@@ -23,6 +23,8 @@ pub enum Ty {
     Ptr(Box<Ty>, bool),
     /// Функция-указатель: типы параметров + тип результата.
     FnPtr(Vec<Ty>, Box<Ty>),
+    /// Срез `[]T` — fat-pointer (указатель на элементы + длина i64).
+    Slice(Box<Ty>),
     Struct(String),
     /// «Отравленный» тип — уже сообщённая ошибка; гасит каскады.
     Err,
@@ -72,6 +74,7 @@ impl Ty {
             // LLVM 15+ использует непрозрачные указатели.
             Ty::Ptr(..) => "ptr".into(),
             Ty::FnPtr(..) => "ptr".into(),
+            Ty::Slice(..) => "%slice".into(),
             Ty::Struct(name) => format!("%struct.{name}"),
             Ty::Err => "i64".into(),
         }
@@ -102,6 +105,7 @@ impl Ty {
                     format!("fn({}) -> {}", ps.join(", "), ret.name())
                 }
             }
+            Ty::Slice(inner) => format!("[]{}", inner.name()),
             Ty::Struct(n) => n.clone(),
             Ty::Err => "<ошибка>".into(),
         }
@@ -156,6 +160,7 @@ impl TyCtx {
                 };
                 Ty::FnPtr(ps, Box::new(r))
             }
+            TypeExpr::Slice(inner, _) => Ty::Slice(Box::new(self.resolve(inner, out))),
             TypeExpr::Named(name, sp) => match name.as_str() {
                 "i8" => Ty::I8,
                 "i16" => Ty::I16,

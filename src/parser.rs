@@ -222,6 +222,13 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Some(TypeExpr::Named(name, sp))
             }
+            Tok::LBracket => {
+                // срез: []T
+                self.bump();
+                self.expect(&Tok::RBracket, "`]` (синтаксис среза — `[]T`)")?;
+                let elem = self.parse_type()?;
+                Some(TypeExpr::Slice(Box::new(elem), sp.to(self.prev_span())))
+            }
             Tok::Fn => {
                 // тип функции-указателя: fn(T1, T2) -> R
                 self.bump();

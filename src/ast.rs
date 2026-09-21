@@ -15,6 +15,8 @@ pub enum TypeExpr {
     PtrMut(Box<TypeExpr>, Span),
     /// Тип функции-указателя: `fn(T1, T2) -> R`.
     Fn(Vec<TypeExpr>, Option<Box<TypeExpr>>, Span),
+    /// Срез `[]T` — fat-pointer (указатель + длина).
+    Slice(Box<TypeExpr>, Span),
 }
 
 impl TypeExpr {
@@ -23,7 +25,8 @@ impl TypeExpr {
             TypeExpr::Named(_, s)
             | TypeExpr::Ptr(_, s)
             | TypeExpr::PtrMut(_, s)
-            | TypeExpr::Fn(_, _, s) => *s,
+            | TypeExpr::Fn(_, _, s)
+            | TypeExpr::Slice(_, s) => *s,
         }
     }
 }
