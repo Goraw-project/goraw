@@ -933,6 +933,26 @@ impl<'a> Codegen<'a> {
     // ---------- выражения (rvalue) ----------
 
     fn gen_expr(&mut self, e: &Expr, expected: Option<&Ty>) -> (String, Ty) {
+        let (v, ty) = self.gen_expr_inner(e, expected);
+        // Коэрция `[N]T` -> `[]T`: строим срез из адреса массива и длины N.
+        if let (Some(Ty::Slice(want)), Ty::Array(got, n)) = (expected, &ty) {
+            if want == got {
+                let elem = (**got).clone();
+                let slot = self.fresh_slot("a2s");
+                self.alloca(&slot, &Ty::Slice(Box::new(elem.clone())));
+                let pf = self.fresh_tmp();
+                self.emit(format!("{pf} = getelementptr %slice, ptr {slot}, i32 0, i32 0"));
+                self.emit(format!("store ptr {v}, ptr {pf}"));
+                let lf = self.fresh_tmp();
+                self.emit(format!("{lf} = getelementptr %slice, ptr {slot}, i32 0, i32 1"));
+                self.emit(format!("store i64 {n}, ptr {lf}"));
+                return (slot, Ty::Slice(Box::new(elem)));
+            }
+        }
+        (v, ty)
+    }
+
+    fn gen_expr_inner(&mut self, e: &Expr, expected: Option<&Ty>) -> (String, Ty) {
         match e {
             Expr::Int(n, _) => match expected {
                 Some(Ty::F32) => (fmt_float(*n as f64, &Ty::F32), Ty::F32),
