@@ -1138,11 +1138,16 @@ impl<'a> Codegen<'a> {
                             return (format!("$CAP{idx}$"), ty.clone());
                         }
                     }
-                    if self.ctx.fns.contains_key(name) {
-                        self.err("E0057", *span, format!("функцию `{name}` нельзя использовать как значение"), Some("её можно только вызывать: `{name}(...)`"));
-                    } else {
-                        self.err("E0032", *span, format!("неизвестное имя `{name}`"), Some("объявите переменную через `let`"));
+                    // Имя функции как значение -> указатель на функцию.
+                    if let Some(sig) = self.ctx.fns.get(name) {
+                        if sig.variadic {
+                            self.err("E0057", *span, format!("нельзя взять указатель на вариадическую функцию `{name}`"), None);
+                            return ("0".into(), Ty::Err);
+                        }
+                        let ty = Ty::FnPtr(sig.params.clone(), Box::new(sig.ret.clone()));
+                        return (format!("@{name}"), ty);
                     }
+                    self.err("E0032", *span, format!("неизвестное имя `{name}`"), Some("объявите переменную через `let`"));
                     ("0".into(), Ty::Err)
                 }
             },
@@ -1658,8 +1663,13 @@ impl<'a> Codegen<'a> {
 
         let name = match callee {
             Expr::Ident(n, _) => n.clone(),
-            _ => {
-                self.err("E0070", callee.span(), "вызывать можно только функцию по имени или метод `x.m(...)`".into(), None);
+            other => {
+                // Непрямой вызов через любое FnPtr-выражение (напр. ops[i](x)).
+                if let Ty::FnPtr(params, ret) = self.type_of(other) {
+                    let (fp, _) = self.gen_expr(other, None);
+                    return self.gen_indirect_call_ptr(&fp, "функция", &params, &ret, args, span);
+                }
+                self.err("E0070", callee.span(), "вызывать можно только функцию по имени, метод `x.m(...)` или значение-указатель на функцию".into(), None);
                 return ("0".into(), Ty::Err);
             }
         };
@@ -2202,7 +2212,11 @@ impl<'a> Codegen<'a> {
     fn gen_indirect_call(&mut self, name: &str, slot: &str, params: &[Ty], ret: &Ty, args: &[Expr], span: Span) -> (String, Ty) {
         let fp = self.fresh_tmp();
         self.emit(format!("{fp} = load ptr, ptr {slot}"));
+        self.gen_indirect_call_ptr(&fp, name, params, ret, args, span)
+    }
 
+    /// Непрямой вызов, где `fp` — уже готовый ptr-значение функции.
+    fn gen_indirect_call_ptr(&mut self, fp: &str, name: &str, params: &[Ty], ret: &Ty, args: &[Expr], span: Span) -> (String, Ty) {
         if args.len() != params.len() {
             self.err("E0072", span, format!("`{name}` ждёт {} аргумент(ов), передано {}", params.len(), args.len()), None);
         }
@@ -2378,6 +2392,13 @@ impl<'a> Codegen<'a> {
                 .map(|l| l.ty.clone())
                 .or_else(|| self.statics.get(n).map(|(_, t)| t.clone()))
                 .or_else(|| self.consts.get(n).map(|cv| cv.ty()))
+                .or_else(|| {
+                    self.ctx
+                        .fns
+                        .get(n)
+                        .filter(|s| !s.variadic)
+                        .map(|s| Ty::FnPtr(s.params.clone(), Box::new(s.ret.clone())))
+                })
                 .unwrap_or(Ty::Err),
             Expr::Unary { op: UnOp::Deref, expr, .. } => match self.type_of(expr) {
                 Ty::Ptr(inner, _) => *inner,
