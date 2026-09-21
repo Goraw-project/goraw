@@ -17,6 +17,8 @@ pub enum TypeExpr {
     Fn(Vec<TypeExpr>, Option<Box<TypeExpr>>, Span),
     /// Срез `[]T` — fat-pointer (указатель + длина).
     Slice(Box<TypeExpr>, Span),
+    /// Массив фиксированного размера `[N]T`.
+    Array(Box<TypeExpr>, u64, Span),
 }
 
 impl TypeExpr {
@@ -26,7 +28,8 @@ impl TypeExpr {
             | TypeExpr::Ptr(_, s)
             | TypeExpr::PtrMut(_, s)
             | TypeExpr::Fn(_, _, s)
-            | TypeExpr::Slice(_, s) => *s,
+            | TypeExpr::Slice(_, s)
+            | TypeExpr::Array(_, _, s) => *s,
         }
     }
 }
@@ -220,6 +223,8 @@ pub enum Expr {
         index: Box<Expr>,
         span: Span,
     },
+    /// Литерал массива: `[e1, e2, ...]`.
+    ArrayLit(Vec<Expr>, Span),
     /// Литерал структуры: `Name { field: value, ... }`.
     StructLit {
         name: String,
@@ -260,6 +265,7 @@ impl Expr {
             | Expr::Index { span: s, .. }
             | Expr::StructLit { span: s, .. }
             | Expr::Cast { span: s, .. }
+            | Expr::ArrayLit(_, s)
             | Expr::Jit { span: s, .. } => *s,
         }
     }

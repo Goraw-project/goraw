@@ -317,11 +317,18 @@ impl<'a> Parser<'a> {
                 Some(TypeExpr::Named(name, sp))
             }
             Tok::LBracket => {
-                // срез: []T
+                // срез `[]T` либо массив `[N]T`
                 self.bump();
-                self.expect(&Tok::RBracket, "`]` (синтаксис среза — `[]T`)")?;
-                let elem = self.parse_type()?;
-                Some(TypeExpr::Slice(Box::new(elem), sp.to(self.prev_span())))
+                if let Tok::Int(n) = self.peek().clone() {
+                    self.bump();
+                    self.expect(&Tok::RBracket, "`]`")?;
+                    let elem = self.parse_type()?;
+                    Some(TypeExpr::Array(Box::new(elem), n.max(0) as u64, sp.to(self.prev_span())))
+                } else {
+                    self.expect(&Tok::RBracket, "`]` (синтаксис среза — `[]T`)")?;
+                    let elem = self.parse_type()?;
+                    Some(TypeExpr::Slice(Box::new(elem), sp.to(self.prev_span())))
+                }
             }
             Tok::Fn => {
                 // тип функции-указателя: fn(T1, T2) -> R
@@ -892,6 +899,23 @@ impl<'a> Parser<'a> {
                 Some(e)
             }
             Tok::Jit => self.parse_jit(),
+            Tok::LBracket => {
+                // литерал массива: [e1, e2, ...]
+                self.bump();
+                let saved = self.no_struct_lit;
+                self.no_struct_lit = false;
+                let mut elems = Vec::new();
+                while !matches!(self.peek(), Tok::RBracket | Tok::Eof) {
+                    elems.push(self.parse_expr()?);
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+                self.no_struct_lit = saved;
+                let end = self.span();
+                self.expect(&Tok::RBracket, "`]`")?;
+                Some(Expr::ArrayLit(elems, sp.to(end)))
+            }
             Tok::Ident(name) => {
                 self.bump();
                 // путь к константе перечисления: Enum::Variant

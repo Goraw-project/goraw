@@ -770,6 +770,17 @@ impl<'a> Codegen<'a> {
                         self.emit(format!("{t} = getelementptr {ety}, ptr {data}, i64 {iv}", ety = elem.llvm()));
                         (t, *elem, true)
                     }
+                    // Массив — bounds-check по константной длине; bv это адрес.
+                    Ty::Array(elem, n) => {
+                        let (iv, _) = self.gen_expr(index, Some(&Ty::I64));
+                        self.emit_bounds_check(&iv, &n.to_string());
+                        let t = self.fresh_tmp();
+                        self.emit(format!(
+                            "{t} = getelementptr [{n} x {ety}], ptr {bv}, i64 0, i64 {iv}",
+                            ety = elem.llvm()
+                        ));
+                        (t, *elem, true)
+                    }
                     Ty::Ptr(inner, m) => {
                         self.require_unsafe(*span, "индексация сырого указателя");
                         let (iv, _) = self.gen_expr(index, Some(&Ty::I64));
@@ -782,7 +793,7 @@ impl<'a> Codegen<'a> {
                     }
                     Ty::Err => ("%poison".into(), Ty::Err, true),
                     other => {
-                        self.err("E0053", base.span(), format!("индексировать можно только указатель или срез, а тут `{}`", other.name()), None);
+                        self.err("E0053", base.span(), format!("индексировать можно только указатель, срез или массив, а тут `{}`", other.name()), None);
                         ("%poison".into(), Ty::Err, true)
                     }
                 }
@@ -1012,6 +1023,14 @@ impl<'a> Codegen<'a> {
             Expr::Cast { expr, ty, span } => self.gen_cast(expr, ty, *span),
             Expr::Call { callee, args, span } => self.gen_call(callee, args, *span, expected),
             Expr::Field { base, field, span } => {
+                // Длина массива — константа.
+                if let Ty::Array(_, n) = self.type_of(base) {
+                    if field == "len" {
+                        return (n.to_string(), Ty::I64);
+                    }
+                    self.err("E0055", *span, format!("у массива есть только поле `len`, а не `{field}`"), None);
+                    return ("0".into(), Ty::Err);
+                }
                 // Поля среза (.ptr / .len) — синтетические.
                 if let Ty::Slice(elem) = self.type_of(base) {
                     let (addr, _) = self.gen_expr(base, None); // адрес агрегата
@@ -1047,11 +1066,16 @@ impl<'a> Codegen<'a> {
                 if ty == Ty::Err {
                     return ("0".into(), Ty::Err);
                 }
+                // Агрегатный элемент представляется адресом (без загрузки).
+                if is_aggregate(&ty) {
+                    return (ptr, ty);
+                }
                 let t = self.fresh_tmp();
                 self.emit(format!("{t} = load {lty}, ptr {ptr}", lty = ty.llvm()));
                 (t, ty)
             }
             Expr::StructLit { name, fields, span } => self.gen_struct_lit(name, fields, *span),
+            Expr::ArrayLit(elems, span) => self.gen_array_lit(elems, expected, *span),
             Expr::Jit { captures, inner, span } => self.gen_jit(captures, inner, *span),
         }
     }
@@ -2037,6 +2061,38 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    fn gen_array_lit(&mut self, elems: &[Expr], expected: Option<&Ty>, span: Span) -> (String, Ty) {
+        // Тип элемента: из ожидания [N]T либо из первого элемента.
+        let elem_ty = match expected {
+            Some(Ty::Array(e, _)) => Some((**e).clone()),
+            _ => None,
+        };
+        let elem_ty = match elem_ty {
+            Some(t) => t,
+            None => {
+                if elems.is_empty() {
+                    self.err("E0085", span, "нельзя вывести тип пустого массива — укажите аннотацию".into(), None);
+                    return ("0".into(), Ty::Err);
+                }
+                self.type_of(&elems[0])
+            }
+        };
+        let n = elems.len() as u64;
+        let arr_ty = Ty::Array(Box::new(elem_ty.clone()), n);
+        let slot = self.fresh_slot("arr");
+        self.alloca(&slot, &arr_ty);
+        for (i, e) in elems.iter().enumerate() {
+            let (v, vty) = self.gen_expr(e, Some(&elem_ty));
+            if !compat(&elem_ty, &vty) && vty != Ty::Err && elem_ty != Ty::Err {
+                self.err("E0086", e.span(), format!("элемент массива типа `{}`, а массив из `{}`", vty.name(), elem_ty.name()), None);
+            }
+            let ep = self.fresh_tmp();
+            self.emit(format!("{ep} = getelementptr {aty}, ptr {slot}, i64 0, i64 {i}", aty = arr_ty.llvm()));
+            self.store_value(&elem_ty, &v, &vty, &ep);
+        }
+        (slot, arr_ty)
+    }
+
     fn gen_struct_lit(&mut self, name: &str, fields: &[(String, Expr, Span)], span: Span) -> (String, Ty) {
         let info = match self.ctx.structs.get(name) {
             Some(i) => i.clone(),
@@ -2132,8 +2188,18 @@ impl<'a> Codegen<'a> {
                 };
                 Ty::FnPtr(ps, Box::new(r))
             }
+            Expr::ArrayLit(elems, _) => {
+                if elems.is_empty() {
+                    Ty::Err
+                } else {
+                    Ty::Array(Box::new(self.type_of(&elems[0])), elems.len() as u64)
+                }
+            }
             Expr::Field { base, field, .. } => {
                 let bt = self.type_of(base);
+                if let Ty::Array(_, _) = bt {
+                    return if field == "len" { Ty::I64 } else { Ty::Err };
+                }
                 if let Ty::Slice(elem) = bt {
                     return match field.as_str() {
                         "ptr" => Ty::Ptr(elem, true),
@@ -2158,6 +2224,7 @@ impl<'a> Codegen<'a> {
             Expr::Index { base, .. } => match self.type_of(base) {
                 Ty::Ptr(inner, _) => *inner,
                 Ty::Slice(elem) => *elem,
+                Ty::Array(elem, _) => *elem,
                 _ => Ty::Err,
             },
             Expr::StructLit { name, .. } => Ty::Struct(name.clone()),
@@ -2372,7 +2439,7 @@ fn is_x86_reg(s: &str) -> bool {
 /// Агрегатные типы (структуры/срезы) представляются в кодогене АДРЕСОМ, а не
 /// скалярным значением: их читают/пишут через load/store агрегата.
 fn is_aggregate(ty: &Ty) -> bool {
-    matches!(ty, Ty::Struct(_) | Ty::Slice(_))
+    matches!(ty, Ty::Struct(_) | Ty::Slice(_) | Ty::Array(..))
 }
 
 /// Совместимы ли типы при передаче/присваивании. Точное равенство, плюс

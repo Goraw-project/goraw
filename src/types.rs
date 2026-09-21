@@ -25,6 +25,8 @@ pub enum Ty {
     FnPtr(Vec<Ty>, Box<Ty>),
     /// Срез `[]T` — fat-pointer (указатель на элементы + длина i64).
     Slice(Box<Ty>),
+    /// Массив фиксированного размера `[N]T`.
+    Array(Box<Ty>, u64),
     Struct(String),
     /// «Отравленный» тип — уже сообщённая ошибка; гасит каскады.
     Err,
@@ -75,6 +77,7 @@ impl Ty {
             Ty::Ptr(..) => "ptr".into(),
             Ty::FnPtr(..) => "ptr".into(),
             Ty::Slice(..) => "%slice".into(),
+            Ty::Array(inner, n) => format!("[{n} x {}]", inner.llvm()),
             Ty::Struct(name) => format!("%struct.{name}"),
             Ty::Err => "i64".into(),
         }
@@ -106,6 +109,7 @@ impl Ty {
                 }
             }
             Ty::Slice(inner) => format!("[]{}", inner.name()),
+            Ty::Array(inner, n) => format!("[{n}]{}", inner.name()),
             Ty::Struct(n) => n.clone(),
             Ty::Err => "<ошибка>".into(),
         }
@@ -168,6 +172,7 @@ impl TyCtx {
                 Ty::FnPtr(ps, Box::new(r))
             }
             TypeExpr::Slice(inner, _) => Ty::Slice(Box::new(self.resolve(inner, out))),
+            TypeExpr::Array(inner, n, _) => Ty::Array(Box::new(self.resolve(inner, out)), *n),
             TypeExpr::Named(name, sp) => match name.as_str() {
                 "i8" => Ty::I8,
                 "i16" => Ty::I16,
