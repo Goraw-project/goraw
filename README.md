@@ -75,6 +75,7 @@ gorawc <файл.gw> [опции]
   --emit-llvm      остановиться на LLVM IR (.ll), не звать clang
   --json           диагностика в LLM-формате (JSON + XML-нотки)
   --run            запустить программу после успешной сборки
+  --test           собрать и прогнать shadow-тесты (test-блоки)
   -O<n>            уровень оптимизации clang (напр. -O2)
   --keep-ll        не удалять промежуточный .ll
   --clang <путь>   путь к clang (по умолчанию из PATH)
@@ -125,17 +126,23 @@ fn add(a: i64, b: i64) -> i64 {           // -> R необязателен (ин
 let x = 10;            // неизменяемая, тип выведен (i64)
 let mut sum: i64 = 0;  // изменяемая, с аннотацией
 name := expr;          // Go-style короткое объявление (изменяемое)
+x += 1; y <<= 2;       // составные присваивания (+= -= *= /= %= &= |= ^= <<= >>=)
 
 if cond { ... } else { ... }
+let m = if a > b { a } else { b };   // if как выражение (обе ветви обязательны)
 while cond { ... }
-x += 1; y <<= 2;      // составные присваивания (+= -= *= /= %= &= |= ^= <<= >>=)
+for i := 0; i < n; i++ { ... }       // трёхчастный
+for cond { ... }                     // while-форма
+for { ... }                          // бесконечный; break/continue
+for x in slice { ... }               // итерация по срезу/массиву
+```
 
-if cond { ... } else { ... }
-while cond { ... }
-for i := 0; i < n; i++ { ... }   // трёхчастный
-for cond { ... }                 // while-форма
-for { ... }                      // бесконечный; break/continue
-for x in slice { ... }           // итерация по срезу
+### Константы и глобальные переменные
+
+```goraw
+const MAX: i64 = 100;          // свёртка в компайл-тайме (арифметика, enum, cast)
+const HALF: i64 = MAX / 2;     // const может ссылаться на const
+static NEXT_ID: i64 = 1;       // изменяемое состояние уровня модуля
 ```
 
 ### Динамическая память: куча и срезы
@@ -150,6 +157,16 @@ free(p);
 На куче и срезах на самом Goraw пишутся `Vec`/`Bytes` (см.
 [examples/bytes.gw](examples/bytes.gw), [examples/slices.gw](examples/slices.gw)).
 Ещё builtins: `sizeof(T)`, `zeroed()`, `f32_bits`/`f64_bits` и обратные.
+
+### Массивы и строки
+
+```goraw
+let a: [4]i64 = [10, 20, 30, 40];    // фиксированный размер, семантика значения
+let n = a.len;                        // константа; a[i] с проверкой границ
+sum_slice(a);                         // [N]T авто-коэрсится в []T
+
+let s: str = "goraw";                 // str == []u8; s.len, s[i], for c in s
+```
 
 ### Перечисления
 
@@ -181,6 +198,15 @@ let v = Vec2 { x: 1.5, y: 2.0 };   // литерал, поля обязател�
 ```
 
 Структуры передаются и возвращаются по значению.
+
+Методы: `self` — безопасная ссылка (`*mut Type`), доступ к полям без `unsafe`:
+
+```goraw
+fn Vec2::len2(self) -> f64 { return self.x * self.x + self.y * self.y; }
+fn Counter::inc(self) { self.value += 1; }   // мутация через self
+
+let d = v.len2();   // вызов метода
+```
 
 ### Safe / unsafe и указатели
 
@@ -257,6 +283,25 @@ let r = scale(5, 3);   // = 80, вызов уже нативной специа�
 `LLVM\bin`). C-рантайм линкуется в `.exe` автоматически и только если
 программа использует `jit`.
 
+## Встроенные тесты (Shadow Tests)
+
+`test`-блоки живут рядом с кодом, но **вырезаются из релиза**. Под `--test`
+каждый компилируется и прогоняется; `assert` допустим только в них.
+
+```goraw
+fn add(a: i64, b: i64) -> i64 { return a + b; }
+
+test "сложение" {
+    assert add(2, 3) == 5;
+    assert add(-1, 1) == 0;
+}
+```
+
+```sh
+gorawc prog.gw --test    # [ ok ]/[FAIL] по каждому + exit-код для CI
+gorawc prog.gw --run     # релиз: тесты не попадают в бинарь
+```
+
 ## Диагностика для LLM
 
 С флагом `--json` ошибки печатаются как строгий JSON, где у каждой
@@ -316,12 +361,19 @@ runtime/
   — куча, срезы, protobuf varint на Goraw.
 - [`examples/enums.gw`](examples/enums.gw),
   [`examples/modules_demo.gw`](examples/modules_demo.gw) — enum, import.
+- [`examples/arrays.gw`](examples/arrays.gw),
+  [`examples/strings.gw`](examples/strings.gw),
+  [`examples/methods.gw`](examples/methods.gw) — массивы, `str`, методы.
+- [`examples/consts.gw`](examples/consts.gw),
+  [`examples/statics.gw`](examples/statics.gw) — `const`/`static`.
+- [`examples/tests_demo.gw`](examples/tests_demo.gw) — shadow-тесты (`--test`).
 - [`examples/proto/`](examples/proto/) — protobuf через `gorawpb`.
 
 ## Ограничения и что дальше
 
-Это игрушечный, но настоящий компилятор. Есть: куча, срезы `[]T`, enum,
-модули (`import`), protobuf (encode+decode). Пока нет: обобщений, методов
-у структур, замыканий (кроме jit), `str`-типа, сборки мусора, namespacing
-модулей, bounds-check срезов. Вызов пользовательских функций из jit-блока
-не поддержан. Подробная дорожная карта — [docs/ROADMAP.md](docs/ROADMAP.md).
+Это игрушечный, но настоящий компилятор. Есть: куча, срезы `[]T`
+(bounds-checked), массивы `[N]T`, `str`, enum, `const`/`static`, методы
+структур, if-выражения, модули (`import`), shadow-тесты, protobuf
+(encode+decode). Пока нет: обобщений, замыканий (кроме jit), сборки мусора,
+namespacing модулей, `map`/`oneof` в protobuf. Вызов пользовательских
+функций из jit-блока не поддержан. Дорожная карта — [docs/ROADMAP.md](docs/ROADMAP.md).
