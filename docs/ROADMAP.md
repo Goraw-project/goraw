@@ -28,6 +28,9 @@
 | CUDA-ядра + PTX | NVPTX-бэкенд LLVM → PTX → ptxas → запуск | Высокая | Высокая | **Делать** как отдельный эпик (LLVM тащит основное) |
 | AMD: llvm-mc + amdclang++ | AMDGPU-бэкенд LLVM + HIP inline + ROCm | Средне-высокая | Высокая | **Может быть** (симметрично CUDA, если нужен AMD) |
 | SASS: cuasm / turingas | Неофициальные per-arch ассемблеры, Python, хрупкие | Нишевая | Высокая | **Пропустить/отложить** (опц. плагин) |
+| Свой Protobuf (Editions) | Wire-совместимый protobuf + схемы Editions; тул `gorawpb` | Высокая | Высокая | **Делать** (Rust-рантайм сначала; Goraw-таргет — по мере роста языка) |
+| Библиотеки/плагины/модули (import) | Три РАЗНЫЕ вещи: module / package / plugin | Высокая | Средне-высокая | **Делать** — сначала терминология и `import` |
+| Inline NASM/MASM (как в asm.gw) | Сохранить `asm(...) {}`; + faithful-путь через реальный ассемблер | Высокая | Средняя | **Оставляем и растим** (см. Эпик 10) |
 
 Обоснования и эскизы — ниже, в порядке рекомендованной работы.
 
@@ -234,14 +237,159 @@ LLVM AMDGPU-бэкенд означает, что бо́льшая часть �
 
 ---
 
+## Эпик 8: Goraw Protobuf (Editions-совместимый) — `gorawpb`
+
+Свой protobuf, **wire-идентичный Google**, со схемной моделью **Editions**
+(вместо proto2/proto3). Clean-room: wire-формат и спека Editions публичны,
+код Google не копируем.
+
+### Что такое Editions (и почему это важно)
+
+В Editions поведение больше не привязано к `syntax = "proto3"`, а задаётся
+**features** с дефолтами по редакции (`edition = "2023"`, далее `2024`…) и
+лексическим наследованием file → message → field:
+
+- `field_presence` = EXPLICIT / IMPLICIT / LEGACY_REQUIRED;
+- `enum_type` = OPEN / CLOSED;
+- `repeated_field_encoding` = PACKED / EXPANDED;
+- `message_encoding` = LENGTH_PREFIXED / DELIMITED (возврат «групп»);
+- `utf8_validation`, `json_format`.
+
+Совместимость с Google = тот же бинарный wire-формат **плюс** корректный
+резолвинг этих features. Именно резолвинг features — Editions-специфичная
+«соль», которую легко недосделать.
+
+### Компоненты
+
+1. **Парсер `.proto`** (Editions): `edition`, `package`, `import`,
+   `message/enum/oneof/map/service`, `option`, `features`.
+2. **Дескрипторная модель** — свой аналог `descriptor.proto`
+   (File/Message/Field/Enum/Service + `FeatureSet`).
+3. **Резолвер features** — дефолты редакции + наследование по уровням.
+4. **Wire-кодек** — varint/zigzag/fixed32/64/LEN, packed repeated, map как
+   repeated-entry, delimited (группы), **сохранение unknown fields**.
+5. **Кодоген** — типы + `encode/decode`. Цель — **Goraw** и/или Rust.
+6. Позже: JSON-mapping, text-format, well-known types (`Any/Timestamp/…`),
+   reflection/dynamic messages, gRPC-сервисы.
+
+### Язык реализации и ключевая зависимость
+
+Инструмент (`gorawpb`) и рантайм — **сначала на Rust** (переиспользуем нашу
+инфраструктуру; парсер/диагностика — в стиле `crate::diag`, значит и тут
+LLM-JSON).
+
+> **Важно:** кодоген В Goraw и рантайм НА Goraw требуют, чтобы язык дорос до
+> динамических коллекций: `Vec`/срезы, `String`/`bytes`, работа с кучей.
+> Сейчас в Goraw только `*u8` и указатели. Значит: Rust-рантайм и Rust-тул
+> первыми; Goraw-таргет — когда появятся эти типы. Это честная зависимость,
+> а не «сделаем сразу».
+
+### Фазировка
+
+- **PB1:** wire-кодек (Rust) + парсер подмножества Editions + дескрипторы +
+  кодоген в Rust-типы. Round-trip против `protoc` на тестовом корпусе.
+- **PB2:** полный `FeatureSet`-резолвинг под edition 2023 (open/closed enums,
+  implicit/explicit presence, packed-дефолты, delimited), unknown fields,
+  well-known types.
+- **PB3:** JSON/text-формат, сервисы, reflection; **кодоген в Goraw** (после
+  дорастания языка).
+
+**Проверка совместимости:** гонять наши encode/decode против
+`protoc`-сгенерированного и против официального **protobuf conformance
+suite**. **Лицензия:** protobuf — BSD-3, спека публична; наша реализация
+clean-room. **Инструмент:** `gorawpb` (аналог `protoc`).
+
+---
+
+## Эпик 9: Модули, пакеты, плагины (import как в Python)
+
+Ты спросил «библиотеки? плагины? модули?» — это **три разные вещи**, которые
+важно не смешивать. Нейминг ниже — рекомендованный.
+
+| Уровень | Что это | Когда действует | Аналог |
+|---|---|---|---|
+| **module** | единица исходника + пространство имён, `import a.b;` | компиляция | Python `import`, C++20 module |
+| **package** | распространяемый набор модулей + манифест + артефакт | дистрибуция/линк | crate/пакет |
+| **plugin** | расширение, грузимое в **рантайме** по стабильному ABI | запуск приложения | `.dll`/`.so` через LoadLibrary/dlopen |
+
+**Рекомендация:** источник/импорт → **module** (`import`, как в Python);
+распространяемый набор → **package** (манифест `goraw.toml`); рантайм-
+расширение → **plugin**. Одно и то же тремя словами не называем.
+
+### `import` — эскиз (примиряет C++20 и Python)
+
+```goraw
+export module math.vec;         // объявление интерфейса модуля (C++20-стиль)
+export fn dot(a: Vec2, b: Vec2) -> f64 { ... }
+fn helper() {}                  // приватно (без export)
+
+// в другом файле:
+import math.vec;                // как в Python
+import math.vec as mv;          // алиас
+from math.vec import dot;       // выборочно (сахар)
+```
+
+- **Резолвинг:** module path → файл/пакет; пути поиска (`GORAW_PATH` +
+  манифест пакета); кэш интерфейса модуля = сериализованный **GIR-хедер**
+  (связь с Эпиком 0/3); раздельная компиляция.
+- **Package/менеджер** (отдельный средний эпик, позже): манифест зависимостей,
+  сборка в `.lib/.a/.dll`, версии — аналог cargo.
+- **Plugin:** контракт из экспортируемых функций с C-ABI; приложение грузит
+  `.dll/.so` в рантайме — **переиспользуем машинерию динамической загрузки,
+  что уже есть в JIT-рантайме** (`LoadLibrary/GetProcAddress` в
+  `runtime/goraw_jit.c`). Компиляторные плагины (свои бэкенды/линты) — как
+  точки расширения поверх GIR.
+
+**Сложность:** модули — средне-высокая (это Эпик 3); менеджер пакетов —
+средний отдельный эпик; плагины — низко-средняя поверх готовой динамич.
+загрузки.
+
+---
+
+## Эпик 10: Inline NASM/MASM — сохраняем и растим
+
+Inline-ассемблер как в [`../examples/asm.gw`](../examples/asm.gw) —
+первоклассная фича, **не выпиливаем**. Пользовательский синтаксис не меняется:
+
+```goraw
+asm("masm", inputs: [value], outputs: [output]) {
+    mov eax, value
+    add eax, 100
+    mov output, eax
+}
+```
+
+Под капотом — два пути (выбор по диалекту/флагу, синтаксис один):
+
+1. **LLVM `inteldialect`** (сейчас) — быстро, без внешних тулов, для коротких
+   вставок. Остаётся дефолтом.
+2. **Faithful backend** — тот же блок ассемблируется **настоящим**
+   ассемблером ради 100% верности диалекту:
+   - `asm("goraw")` → наш `gorawas` (Эпик 2);
+   - `asm("nasm")` → внешний NASM;
+   - `asm("masm")` → UASM (или `ml64`, если есть MSVC).
+
+   Реализация faithful: собрать блок в микрообъект с экспортом символа +
+   **ABI-контракт** по `inputs/outputs` (регистры/стек), слинковать и звать
+   как функцию. Это тот самый «Открытый вопрос» про ABI ниже.
+
+**Итог:** кому нужен настоящий NASM/MASM inline — получает его через faithful;
+кому хватает лёгкого пути — остаётся на LLVM inteldialect. Один синтаксис,
+разные бэкенды.
+
+---
+
 ## Рекомендованный порядок (milestones)
 
 1. **M1 — Фундамент:** GIR (Эпик 0) + Shadow Tests (Эпик 1, параллельно).
-2. **M2 — Ассемблеры:** backend-слой + NASM + UASM (Эпик 2).
-3. **M3 — Модули:** модульная система языка (Эпик 3) + драйвер (Эпик 6).
-4. **M4 — NVIDIA:** CUDA-ядра/PTX (Эпик 4).
-5. **M5 — AMD:** если нужно (Эпик 5).
-6. **M6 — SASS:** опциональный плагин (Эпик 7).
+2. **M2 — Ассемблеры:** доращивание `gorawas` (память→ветвления→релокации,
+   Эпик 2) + faithful inline-путь (Эпик 10).
+3. **M3 — Модули:** module-система + `import` (Эпик 3/9) + драйвер (Эпик 6).
+4. **M4 — Protobuf:** `gorawpb` PB1→PB2 (Эпик 8) — **можно параллельно с M2/M3**,
+   т.к. Rust-рантайм не зависит от бэкендов; Goraw-таргет ждёт роста языка.
+5. **M5 — NVIDIA:** CUDA-ядра/PTX (Эпик 4).
+6. **M6 — Пакеты/плагины:** менеджер пакетов + рантайм-плагины (Эпик 9).
+7. **M7 — AMD / SASS:** по необходимости (Эпики 5, 7).
 
 Каждый milestone самодостаточен и оставляет язык рабочим.
 
@@ -276,6 +424,13 @@ LLVM AMDGPU-бэкенд означает, что бо́льшая часть �
 - Синтаксис `launch` для GPU-ядер и модель device/host в системе типов.
 - «Модульность C++20» — это про язык (принято) или ещё и про раскладку
   самого компилятора? Пока трактуем как фичу языка.
+- **Protobuf → Goraw:** кодоген в Goraw блокирован отсутствием динамических
+  типов (`Vec`/срез/`String`/`bytes`/куча). Приоритезировать их добавление в
+  язык, если Goraw-таргет для protobuf важен раньше Rust-рантайма.
+- **Нейминг module/package/plugin** — принять предложенный (module=import,
+  package=дистрибуция, plugin=рантайм). Одно ≠ три слова.
+- **Editions target:** начинать с `edition = "2023"`; форматы JSON/text и
+  reflection — в PB3.
 
 ### Ссылки
 
@@ -284,3 +439,7 @@ LLVM AMDGPU-бэкенд означает, что бо́льшая часть �
 - turingas — https://github.com/daadaada/turingas
 - cuasm — https://github.com/gpuocelot/cuasm , CuAssembler — https://github.com/cloudcores/CuAssembler
 - LLVM NVPTX / AMDGPU — бэкенды в составе LLVM
+- Protobuf Editions — https://protobuf.dev/editions/overview/ ,
+  wire-формат — https://protobuf.dev/programming-guides/encoding/ ,
+  conformance — https://github.com/protocolbuffers/protobuf/tree/main/conformance
+- Rust protobuf для референса — prost https://github.com/tokio-rs/prost
