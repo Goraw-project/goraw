@@ -62,6 +62,17 @@ pub struct FnDef {
     pub body: Option<Block>, // None => extern
     pub is_unsafe: bool,
     pub is_extern: bool,
+    /// Функция сгенерирована из test-блока (в теле разрешён `assert`).
+    pub is_test: bool,
+    pub span: Span,
+}
+
+/// Обязательный встроенный тест (shadow test): не попадает в релиз, а под
+/// `--test` компилируется в отдельную функцию и прогоняется.
+#[derive(Clone, Debug)]
+pub struct TestDef {
+    pub name: String,
+    pub body: Block,
     pub span: Span,
 }
 
@@ -118,6 +129,8 @@ pub enum Stmt {
     Break(Span),
     Continue(Span),
     Unsafe(Block, Span),
+    /// `assert expr;` внутри test-блока: при ложности тест падает.
+    Assert(Expr, Span),
     /// Инлайн-ассемблер (фаза 2).
     Asm(AsmBlock),
 }
@@ -134,6 +147,7 @@ impl Stmt {
             | Stmt::ForIn { span, .. }
             | Stmt::Break(span)
             | Stmt::Continue(span)
+            | Stmt::Assert(_, span)
             | Stmt::Unsafe(_, span) => *span,
             Stmt::Expr(e) => e.span(),
             Stmt::Asm(a) => a.span,
@@ -279,4 +293,5 @@ pub struct Program {
     pub structs: Vec<StructDef>,
     pub enums: Vec<EnumDef>,
     pub fns: Vec<FnDef>,
+    pub tests: Vec<TestDef>,
 }

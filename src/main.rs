@@ -4,7 +4,7 @@
 //! -> clang -> .exe. Диагностики умеет печатать по-человечески или в
 //! LLM-дружественном JSON (`--json`).
 
-use gorawc::{codegen, diag, lexer, parser, types};
+use gorawc::{ast, codegen, diag, lexer, parser, types};
 
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
@@ -22,6 +22,7 @@ struct Options {
     opt: Option<String>, // уровень оптимизации, напр. "2"
     clang: String,
     keep_ll: bool,
+    test: bool, // собрать и прогнать shadow-тесты
 }
 
 fn main() {
@@ -48,6 +49,7 @@ fn print_help() {
     --emit-llvm      остановиться на LLVM IR (.ll), не звать clang\n\
     --json           печатать диагностику в LLM-формате (JSON + XML-нотки)\n\
     --run            запустить программу после успешной сборки\n\
+    --test           собрать и прогнать shadow-тесты (test-блоки)\n\
     -O<n>            уровень оптимизации clang (напр. -O2)\n\
     --keep-ll        не удалять промежуточный .ll при сборке .exe\n\
     --clang <путь>   путь к clang (по умолчанию `clang` из PATH)\n\
@@ -64,6 +66,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut opt = None;
     let mut clang = "clang".to_string();
     let mut keep_ll = false;
+    let mut test = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -80,6 +83,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--emit-llvm" => emit_llvm = true,
             "--json" => json = true,
             "--run" => run = true,
+            "--test" => test = true,
             "--keep-ll" => keep_ll = true,
             "--clang" => {
                 i += 1;
@@ -98,7 +102,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     }
 
     let input = input.ok_or("не указан входной файл (см. --help)")?;
-    Ok(Options { input, output, emit_llvm, json, run, opt, clang, keep_ll })
+    Ok(Options { input, output, emit_llvm, json, run, opt, clang, keep_ll, test })
 }
 
 fn run(opts: Options) -> i32 {
@@ -119,10 +123,15 @@ fn run(opts: Options) -> i32 {
     let toks = lx.tokenize(&mut diags);
 
     // Парсер.
-    let prog = {
+    let mut prog = {
         let mut p = parser::Parser::new(toks, &src, &mut diags);
         p.parse_program()
     };
+
+    // Режим тестов: превращаем test-блоки в функции и генерируем harness-main.
+    if opts.test {
+        transform_tests(&mut prog);
+    }
 
     // Сбор типов (первый проход).
     let mut collected = Vec::new();
@@ -210,7 +219,7 @@ fn run(opts: Options) -> i32 {
 
     eprintln!("собрано: `{}`", exe_path.display());
 
-    if opts.run {
+    if opts.run || opts.test {
         let status = Command::new(&exe_path).status();
         match status {
             Ok(s) => return s.code().unwrap_or(0),
@@ -222,6 +231,58 @@ fn run(opts: Options) -> i32 {
     }
 
     0
+}
+
+/// Преобразует программу под `--test`: каждый `test`-блок → функция
+/// `__test_N() -> i64` (0 = ок, иначе номер строки упавшего assert), плюс
+/// сгенерированный `main`, который прогоняет тесты и печатает отчёт. Тесты не
+/// попадают в обычную сборку (это «shadow»-тесты) — трансформация только здесь.
+fn transform_tests(prog: &mut ast::Program) {
+    use ast::*;
+    let dummy = diag::Span::dummy();
+
+    // Убираем пользовательский main — его заменит harness.
+    let mut fns: Vec<FnDef> = std::mem::take(&mut prog.fns).into_iter().filter(|f| f.name != "main").collect();
+    let user_has_printf = fns.iter().any(|f| f.name == "printf");
+
+    let tests = std::mem::take(&mut prog.tests);
+    for (i, t) in tests.iter().enumerate() {
+        fns.push(FnDef {
+            name: format!("__test_{i}"),
+            params: Vec::new(),
+            variadic: false,
+            ret: Some(TypeExpr::Named("i64".into(), dummy)),
+            body: Some(t.body.clone()),
+            is_unsafe: false,
+            is_extern: false,
+            is_test: true,
+            span: t.span,
+        });
+    }
+
+    // Harness-main генерируем как исходник Goraw и парсим — без ручной сборки AST.
+    let mut hs = String::new();
+    if !user_has_printf {
+        hs.push_str("extern fn printf(fmt: *u8, ...) -> i32;\n");
+    }
+    hs.push_str("fn main() -> i32 {\n");
+    hs.push_str("    let mut __p: i64 = 0;\n    let mut __f: i64 = 0;\n");
+    for (i, t) in tests.iter().enumerate() {
+        let name = t.name.replace('\\', "\\\\").replace('"', "\\\"");
+        hs.push_str(&format!("    let r{i} = __test_{i}();\n"));
+        hs.push_str(&format!(
+            "    if r{i} != 0 {{ printf(\"[FAIL] %s (строка %lld)\\n\", \"{name}\", r{i}); __f += 1; }} else {{ printf(\"[ ok ] %s\\n\", \"{name}\"); __p += 1; }}\n"
+        ));
+    }
+    hs.push_str("    printf(\"\\n%lld passed, %lld failed\\n\", __p, __f);\n");
+    hs.push_str("    return __f as i32;\n}\n");
+
+    let mut hdiags = diag::Diags::new("<test-harness>", hs.clone());
+    let htoks = lexer::Lexer::new(&hs).tokenize(&mut hdiags);
+    let hprog = parser::Parser::new(htoks, &hs, &mut hdiags).parse_program();
+    fns.extend(hprog.fns);
+
+    prog.fns = fns;
 }
 
 /// Рекурсивно собирает главный файл и все импортируемые (`import "path";`) в

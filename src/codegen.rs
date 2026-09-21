@@ -43,6 +43,7 @@ pub struct Codegen<'a> {
     captures: Option<HashMap<String, (usize, Ty)>>,
     in_jit_template: bool,
     jittmpl_count: u32,
+    in_test: bool, // тело текущей функции — тест (разрешён assert)
 }
 
 impl<'a> Codegen<'a> {
@@ -68,6 +69,7 @@ impl<'a> Codegen<'a> {
             captures: None,
             in_jit_template: false,
             jittmpl_count: 0,
+            in_test: false,
         }
     }
 
@@ -163,6 +165,7 @@ impl<'a> Codegen<'a> {
         self.code.clear();
         self.cur_ret = ret_ty.clone();
         self.cur_unsafe = f.is_unsafe;
+        self.in_test = f.is_test;
         self.unsafe_depth = 0;
         self.scopes.clear();
         self.loops.clear();
@@ -198,6 +201,10 @@ impl<'a> Codegen<'a> {
 
         // Финальный терминатор, если провалились в конец.
         if !self.terminated {
+            if f.is_test {
+                // Дошли до конца теста — все assert прошли: возвращаем 0 (ок).
+                self.emit("ret i64 0".into());
+            } else {
             match &self.cur_ret {
                 Ty::Void => self.emit("ret void".into()),
                 other => {
@@ -216,6 +223,7 @@ impl<'a> Codegen<'a> {
                     let z = self.zero_of(other);
                     self.emit(format!("ret {} {}", other.llvm(), z));
                 }
+            }
             }
         }
 
@@ -519,6 +527,22 @@ impl<'a> Codegen<'a> {
                 self.unsafe_depth += 1;
                 self.gen_block(block);
                 self.unsafe_depth -= 1;
+            }
+
+            Stmt::Assert(expr, span) => {
+                if !self.in_test {
+                    self.err("E0082", *span, "`assert` допустим только внутри test-блока".into(), Some("оберните проверку в `test \"имя\" { ... }`"));
+                    return;
+                }
+                let (c, cty) = self.gen_expr(expr, Some(&Ty::Bool));
+                self.expect_bool(&cty, expr.span());
+                // при ложности тест возвращает номер строки упавшего assert (!=0).
+                let okl = self.fresh_label("asok");
+                let faill = self.fresh_label("asfail");
+                self.emit(format!("br i1 {c}, label %{okl}, label %{faill}"));
+                self.emit_label(&faill);
+                self.emit(format!("ret i64 {}", expr.span().lo.line));
+                self.emit_label(&okl);
             }
 
             Stmt::Asm(a) => self.gen_asm(a),

@@ -111,6 +111,7 @@ impl<'a> Parser<'a> {
         let mut structs = Vec::new();
         let mut enums = Vec::new();
         let mut fns = Vec::new();
+        let mut tests = Vec::new();
         while !self.at_eof() {
             match self.peek() {
                 // `import "path";` — резолвится драйвером (мульти-файловая
@@ -136,6 +137,11 @@ impl<'a> Parser<'a> {
                     Some(e) => enums.push(e),
                     None => self.synchronize(),
                 },
+                // `test "name" { ... }` — контекстно (test не зарезервирован)
+                Tok::Ident(s) if s == "test" => match self.parse_test() {
+                    Some(t) => tests.push(t),
+                    None => self.synchronize(),
+                },
                 Tok::Fn | Tok::Extern | Tok::Unsafe => match self.parse_fn() {
                     Some(f) => fns.push(f),
                     None => self.synchronize(),
@@ -156,7 +162,24 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        Program { structs, enums, fns }
+        Program { structs, enums, fns, tests }
+    }
+
+    fn parse_test(&mut self) -> P<TestDef> {
+        let start = self.span();
+        self.bump(); // `test`
+        let name = match self.peek().clone() {
+            Tok::Str(s) => {
+                self.bump();
+                s
+            }
+            _ => {
+                self.diags.push(Diagnostic::error("E0025", self.span(), "после `test` ожидалось имя-строка, напр. `test \"складывает\" { ... }`"));
+                String::from("<unnamed>")
+            }
+        };
+        let body = self.parse_block()?;
+        Some(TestDef { name, body, span: start.to(self.prev_span()) })
     }
 
     fn parse_enum(&mut self) -> P<EnumDef> {
@@ -255,6 +278,7 @@ impl<'a> Parser<'a> {
             body,
             is_unsafe,
             is_extern,
+            is_test: false,
             span: start.to(end),
         })
     }
@@ -377,6 +401,14 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let block = self.parse_block()?;
                 Some(Stmt::Unsafe(block, sp.to(self.prev_span())))
+            }
+            // `assert expr;` — контекстно (assert не зарезервирован)
+            Tok::Ident(s) if s == "assert" => {
+                let sp = self.span();
+                self.bump();
+                let e = self.parse_expr()?;
+                self.expect(&Tok::Semi, "`;`")?;
+                Some(Stmt::Assert(e, sp.to(self.prev_span())))
             }
             Tok::Asm => {
                 let a = self.parse_asm()?;
