@@ -868,6 +868,11 @@ impl<'a> Parser<'a> {
                 let e = self.parse_unary()?;
                 Some(Expr::Unary { op: UnOp::Not, span: sp.to(e.span()), expr: Box::new(e) })
             }
+            Tok::Tilde => {
+                self.bump();
+                let e = self.parse_unary()?;
+                Some(Expr::Unary { op: UnOp::BitNot, span: sp.to(e.span()), expr: Box::new(e) })
+            }
             Tok::Star => {
                 self.bump();
                 let e = self.parse_unary()?;

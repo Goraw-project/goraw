@@ -926,7 +926,9 @@ impl<'a> Codegen<'a> {
         let ok = self.fresh_label("inb");
         self.emit(format!("br i1 {oob}, label %{fail}, label %{ok}"));
         self.emit_label(&fail);
-        self.use_intrinsic("declare void @abort()".into());
+        if !self.ctx.fns.contains_key("abort") {
+            self.use_intrinsic("declare void @abort()".into());
+        }
         self.emit("call void @abort()".into());
         self.emit("unreachable".into());
         self.emit_label(&ok);
@@ -1451,6 +1453,19 @@ impl<'a> Codegen<'a> {
                     ("0".into(), Ty::Err)
                 }
             }
+            UnOp::BitNot => {
+                let (v, ty) = self.gen_expr(expr, expected.filter(|t| t.is_int()));
+                if ty.is_int() {
+                    let t = self.fresh_tmp();
+                    self.emit(format!("{t} = xor {lty} {v}, -1", lty = ty.llvm()));
+                    (t, ty)
+                } else if ty == Ty::Err {
+                    ("0".into(), Ty::Err)
+                } else {
+                    self.err("E0062", span, format!("`~` применяется к целому, а не к `{}`", ty.name()), None);
+                    ("0".into(), Ty::Err)
+                }
+            }
             UnOp::Deref => {
                 let (ptr, ty, _) = self.gen_lvalue(&Expr::Unary { op: UnOp::Deref, expr: Box::new(expr.clone()), span });
                 if ty == Ty::Err {
@@ -1796,6 +1811,7 @@ impl<'a> Codegen<'a> {
                 return Some(self.heap_builtin(name, args, span));
             }
             "make_slice" => return Some(self.bi_make_slice(args, span)),
+            "panic" => return Some(self.bi_panic(args, span)),
             "f32_bits" | "f64_bits" => return Some(self.bi_bits(name, args, span)),
             "f32_from_bits" | "f64_from_bits" => return Some(self.bi_from_bits(name, args, span)),
             "sizeof" => return Some(self.bi_sizeof(args, span)),
@@ -2145,6 +2161,28 @@ impl<'a> Codegen<'a> {
             let z = self.zero_of(&ty);
             (z, ty)
         }
+    }
+
+    /// `panic(msg: *u8)` — печатает сообщение и аварийно завершает процесс.
+    fn bi_panic(&mut self, args: &[Expr], span: Span) -> (String, Ty) {
+        if args.len() != 1 {
+            self.err("E0094", span, format!("`panic` ждёт 1 аргумент (сообщение *u8), передано {}", args.len()), None);
+            return ("".into(), Ty::Void);
+        }
+        let (msg, _) = self.gen_expr(&args[0], Some(&Ty::Ptr(Box::new(Ty::U8), false)));
+        let fmt = self.intern_string("panic: %s\n");
+        if !self.ctx.fns.contains_key("printf") {
+            self.use_intrinsic("declare i32 @printf(ptr, ...)".into());
+        }
+        if !self.ctx.fns.contains_key("abort") {
+            self.use_intrinsic("declare void @abort()".into());
+        }
+        let t = self.fresh_tmp();
+        self.emit(format!("{t} = call i32 (ptr, ...) @printf(ptr {fmt}, ptr {msg})"));
+        self.emit("call void @abort()".into());
+        self.emit("unreachable".into());
+        self.terminated = true;
+        ("".into(), Ty::Void)
     }
 
     fn expect_ptr(&mut self, ty: &Ty, span: Span, what: &str) {
@@ -2532,6 +2570,10 @@ impl<'a> Codegen<'a> {
                     },
                     UnOp::Not => match v {
                         CVal::Bool(b) => Some(CVal::Bool(!b)),
+                        _ => None,
+                    },
+                    UnOp::BitNot => match v {
+                        CVal::Int(n, t) => Some(CVal::Int(!n, t)),
                         _ => None,
                     },
                     _ => None,

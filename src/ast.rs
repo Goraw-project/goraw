@@ -320,8 +320,9 @@ pub enum BinOp {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnOp {
-    Neg,   // -x
-    Not,   // !x
+    Neg,    // -x
+    Not,    // !x
+    BitNot, // ~x
     Deref, // *x
     Ref,   // &x  (взятие адреса, всегда даёт *T или *mut T в зависимости от lvalue)
     RefMut,// &mut x

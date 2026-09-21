@@ -67,6 +67,7 @@ pub enum Tok {
     Shl,       // <<
     Shr,       // >>
     Bang,      // !
+    Tilde,     // ~
     AndAnd,    // &&
     OrOr,      // ||
     PipeArrow, // |>  (конвейер)
@@ -453,6 +454,7 @@ impl<'a> Lexer<'a> {
                 }
                 _ => Tok::Plus,
             },
+            '~' => Tok::Tilde,
             '*' => {
                 if self.peek() == Some('=') {
                     self.bump();
