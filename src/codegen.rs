@@ -247,7 +247,7 @@ impl<'a> Codegen<'a> {
                 let (val, vty) = self.gen_expr(value, expected.as_ref());
                 let var_ty = match &expected {
                     Some(t) => {
-                        if *t != vty && vty != Ty::Err && *t != Ty::Err {
+                        if !compat(t, &vty) && vty != Ty::Err && *t != Ty::Err {
                             self.err(
                                 "E0033",
                                 value.span(),
@@ -286,7 +286,7 @@ impl<'a> Codegen<'a> {
                     );
                 }
                 let (val, vty) = self.gen_expr(value, Some(&ty));
-                if ty != vty && ty != Ty::Err && vty != Ty::Err {
+                if !compat(&ty, &vty) && ty != Ty::Err && vty != Ty::Err {
                     self.err(
                         "E0036",
                         value.span(),
@@ -320,7 +320,7 @@ impl<'a> Codegen<'a> {
                     }
                     (Some(e), ret) => {
                         let (val, vty) = self.gen_expr(e, Some(ret));
-                        if *ret != vty && vty != Ty::Err {
+                        if !compat(ret, &vty) && vty != Ty::Err {
                             self.err(
                                 "E0043",
                                 e.span(),
@@ -795,7 +795,7 @@ impl<'a> Codegen<'a> {
                     ("0".into(), Ty::Err)
                 }
             },
-            Expr::Unary { op, expr, span } => self.gen_unary(*op, expr, *span),
+            Expr::Unary { op, expr, span } => self.gen_unary(*op, expr, *span, expected),
             Expr::Binary { op, lhs, rhs, span } => self.gen_binary(*op, lhs, rhs, *span, expected),
             Expr::Cast { expr, ty, span } => self.gen_cast(expr, ty, *span),
             Expr::Call { callee, args, span } => self.gen_call(callee, args, *span),
@@ -1049,10 +1049,10 @@ impl<'a> Codegen<'a> {
         module
     }
 
-    fn gen_unary(&mut self, op: UnOp, expr: &Expr, span: Span) -> (String, Ty) {
+    fn gen_unary(&mut self, op: UnOp, expr: &Expr, span: Span, expected: Option<&Ty>) -> (String, Ty) {
         match op {
             UnOp::Neg => {
-                let (v, ty) = self.gen_expr(expr, None);
+                let (v, ty) = self.gen_expr(expr, expected.filter(|t| t.is_numeric()));
                 if ty.is_int() {
                     let t = self.fresh_tmp();
                     self.emit(format!("{t} = sub {lty} 0, {v}", lty = ty.llvm()));
@@ -1330,7 +1330,7 @@ impl<'a> Codegen<'a> {
             let (mut v, mut vty) = self.gen_expr(a, expected.as_ref());
             // Проверка типа фиксированных параметров.
             if let Some(pt) = &expected {
-                if *pt != vty && vty != Ty::Err && *pt != Ty::Err {
+                if !compat(pt, &vty) && vty != Ty::Err && *pt != Ty::Err {
                     self.err(
                         "E0073",
                         a.span(),
@@ -1402,6 +1402,7 @@ impl<'a> Codegen<'a> {
                 return Some(self.heap_builtin(name, args, span));
             }
             "make_slice" => return Some(self.bi_make_slice(args, span)),
+            "f32_bits" | "f64_bits" => return Some(self.bi_bits(name, args, span)),
             _ => {}
         }
 
@@ -1666,6 +1667,28 @@ impl<'a> Codegen<'a> {
         (slot, Ty::Slice(Box::new(elem)))
     }
 
+    /// Побитовое представление float как целого (bitcast, не преобразование
+    /// значения): `f32_bits(x) -> u32`, `f64_bits(x) -> u64`. Нужно для
+    /// fixed32/fixed64/float/double protobuf.
+    fn bi_bits(&mut self, name: &str, args: &[Expr], span: Span) -> (String, Ty) {
+        if args.len() != 1 {
+            self.err("E0094", span, format!("`{name}` ждёт 1 аргумент, передано {}", args.len()), None);
+            return ("0".into(), Ty::Err);
+        }
+        let (src_ty, dst_ty, ll_src) = if name == "f32_bits" {
+            (Ty::F32, Ty::U32, "float")
+        } else {
+            (Ty::F64, Ty::U64, "double")
+        };
+        let (v, vty) = self.gen_expr(&args[0], Some(&src_ty));
+        if vty != src_ty && vty != Ty::Err {
+            self.err("E0094", args[0].span(), format!("`{name}` ждёт `{}`, а тут `{}`", src_ty.name(), vty.name()), None);
+        }
+        let t = self.fresh_tmp();
+        self.emit(format!("{t} = bitcast {ll_src} {v} to {}", dst_ty.llvm()));
+        (t, dst_ty)
+    }
+
     fn expect_ptr(&mut self, ty: &Ty, span: Span, what: &str) {
         if !ty.is_ptr() && *ty != Ty::Err {
             self.err("E0093", span, format!("`{what}` ожидает указатель, а тут `{}`", ty.name()), None);
@@ -1697,7 +1720,7 @@ impl<'a> Codegen<'a> {
             let expected = params.get(i).cloned();
             let (v, vty) = self.gen_expr(a, expected.as_ref());
             if let Some(pt) = &expected {
-                if *pt != vty && vty != Ty::Err && *pt != Ty::Err {
+                if !compat(pt, &vty) && vty != Ty::Err && *pt != Ty::Err {
                     self.err("E0073", a.span(), format!("аргумент {}: ожидался `{}`, передан `{}`", i + 1, pt.name(), vty.name()), None);
                 }
                 argvals.push(format!("{} {}", pt.llvm(), v));
@@ -1760,7 +1783,7 @@ impl<'a> Codegen<'a> {
                     seen[idx] = true;
                     let fty = info.fields[idx].1.clone();
                     let (v, vty) = self.gen_expr(fexpr, Some(&fty));
-                    if fty != vty && vty != Ty::Err && fty != Ty::Err {
+                    if !compat(&fty, &vty) && vty != Ty::Err && fty != Ty::Err {
                         self.err("E0076", fexpr.span(), format!("поле `{fname}`: ожидался `{}`, передан `{}`", fty.name(), vty.name()), None);
                     }
                     let fptr = self.fresh_tmp();
@@ -1993,6 +2016,16 @@ fn is_x86_reg(s: &str) -> bool {
 /// скалярным значением: их читают/пишут через load/store агрегата.
 fn is_aggregate(ty: &Ty) -> bool {
     matches!(ty, Ty::Struct(_) | Ty::Slice(_))
+}
+
+/// Совместимы ли типы при передаче/присваивании. Точное равенство, плюс
+/// коэрция указателей `*mut T` -> `*T` (потеря права записи — безопасна;
+/// обратно — нет). На уровне LLVM указатели непрозрачны, конверсия не нужна.
+fn compat(to: &Ty, from: &Ty) -> bool {
+    if to == from {
+        return true;
+    }
+    matches!((to, from), (Ty::Ptr(a, false), Ty::Ptr(b, _)) if a == b)
 }
 
 /// Форматирует float как точную hex-константу LLVM (без потери точности).

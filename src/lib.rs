@@ -7,4 +7,5 @@ pub mod codegen;
 pub mod diag;
 pub mod lexer;
 pub mod parser;
+pub mod proto;
 pub mod types;
