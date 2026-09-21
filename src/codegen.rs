@@ -44,6 +44,33 @@ pub struct Codegen<'a> {
     in_jit_template: bool,
     jittmpl_count: u32,
     in_test: bool, // тело текущей функции — тест (разрешён assert)
+    /// Свёрнутые глобальные константы: имя -> значение.
+    consts: HashMap<String, CVal>,
+}
+
+/// Значение константы, свёрнутое в компайл-тайме.
+#[derive(Clone)]
+enum CVal {
+    Int(i64, Ty),
+    Float(f64, Ty),
+    Bool(bool),
+}
+
+impl CVal {
+    fn ty(&self) -> Ty {
+        match self {
+            CVal::Int(_, t) => t.clone(),
+            CVal::Float(_, t) => t.clone(),
+            CVal::Bool(_) => Ty::Bool,
+        }
+    }
+    fn render(&self) -> String {
+        match self {
+            CVal::Int(n, _) => n.to_string(),
+            CVal::Float(f, t) => fmt_float(*f, t),
+            CVal::Bool(b) => if *b { "true".into() } else { "false".into() },
+        }
+    }
 }
 
 impl<'a> Codegen<'a> {
@@ -70,12 +97,33 @@ impl<'a> Codegen<'a> {
             in_jit_template: false,
             jittmpl_count: 0,
             in_test: false,
+            consts: HashMap::new(),
         }
     }
 
     // ---------- сборка модуля ----------
 
     pub fn emit_module(mut self, prog: &Program) -> String {
+        // Свёртка глобальных констант (до тел — их подставляют по имени).
+        for c in &prog.consts {
+            let expected = c.ty.as_ref().map(|t| self.resolve(t));
+            match self.eval_const(&c.value, expected.as_ref()) {
+                Some(cv) => {
+                    let ty = cv.ty();
+                    if let Some(want) = &expected {
+                        if *want != ty && ty != Ty::Err && *want != Ty::Err {
+                            self.err("E0083", c.value.span(), format!("тип константы `{}` не совпадает с объявленным `{}`", ty.name(), want.name()), None);
+                        }
+                    }
+                    self.consts.insert(c.name.clone(), cv);
+                }
+                None => {
+                    self.err("E0084", c.value.span(), format!("`const {}` должна быть константным выражением", c.name), Some("допустимы литералы, арифметика над ними, enum-варианты и `as`"));
+                    self.consts.insert(c.name.clone(), CVal::Int(0, Ty::Err));
+                }
+            }
+        }
+
         // Сначала генерируем тела функций — попутно собираются использованные
         // строковые константы и LLVM-интринзики, нужные для заголовка.
         for f in &prog.fns {
@@ -941,6 +989,10 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 None => {
+                    // Глобальная константа (свёрнута заранее).
+                    if let Some(cv) = self.consts.get(name) {
+                        return (cv.render(), cv.ty());
+                    }
                     // Захваченная в jit-шаблоне переменная -> плейсхолдер-константа.
                     if let Some(caps) = &self.captures {
                         if let Some((idx, ty)) = caps.get(name) {
@@ -2037,7 +2089,11 @@ impl<'a> Codegen<'a> {
             Expr::Null(..) => Ty::Ptr(Box::new(Ty::U8), true),
             Expr::Path(..) => Ty::I32,
             Expr::Str(..) => Ty::Ptr(Box::new(Ty::U8), false),
-            Expr::Ident(n, _) => self.lookup(n).map(|l| l.ty.clone()).unwrap_or(Ty::Err),
+            Expr::Ident(n, _) => self
+                .lookup(n)
+                .map(|l| l.ty.clone())
+                .or_else(|| self.consts.get(n).map(|cv| cv.ty()))
+                .unwrap_or(Ty::Err),
             Expr::Unary { op: UnOp::Deref, expr, .. } => match self.type_of(expr) {
                 Ty::Ptr(inner, _) => *inner,
                 _ => Ty::Err,
@@ -2115,6 +2171,81 @@ impl<'a> Codegen<'a> {
             self.diags.push(d);
         }
         ty
+    }
+
+    /// Свёртка константного выражения. None — не константа.
+    fn eval_const(&self, e: &Expr, expected: Option<&Ty>) -> Option<CVal> {
+        match e {
+            Expr::Int(n, _) => Some(match expected {
+                Some(Ty::F32) => CVal::Float(*n as f64, Ty::F32),
+                Some(Ty::F64) => CVal::Float(*n as f64, Ty::F64),
+                Some(t) if t.is_int() => CVal::Int(*n, t.clone()),
+                _ => CVal::Int(*n, Ty::I64),
+            }),
+            Expr::Float(f, _) => Some(match expected {
+                Some(Ty::F32) => CVal::Float(*f, Ty::F32),
+                _ => CVal::Float(*f, Ty::F64),
+            }),
+            Expr::Bool(b, _) => Some(CVal::Bool(*b)),
+            Expr::Path(en, var, _) => {
+                self.ctx.enums.get(en).and_then(|m| m.get(var)).map(|v| CVal::Int(*v, Ty::I32))
+            }
+            Expr::Ident(name, _) => self.consts.get(name).cloned(),
+            Expr::Unary { op, expr, .. } => {
+                let v = self.eval_const(expr, expected)?;
+                match op {
+                    UnOp::Neg => match v {
+                        CVal::Int(n, t) => Some(CVal::Int(n.wrapping_neg(), t)),
+                        CVal::Float(f, t) => Some(CVal::Float(-f, t)),
+                        _ => None,
+                    },
+                    UnOp::Not => match v {
+                        CVal::Bool(b) => Some(CVal::Bool(!b)),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }
+            Expr::Cast { expr, ty, .. } => {
+                let mut junk = Vec::new();
+                let dst = self.ctx.resolve(ty, &mut junk);
+                let v = self.eval_const(expr, None)?;
+                match v {
+                    CVal::Int(n, _) => {
+                        if dst.is_float() {
+                            Some(CVal::Float(n as f64, dst))
+                        } else if dst.is_int() {
+                            Some(CVal::Int(n, dst))
+                        } else {
+                            None
+                        }
+                    }
+                    CVal::Float(f, _) => {
+                        if dst.is_float() {
+                            Some(CVal::Float(f, dst))
+                        } else if dst.is_int() {
+                            Some(CVal::Int(f as i64, dst))
+                        } else {
+                            None
+                        }
+                    }
+                    CVal::Bool(b) => {
+                        if dst.is_int() {
+                            Some(CVal::Int(b as i64, dst))
+                        } else {
+                            None
+                        }
+                    }
+                }
+            }
+            Expr::Binary { op, lhs, rhs, .. } => {
+                let l = self.eval_const(lhs, expected)?;
+                let lty = l.ty();
+                let r = self.eval_const(rhs, if lty.is_numeric() { Some(&lty) } else { None })?;
+                eval_bin(*op, l, r)
+            }
+            _ => None,
+        }
     }
 
     fn lookup(&self, name: &str) -> Option<&Local> {
@@ -2252,6 +2383,57 @@ fn compat(to: &Ty, from: &Ty) -> bool {
         return true;
     }
     matches!((to, from), (Ty::Ptr(a, false), Ty::Ptr(b, _)) if a == b)
+}
+
+/// Свёртка бинарной операции над константами.
+fn eval_bin(op: BinOp, l: CVal, r: CVal) -> Option<CVal> {
+    use BinOp::*;
+    match (l, r) {
+        (CVal::Int(a, t), CVal::Int(b, _)) => {
+            let iarith = |v: i64| Some(CVal::Int(v, t.clone()));
+            match op {
+                Add => iarith(a.wrapping_add(b)),
+                Sub => iarith(a.wrapping_sub(b)),
+                Mul => iarith(a.wrapping_mul(b)),
+                Div => if b == 0 { None } else { iarith(a.wrapping_div(b)) },
+                Rem => if b == 0 { None } else { iarith(a.wrapping_rem(b)) },
+                BitAnd => iarith(a & b),
+                BitOr => iarith(a | b),
+                BitXor => iarith(a ^ b),
+                Shl => iarith(a.wrapping_shl(b as u32)),
+                Shr => iarith(a.wrapping_shr(b as u32)),
+                Eq => Some(CVal::Bool(a == b)),
+                Ne => Some(CVal::Bool(a != b)),
+                Lt => Some(CVal::Bool(a < b)),
+                Le => Some(CVal::Bool(a <= b)),
+                Gt => Some(CVal::Bool(a > b)),
+                Ge => Some(CVal::Bool(a >= b)),
+                _ => None,
+            }
+        }
+        (CVal::Float(a, t), CVal::Float(b, _)) => match op {
+            Add => Some(CVal::Float(a + b, t)),
+            Sub => Some(CVal::Float(a - b, t)),
+            Mul => Some(CVal::Float(a * b, t)),
+            Div => Some(CVal::Float(a / b, t)),
+            Rem => Some(CVal::Float(a % b, t)),
+            Eq => Some(CVal::Bool(a == b)),
+            Ne => Some(CVal::Bool(a != b)),
+            Lt => Some(CVal::Bool(a < b)),
+            Le => Some(CVal::Bool(a <= b)),
+            Gt => Some(CVal::Bool(a > b)),
+            Ge => Some(CVal::Bool(a >= b)),
+            _ => None,
+        },
+        (CVal::Bool(a), CVal::Bool(b)) => match op {
+            And => Some(CVal::Bool(a && b)),
+            Or => Some(CVal::Bool(a || b)),
+            Eq => Some(CVal::Bool(a == b)),
+            Ne => Some(CVal::Bool(a != b)),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Форматирует float как точную hex-константу LLVM (без потери точности).

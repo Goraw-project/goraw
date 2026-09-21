@@ -110,6 +110,7 @@ impl<'a> Parser<'a> {
     pub fn parse_program(&mut self) -> Program {
         let mut structs = Vec::new();
         let mut enums = Vec::new();
+        let mut consts = Vec::new();
         let mut fns = Vec::new();
         let mut tests = Vec::new();
         while !self.at_eof() {
@@ -137,6 +138,10 @@ impl<'a> Parser<'a> {
                     Some(e) => enums.push(e),
                     None => self.synchronize(),
                 },
+                Tok::Const => match self.parse_const() {
+                    Some(c) => consts.push(c),
+                    None => self.synchronize(),
+                },
                 // `test "name" { ... }` — контекстно (test не зарезервирован)
                 Tok::Ident(s) if s == "test" => match self.parse_test() {
                     Some(t) => tests.push(t),
@@ -162,7 +167,18 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        Program { structs, enums, fns, tests }
+        Program { structs, enums, consts, fns, tests }
+    }
+
+    fn parse_const(&mut self) -> P<ConstDef> {
+        let start = self.span();
+        self.expect(&Tok::Const, "`const`")?;
+        let (name, _) = self.expect_ident("константы")?;
+        let ty = if self.eat(&Tok::Colon) { Some(self.parse_type()?) } else { None };
+        self.expect(&Tok::Assign, "`=`")?;
+        let value = self.parse_expr()?;
+        self.expect(&Tok::Semi, "`;`")?;
+        Some(ConstDef { name, ty, value, span: start.to(self.prev_span()) })
     }
 
     fn parse_test(&mut self) -> P<TestDef> {

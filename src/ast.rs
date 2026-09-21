@@ -45,6 +45,15 @@ pub struct StructDef {
     pub span: Span,
 }
 
+/// Глобальная константа: `const NAME[: T] = expr;` (свёртка в компайл-тайме).
+#[derive(Clone, Debug)]
+pub struct ConstDef {
+    pub name: String,
+    pub ty: Option<TypeExpr>,
+    pub value: Expr,
+    pub span: Span,
+}
+
 /// Перечисление (C-style, представляется i32).
 #[derive(Clone, Debug)]
 pub struct EnumDef {
@@ -292,6 +301,7 @@ pub enum UnOp {
 pub struct Program {
     pub structs: Vec<StructDef>,
     pub enums: Vec<EnumDef>,
+    pub consts: Vec<ConstDef>,
     pub fns: Vec<FnDef>,
     pub tests: Vec<TestDef>,
 }

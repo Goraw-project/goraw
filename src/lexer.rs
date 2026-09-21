@@ -35,6 +35,7 @@ pub enum Tok {
     Null,
     Import,
     Enum,
+    Const,
     ColonColon, // ::
 
     // пунктуация / операторы
@@ -263,6 +264,7 @@ impl<'a> Lexer<'a> {
             "null" => Tok::Null,
             "import" => Tok::Import,
             "enum" => Tok::Enum,
+            "const" => Tok::Const,
             _ => Tok::Ident(s),
         };
         Token { tok, span: Span::new(start, end) }
