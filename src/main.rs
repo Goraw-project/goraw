@@ -102,15 +102,17 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
 }
 
 fn run(opts: Options) -> i32 {
-    let src = match std::fs::read_to_string(&opts.input) {
-        Ok(s) => s,
+    // Собираем главный файл и все, что он тянет через `import "..."`.
+    let (src, line_map) = match gather_sources(&opts.input) {
+        Ok(x) => x,
         Err(e) => {
-            eprintln!("не удалось прочитать `{}`: {e}", opts.input.display());
+            eprintln!("{e}");
             return 2;
         }
     };
     let file = opts.input.display().to_string();
     let mut diags = diag::Diags::new(file.clone(), src.clone());
+    diags.set_line_map(line_map);
 
     // Лексер.
     let mut lx = lexer::Lexer::new(&src);
@@ -220,6 +222,70 @@ fn run(opts: Options) -> i32 {
     }
 
     0
+}
+
+/// Рекурсивно собирает главный файл и все импортируемые (`import "path";`) в
+/// один объединённый источник + карту строк (для диагностик по файлам).
+/// Порядок: зависимости раньше импортёра; дубли включаются один раз.
+fn gather_sources(main: &Path) -> Result<(String, Vec<(u32, String)>), String> {
+    use std::collections::HashSet;
+    let mut order: Vec<(String, String)> = Vec::new(); // (отображаемый путь, src)
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+
+    fn visit(
+        path: &Path,
+        seen: &mut HashSet<PathBuf>,
+        order: &mut Vec<(String, String)>,
+    ) -> Result<(), String> {
+        let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        if !seen.insert(canon.clone()) {
+            return Ok(());
+        }
+        let src = std::fs::read_to_string(path)
+            .map_err(|e| format!("не удалось прочитать `{}`: {e}", path.display()))?;
+        let dir = path.parent().unwrap_or(Path::new("."));
+        for imp in scan_imports(&src) {
+            let resolved = dir.join(&imp);
+            visit(&resolved, seen, order)?;
+        }
+        order.push((path.display().to_string(), src));
+        Ok(())
+    }
+
+    visit(main, &mut seen, &mut order)?;
+
+    let mut combined = String::new();
+    let mut map = Vec::new();
+    for (path, src) in &order {
+        let start_line = combined.matches('\n').count() as u32 + 1;
+        map.push((start_line, path.clone()));
+        combined.push_str(src);
+        if !src.ends_with('\n') {
+            combined.push('\n');
+        }
+    }
+    Ok((combined, map))
+}
+
+/// Лёгкое сканирование строк на `import "path";` (без полного парсинга).
+fn scan_imports(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for raw in src.lines() {
+        let line = match raw.find("//") {
+            Some(p) => &raw[..p],
+            None => raw,
+        };
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("import") {
+            let rest = rest.trim_start();
+            if let Some(start) = rest.find('"') {
+                if let Some(end) = rest[start + 1..].find('"') {
+                    out.push(rest[start + 1..start + 1 + end].to_string());
+                }
+            }
+        }
+    }
+    out
 }
 
 fn output_paths(opts: &Options) -> (PathBuf, PathBuf) {

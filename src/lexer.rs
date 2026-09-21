@@ -33,6 +33,7 @@ pub enum Tok {
     Asm,
     Jit,
     Null,
+    Import,
 
     // пунктуация / операторы
     LParen,
@@ -246,6 +247,7 @@ impl<'a> Lexer<'a> {
             "asm" => Tok::Asm,
             "jit" => Tok::Jit,
             "null" => Tok::Null,
+            "import" => Tok::Import,
             _ => Tok::Ident(s),
         };
         Token { tok, span: Span::new(start, end) }

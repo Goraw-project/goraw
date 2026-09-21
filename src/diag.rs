@@ -95,11 +95,35 @@ pub struct Diags {
     pub file: String,
     pub src: String,
     pub items: Vec<Diagnostic>,
+    /// Для мульти-файловой сборки: (стартовая строка в объединённом src, путь).
+    /// Пусто → один файл. Отсортировано по стартовой строке.
+    pub line_map: Vec<(u32, String)>,
 }
 
 impl Diags {
     pub fn new(file: impl Into<String>, src: impl Into<String>) -> Diags {
-        Diags { file: file.into(), src: src.into(), items: Vec::new() }
+        Diags { file: file.into(), src: src.into(), items: Vec::new(), line_map: Vec::new() }
+    }
+
+    /// Устанавливает карту файлов для объединённого источника.
+    pub fn set_line_map(&mut self, map: Vec<(u32, String)>) {
+        self.line_map = map;
+    }
+
+    /// По глобальной строке в объединённом src возвращает (путь, локальная строка).
+    pub fn locate(&self, line: u32) -> (String, u32) {
+        if self.line_map.is_empty() {
+            return (self.file.clone(), line);
+        }
+        let mut best = &self.line_map[0];
+        for e in &self.line_map {
+            if e.0 <= line {
+                best = e;
+            } else {
+                break;
+            }
+        }
+        (best.1.clone(), line.saturating_sub(best.0) + 1)
     }
 
     pub fn push(&mut self, d: Diagnostic) {
@@ -130,13 +154,8 @@ impl Diags {
                 code = d.code,
                 msg = d.message
             );
-            let _ = writeln!(
-                out,
-                "  --> {file}:{line}:{col}",
-                file = self.file,
-                line = d.span.lo.line,
-                col = d.span.lo.col
-            );
+            let (path, local_line) = self.locate(d.span.lo.line);
+            let _ = writeln!(out, "  --> {path}:{local_line}:{col}", col = d.span.lo.col);
             let line = self.line_text(d.span.lo.line);
             let _ = writeln!(out, "   | {line}");
             let caret_pad = d.span.lo.col.saturating_sub(1) as usize;
@@ -188,11 +207,13 @@ impl Diags {
             } else {
                 1
             };
+            let (path, local_line) = self.locate(d.span.lo.line);
             let explain = format!(
-                "<explain code=\"{code}\" severity=\"{sev}\">\n  <at line=\"{ln}\" col=\"{col}\"/>\n  <source>{src}</source>\n  <mark>{pad}{car}</mark>\n  <message>{msg}</message>{hint}\n</explain>",
+                "<explain code=\"{code}\" severity=\"{sev}\">\n  <at file=\"{fpath}\" line=\"{ln}\" col=\"{col}\"/>\n  <source>{src}</source>\n  <mark>{pad}{car}</mark>\n  <message>{msg}</message>{hint}\n</explain>",
                 code = d.code,
                 sev = d.severity.as_str(),
-                ln = d.span.lo.line,
+                fpath = xesc(&path),
+                ln = local_line,
                 col = d.span.lo.col,
                 src = xesc(line),
                 pad = " ".repeat(caret_pad),
@@ -209,10 +230,11 @@ impl Diags {
             let _ = writeln!(out, "      \"severity\": {},", jstr(d.severity.as_str()));
             let _ = writeln!(out, "      \"code\": {},", jstr(d.code));
             let _ = writeln!(out, "      \"message\": {},", jstr(&d.message));
+            let _ = writeln!(out, "      \"srcfile\": {},", jstr(&path));
             let _ = writeln!(
                 out,
                 "      \"line\": {}, \"col\": {}, \"endLine\": {}, \"endCol\": {},",
-                d.span.lo.line, d.span.lo.col, d.span.hi.line, d.span.hi.col
+                local_line, d.span.lo.col, d.span.hi.line, d.span.hi.col
             );
             match &d.hint {
                 Some(h) => {

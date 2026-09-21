@@ -112,6 +112,21 @@ impl<'a> Parser<'a> {
         let mut fns = Vec::new();
         while !self.at_eof() {
             match self.peek() {
+                // `import "path";` — резолвится драйвером (мульти-файловая
+                // сборка), здесь просто пропускаем.
+                Tok::Import => {
+                    self.bump();
+                    if matches!(self.peek(), Tok::Str(_)) {
+                        self.bump();
+                    } else {
+                        self.diags.push(Diagnostic::error(
+                            "E0019",
+                            self.span(),
+                            "после `import` ожидалась строка пути, напр. `import \"lib.gw\";`",
+                        ));
+                    }
+                    let _ = self.eat(&Tok::Semi);
+                }
                 Tok::Struct => match self.parse_struct() {
                     Some(s) => structs.push(s),
                     None => self.synchronize(),
