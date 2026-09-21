@@ -111,6 +111,7 @@ impl<'a> Parser<'a> {
         let mut structs = Vec::new();
         let mut enums = Vec::new();
         let mut consts = Vec::new();
+        let mut statics = Vec::new();
         let mut fns = Vec::new();
         let mut tests = Vec::new();
         while !self.at_eof() {
@@ -142,6 +143,10 @@ impl<'a> Parser<'a> {
                     Some(c) => consts.push(c),
                     None => self.synchronize(),
                 },
+                Tok::Static => match self.parse_static() {
+                    Some(s) => statics.push(s),
+                    None => self.synchronize(),
+                },
                 // `test "name" { ... }` — контекстно (test не зарезервирован)
                 Tok::Ident(s) if s == "test" => match self.parse_test() {
                     Some(t) => tests.push(t),
@@ -167,7 +172,19 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        Program { structs, enums, consts, fns, tests }
+        Program { structs, enums, consts, statics, fns, tests }
+    }
+
+    fn parse_static(&mut self) -> P<StaticDef> {
+        let start = self.span();
+        self.expect(&Tok::Static, "`static`")?;
+        let (name, _) = self.expect_ident("глобальной переменной")?;
+        self.expect(&Tok::Colon, "`:` (у static обязателен тип)")?;
+        let ty = self.parse_type()?;
+        self.expect(&Tok::Assign, "`=`")?;
+        let value = self.parse_expr()?;
+        self.expect(&Tok::Semi, "`;`")?;
+        Some(StaticDef { name, ty, value, span: start.to(self.prev_span()) })
     }
 
     fn parse_const(&mut self) -> P<ConstDef> {

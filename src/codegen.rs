@@ -49,6 +49,10 @@ pub struct Codegen<'a> {
     in_test: bool, // тело текущей функции — тест (разрешён assert)
     /// Свёрнутые глобальные константы: имя -> значение.
     consts: HashMap<String, CVal>,
+    /// Глобальные static-переменные: имя -> (LLVM-символ, тип).
+    statics: HashMap<String, (String, Ty)>,
+    /// Определения глобалов для заголовка.
+    globals: String,
 }
 
 /// Значение константы, свёрнутое в компайл-тайме.
@@ -101,6 +105,8 @@ impl<'a> Codegen<'a> {
             jittmpl_count: 0,
             in_test: false,
             consts: HashMap::new(),
+            statics: HashMap::new(),
+            globals: String::new(),
         }
     }
 
@@ -125,6 +131,26 @@ impl<'a> Codegen<'a> {
                     self.consts.insert(c.name.clone(), CVal::Int(0, Ty::Err));
                 }
             }
+        }
+
+        // Глобальные static-переменные с константной инициализацией.
+        for s in &prog.statics {
+            let ty = self.resolve(&s.ty);
+            let sym = format!("@g.{}", s.name);
+            let init = match self.eval_const(&s.value, Some(&ty)) {
+                Some(cv) => {
+                    if !compat(&ty, &cv.ty()) && cv.ty() != Ty::Err && ty != Ty::Err {
+                        self.err("E0088", s.value.span(), format!("инициализатор static типа `{}`, а объявлен `{}`", cv.ty().name(), ty.name()), None);
+                    }
+                    cv.render()
+                }
+                None => {
+                    self.err("E0089", s.value.span(), format!("`static {}` требует константный инициализатор", s.name), None);
+                    self.zero_of(&ty)
+                }
+            };
+            self.globals.push_str(&format!("{sym} = global {} {init}\n", ty.llvm()));
+            self.statics.insert(s.name.clone(), (sym, ty));
         }
 
         // Сначала генерируем тела функций — попутно собираются использованные
@@ -179,6 +205,10 @@ impl<'a> Codegen<'a> {
         header.push('\n');
 
         let mut out = header;
+        if !self.globals.is_empty() {
+            out.push_str(&self.globals);
+            out.push('\n');
+        }
         out.push_str(&self.strings);
         if !self.strings.is_empty() {
             out.push('\n');
@@ -738,6 +768,10 @@ impl<'a> Codegen<'a> {
             Expr::Ident(name, span) => match self.lookup(name) {
                 Some(l) => (l.slot.clone(), l.ty.clone(), l.mutable),
                 None => {
+                    // static — изменяемое место (адрес глобала).
+                    if let Some((sym, ty)) = self.statics.get(name) {
+                        return (sym.clone(), ty.clone(), true);
+                    }
                     self.err("E0032", *span, format!("неизвестное имя `{name}`"), Some("объявите его через `let`"));
                     ("%poison".into(), Ty::Err, true)
                 }
@@ -1028,6 +1062,16 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 None => {
+                    // Глобальная static-переменная — грузим из глобала.
+                    if let Some((sym, ty)) = self.statics.get(name) {
+                        let (sym, ty) = (sym.clone(), ty.clone());
+                        if is_aggregate(&ty) {
+                            return (sym, ty);
+                        }
+                        let t = self.fresh_tmp();
+                        self.emit(format!("{t} = load {lty}, ptr {sym}", lty = ty.llvm()));
+                        return (t, ty);
+                    }
                     // Глобальная константа (свёрнута заранее).
                     if let Some(cv) = self.consts.get(name) {
                         return (cv.render(), cv.ty());
@@ -2276,6 +2320,7 @@ impl<'a> Codegen<'a> {
             Expr::Ident(n, _) => self
                 .lookup(n)
                 .map(|l| l.ty.clone())
+                .or_else(|| self.statics.get(n).map(|(_, t)| t.clone()))
                 .or_else(|| self.consts.get(n).map(|cv| cv.ty()))
                 .unwrap_or(Ty::Err),
             Expr::Unary { op: UnOp::Deref, expr, .. } => match self.type_of(expr) {

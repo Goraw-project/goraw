@@ -48,6 +48,15 @@ pub struct StructDef {
     pub span: Span,
 }
 
+/// Глобальная изменяемая переменная: `static NAME: T = const_expr;`.
+#[derive(Clone, Debug)]
+pub struct StaticDef {
+    pub name: String,
+    pub ty: TypeExpr,
+    pub value: Expr,
+    pub span: Span,
+}
+
 /// Глобальная константа: `const NAME[: T] = expr;` (свёртка в компайл-тайме).
 #[derive(Clone, Debug)]
 pub struct ConstDef {
@@ -316,6 +325,7 @@ pub struct Program {
     pub structs: Vec<StructDef>,
     pub enums: Vec<EnumDef>,
     pub consts: Vec<ConstDef>,
+    pub statics: Vec<StaticDef>,
     pub fns: Vec<FnDef>,
     pub tests: Vec<TestDef>,
 }
