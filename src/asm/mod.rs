@@ -47,6 +47,7 @@ enum Operand {
     R64(AsmRegister64),
     R32(AsmRegister32),
     Imm(i64),
+    Mem(AsmMemoryOperand),
 }
 
 struct Program {
@@ -147,7 +148,75 @@ fn parse_operand(s: &str) -> Option<Operand> {
     if let Some(r) = reg32(s) {
         return Some(Operand::R32(r));
     }
+    if s.starts_with('[') && s.ends_with(']') {
+        return parse_mem(&s[1..s.len() - 1]).map(Operand::Mem);
+    }
     parse_imm(s).map(Operand::Imm)
+}
+
+/// Разбор адреса памяти `base [+ index [* scale]] [+/- disp]` (64-битные
+/// регистры). Возвращает AsmMemoryOperand без размера — размер задаётся при
+/// эмиссии по парному регистру.
+fn parse_mem(inner: &str) -> Option<AsmMemoryOperand> {
+    // Токенизация: идентификаторы, числа, операторы + - *
+    let mut toks: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for c in inner.chars() {
+        if c == '+' || c == '-' || c == '*' {
+            if !cur.trim().is_empty() {
+                toks.push(cur.trim().to_string());
+            }
+            cur.clear();
+            toks.push(c.to_string());
+        } else {
+            cur.push(c);
+        }
+    }
+    if !cur.trim().is_empty() {
+        toks.push(cur.trim().to_string());
+    }
+    if toks.is_empty() {
+        return None;
+    }
+
+    let base = reg64(&toks[0])?;
+    let mut index: Option<(AsmRegister64, i32)> = None;
+    let mut disp: i64 = 0;
+
+    let mut i = 1;
+    while i < toks.len() {
+        let sign = match toks[i].as_str() {
+            "+" => 1i64,
+            "-" => -1i64,
+            _ => return None,
+        };
+        i += 1;
+        let t = toks.get(i)?;
+        if let Some(r) = reg64(t) {
+            // индексный регистр, возможно со шкалой
+            let mut scale = 1i32;
+            if toks.get(i + 1).map(|s| s == "*").unwrap_or(false) {
+                let sc = toks.get(i + 2)?;
+                scale = sc.parse::<i32>().ok()?;
+                i += 2;
+            }
+            index = Some((r, scale));
+        } else if let Some(n) = parse_imm(t) {
+            disp += sign * n;
+        } else {
+            return None;
+        }
+        i += 1;
+    }
+
+    let mut m: AsmMemoryOperand = base + 0i64;
+    if let Some((idx, scale)) = index {
+        m = m + idx * scale;
+    }
+    if disp != 0 {
+        m = m + disp;
+    }
+    Some(m)
 }
 
 fn parse_imm(s: &str) -> Option<i64> {
@@ -293,8 +362,14 @@ fn emit_insn(a: &mut CodeAssembler, mnem: &str, ops: &[Operand], span: Span, dia
         ("mov", [R64(d), Imm(i)]) => a.mov(*d, *i),
         ("mov", [R32(d), R32(s)]) => a.mov(*d, *s),
         ("mov", [R32(d), Imm(i)]) => a.mov(*d, *i as i32),
+        // mov с памятью (размер qword по r64)
+        ("mov", [R64(d), Mem(m)]) => a.mov(*d, qword_ptr(*m)),
+        ("mov", [Mem(m), R64(s)]) => a.mov(qword_ptr(*m), *s),
+        ("mov", [Mem(m), Imm(i)]) => a.mov(qword_ptr(*m), *i as i32),
+        ("lea", [R64(d), Mem(m)]) => a.lea(*d, qword_ptr(*m)),
 
         ("imul", [R64(d), R64(s)]) => a.imul_2(*d, *s),
+        ("imul", [R64(d), Mem(m)]) => a.imul_2(*d, qword_ptr(*m)),
 
         _ => {
             diags.push(
@@ -332,6 +407,16 @@ fn alu2(a: &mut CodeAssembler, mnem: &str, ops: &[Operand], span: Span, diags: &
         ("cmp", [R64(d), Imm(i)]) => a.cmp(*d, *i as i32),
         ("cmp", [R32(d), R32(s)]) => a.cmp(*d, *s),
         ("cmp", [R32(d), Imm(i)]) => a.cmp(*d, *i as i32),
+        // ALU с памятью (reg64, [mem]) и ([mem], reg64)
+        ("add", [R64(d), Mem(m)]) => a.add(*d, qword_ptr(*m)),
+        ("add", [Mem(m), R64(s)]) => a.add(qword_ptr(*m), *s),
+        ("sub", [R64(d), Mem(m)]) => a.sub(*d, qword_ptr(*m)),
+        ("sub", [Mem(m), R64(s)]) => a.sub(qword_ptr(*m), *s),
+        ("and", [R64(d), Mem(m)]) => a.and(*d, qword_ptr(*m)),
+        ("or", [R64(d), Mem(m)]) => a.or(*d, qword_ptr(*m)),
+        ("xor", [R64(d), Mem(m)]) => a.xor(*d, qword_ptr(*m)),
+        ("cmp", [R64(d), Mem(m)]) => a.cmp(*d, qword_ptr(*m)),
+        ("cmp", [Mem(m), R64(s)]) => a.cmp(qword_ptr(*m), *s),
         _ => {
             diags.push(
                 Diagnostic::error("A0005", span, format!("не поддержанная форма `{mnem}`"))
