@@ -21,6 +21,8 @@ pub enum Ty {
     Void,
     /// Указатель: тип элемента + признак изменяемости (safe-модель).
     Ptr(Box<Ty>, bool),
+    /// Функция-указатель: типы параметров + тип результата.
+    FnPtr(Vec<Ty>, Box<Ty>),
     Struct(String),
     /// «Отравленный» тип — уже сообщённая ошибка; гасит каскады.
     Err,
@@ -69,6 +71,7 @@ impl Ty {
             Ty::Void => "void".into(),
             // LLVM 15+ использует непрозрачные указатели.
             Ty::Ptr(..) => "ptr".into(),
+            Ty::FnPtr(..) => "ptr".into(),
             Ty::Struct(name) => format!("%struct.{name}"),
             Ty::Err => "i64".into(),
         }
@@ -91,6 +94,14 @@ impl Ty {
             Ty::Void => "void".into(),
             Ty::Ptr(inner, true) => format!("*mut {}", inner.name()),
             Ty::Ptr(inner, false) => format!("*{}", inner.name()),
+            Ty::FnPtr(params, ret) => {
+                let ps: Vec<String> = params.iter().map(|t| t.name()).collect();
+                if **ret == Ty::Void {
+                    format!("fn({})", ps.join(", "))
+                } else {
+                    format!("fn({}) -> {}", ps.join(", "), ret.name())
+                }
+            }
             Ty::Struct(n) => n.clone(),
             Ty::Err => "<ошибка>".into(),
         }
@@ -137,6 +148,14 @@ impl TyCtx {
         match te {
             TypeExpr::Ptr(inner, _) => Ty::Ptr(Box::new(self.resolve(inner, out)), false),
             TypeExpr::PtrMut(inner, _) => Ty::Ptr(Box::new(self.resolve(inner, out)), true),
+            TypeExpr::Fn(params, ret, _) => {
+                let ps = params.iter().map(|t| self.resolve(t, out)).collect();
+                let r = match ret {
+                    Some(t) => self.resolve(t, out),
+                    None => Ty::Void,
+                };
+                Ty::FnPtr(ps, Box::new(r))
+            }
             TypeExpr::Named(name, sp) => match name.as_str() {
                 "i8" => Ty::I8,
                 "i16" => Ty::I16,

@@ -38,6 +38,11 @@ pub struct Codegen<'a> {
     loops: Vec<(String, String)>, // (continue-label, break-label)
     terminated: bool,             // текущий блок уже завершён терминатором
     intrinsics: HashSet<String>,  // declare-строки использованных LLVM-интринзиков
+    // Пока генерируется IR-ШАБЛОН jit-блока: захваченные имена -> (индекс, тип).
+    // Их чтение выдаёт плейсхолдер `$CAPi$`, который рантайм заменит на константу.
+    captures: Option<HashMap<String, (usize, Ty)>>,
+    in_jit_template: bool,
+    jittmpl_count: u32,
 }
 
 impl<'a> Codegen<'a> {
@@ -60,6 +65,9 @@ impl<'a> Codegen<'a> {
             loops: Vec::new(),
             terminated: false,
             intrinsics: HashSet::new(),
+            captures: None,
+            in_jit_template: false,
+            jittmpl_count: 0,
         }
     }
 
@@ -126,13 +134,31 @@ impl<'a> Codegen<'a> {
     // ---------- функции ----------
 
     fn gen_fn(&mut self, f: &FnDef) {
-        let sig = self.ctx.fns[&f.name].clone();
+        // Сигнатуру строим прямо из объявления — это работает и для top-level
+        // функций, и для внутренней функции jit-блока (её нет в ctx.fns).
+        // Типы уже проверены на первом проходе, поэтому ошибки resolve глушим.
+        let param_tys: Vec<Ty> = f
+            .params
+            .iter()
+            .map(|p| {
+                let mut junk = Vec::new();
+                self.ctx.resolve(&p.ty, &mut junk)
+            })
+            .collect();
+        let ret_ty = match &f.ret {
+            Some(t) => {
+                let mut junk = Vec::new();
+                self.ctx.resolve(t, &mut junk)
+            }
+            None => Ty::Void,
+        };
+
         self.tmp = 0;
         self.label = 0;
         self.slotcount = 0;
         self.allocas.clear();
         self.code.clear();
-        self.cur_ret = sig.ret.clone();
+        self.cur_ret = ret_ty.clone();
         self.cur_unsafe = f.is_unsafe;
         self.unsafe_depth = 0;
         self.scopes.clear();
@@ -142,18 +168,18 @@ impl<'a> Codegen<'a> {
 
         // Сигнатура.
         let mut params_sig = Vec::new();
-        for (p, pty) in f.params.iter().zip(sig.params.iter()) {
+        for (p, pty) in f.params.iter().zip(param_tys.iter()) {
             params_sig.push(format!("{} %arg.{}", pty.llvm(), p.name));
         }
         self.body.push_str(&format!(
             "define {} @{}({}) {{\n",
-            sig.ret.llvm(),
+            ret_ty.llvm(),
             f.name,
             params_sig.join(", ")
         ));
 
         // Пролог: слоты под параметры.
-        for (p, pty) in f.params.iter().zip(sig.params.iter()) {
+        for (p, pty) in f.params.iter().zip(param_tys.iter()) {
             let slot = self.fresh_slot(&p.name);
             self.alloca(&slot, pty);
             self.emit(format!("store {ty} %arg.{name}, ptr {slot}", ty = pty.llvm(), name = p.name));
@@ -714,6 +740,12 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 None => {
+                    // Захваченная в jit-шаблоне переменная -> плейсхолдер-константа.
+                    if let Some(caps) = &self.captures {
+                        if let Some((idx, ty)) = caps.get(name) {
+                            return (format!("$CAP{idx}$"), ty.clone());
+                        }
+                    }
                     if self.ctx.fns.contains_key(name) {
                         self.err("E0057", *span, format!("функцию `{name}` нельзя использовать как значение"), Some("её можно только вызывать: `{name}(...)`"));
                     } else {
@@ -756,7 +788,213 @@ impl<'a> Codegen<'a> {
                 (t, ty)
             }
             Expr::StructLit { name, fields, span } => self.gen_struct_lit(name, fields, *span),
+            Expr::Jit { captures, inner, span } => self.gen_jit(captures, inner, *span),
         }
+    }
+
+    /// Кодоген jit-блока: строит IR-шаблон внутренней функции с плейсхолдерами
+    /// захватов, встраивает его строкой, и в рантайме зовёт goraw_jit_compile,
+    /// который подставляет константы и JIT-компилирует специализацию.
+    fn gen_jit(&mut self, captures: &[(String, Span)], inner: &FnDef, span: Span) -> (String, Ty) {
+        // Типы параметров и результата внутренней функции.
+        let param_tys: Vec<Ty> = inner.params.iter().map(|p| self.resolve(&p.ty)).collect();
+        let ret_ty = match &inner.ret {
+            Some(t) => self.resolve(t),
+            None => Ty::Void,
+        };
+        let fnptr_ty = Ty::FnPtr(param_tys.clone(), Box::new(ret_ty.clone()));
+
+        // Разрешаем захваты в текущей области: имя -> (индекс, слот, тип).
+        let mut cap_map: HashMap<String, (usize, Ty)> = HashMap::new();
+        let mut cap_slots: Vec<(String, Ty)> = Vec::new();
+        for (i, (name, csp)) in captures.iter().enumerate() {
+            match self.lookup(name) {
+                Some(l) => {
+                    cap_map.insert(name.clone(), (i, l.ty.clone()));
+                    cap_slots.push((l.slot.clone(), l.ty.clone()));
+                }
+                None => {
+                    self.err("E0096", *csp, format!("неизвестная захватываемая переменная `{name}`"), None);
+                    cap_map.insert(name.clone(), (i, Ty::Err));
+                    cap_slots.push(("%poison".into(), Ty::Err));
+                }
+            }
+        }
+
+        // 1. Строим IR-шаблон внутренней функции в изолированных буферах.
+        let template = self.build_jit_template(inner, cap_map, &ret_ty);
+
+        // 2. Встраиваем шаблон и имя функции как строковые константы.
+        let tmpl_ptr = self.intern_string(&template);
+        let name_ptr = self.intern_string("__goraw_jit");
+
+        // 3. Гарантируем extern-объявление рантайма.
+        self.use_intrinsic("declare ptr @goraw_jit_compile(ptr, ptr, i32, ptr, ptr)".into());
+
+        // 4. В рантайме готовим массивы bits[] и kinds[] по захватам.
+        let n = cap_slots.len();
+        let bits_arr = self.fresh_slot("jit_bits");
+        let kinds_arr = self.fresh_slot("jit_kinds");
+        self.allocas.push_str(&format!("  {bits_arr} = alloca [{n} x i64]\n", n = n.max(1)));
+        self.allocas.push_str(&format!("  {kinds_arr} = alloca [{n} x i32]\n", n = n.max(1)));
+
+        for (i, (slot, ty)) in cap_slots.iter().enumerate() {
+            let (bits, kind) = self.capture_to_bits(slot, ty);
+            let bp = self.fresh_tmp();
+            self.emit(format!("{bp} = getelementptr [{n} x i64], ptr {bits_arr}, i64 0, i64 {i}", n = n.max(1)));
+            self.emit(format!("store i64 {bits}, ptr {bp}"));
+            let kp = self.fresh_tmp();
+            self.emit(format!("{kp} = getelementptr [{n} x i32], ptr {kinds_arr}, i64 0, i64 {i}", n = n.max(1)));
+            self.emit(format!("store i32 {kind}, ptr {kp}"));
+        }
+
+        // 5. Зовём рантайм: goraw_jit_compile(tmpl, name, n, bits, kinds) -> ptr.
+        let _ = span;
+        let res = self.fresh_tmp();
+        self.emit(format!(
+            "{res} = call ptr @goraw_jit_compile(ptr {tmpl_ptr}, ptr {name_ptr}, i32 {n}, ptr {bits_arr}, ptr {kinds_arr})"
+        ));
+        (res, fnptr_ty)
+    }
+
+    /// Загружает захват из слота и приводит к паре (i64-биты, код-типа) для рантайма.
+    fn capture_to_bits(&mut self, slot: &str, ty: &Ty) -> (String, i32) {
+        let kind = match ty {
+            Ty::I8 => 0,
+            Ty::I16 => 1,
+            Ty::I32 => 2,
+            Ty::I64 => 3,
+            Ty::U8 => 4,
+            Ty::U16 => 5,
+            Ty::U32 => 6,
+            Ty::U64 => 7,
+            Ty::F32 => 8,
+            Ty::F64 => 9,
+            _ => 3,
+        };
+        let v = self.fresh_tmp();
+        self.emit(format!("{v} = load {lty}, ptr {slot}", lty = ty.llvm()));
+        let bits = match ty {
+            Ty::I64 | Ty::U64 => v,
+            Ty::F64 => {
+                let t = self.fresh_tmp();
+                self.emit(format!("{t} = bitcast double {v} to i64"));
+                t
+            }
+            Ty::F32 => {
+                let bc = self.fresh_tmp();
+                self.emit(format!("{bc} = bitcast float {v} to i32"));
+                let ze = self.fresh_tmp();
+                self.emit(format!("{ze} = zext i32 {bc} to i64"));
+                ze
+            }
+            t if t.is_signed() => {
+                let t2 = self.fresh_tmp();
+                self.emit(format!("{t2} = sext {lty} {v} to i64", lty = ty.llvm()));
+                t2
+            }
+            _ => {
+                // беззнаковые целые уже < 64 бит
+                let t2 = self.fresh_tmp();
+                self.emit(format!("{t2} = zext {lty} {v} to i64", lty = ty.llvm()));
+                t2
+            }
+        };
+        (bits, kind)
+    }
+
+    /// Собирает самостоятельный IR-модуль-шаблон для внутренней функции jit.
+    /// Захваты внутри становятся плейсхолдерами `$CAPi$`. Модуль без triple/
+    /// datalayout — их проставит LLJIT под хост.
+    fn build_jit_template(
+        &mut self,
+        inner: &FnDef,
+        cap_map: HashMap<String, (usize, Ty)>,
+        _ret_ty: &Ty,
+    ) -> String {
+        // Сохраняем состояние текущего (главного) модуля и функции.
+        let saved_body = std::mem::take(&mut self.body);
+        let saved_strings = std::mem::take(&mut self.strings);
+        let saved_intr = std::mem::take(&mut self.intrinsics);
+        let saved_allocas = std::mem::take(&mut self.allocas);
+        let saved_code = std::mem::take(&mut self.code);
+        let saved_scopes = std::mem::take(&mut self.scopes);
+        let saved_loops = std::mem::take(&mut self.loops);
+        let saved_tmp = self.tmp;
+        let saved_label = self.label;
+        let saved_slot = self.slotcount;
+        let saved_ret = self.cur_ret.clone();
+        let saved_unsafe = self.cur_unsafe;
+        let saved_udepth = self.unsafe_depth;
+        let saved_term = self.terminated;
+        let saved_strcount = self.strcount;
+
+        // Переключаемся в режим шаблона.
+        self.captures = Some(cap_map);
+        self.in_jit_template = true;
+
+        // Внутренняя функция всегда компилируется под именем __goraw_jit.
+        let mut renamed = inner.clone();
+        renamed.name = "__goraw_jit".to_string();
+        self.gen_fn(&renamed);
+
+        let tmpl_body = std::mem::take(&mut self.body);
+        let tmpl_strings = std::mem::take(&mut self.strings);
+        let tmpl_intr = std::mem::take(&mut self.intrinsics);
+
+        // Собираем модуль-шаблон: declare внешних C-функций (их резолвит
+        // генератор символов процесса) + declare интринзиков + строки + тело.
+        let mut module = String::new();
+        let mut extern_decls: Vec<String> = Vec::new();
+        for (fname, sig) in &self.ctx.fns {
+            if sig.is_extern {
+                let params: Vec<String> = sig.params.iter().map(|t| t.llvm()).collect();
+                let mut plist = params.join(", ");
+                if sig.variadic {
+                    if plist.is_empty() {
+                        plist.push_str("...");
+                    } else {
+                        plist.push_str(", ...");
+                    }
+                }
+                extern_decls.push(format!("declare {} @{}({})", sig.ret.llvm(), fname, plist));
+            }
+        }
+        extern_decls.sort();
+        for d in extern_decls {
+            module.push_str(&d);
+            module.push('\n');
+        }
+        let mut intr: Vec<&String> = tmpl_intr.iter().collect();
+        intr.sort();
+        for d in intr {
+            module.push_str(d);
+            module.push('\n');
+        }
+        module.push_str(&tmpl_strings);
+        module.push_str(&tmpl_body);
+
+        // Восстанавливаем состояние главного модуля/функции.
+        self.body = saved_body;
+        self.strings = saved_strings;
+        self.intrinsics = saved_intr;
+        self.allocas = saved_allocas;
+        self.code = saved_code;
+        self.scopes = saved_scopes;
+        self.loops = saved_loops;
+        self.tmp = saved_tmp;
+        self.label = saved_label;
+        self.slotcount = saved_slot;
+        self.cur_ret = saved_ret;
+        self.cur_unsafe = saved_unsafe;
+        self.unsafe_depth = saved_udepth;
+        self.terminated = saved_term;
+        self.strcount = saved_strcount;
+        self.captures = None;
+        self.in_jit_template = false;
+        self.jittmpl_count += 1;
+
+        module
     }
 
     fn gen_unary(&mut self, op: UnOp, expr: &Expr, span: Span) -> (String, Ty) {
@@ -989,6 +1227,14 @@ impl<'a> Codegen<'a> {
                 return ("0".into(), Ty::Err);
             }
         };
+
+        // Локальная переменная-функция (в т.ч. хендл jit) — непрямой вызов.
+        if let Some(local) = self.lookup(&name).cloned() {
+            if let Ty::FnPtr(params, ret) = local.ty {
+                return self.gen_indirect_call(&name, &local.slot, &params, &ret, args, span);
+            }
+        }
+
         let sig = match self.ctx.fns.get(&name) {
             Some(s) => s.clone(),
             None => {
@@ -1000,6 +1246,18 @@ impl<'a> Codegen<'a> {
                 return ("0".into(), Ty::Err);
             }
         };
+
+        // Внутри jit-шаблона можно звать только extern C и math-builtin —
+        // пользовательские функции не экспортируются и не резолвятся в рантайме.
+        if self.in_jit_template && !sig.is_extern {
+            self.err(
+                "E0095",
+                span,
+                format!("вызов пользовательской функции `{name}` из jit-блока пока не поддержан"),
+                Some("в jit-блоке доступны extern C-функции и встроенная математика"),
+            );
+            return ("0".into(), Ty::Err);
+        }
 
         if sig.is_unsafe {
             self.require_unsafe(span, format!("вызов unsafe-функции `{name}`"));
@@ -1240,6 +1498,38 @@ impl<'a> Codegen<'a> {
         self.intrinsics.insert(decl);
     }
 
+    /// Непрямой вызов через функцию-указатель (например, хендл jit-блока).
+    fn gen_indirect_call(&mut self, name: &str, slot: &str, params: &[Ty], ret: &Ty, args: &[Expr], span: Span) -> (String, Ty) {
+        let fp = self.fresh_tmp();
+        self.emit(format!("{fp} = load ptr, ptr {slot}"));
+
+        if args.len() != params.len() {
+            self.err("E0072", span, format!("`{name}` ждёт {} аргумент(ов), передано {}", params.len(), args.len()), None);
+        }
+        let mut argvals: Vec<String> = Vec::new();
+        for (i, a) in args.iter().enumerate() {
+            let expected = params.get(i).cloned();
+            let (v, vty) = self.gen_expr(a, expected.as_ref());
+            if let Some(pt) = &expected {
+                if *pt != vty && vty != Ty::Err && *pt != Ty::Err {
+                    self.err("E0073", a.span(), format!("аргумент {}: ожидался `{}`, передан `{}`", i + 1, pt.name(), vty.name()), None);
+                }
+                argvals.push(format!("{} {}", pt.llvm(), v));
+            } else {
+                argvals.push(format!("{} {}", vty.llvm(), v));
+            }
+        }
+        let argstr = argvals.join(", ");
+        if *ret == Ty::Void {
+            self.emit(format!("call void {fp}({argstr})"));
+            ("".into(), Ty::Void)
+        } else {
+            let t = self.fresh_tmp();
+            self.emit(format!("{t} = call {rty} {fp}({argstr})", rty = ret.llvm()));
+            (t, ret.clone())
+        }
+    }
+
     /// Приведение вариадических аргументов по правилам C (default argument promotions).
     fn promote_variadic(&mut self, v: String, ty: Ty) -> (String, Ty) {
         match ty {
@@ -1332,9 +1622,25 @@ impl<'a> Codegen<'a> {
                 self.ctx.resolve(ty, &mut junk)
             }
             Expr::Call { callee, .. } => match &**callee {
-                Expr::Ident(n, _) => self.ctx.fns.get(n).map(|s| s.ret.clone()).unwrap_or(Ty::Err),
+                Expr::Ident(n, _) => {
+                    if let Some(l) = self.lookup(n) {
+                        if let Ty::FnPtr(_, ret) = &l.ty {
+                            return (**ret).clone();
+                        }
+                    }
+                    self.ctx.fns.get(n).map(|s| s.ret.clone()).unwrap_or(Ty::Err)
+                }
                 _ => Ty::Err,
             },
+            Expr::Jit { inner, .. } => {
+                let mut junk = Vec::new();
+                let ps = inner.params.iter().map(|p| self.ctx.resolve(&p.ty, &mut junk)).collect();
+                let r = match &inner.ret {
+                    Some(t) => self.ctx.resolve(t, &mut junk),
+                    None => Ty::Void,
+                };
+                Ty::FnPtr(ps, Box::new(r))
+            }
             Expr::Field { base, field, .. } => {
                 let bt = self.type_of(base);
                 let sname = match bt {
@@ -1443,7 +1749,7 @@ impl<'a> Codegen<'a> {
             "0.0".into()
         } else if let Ty::Struct(_) = ty {
             "zeroinitializer".into()
-        } else if ty.is_ptr() {
+        } else if ty.is_ptr() || matches!(ty, Ty::FnPtr(..)) {
             "null".into()
         } else {
             "0".into()

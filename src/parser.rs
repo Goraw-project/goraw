@@ -222,6 +222,25 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Some(TypeExpr::Named(name, sp))
             }
+            Tok::Fn => {
+                // тип функции-указателя: fn(T1, T2) -> R
+                self.bump();
+                self.expect(&Tok::LParen, "`(`")?;
+                let mut params = Vec::new();
+                while !matches!(self.peek(), Tok::RParen | Tok::Eof) {
+                    params.push(self.parse_type()?);
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&Tok::RParen, "`)`")?;
+                let ret = if self.eat(&Tok::Arrow) {
+                    Some(Box::new(self.parse_type()?))
+                } else {
+                    None
+                };
+                Some(TypeExpr::Fn(params, ret, sp.to(self.prev_span())))
+            }
             other => {
                 self.diags.push(Diagnostic::error(
                     "E0013",
@@ -518,6 +537,50 @@ impl<'a> Parser<'a> {
         Some(AsmBlock { dialect, inputs, outputs, body, span: sp.to(self.prev_span()) })
     }
 
+    /// jit(captures: [a, b]) { fn execute(params) -> R { ... } }
+    /// Список захватов необязателен: допускается `jit { fn ... }`.
+    fn parse_jit(&mut self) -> P<Expr> {
+        let sp = self.span();
+        self.expect(&Tok::Jit, "`jit`")?;
+        let mut captures = Vec::new();
+        if self.eat(&Tok::LParen) {
+            let (kw, kwsp) = self.expect_ident("`captures`")?;
+            if kw != "captures" {
+                self.diags.push(
+                    Diagnostic::error("E0019", kwsp, format!("ожидалось `captures`, а найдено `{kw}`"))
+                        .with_hint("синтаксис: `jit(captures: [a, b]) { ... }`"),
+                );
+            }
+            self.expect(&Tok::Colon, "`:`")?;
+            self.expect(&Tok::LBracket, "`[`")?;
+            while !matches!(self.peek(), Tok::RBracket | Tok::Eof) {
+                let (n, nsp) = self.expect_ident("захватываемой переменной")?;
+                captures.push((n, nsp));
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Tok::RBracket, "`]`")?;
+            self.expect(&Tok::RParen, "`)`")?;
+        }
+        // Тело jit-блока: ровно одно объявление функции.
+        let saved = self.no_struct_lit;
+        self.no_struct_lit = false;
+        self.expect(&Tok::LBrace, "`{` тела jit-блока")?;
+        let inner = self.parse_fn()?;
+        self.expect(&Tok::RBrace, "`}` тела jit-блока")?;
+        self.no_struct_lit = saved;
+        if inner.body.is_none() {
+            self.diags.push(Diagnostic::error(
+                "E0019",
+                inner.span,
+                "в jit-блоке нужна функция с телом",
+            ));
+            return None;
+        }
+        Some(Expr::Jit { captures, inner: Box::new(inner), span: sp.to(self.prev_span()) })
+    }
+
     // ---- выражения (Pratt) ----
 
     pub fn parse_expr(&mut self) -> P<Expr> {
@@ -695,6 +758,7 @@ impl<'a> Parser<'a> {
                 self.expect(&Tok::RParen, "`)`")?;
                 Some(e)
             }
+            Tok::Jit => self.parse_jit(),
             Tok::Ident(name) => {
                 self.bump();
                 // литерал структуры Name { ... }

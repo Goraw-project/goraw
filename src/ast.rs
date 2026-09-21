@@ -13,12 +13,17 @@ pub enum TypeExpr {
     Ptr(Box<TypeExpr>, Span),
     /// `*mut T` — изменяемый сырой указатель.
     PtrMut(Box<TypeExpr>, Span),
+    /// Тип функции-указателя: `fn(T1, T2) -> R`.
+    Fn(Vec<TypeExpr>, Option<Box<TypeExpr>>, Span),
 }
 
 impl TypeExpr {
     pub fn span(&self) -> Span {
         match self {
-            TypeExpr::Named(_, s) | TypeExpr::Ptr(_, s) | TypeExpr::PtrMut(_, s) => *s,
+            TypeExpr::Named(_, s)
+            | TypeExpr::Ptr(_, s)
+            | TypeExpr::PtrMut(_, s)
+            | TypeExpr::Fn(_, _, s) => *s,
         }
     }
 }
@@ -181,6 +186,15 @@ pub enum Expr {
         ty: TypeExpr,
         span: Span,
     },
+    /// JIT-блок с рантайм-специализацией:
+    /// `jit(captures: [a, b]) { fn execute(...) -> R { ... } }`.
+    /// Значение выражения — функция-указатель на скомпилированную в рантайме
+    /// специализацию, где захваты `a`, `b` вкомпилированы как константы.
+    Jit {
+        captures: Vec<(String, Span)>,
+        inner: Box<FnDef>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -197,7 +211,8 @@ impl Expr {
             | Expr::Field { span: s, .. }
             | Expr::Index { span: s, .. }
             | Expr::StructLit { span: s, .. }
-            | Expr::Cast { span: s, .. } => *s,
+            | Expr::Cast { span: s, .. }
+            | Expr::Jit { span: s, .. } => *s,
         }
     }
 }

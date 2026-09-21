@@ -14,6 +14,10 @@ mod types;
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
+/// Рантайм JIT-специализации встроен в компилятор и разворачивается рядом с
+/// .ll только когда программа реально использует jit-блоки.
+const JIT_RUNTIME_C: &str = include_str!("../runtime/goraw_jit.c");
+
 struct Options {
     input: PathBuf,
     output: Option<PathBuf>,
@@ -159,13 +163,29 @@ fn run(opts: Options) -> i32 {
         return 0;
     }
 
+    // Если программа использует jit-блоки — рядом кладём C-рантайм и линкуем его.
+    let uses_jit = ir.contains("@goraw_jit_compile(");
+    let mut jit_rt_path: Option<PathBuf> = None;
+    if uses_jit {
+        let rt = ll_path.with_extension("jitrt.c");
+        if let Err(e) = std::fs::write(&rt, JIT_RUNTIME_C) {
+            eprintln!("не удалось записать JIT-рантайм `{}`: {e}", rt.display());
+            return 2;
+        }
+        jit_rt_path = Some(rt);
+    }
+
     // Линковка через clang.
     let mut cmd = Command::new(&opts.clang);
     cmd.arg("--target=x86_64-w64-windows-gnu");
     if let Some(o) = &opts.opt {
         cmd.arg(format!("-O{o}"));
     }
-    cmd.arg(&ll_path).arg("-o").arg(&exe_path);
+    cmd.arg(&ll_path);
+    if let Some(rt) = &jit_rt_path {
+        cmd.arg(rt);
+    }
+    cmd.arg("-o").arg(&exe_path);
     // Подавляем предупреждение о переопределении triple (у нас он корректный).
     cmd.arg("-Wno-override-module");
 
@@ -186,6 +206,9 @@ fn run(opts: Options) -> i32 {
 
     if !opts.keep_ll {
         let _ = std::fs::remove_file(&ll_path);
+        if let Some(rt) = &jit_rt_path {
+            let _ = std::fs::remove_file(rt);
+        }
     }
 
     eprintln!("собрано: `{}`", exe_path.display());
