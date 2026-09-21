@@ -454,8 +454,16 @@ impl<'a> Parser<'a> {
             }
         }
 
-        // иначе: выражение, затем возможно =, ++ или --
+        // иначе: выражение, затем возможно =, op=, ++ или --
         let e = self.parse_expr()?;
+        // составные присваивания: x op= y  ==  x = x op y
+        if let Some(op) = compound_op(self.peek()) {
+            self.bump();
+            let rhs = self.parse_expr()?;
+            let span = e.span().to(rhs.span());
+            let value = Expr::Binary { op, lhs: Box::new(e.clone()), rhs: Box::new(rhs), span };
+            return Some(Stmt::Assign { span, target: e, value });
+        }
         match self.peek() {
             Tok::Assign => {
                 self.bump();
@@ -820,6 +828,23 @@ impl<'a> Parser<'a> {
             }
         }
     }
+}
+
+/// Оператор составного присваивания `op=` → соответствующий BinOp.
+fn compound_op(t: &Tok) -> Option<BinOp> {
+    Some(match t {
+        Tok::PlusEq => BinOp::Add,
+        Tok::MinusEq => BinOp::Sub,
+        Tok::StarEq => BinOp::Mul,
+        Tok::SlashEq => BinOp::Div,
+        Tok::PercentEq => BinOp::Rem,
+        Tok::AmpEq => BinOp::BitAnd,
+        Tok::PipeEq => BinOp::BitOr,
+        Tok::CaretEq => BinOp::BitXor,
+        Tok::ShlEq => BinOp::Shl,
+        Tok::ShrEq => BinOp::Shr,
+        _ => return None,
+    })
 }
 
 /// Приоритет и вид бинарного оператора (больше число — выше приоритет).

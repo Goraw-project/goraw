@@ -73,6 +73,18 @@ pub enum Tok {
     PlusPlus,   // ++
     MinusMinus, // --
 
+    // составные присваивания
+    PlusEq,
+    MinusEq,
+    StarEq,
+    SlashEq,
+    PercentEq,
+    AmpEq,
+    PipeEq,
+    CaretEq,
+    ShlEq,
+    ShrEq,
+
     Eof,
 }
 
@@ -411,28 +423,66 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     Tok::MinusMinus
                 }
+                Some('=') => {
+                    self.bump();
+                    Tok::MinusEq
+                }
                 _ => Tok::Minus,
             },
-            '+' => {
-                if self.peek() == Some('+') {
+            '+' => match self.peek() {
+                Some('+') => {
                     self.bump();
                     Tok::PlusPlus
+                }
+                Some('=') => {
+                    self.bump();
+                    Tok::PlusEq
+                }
+                _ => Tok::Plus,
+            },
+            '*' => {
+                if self.peek() == Some('=') {
+                    self.bump();
+                    Tok::StarEq
                 } else {
-                    Tok::Plus
+                    Tok::Star
                 }
             }
-            '*' => Tok::Star,
-            '/' => Tok::Slash,
-            '%' => Tok::Percent,
-            '^' => Tok::Caret,
-            '&' => {
-                if self.peek() == Some('&') {
+            '/' => {
+                if self.peek() == Some('=') {
+                    self.bump();
+                    Tok::SlashEq
+                } else {
+                    Tok::Slash
+                }
+            }
+            '%' => {
+                if self.peek() == Some('=') {
+                    self.bump();
+                    Tok::PercentEq
+                } else {
+                    Tok::Percent
+                }
+            }
+            '^' => {
+                if self.peek() == Some('=') {
+                    self.bump();
+                    Tok::CaretEq
+                } else {
+                    Tok::Caret
+                }
+            }
+            '&' => match self.peek() {
+                Some('&') => {
                     self.bump();
                     Tok::AndAnd
-                } else {
-                    Tok::Amp
                 }
-            }
+                Some('=') => {
+                    self.bump();
+                    Tok::AmpEq
+                }
+                _ => Tok::Amp,
+            },
             '|' => match self.peek() {
                 Some('|') => {
                     self.bump();
@@ -441,6 +491,10 @@ impl<'a> Lexer<'a> {
                 Some('>') => {
                     self.bump();
                     Tok::PipeArrow
+                }
+                Some('=') => {
+                    self.bump();
+                    Tok::PipeEq
                 }
                 _ => Tok::Pipe,
             },
@@ -467,7 +521,12 @@ impl<'a> Lexer<'a> {
                 }
                 Some('<') => {
                     self.bump();
-                    Tok::Shl
+                    if self.peek() == Some('=') {
+                        self.bump();
+                        Tok::ShlEq
+                    } else {
+                        Tok::Shl
+                    }
                 }
                 _ => Tok::Lt,
             },
@@ -478,7 +537,12 @@ impl<'a> Lexer<'a> {
                 }
                 Some('>') => {
                     self.bump();
-                    Tok::Shr
+                    if self.peek() == Some('=') {
+                        self.bump();
+                        Tok::ShrEq
+                    } else {
+                        Tok::Shr
+                    }
                 }
                 _ => Tok::Gt,
             },
