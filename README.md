@@ -21,6 +21,17 @@
 - **ошибки сборки в машиночитаемом виде**: строгий JSON с XML-нотками
   (`--json`), чтобы модель могла их парсить и чинить.
 
+Экосистема (три инструмента):
+
+- **`gorawc`** — компилятор языка (`.gw` → `.exe`);
+- **`gorawas`** — нативный ассемблер Goraw-asm (Intel-диалект, backend
+  `iced-x86`, вывод COFF `.obj`);
+- **`gorawpb`** — компилятор Protobuf (Editions) в Goraw (`.proto` → `.gw`
+  со структурами и `encode_*`/`decode_*`).
+
+Язык уже умеет **динамическую память** (куча + срезы `[]T`), поэтому на
+нём самом написан, например, protobuf-рантайм.
+
 ```goraw
 extern fn printf(fmt: *u8, ...) -> i32;
 
@@ -42,8 +53,18 @@ fn main() -> i32 {
 
 ```sh
 cargo build --release
-# бинарь: target/release/gorawc
+# бинари: target/release/{gorawc, gorawas, gorawpb}
 ```
+
+Ассемблер и protobuf:
+
+```sh
+gorawas prog.asm -o prog.obj            # Goraw-asm → COFF .obj
+gorawpb schema.proto -o schema.gw       # .proto (Editions) → Goraw
+```
+
+Protobuf-пример (encode+decode, байты идентичны protoc) —
+[examples/proto/](examples/proto/).
 
 ## Использование
 
@@ -77,10 +98,12 @@ gorawc broken.gw --json                # ошибки в JSON для LLM
 | Плавающие | `f32 f64` |
 | Прочее | `bool`, `void` |
 | Указатели | `*T` (только чтение через unsafe), `*mut T` |
+| Срезы | `[]T` — fat-pointer (`.ptr`, `.len`, безопасная индексация) |
 | Функции | `fn(T1, T2) -> R` |
-| Пользовательские | `struct` |
+| Пользовательские | `struct`, `enum` (C-style, `-> i32`) |
 
 Строковый литерал имеет тип `*u8` (C-строка с завершающим нулём).
+`null` — нулевой указатель.
 
 Числовые литералы подстраиваются под ожидаемый тип: в `let x: i32 = 0`
 и `f64`-контексте `0` станет нужного типа. Неявных приведений между
@@ -105,10 +128,45 @@ name := expr;          // Go-style короткое объявление (изм
 
 if cond { ... } else { ... }
 while cond { ... }
+x += 1; y <<= 2;      // составные присваивания (+= -= *= /= %= &= |= ^= <<= >>=)
+
+if cond { ... } else { ... }
+while cond { ... }
 for i := 0; i < n; i++ { ... }   // трёхчастный
 for cond { ... }                 // while-форма
 for { ... }                      // бесконечный; break/continue
+for x in slice { ... }           // итерация по срезу
 ```
+
+### Динамическая память: куча и срезы
+
+```goraw
+let p: *mut u8 = alloc(64);       // malloc; realloc/free/mem_copy/mem_set
+let xs: []i64 = make_slice(p as *mut i64, 8);
+for x in xs { /* ... */ }          // xs.len, xs[i] — безопасны
+free(p);
+```
+
+На куче и срезах на самом Goraw пишутся `Vec`/`Bytes` (см.
+[examples/bytes.gw](examples/bytes.gw), [examples/slices.gw](examples/slices.gw)).
+Ещё builtins: `sizeof(T)`, `zeroed()`, `f32_bits`/`f64_bits` и обратные.
+
+### Перечисления
+
+```goraw
+enum Color { Red, Green, Blue }             // 0, 1, 2
+enum Status { Ok = 0, NotFound = 404 }      // явные значения
+let c: Color = Color::Green;                // доступ через ::
+```
+
+### Модули
+
+```goraw
+import "mod_math.gw";   // подключает объявления другого файла
+```
+
+Резолвится компилятором (рекурсивно, с дедупом); диагностики остаются
+привязаны к исходным файлам. Namespacing/пакеты — в планах.
 
 ### Структуры
 
@@ -233,8 +291,13 @@ src/
   parser.rs   — рекурсивный спуск + Pratt для выражений
   types.rs    — система типов и сбор сигнатур (1-й проход)
   codegen.rs  — семантика + генерация LLVM IR (2-й проход)
-  diag.rs     — диагностики: человекочитаемо и в LLM-JSON
-  main.rs     — CLI-драйвер, вызов clang
+  diag.rs     — диагностики: человекочитаемо и в LLM-JSON (мульти-файл)
+  main.rs     — CLI-драйвер gorawc, резолвинг import, вызов clang
+  lib.rs      — общая библиотека для всех бинарей
+  asm/        — ассемблер Goraw-asm (gorawas): парсер + iced-x86 + object
+  proto/      — protobuf Editions (gorawpb): парсер .proto, дескрипторы,
+                резолвинг features, кодоген в Goraw (encode/decode)
+  bin/        — gorawas.rs, gorawpb.rs
 runtime/
   goraw_jit.c — рантайм JIT-специализации на LLVM-C ORC
 ```
@@ -249,10 +312,16 @@ runtime/
 - [`examples/math.gw`](examples/math.gw) — конвейер `|>` и математика.
 - [`examples/asm.gw`](examples/asm.gw) — инлайн-ассемблер.
 - [`examples/jit.gw`](examples/jit.gw) — JIT-специализация.
+- [`examples/bytes.gw`](examples/bytes.gw) / [`examples/slices.gw`](examples/slices.gw)
+  — куча, срезы, protobuf varint на Goraw.
+- [`examples/enums.gw`](examples/enums.gw),
+  [`examples/modules_demo.gw`](examples/modules_demo.gw) — enum, import.
+- [`examples/proto/`](examples/proto/) — protobuf через `gorawpb`.
 
 ## Ограничения и что дальше
 
-Это игрушечный, но настоящий компилятор. Пока нет: массивов и срезов как
-типов (только указатели), обобщений, методов у структур, замыканий
-(кроме jit), модулей, сборки мусора. Вызов пользовательских функций из
-jit-блока не поддержан. Всё это — хорошие следующие шаги.
+Это игрушечный, но настоящий компилятор. Есть: куча, срезы `[]T`, enum,
+модули (`import`), protobuf (encode+decode). Пока нет: обобщений, методов
+у структур, замыканий (кроме jit), `str`-типа, сборки мусора, namespacing
+модулей, bounds-check срезов. Вызов пользовательских функций из jit-блока
+не поддержан. Подробная дорожная карта — [docs/ROADMAP.md](docs/ROADMAP.md).

@@ -29,7 +29,7 @@
 | AMD: llvm-mc + amdclang++ | AMDGPU-бэкенд LLVM + HIP inline + ROCm | Средне-высокая | Высокая | **Может быть** (симметрично CUDA, если нужен AMD) |
 | SASS: cuasm / turingas | Неофициальные per-arch ассемблеры, Python, хрупкие | Нишевая | Высокая | **Пропустить/отложить** (опц. плагин) |
 | Свой Protobuf (Editions) | Wire-совместимый protobuf + схемы Editions; тул `gorawpb` | Высокая | Высокая | **Делать** (Rust-рантайм сначала; Goraw-таргет — по мере роста языка) |
-| Библиотеки/плагины/модули (import) | Три РАЗНЫЕ вещи: module / package / plugin | Высокая | Средне-высокая | **Делать** — сначала терминология и `import` |
+| Библиотеки/плагины/модули (import) | Три РАЗНЫЕ вещи: module / package / plugin | Высокая | Средне-высокая | **🚧 `import` готов** (мультифайл); namespacing/пакеты — далее |
 | Inline NASM/MASM (как в asm.gw) | Сохранить `asm(...) {}`; + faithful-путь через реальный ассемблер | Высокая | Средняя | **Оставляем и растим** (см. Эпик 10) |
 
 Обоснования и эскизы — ниже, в порядке рекомендованной работы.
@@ -292,11 +292,11 @@ LLM-JSON).
 
 ### Фазировка
 
-- **PB1 (✅ encode готов):** парсер Editions + дескрипторы + резолвинг
-  features + кодоген в **Goraw** (не Rust — язык дорос). `gorawpb` даёт
-  `.gw`, чей `encode_*` выдаёт байты, идентичные `protoc`. Проверено на
-  скалярах/zigzag/fixed/packed/nested (`examples/proto/`). Осталось в PB1:
-  **decode**, map/oneof, repeated string.
+- **PB1 (✅ encode + decode готовы):** парсер Editions + дескрипторы +
+  резолвинг features + кодоген в **Goraw** (не Rust — язык дорос).
+  `encode_*`/`decode_*` дают байты, идентичные `protoc`; round-trip
+  проверен (`examples/proto/`). Осталось в PB1: map/oneof, repeated
+  string/message, expanded repeated decode.
 - **PB2:** полный `FeatureSet`-резолвинг под edition 2023 (open/closed enums,
   implicit/explicit presence, packed-дефолты, delimited), unknown fields,
   well-known types.
