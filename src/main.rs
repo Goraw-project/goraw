@@ -1,0 +1,236 @@
+//! Драйвер компилятора Goraw.
+//!
+//! Пайплайн: исходник -> лексер -> парсер -> сбор типов -> кодоген (LLVM IR)
+//! -> clang -> .exe. Диагностики умеет печатать по-человечески или в
+//! LLM-дружественном JSON (`--json`).
+
+mod ast;
+mod codegen;
+mod diag;
+mod lexer;
+mod parser;
+mod types;
+
+use std::path::{Path, PathBuf};
+use std::process::{exit, Command};
+
+struct Options {
+    input: PathBuf,
+    output: Option<PathBuf>,
+    emit_llvm: bool,   // остановиться на .ll
+    json: bool,        // диагностика в JSON
+    run: bool,         // запустить после сборки
+    opt: Option<String>, // уровень оптимизации, напр. "2"
+    clang: String,
+    keep_ll: bool,
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let opts = match parse_args(&args) {
+        Ok(o) => o,
+        Err(msg) => {
+            eprintln!("{msg}");
+            exit(2);
+        }
+    };
+    exit(run(opts));
+}
+
+fn print_help() {
+    println!(
+        "gorawc — компилятор языка Goraw (LLVM backend)\n\
+\n\
+ИСПОЛЬЗОВАНИЕ:\n\
+    gorawc <файл.gw> [опции]\n\
+\n\
+ОПЦИИ:\n\
+    -o <путь>        имя выходного файла (.exe или .ll)\n\
+    --emit-llvm      остановиться на LLVM IR (.ll), не звать clang\n\
+    --json           печатать диагностику в LLM-формате (JSON + XML-нотки)\n\
+    --run            запустить программу после успешной сборки\n\
+    -O<n>            уровень оптимизации clang (напр. -O2)\n\
+    --keep-ll        не удалять промежуточный .ll при сборке .exe\n\
+    --clang <путь>   путь к clang (по умолчанию `clang` из PATH)\n\
+    -h, --help       показать эту справку\n"
+    );
+}
+
+fn parse_args(args: &[String]) -> Result<Options, String> {
+    let mut input: Option<PathBuf> = None;
+    let mut output = None;
+    let mut emit_llvm = false;
+    let mut json = false;
+    let mut run = false;
+    let mut opt = None;
+    let mut clang = "clang".to_string();
+    let mut keep_ll = false;
+
+    let mut i = 1;
+    while i < args.len() {
+        let a = &args[i];
+        match a.as_str() {
+            "-h" | "--help" => {
+                print_help();
+                exit(0);
+            }
+            "-o" => {
+                i += 1;
+                output = Some(PathBuf::from(args.get(i).ok_or("-o требует аргумент")?));
+            }
+            "--emit-llvm" => emit_llvm = true,
+            "--json" => json = true,
+            "--run" => run = true,
+            "--keep-ll" => keep_ll = true,
+            "--clang" => {
+                i += 1;
+                clang = args.get(i).ok_or("--clang требует аргумент")?.clone();
+            }
+            s if s.starts_with("-O") => opt = Some(s[2..].to_string()),
+            s if s.starts_with('-') => return Err(format!("неизвестная опция `{s}` (см. --help)")),
+            s => {
+                if input.is_some() {
+                    return Err(format!("лишний аргумент `{s}`"));
+                }
+                input = Some(PathBuf::from(s));
+            }
+        }
+        i += 1;
+    }
+
+    let input = input.ok_or("не указан входной файл (см. --help)")?;
+    Ok(Options { input, output, emit_llvm, json, run, opt, clang, keep_ll })
+}
+
+fn run(opts: Options) -> i32 {
+    let src = match std::fs::read_to_string(&opts.input) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("не удалось прочитать `{}`: {e}", opts.input.display());
+            return 2;
+        }
+    };
+    let file = opts.input.display().to_string();
+    let mut diags = diag::Diags::new(file.clone(), src.clone());
+
+    // Лексер.
+    let mut lx = lexer::Lexer::new(&src);
+    let toks = lx.tokenize(&mut diags);
+
+    // Парсер.
+    let prog = {
+        let mut p = parser::Parser::new(toks, &src, &mut diags);
+        p.parse_program()
+    };
+
+    // Сбор типов (первый проход).
+    let mut collected = Vec::new();
+    let ctx = types::collect(&prog.structs, &prog.fns, &mut collected);
+    for d in collected {
+        diags.push(d);
+    }
+
+    // Кодоген + семантика (второй проход).
+    let ir = {
+        let cg = codegen::Codegen::new(&ctx, &mut diags);
+        cg.emit_module(&prog)
+    };
+
+    // Есть ошибки — печатаем диагностику и выходим.
+    if diags.has_errors() {
+        emit_diags(&diags, opts.json);
+        return 1;
+    }
+    // Предупреждения печатаем, но продолжаем.
+    if !diags.items.is_empty() {
+        emit_diags(&diags, opts.json);
+    }
+
+    // Пути вывода.
+    let (ll_path, exe_path) = output_paths(&opts);
+
+    if let Err(e) = std::fs::write(&ll_path, &ir) {
+        eprintln!("не удалось записать `{}`: {e}", ll_path.display());
+        return 2;
+    }
+
+    if opts.emit_llvm {
+        eprintln!("LLVM IR записан в `{}`", ll_path.display());
+        return 0;
+    }
+
+    // Линковка через clang.
+    let mut cmd = Command::new(&opts.clang);
+    cmd.arg("--target=x86_64-w64-windows-gnu");
+    if let Some(o) = &opts.opt {
+        cmd.arg(format!("-O{o}"));
+    }
+    cmd.arg(&ll_path).arg("-o").arg(&exe_path);
+    // Подавляем предупреждение о переопределении triple (у нас он корректный).
+    cmd.arg("-Wno-override-module");
+
+    let status = match cmd.status() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "не удалось запустить clang (`{}`): {e}\nУстановите LLVM или укажите путь через --clang",
+                opts.clang
+            );
+            return 2;
+        }
+    };
+    if !status.success() {
+        eprintln!("clang завершился с ошибкой при линковке `{}`", ll_path.display());
+        return 1;
+    }
+
+    if !opts.keep_ll {
+        let _ = std::fs::remove_file(&ll_path);
+    }
+
+    eprintln!("собрано: `{}`", exe_path.display());
+
+    if opts.run {
+        let status = Command::new(&exe_path).status();
+        match status {
+            Ok(s) => return s.code().unwrap_or(0),
+            Err(e) => {
+                eprintln!("не удалось запустить `{}`: {e}", exe_path.display());
+                return 2;
+            }
+        }
+    }
+
+    0
+}
+
+fn output_paths(opts: &Options) -> (PathBuf, PathBuf) {
+    let stem = opts.input.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "out".into());
+    let dir = opts.input.parent().unwrap_or(Path::new("."));
+    match &opts.output {
+        Some(o) => {
+            if opts.emit_llvm {
+                (o.clone(), o.clone())
+            } else {
+                let ll = o.with_extension("ll");
+                (ll, o.clone())
+            }
+        }
+        None => {
+            if opts.emit_llvm {
+                (dir.join(format!("{stem}.ll")), dir.join(format!("{stem}.ll")))
+            } else {
+                (dir.join(format!("{stem}.ll")), dir.join(format!("{stem}.exe")))
+            }
+        }
+    }
+}
+
+fn emit_diags(diags: &diag::Diags, json: bool) {
+    if json {
+        // JSON идёт в stdout (чтобы удобно ловить пайпом), человекочитаемое — в stderr.
+        print!("{}", diags.render_llm_json());
+    } else {
+        eprint!("{}", diags.render_human());
+    }
+}
