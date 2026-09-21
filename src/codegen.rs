@@ -14,6 +14,9 @@ struct Local {
     slot: String, // имя alloca-слота, напр. "%sum.0"
     ty: Ty,
     mutable: bool,
+    /// Безопасная ссылка (приёмник метода `self`): доступ к полям через неё
+    /// не требует `unsafe`, хотя тип — сырой указатель.
+    safe: bool,
 }
 
 pub struct Codegen<'a> {
@@ -237,10 +240,11 @@ impl<'a> Codegen<'a> {
             let slot = self.fresh_slot(&p.name);
             self.alloca(&slot, pty);
             self.emit(format!("store {ty} %arg.{name}, ptr {slot}", ty = pty.llvm(), name = p.name));
+            let is_self = p.name == "self" && matches!(pty, Ty::Ptr(..));
             self.scopes
                 .last_mut()
                 .unwrap()
-                .insert(p.name.clone(), Local { slot, ty: pty.clone(), mutable: false });
+                .insert(p.name.clone(), Local { slot, ty: pty.clone(), mutable: false, safe: is_self });
         }
 
         if let Some(body) = &f.body {
@@ -327,7 +331,7 @@ impl<'a> Codegen<'a> {
                 self.store_value(&var_ty, &val, &vty, &slot);
                 self.scopes.last_mut().unwrap().insert(
                     name.clone(),
-                    Local { slot, ty: var_ty, mutable: *mutable },
+                    Local { slot, ty: var_ty, mutable: *mutable, safe: false },
                 );
             }
 
@@ -511,7 +515,7 @@ impl<'a> Codegen<'a> {
                 self.alloca(&vslot, &elem);
                 self.scopes.last_mut().unwrap().insert(
                     var.clone(),
-                    Local { slot: vslot.clone(), ty: elem.clone(), mutable: false },
+                    Local { slot: vslot.clone(), ty: elem.clone(), mutable: false, safe: false },
                 );
 
                 let cond_l = self.fresh_label("ficond");
@@ -889,7 +893,9 @@ impl<'a> Codegen<'a> {
                 (v, name)
             }
             Ty::Ptr(inner, _) if matches!(*inner, Ty::Struct(_)) => {
-                self.require_unsafe(base.span(), "доступ к полю через сырой указатель");
+                if !self.is_safe_ref(base) {
+                    self.require_unsafe(base.span(), "доступ к полю через сырой указатель");
+                }
                 let (v, _) = self.gen_expr(base, None); // загруженный указатель
                 if let Ty::Struct(name) = *inner {
                     (v, name)
@@ -914,7 +920,9 @@ impl<'a> Codegen<'a> {
                 (addr, name, m)
             }
             Ty::Ptr(inner, m) if matches!(*inner, Ty::Struct(_)) => {
-                self.require_unsafe(base.span(), "запись поля через сырой указатель");
+                if !self.is_safe_ref(base) {
+                    self.require_unsafe(base.span(), "запись поля через сырой указатель");
+                }
                 let (v, _) = self.gen_expr(base, None);
                 if let Ty::Struct(name) = *inner {
                     (v, name, m)
@@ -1528,10 +1536,29 @@ impl<'a> Codegen<'a> {
     }
 
     fn gen_call(&mut self, callee: &Expr, args: &[Expr], span: Span, expected: Option<&Ty>) -> (String, Ty) {
+        // Вызов метода: expr.method(args) -> Type__method(self, args).
+        if let Expr::Field { base, field, .. } = callee {
+            let bt = self.type_of(base);
+            let tname = match &bt {
+                Ty::Struct(n) => Some(n.clone()),
+                Ty::Ptr(inner, _) => match &**inner {
+                    Ty::Struct(n) => Some(n.clone()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(tn) = tname {
+                let mangled = format!("{tn}__{field}");
+                if self.ctx.fns.contains_key(&mangled) {
+                    return self.gen_method_call(&mangled, base, &bt, args, span);
+                }
+            }
+        }
+
         let name = match callee {
             Expr::Ident(n, _) => n.clone(),
             _ => {
-                self.err("E0070", callee.span(), "вызывать можно только функцию по имени".into(), None);
+                self.err("E0070", callee.span(), "вызывать можно только функцию по имени или метод `x.m(...)`".into(), None);
                 return ("0".into(), Ty::Err);
             }
         };
@@ -2027,6 +2054,49 @@ impl<'a> Codegen<'a> {
         self.intrinsics.insert(decl);
     }
 
+    /// Вызов метода `base.m(args)` -> `Type__m(self, args)`. `self` — адрес
+    /// приёмника (для значения-структуры) или сам указатель (для `*T`).
+    fn gen_method_call(&mut self, mangled: &str, base: &Expr, bt: &Ty, args: &[Expr], span: Span) -> (String, Ty) {
+        let sig = self.ctx.fns[mangled].clone();
+        // self: для Struct — адрес хранилища, для Ptr(Struct) — сам указатель.
+        let (self_val, _) = self.gen_expr(base, None);
+        let _ = bt;
+
+        let want = sig.params.len().saturating_sub(1); // без self
+        if args.len() != want {
+            self.err("E0072", span, format!("метод `{mangled}` ждёт {want} аргумент(ов), передано {}", args.len()), None);
+        }
+        let mut argvals: Vec<String> = vec![format!("ptr {self_val}")];
+        for (i, a) in args.iter().enumerate() {
+            let expected = sig.params.get(i + 1).cloned();
+            let (v, vty) = self.gen_expr(a, expected.as_ref());
+            match &expected {
+                Some(pt) => {
+                    if !compat(pt, &vty) && vty != Ty::Err && *pt != Ty::Err {
+                        self.err("E0073", a.span(), format!("аргумент {}: ожидался `{}`, передан `{}`", i + 1, pt.name(), vty.name()), None);
+                    }
+                    if is_aggregate(pt) {
+                        let t = self.fresh_tmp();
+                        self.emit(format!("{t} = load {ty}, ptr {v}", ty = pt.llvm()));
+                        argvals.push(format!("{} {}", pt.llvm(), t));
+                    } else {
+                        argvals.push(format!("{} {}", pt.llvm(), v));
+                    }
+                }
+                None => argvals.push(format!("{} {}", vty.llvm(), v)),
+            }
+        }
+        let argstr = argvals.join(", ");
+        if sig.ret == Ty::Void {
+            self.emit(format!("call void @{mangled}({argstr})"));
+            ("".into(), Ty::Void)
+        } else {
+            let t = self.fresh_tmp();
+            self.emit(format!("{t} = call {rty} @{mangled}({argstr})", rty = sig.ret.llvm()));
+            self.spill_if_aggregate(t, sig.ret)
+        }
+    }
+
     /// Непрямой вызов через функцию-указатель (например, хендл jit-блока).
     fn gen_indirect_call(&mut self, name: &str, slot: &str, params: &[Ty], ret: &Ty, args: &[Expr], span: Span) -> (String, Ty) {
         let fp = self.fresh_tmp();
@@ -2196,6 +2266,19 @@ impl<'a> Codegen<'a> {
                         }
                     }
                     self.ctx.fns.get(n).map(|s| s.ret.clone()).unwrap_or(Ty::Err)
+                }
+                // метод base.m(...)
+                Expr::Field { base, field, .. } => {
+                    let tn = match self.type_of(base) {
+                        Ty::Struct(n) => Some(n),
+                        Ty::Ptr(inner, _) => match *inner {
+                            Ty::Struct(n) => Some(n),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    tn.and_then(|t| self.ctx.fns.get(&format!("{t}__{field}")).map(|s| s.ret.clone()))
+                        .unwrap_or(Ty::Err)
                 }
                 _ => Ty::Err,
             },
@@ -2376,6 +2459,11 @@ impl<'a> Codegen<'a> {
             "{label} = private unnamed_addr constant [{len} x i8] c\"{enc}\"\n"
         ));
         label
+    }
+
+    /// Является ли выражение безопасной ссылкой (приёмником `self`)?
+    fn is_safe_ref(&self, e: &Expr) -> bool {
+        matches!(e, Expr::Ident(n, _) if self.lookup(n).map(|l| l.safe).unwrap_or(false))
     }
 
     fn require_unsafe(&mut self, span: Span, what: impl Into<String>) {

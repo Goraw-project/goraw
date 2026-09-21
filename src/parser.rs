@@ -258,7 +258,14 @@ impl<'a> Parser<'a> {
         let is_extern = self.eat(&Tok::Extern);
         let is_unsafe = self.eat(&Tok::Unsafe);
         self.expect(&Tok::Fn, "`fn`")?;
-        let (name, _) = self.expect_ident("функции")?;
+        let (name0, name_sp) = self.expect_ident("функции")?;
+        // Метод: `fn Type::method(self, ...)` — мангл имени + приёмник self.
+        let (name, method_recv) = if self.eat(&Tok::ColonColon) {
+            let (m, _) = self.expect_ident("метода")?;
+            (format!("{name0}__{m}"), Some(name0))
+        } else {
+            (name0, None)
+        };
         self.expect(&Tok::LParen, "`(`")?;
         let mut params = Vec::new();
         let mut variadic = false;
@@ -269,6 +276,22 @@ impl<'a> Parser<'a> {
             }
             let psp = self.span();
             let (pname, _) = self.expect_ident("параметра")?;
+            // `self` без типа в методе -> приёмник `*mut Type`.
+            if pname == "self" && !matches!(self.peek(), Tok::Colon) {
+                match &method_recv {
+                    Some(recv) => {
+                        let ty = TypeExpr::PtrMut(Box::new(TypeExpr::Named(recv.clone(), name_sp)), psp);
+                        params.push(Param { name: "self".into(), ty, span: psp });
+                    }
+                    None => {
+                        self.diags.push(Diagnostic::error("E0026", psp, "`self` допустим только в методе `fn Type::method(self, ...)`"));
+                    }
+                }
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+                continue;
+            }
             self.expect(&Tok::Colon, "`:`")?;
             let ty = self.parse_type()?;
             params.push(Param { name: pname, ty, span: psp });
