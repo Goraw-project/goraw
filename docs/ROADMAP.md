@@ -292,8 +292,11 @@ LLM-JSON).
 
 ### Фазировка
 
-- **PB1:** wire-кодек (Rust) + парсер подмножества Editions + дескрипторы +
-  кодоген в Rust-типы. Round-trip против `protoc` на тестовом корпусе.
+- **PB1 (✅ encode готов):** парсер Editions + дескрипторы + резолвинг
+  features + кодоген в **Goraw** (не Rust — язык дорос). `gorawpb` даёт
+  `.gw`, чей `encode_*` выдаёт байты, идентичные `protoc`. Проверено на
+  скалярах/zigzag/fixed/packed/nested (`examples/proto/`). Осталось в PB1:
+  **decode**, map/oneof, repeated string.
 - **PB2:** полный `FeatureSet`-резолвинг под edition 2023 (open/closed enums,
   implicit/explicit presence, packed-дефолты, delimited), unknown fields,
   well-known types.
