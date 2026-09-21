@@ -225,6 +225,13 @@ pub enum Expr {
     },
     /// Литерал массива: `[e1, e2, ...]`.
     ArrayLit(Vec<Expr>, Span),
+    /// if-выражение: `if cond { a } else { b }` (обе ветви дают значение).
+    IfExpr {
+        cond: Box<Expr>,
+        then: Box<Expr>,
+        els: Box<Expr>,
+        span: Span,
+    },
     /// Литерал структуры: `Name { field: value, ... }`.
     StructLit {
         name: String,
@@ -266,6 +273,7 @@ impl Expr {
             | Expr::StructLit { span: s, .. }
             | Expr::Cast { span: s, .. }
             | Expr::ArrayLit(_, s)
+            | Expr::IfExpr { span: s, .. }
             | Expr::Jit { span: s, .. } => *s,
         }
     }

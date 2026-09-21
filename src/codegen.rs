@@ -1104,6 +1104,7 @@ impl<'a> Codegen<'a> {
             }
             Expr::StructLit { name, fields, span } => self.gen_struct_lit(name, fields, *span),
             Expr::ArrayLit(elems, span) => self.gen_array_lit(elems, expected, *span),
+            Expr::IfExpr { cond, then, els, span } => self.gen_if_expr(cond, then, els, expected, *span),
             Expr::Jit { captures, inner, span } => self.gen_jit(captures, inner, *span),
         }
     }
@@ -2151,6 +2152,43 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    fn gen_if_expr(&mut self, cond: &Expr, then: &Expr, els: &Expr, expected: Option<&Ty>, _span: Span) -> (String, Ty) {
+        let (c, cty) = self.gen_expr(cond, Some(&Ty::Bool));
+        self.expect_bool(&cty, cond.span());
+        // Тип результата — из then-ветви (else обязана совпасть).
+        let then_l = self.fresh_label("ifethen");
+        let else_l = self.fresh_label("ifeelse");
+        let end_l = self.fresh_label("ifeend");
+        self.emit(format!("br i1 {c}, label %{then_l}, label %{else_l}"));
+
+        self.emit_label(&then_l);
+        let (tv, tty) = self.gen_expr(then, expected);
+        if tty == Ty::Err {
+            return ("0".into(), Ty::Err);
+        }
+        let slot = self.fresh_slot("ifeval");
+        self.alloca(&slot, &tty);
+        self.store_value(&tty, &tv, &tty, &slot);
+        self.emit(format!("br label %{end_l}"));
+
+        self.emit_label(&else_l);
+        let (ev, ety) = self.gen_expr(els, Some(&tty));
+        if !compat(&tty, &ety) && ety != Ty::Err {
+            self.err("E0087", els.span(), format!("ветви if-выражения разных типов: `{}` и `{}`", tty.name(), ety.name()), None);
+        }
+        self.store_value(&tty, &ev, &ety, &slot);
+        self.emit(format!("br label %{end_l}"));
+
+        self.emit_label(&end_l);
+        if is_aggregate(&tty) {
+            (slot, tty)
+        } else {
+            let r = self.fresh_tmp();
+            self.emit(format!("{r} = load {ty}, ptr {slot}", ty = tty.llvm()));
+            (r, tty)
+        }
+    }
+
     fn gen_array_lit(&mut self, elems: &[Expr], expected: Option<&Ty>, span: Span) -> (String, Ty) {
         // Тип элемента: из ожидания [N]T либо из первого элемента.
         let elem_ty = match expected {
@@ -2298,6 +2336,7 @@ impl<'a> Codegen<'a> {
                     Ty::Array(Box::new(self.type_of(&elems[0])), elems.len() as u64)
                 }
             }
+            Expr::IfExpr { then, .. } => self.type_of(then),
             Expr::Field { base, field, .. } => {
                 let bt = self.type_of(base);
                 if let Ty::Array(_, _) = bt {

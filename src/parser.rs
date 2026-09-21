@@ -921,6 +921,28 @@ impl<'a> Parser<'a> {
                 self.expect(&Tok::RParen, "`)`")?;
                 Some(e)
             }
+            Tok::If => {
+                // if-выражение: if cond { a } else { b }
+                self.bump();
+                let saved = self.no_struct_lit;
+                self.no_struct_lit = true;
+                let cond = self.parse_expr()?;
+                self.no_struct_lit = false;
+                self.expect(&Tok::LBrace, "`{` (ветвь if-выражения)")?;
+                let then = self.parse_expr()?;
+                self.expect(&Tok::RBrace, "`}`")?;
+                self.expect(&Tok::Else, "`else` (у if-выражения обе ветви обязательны)")?;
+                self.expect(&Tok::LBrace, "`{`")?;
+                let els = self.parse_expr()?;
+                self.expect(&Tok::RBrace, "`}`")?;
+                self.no_struct_lit = saved;
+                Some(Expr::IfExpr {
+                    cond: Box::new(cond),
+                    then: Box::new(then),
+                    els: Box::new(els),
+                    span: sp.to(self.prev_span()),
+                })
+            }
             Tok::Jit => self.parse_jit(),
             Tok::LBracket => {
                 // литерал массива: [e1, e2, ...]
