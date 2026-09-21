@@ -1314,7 +1314,7 @@ impl<'a> Codegen<'a> {
             } else {
                 let t = self.fresh_tmp();
                 self.emit(format!("{t} = call {rty} ({plist}) @{name}({})", argvals.join(", "), rty = sig.ret.llvm()));
-                (t, sig.ret)
+                self.spill_if_aggregate(t, sig.ret)
             }
         } else if sig.ret == Ty::Void {
             self.emit(format!("call void @{name}({})", argvals.join(", ")));
@@ -1322,13 +1322,36 @@ impl<'a> Codegen<'a> {
         } else {
             let t = self.fresh_tmp();
             self.emit(format!("{t} = call {rty} @{name}({})", argvals.join(", "), rty = sig.ret.llvm()));
-            (t, sig.ret)
+            self.spill_if_aggregate(t, sig.ret)
+        }
+    }
+
+    /// Функция, вернувшая агрегат (структуру/срез), отдаёт его ЗНАЧЕНИЕМ, а по
+    /// нашему соглашению агрегаты представляются АДРЕСОМ. Спиллим во временный
+    /// слот и возвращаем адрес.
+    fn spill_if_aggregate(&mut self, val: String, ty: Ty) -> (String, Ty) {
+        if is_aggregate(&ty) {
+            let slot = self.fresh_slot("ret");
+            self.alloca(&slot, &ty);
+            self.emit(format!("store {t} {val}, ptr {slot}", t = ty.llvm()));
+            (slot, ty)
+        } else {
+            (val, ty)
         }
     }
 
     /// Встроенная функциональная математика, ложащаяся на LLVM-интринзики.
     /// Возвращает None, если имя не является builtin.
     fn try_builtin(&mut self, name: &str, args: &[Expr], span: Span) -> Option<(String, Ty)> {
+        // Куча и работа с памятью — разблокируют динамические структуры
+        // (Vec/Bytes/String можно писать на самом Goraw поверх этого).
+        match name {
+            "alloc" | "free" | "realloc" | "mem_copy" | "mem_set" => {
+                return Some(self.heap_builtin(name, args, span));
+            }
+            _ => {}
+        }
+
         // Классификация builtin по имени.
         enum Kind {
             FUnary,             // f(x): float -> float
@@ -1486,6 +1509,88 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Builtin'ы кучи и памяти: alloc/free/realloc/mem_copy/mem_set.
+    /// Возвращают сырые указатели — работа через них требует `unsafe`, что и
+    /// держит safe/unsafe-границу.
+    fn heap_builtin(&mut self, name: &str, args: &[Expr], span: Span) -> (String, Ty) {
+        let ptr_u8_mut = Ty::Ptr(Box::new(Ty::U8), true);
+        match name {
+            "alloc" => {
+                if args.len() != 1 {
+                    self.err("E0092", span, format!("`alloc` ждёт 1 аргумент (размер), передано {}", args.len()), None);
+                    return ("null".into(), ptr_u8_mut);
+                }
+                let (n, _) = self.gen_expr(&args[0], Some(&Ty::I64));
+                self.use_intrinsic("declare ptr @malloc(i64)".into());
+                let t = self.fresh_tmp();
+                self.emit(format!("{t} = call ptr @malloc(i64 {n})"));
+                (t, ptr_u8_mut)
+            }
+            "realloc" => {
+                if args.len() != 2 {
+                    self.err("E0092", span, format!("`realloc` ждёт 2 аргумента (ptr, размер), передано {}", args.len()), None);
+                    return ("null".into(), ptr_u8_mut);
+                }
+                let (p, pty) = self.gen_expr(&args[0], None);
+                self.expect_ptr(&pty, args[0].span(), "realloc");
+                let (n, _) = self.gen_expr(&args[1], Some(&Ty::I64));
+                self.use_intrinsic("declare ptr @realloc(ptr, i64)".into());
+                let t = self.fresh_tmp();
+                self.emit(format!("{t} = call ptr @realloc(ptr {p}, i64 {n})"));
+                (t, ptr_u8_mut)
+            }
+            "free" => {
+                if args.len() != 1 {
+                    self.err("E0092", span, format!("`free` ждёт 1 аргумент (ptr), передано {}", args.len()), None);
+                    return ("".into(), Ty::Void);
+                }
+                let (p, pty) = self.gen_expr(&args[0], None);
+                self.expect_ptr(&pty, args[0].span(), "free");
+                self.use_intrinsic("declare void @free(ptr)".into());
+                self.emit(format!("call void @free(ptr {p})"));
+                ("".into(), Ty::Void)
+            }
+            "mem_copy" => {
+                if args.len() != 3 {
+                    self.err("E0092", span, format!("`mem_copy` ждёт 3 аргумента (dst, src, n), передано {}", args.len()), None);
+                    return ("".into(), Ty::Void);
+                }
+                self.require_unsafe(span, "копирование памяти");
+                let (dst, dty) = self.gen_expr(&args[0], None);
+                self.expect_ptr(&dty, args[0].span(), "mem_copy");
+                let (src, sty) = self.gen_expr(&args[1], None);
+                self.expect_ptr(&sty, args[1].span(), "mem_copy");
+                let (n, _) = self.gen_expr(&args[2], Some(&Ty::I64));
+                self.use_intrinsic("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)".into());
+                self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {dst}, ptr {src}, i64 {n}, i1 false)"));
+                ("".into(), Ty::Void)
+            }
+            "mem_set" => {
+                if args.len() != 3 {
+                    self.err("E0092", span, format!("`mem_set` ждёт 3 аргумента (dst, byte, n), передано {}", args.len()), None);
+                    return ("".into(), Ty::Void);
+                }
+                self.require_unsafe(span, "заполнение памяти");
+                let (dst, dty) = self.gen_expr(&args[0], None);
+                self.expect_ptr(&dty, args[0].span(), "mem_set");
+                let (val, _) = self.gen_expr(&args[1], Some(&Ty::I32));
+                let (n, _) = self.gen_expr(&args[2], Some(&Ty::I64));
+                let v8 = self.fresh_tmp();
+                self.emit(format!("{v8} = trunc i32 {val} to i8"));
+                self.use_intrinsic("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)".into());
+                self.emit(format!("call void @llvm.memset.p0.i64(ptr {dst}, i8 {v8}, i64 {n}, i1 false)"));
+                ("".into(), Ty::Void)
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn expect_ptr(&mut self, ty: &Ty, span: Span, what: &str) {
+        if !ty.is_ptr() && *ty != Ty::Err {
+            self.err("E0093", span, format!("`{what}` ожидает указатель, а тут `{}`", ty.name()), None);
+        }
+    }
+
     fn type_suffix(&self, ty: &Ty) -> String {
         match ty {
             Ty::F32 => "f32".into(),
@@ -1526,7 +1631,7 @@ impl<'a> Codegen<'a> {
         } else {
             let t = self.fresh_tmp();
             self.emit(format!("{t} = call {rty} {fp}({argstr})", rty = ret.llvm()));
-            (t, ret.clone())
+            self.spill_if_aggregate(t, ret.clone())
         }
     }
 
@@ -1793,6 +1898,12 @@ fn is_x86_reg(s: &str) -> bool {
         "ax", "bx", "cx", "dx", "al", "bl", "cl", "dl", "ah", "bh", "ch", "dh",
     ];
     REGS.contains(&s)
+}
+
+/// Агрегатные типы (структуры/срезы) представляются в кодогене АДРЕСОМ, а не
+/// скалярным значением: их читают/пишут через load/store агрегата.
+fn is_aggregate(ty: &Ty) -> bool {
+    matches!(ty, Ty::Struct(_))
 }
 
 /// Форматирует float как точную hex-константу LLVM (без потери точности).
