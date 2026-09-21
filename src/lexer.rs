@@ -32,6 +32,7 @@ pub enum Tok {
     Continue,
     Asm,
     Jit,
+    Null,
 
     // пунктуация / операторы
     LParen,
@@ -244,6 +245,7 @@ impl<'a> Lexer<'a> {
             "continue" => Tok::Continue,
             "asm" => Tok::Asm,
             "jit" => Tok::Jit,
+            "null" => Tok::Null,
             _ => Tok::Ident(s),
         };
         Token { tok, span: Span::new(start, end) }

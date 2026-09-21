@@ -748,6 +748,10 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Some(Expr::Str(s, sp))
             }
+            Tok::Null => {
+                self.bump();
+                Some(Expr::Null(sp))
+            }
             Tok::True => {
                 self.bump();
                 Some(Expr::Bool(true, sp))

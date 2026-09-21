@@ -148,6 +148,8 @@ pub enum Expr {
     Bool(bool, Span),
     Str(String, Span),
     Ident(String, Span),
+    /// Нулевой указатель.
+    Null(Span),
     /// Бинарная операция.
     Binary {
         op: BinOp,
@@ -208,6 +210,7 @@ impl Expr {
             | Expr::Bool(_, s)
             | Expr::Str(_, s)
             | Expr::Ident(_, s)
+            | Expr::Null(s)
             | Expr::Binary { span: s, .. }
             | Expr::Unary { span: s, .. }
             | Expr::Call { span: s, .. }

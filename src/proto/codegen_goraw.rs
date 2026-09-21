@@ -79,6 +79,79 @@ fn gpb_bytes(b: *mut GpbBuf, data: *u8, len: i64) {
         i = i + 1;
     }
 }
+
+// --- reader (decode) ---
+struct GpbReader { data: *u8, len: i64, pos: i64 }
+
+fn gpb_rd_new(data: *u8, len: i64) -> GpbReader {
+    return GpbReader { data: data, len: len, pos: 0 };
+}
+
+fn gpb_rd_eof(r: *mut GpbReader) -> bool {
+    unsafe { return r.pos >= r.len; }
+}
+
+fn gpb_rd_byte(r: *mut GpbReader) -> u8 {
+    unsafe {
+        let b: u8 = r.data[r.pos];
+        r.pos = r.pos + 1;
+        return b;
+    }
+}
+
+fn gpb_rd_varint(r: *mut GpbReader) -> u64 {
+    let mut result: u64 = 0;
+    let mut shift: u64 = 0;
+    for {
+        let b: u8 = gpb_rd_byte(r);
+        result = result | (((b & 127) as u64) << shift);
+        if (b & 128) == 0 { break; }
+        shift = shift + 7;
+    }
+    return result;
+}
+
+fn gpb_rd_fixed32(r: *mut GpbReader) -> u32 {
+    let b0: u32 = gpb_rd_byte(r) as u32;
+    let b1: u32 = gpb_rd_byte(r) as u32;
+    let b2: u32 = gpb_rd_byte(r) as u32;
+    let b3: u32 = gpb_rd_byte(r) as u32;
+    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+}
+
+fn gpb_rd_fixed64(r: *mut GpbReader) -> u64 {
+    let mut result: u64 = 0;
+    let mut shift: u64 = 0;
+    let mut i: i64 = 0;
+    while i < 8 {
+        result = result | ((gpb_rd_byte(r) as u64) << shift);
+        shift = shift + 8;
+        i = i + 1;
+    }
+    return result;
+}
+
+fn gpb_rd_skip(r: *mut GpbReader, wt: u64) {
+    if wt == 0 {
+        gpb_rd_varint(r);
+    } else if wt == 1 {
+        unsafe { r.pos = r.pos + 8; }
+    } else if wt == 5 {
+        unsafe { r.pos = r.pos + 4; }
+    } else if wt == 2 {
+        let n: i64 = gpb_rd_varint(r) as i64;
+        unsafe { r.pos = r.pos + n; }
+    }
+}
+
+fn gpb_unzigzag32(v: u64) -> i32 {
+    let u: u32 = v as u32;
+    return ((u >> 1) as i32) ^ (0 - ((u & 1) as i32));
+}
+
+fn gpb_unzigzag64(v: u64) -> i64 {
+    return ((v >> 1) as i64) ^ (0 - ((v & 1) as i64));
+}
 // --- конец prelude ---
 "#;
 
@@ -102,7 +175,171 @@ pub fn generate(file: &FileD) -> String {
         gen_encode(&mut out, file, m);
         out.push('\n');
     }
+    for m in &file.messages {
+        gen_decode(&mut out, file, m);
+        out.push('\n');
+    }
     out
+}
+
+/// Способ чтения скаляра из reader'а.
+enum ReadKind {
+    Varint, // let v: u64 = gpb_rd_varint(...)
+    F32,    // let v: u32 = gpb_rd_fixed32(...)
+    F64,    // let v: u64 = gpb_rd_fixed64(...)
+}
+
+/// (способ чтения, выражение конверсии из прочитанного `v` в тип поля).
+fn scalar_read(file: &FileD, ty: &FieldType) -> (ReadKind, String) {
+    use FieldType::*;
+    if is_enum(file, ty) {
+        return (ReadKind::Varint, "v as i32".into());
+    }
+    match ty {
+        Int32 => (ReadKind::Varint, "v as i32".into()),
+        Int64 => (ReadKind::Varint, "v as i64".into()),
+        UInt32 => (ReadKind::Varint, "v as u32".into()),
+        UInt64 => (ReadKind::Varint, "v".into()),
+        SInt32 => (ReadKind::Varint, "gpb_unzigzag32(v)".into()),
+        SInt64 => (ReadKind::Varint, "gpb_unzigzag64(v)".into()),
+        Bool => (ReadKind::Varint, "v != 0".into()),
+        Fixed32 => (ReadKind::F32, "v".into()),
+        SFixed32 => (ReadKind::F32, "v as i32".into()),
+        Float => (ReadKind::F32, "f32_from_bits(v)".into()),
+        Fixed64 => (ReadKind::F64, "v".into()),
+        SFixed64 => (ReadKind::F64, "v as i64".into()),
+        Double => (ReadKind::F64, "f64_from_bits(v)".into()),
+        _ => (ReadKind::Varint, "v".into()),
+    }
+}
+
+fn read_stmt(kind: &ReadKind) -> &'static str {
+    match kind {
+        ReadKind::Varint => "let v: u64 = gpb_rd_varint(&mut r);",
+        ReadKind::F32 => "let v: u32 = gpb_rd_fixed32(&mut r);",
+        ReadKind::F64 => "let v: u64 = gpb_rd_fixed64(&mut r);",
+    }
+}
+
+fn gen_decode(out: &mut String, file: &FileD, m: &MessageD) {
+    let _ = writeln!(out, "fn decode_{}(data: *u8, len: i64) -> {} {{", m.name, m.name);
+    let _ = writeln!(out, "    let mut m: {} = zeroed();", m.name);
+    let _ = writeln!(out, "    let mut r: GpbReader = gpb_rd_new(data, len);");
+    let _ = writeln!(out, "    unsafe {{");
+    let _ = writeln!(out, "        for {{");
+    let _ = writeln!(out, "            if gpb_rd_eof(&mut r) {{ break; }}");
+    let _ = writeln!(out, "            let tag: u64 = gpb_rd_varint(&mut r);");
+    let _ = writeln!(out, "            let fnum: u64 = tag >> 3;");
+    let _ = writeln!(out, "            let wt: u64 = tag & 7;");
+
+    let mut first = true;
+    for f in &m.fields {
+        if matches!(f.ty, FieldType::Map(..)) {
+            continue;
+        }
+        // repeated message / repeated string decode — PB2, попадут в skip.
+        let handled = if f.repeated {
+            scalar_gtype(file, &f.ty).is_some()
+        } else {
+            scalar_gtype(file, &f.ty).is_some()
+                || matches!(f.ty, FieldType::String | FieldType::Bytes)
+                || is_message(file, &f.ty)
+        };
+        if !handled {
+            continue;
+        }
+        let kw = if first { "if" } else { "} else if" };
+        first = false;
+        let _ = writeln!(out, "            {kw} fnum == {} {{", f.number);
+        if f.repeated {
+            gen_decode_packed(out, file, f);
+        } else {
+            gen_decode_singular(out, file, f);
+        }
+    }
+    if first {
+        // ни одного известного поля — просто skip
+        let _ = writeln!(out, "            gpb_rd_skip(&mut r, wt);");
+    } else {
+        let _ = writeln!(out, "            }} else {{ gpb_rd_skip(&mut r, wt); }}");
+    }
+    let _ = writeln!(out, "        }}");
+    let _ = writeln!(out, "    }}");
+    let _ = writeln!(out, "    return m;");
+    let _ = writeln!(out, "}}");
+}
+
+fn gen_decode_singular(out: &mut String, file: &FileD, f: &FieldD) {
+    let name = &f.name;
+    let set_has = |out: &mut String| {
+        if f.presence == Presence::Explicit {
+            let _ = writeln!(out, "                m.has_{name} = true;");
+        }
+    };
+
+    if scalar_gtype(file, &f.ty).is_some() {
+        let (kind, conv) = scalar_read(file, &f.ty);
+        let _ = writeln!(out, "                {}", read_stmt(&kind));
+        let _ = writeln!(out, "                m.{name} = {conv};");
+        set_has(out);
+        return;
+    }
+    if matches!(f.ty, FieldType::String | FieldType::Bytes) {
+        let _ = writeln!(out, "                let ln: i64 = gpb_rd_varint(&mut r) as i64;");
+        let _ = writeln!(out, "                m.{name}_ptr = &r.data[r.pos];");
+        let _ = writeln!(out, "                m.{name}_len = ln;");
+        let _ = writeln!(out, "                r.pos = r.pos + ln;");
+        set_has(out);
+        return;
+    }
+    if is_message(file, &f.ty) {
+        let sub = flat(&f.ty);
+        let _ = writeln!(out, "                let ln: i64 = gpb_rd_varint(&mut r) as i64;");
+        let _ = writeln!(out, "                let subp_{name}: *u8 = &r.data[r.pos];");
+        let _ = writeln!(out, "                let sp_{name}: *mut {sub} = alloc(sizeof({sub})) as *mut {sub};");
+        let _ = writeln!(out, "                *sp_{name} = decode_{sub}(subp_{name}, ln);");
+        let _ = writeln!(out, "                m.{name} = sp_{name};");
+        let _ = writeln!(out, "                r.pos = r.pos + ln;");
+    }
+}
+
+/// Декодирование packed repeated числовых полей (два прохода: подсчёт → заполнение).
+fn gen_decode_packed(out: &mut String, file: &FileD, f: &FieldD) {
+    let name = &f.name;
+    let et = scalar_gtype(file, &f.ty).unwrap();
+    let (kind, conv) = scalar_read(file, &f.ty);
+
+    let _ = writeln!(out, "                let plen: i64 = gpb_rd_varint(&mut r) as i64;");
+    let _ = writeln!(out, "                let start_{name}: i64 = r.pos;");
+    let _ = writeln!(out, "                let end_{name}: i64 = start_{name} + plen;");
+
+    // Подсчёт количества элементов.
+    match kind {
+        ReadKind::Varint => {
+            let _ = writeln!(out, "                let mut cnt_{name}: i64 = 0;");
+            let _ = writeln!(out, "                let mut j_{name}: i64 = start_{name};");
+            let _ = writeln!(out, "                while j_{name} < end_{name} {{");
+            let _ = writeln!(out, "                    if (r.data[j_{name}] & 128) == 0 {{ cnt_{name} = cnt_{name} + 1; }}");
+            let _ = writeln!(out, "                    j_{name} = j_{name} + 1;");
+            let _ = writeln!(out, "                }}");
+        }
+        ReadKind::F32 => {
+            let _ = writeln!(out, "                let cnt_{name}: i64 = plen / 4;");
+        }
+        ReadKind::F64 => {
+            let _ = writeln!(out, "                let cnt_{name}: i64 = plen / 8;");
+        }
+    }
+
+    // Аллокация и заполнение.
+    let _ = writeln!(out, "                let raw_{name}: *mut {et} = alloc(cnt_{name} * sizeof({et})) as *mut {et};");
+    let _ = writeln!(out, "                let mut k_{name}: i64 = 0;");
+    let _ = writeln!(out, "                while k_{name} < cnt_{name} {{");
+    let _ = writeln!(out, "                    {}", read_stmt(&kind));
+    let _ = writeln!(out, "                    raw_{name}[k_{name}] = {conv};");
+    let _ = writeln!(out, "                    k_{name} = k_{name} + 1;");
+    let _ = writeln!(out, "                }}");
+    let _ = writeln!(out, "                m.{name} = make_slice(raw_{name}, cnt_{name});");
 }
 
 fn is_enum(file: &FileD, ty: &FieldType) -> bool {

@@ -764,6 +764,15 @@ impl<'a> Codegen<'a> {
                 _ => (fmt_float(*f, &Ty::F64), Ty::F64),
             },
             Expr::Bool(b, _) => (if *b { "true".into() } else { "false".into() }, Ty::Bool),
+            Expr::Null(_) => {
+                // Тип берём из ожидания (если это указатель), иначе *mut u8.
+                let ty = match expected {
+                    Some(t @ Ty::Ptr(..)) => t.clone(),
+                    Some(t @ Ty::FnPtr(..)) => t.clone(),
+                    _ => Ty::Ptr(Box::new(Ty::U8), true),
+                };
+                ("null".into(), ty)
+            }
             Expr::Str(s, _) => {
                 let g = self.intern_string(s);
                 (g, Ty::Ptr(Box::new(Ty::U8), false))
@@ -798,7 +807,7 @@ impl<'a> Codegen<'a> {
             Expr::Unary { op, expr, span } => self.gen_unary(*op, expr, *span, expected),
             Expr::Binary { op, lhs, rhs, span } => self.gen_binary(*op, lhs, rhs, *span, expected),
             Expr::Cast { expr, ty, span } => self.gen_cast(expr, ty, *span),
-            Expr::Call { callee, args, span } => self.gen_call(callee, args, *span),
+            Expr::Call { callee, args, span } => self.gen_call(callee, args, *span, expected),
             Expr::Field { base, field, span } => {
                 // Поля среза (.ptr / .len) — синтетические.
                 if let Ty::Slice(elem) = self.type_of(base) {
@@ -1271,7 +1280,7 @@ impl<'a> Codegen<'a> {
         (t, dst)
     }
 
-    fn gen_call(&mut self, callee: &Expr, args: &[Expr], span: Span) -> (String, Ty) {
+    fn gen_call(&mut self, callee: &Expr, args: &[Expr], span: Span, expected: Option<&Ty>) -> (String, Ty) {
         let name = match callee {
             Expr::Ident(n, _) => n.clone(),
             _ => {
@@ -1291,7 +1300,7 @@ impl<'a> Codegen<'a> {
             Some(s) => s.clone(),
             None => {
                 // Не пользовательская функция — возможно, встроенная математика.
-                if let Some(r) = self.try_builtin(&name, args, span) {
+                if let Some(r) = self.try_builtin(&name, args, span, expected) {
                     return r;
                 }
                 self.err("E0071", span, format!("вызов неизвестной функции `{name}`"), Some("объявите её, добавьте `extern fn`, либо это не встроенная math-функция"));
@@ -1394,7 +1403,7 @@ impl<'a> Codegen<'a> {
 
     /// Встроенная функциональная математика, ложащаяся на LLVM-интринзики.
     /// Возвращает None, если имя не является builtin.
-    fn try_builtin(&mut self, name: &str, args: &[Expr], span: Span) -> Option<(String, Ty)> {
+    fn try_builtin(&mut self, name: &str, args: &[Expr], span: Span, expected: Option<&Ty>) -> Option<(String, Ty)> {
         // Куча и работа с памятью — разблокируют динамические структуры
         // (Vec/Bytes/String можно писать на самом Goraw поверх этого).
         match name {
@@ -1403,6 +1412,9 @@ impl<'a> Codegen<'a> {
             }
             "make_slice" => return Some(self.bi_make_slice(args, span)),
             "f32_bits" | "f64_bits" => return Some(self.bi_bits(name, args, span)),
+            "f32_from_bits" | "f64_from_bits" => return Some(self.bi_from_bits(name, args, span)),
+            "sizeof" => return Some(self.bi_sizeof(args, span)),
+            "zeroed" => return Some(self.bi_zeroed(expected, span)),
             _ => {}
         }
 
@@ -1689,6 +1701,67 @@ impl<'a> Codegen<'a> {
         (t, dst_ty)
     }
 
+    /// Обратный bitcast: `f32_from_bits(u32) -> f32`, `f64_from_bits(u64) -> f64`.
+    fn bi_from_bits(&mut self, name: &str, args: &[Expr], span: Span) -> (String, Ty) {
+        if args.len() != 1 {
+            self.err("E0094", span, format!("`{name}` ждёт 1 аргумент, передано {}", args.len()), None);
+            return ("0".into(), Ty::Err);
+        }
+        let (src_ty, dst_ty, ll_dst) = if name == "f32_from_bits" {
+            (Ty::U32, Ty::F32, "float")
+        } else {
+            (Ty::U64, Ty::F64, "double")
+        };
+        let (v, _) = self.gen_expr(&args[0], Some(&src_ty));
+        let t = self.fresh_tmp();
+        self.emit(format!("{t} = bitcast {} {v} to {ll_dst}", src_ty.llvm()));
+        (t, dst_ty)
+    }
+
+    /// `sizeof(T)` — размер типа в байтах (с учётом выравнивания), считается
+    /// LLVM через идиому getelementptr null. Аргумент — имя типа.
+    fn bi_sizeof(&mut self, args: &[Expr], span: Span) -> (String, Ty) {
+        if args.len() != 1 {
+            self.err("E0094", span, "`sizeof` ждёт 1 аргумент — имя типа".into(), None);
+            return ("0".into(), Ty::I64);
+        }
+        let ty = match &args[0] {
+            Expr::Ident(name, sp) => self.resolve(&crate::ast::TypeExpr::Named(name.clone(), *sp)),
+            other => {
+                self.err("E0094", other.span(), "`sizeof` ждёт имя типа, напр. `sizeof(Point)`".into(), None);
+                return ("0".into(), Ty::I64);
+            }
+        };
+        if ty == Ty::Err {
+            return ("0".into(), Ty::I64);
+        }
+        let g = self.fresh_tmp();
+        self.emit(format!("{g} = getelementptr {ll}, ptr null, i64 1", ll = ty.llvm()));
+        let s = self.fresh_tmp();
+        self.emit(format!("{s} = ptrtoint ptr {g} to i64"));
+        (s, Ty::I64)
+    }
+
+    /// `zeroed()` — нулевое значение ожидаемого типа (для инициализации).
+    fn bi_zeroed(&mut self, expected: Option<&Ty>, span: Span) -> (String, Ty) {
+        let ty = match expected {
+            Some(t) if *t != Ty::Void => t.clone(),
+            _ => {
+                self.err("E0094", span, "`zeroed()` требует известный тип — укажите его в аннотации".into(), None);
+                return ("0".into(), Ty::Err);
+            }
+        };
+        if is_aggregate(&ty) {
+            let slot = self.fresh_slot("zero");
+            self.alloca(&slot, &ty);
+            self.emit(format!("store {t} zeroinitializer, ptr {slot}", t = ty.llvm()));
+            (slot, ty)
+        } else {
+            let z = self.zero_of(&ty);
+            (z, ty)
+        }
+    }
+
     fn expect_ptr(&mut self, ty: &Ty, span: Span, what: &str) {
         if !ty.is_ptr() && *ty != Ty::Err {
             self.err("E0093", span, format!("`{what}` ожидает указатель, а тут `{}`", ty.name()), None);
@@ -1810,6 +1883,7 @@ impl<'a> Codegen<'a> {
             Expr::Int(..) => Ty::I64,
             Expr::Float(..) => Ty::F64,
             Expr::Bool(..) => Ty::Bool,
+            Expr::Null(..) => Ty::Ptr(Box::new(Ty::U8), true),
             Expr::Str(..) => Ty::Ptr(Box::new(Ty::U8), false),
             Expr::Ident(n, _) => self.lookup(n).map(|l| l.ty.clone()).unwrap_or(Ty::Err),
             Expr::Unary { op: UnOp::Deref, expr, .. } => match self.type_of(expr) {
