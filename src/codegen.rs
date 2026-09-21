@@ -423,6 +423,80 @@ impl<'a> Codegen<'a> {
                 self.scopes.pop();
             }
 
+            Stmt::ForIn { var, iter, body, span } => {
+                self.scopes.push(HashMap::new());
+                let (saddr, sty) = self.gen_expr(iter, None);
+                let elem = match sty {
+                    Ty::Slice(e) => *e,
+                    Ty::Err => {
+                        self.scopes.pop();
+                        return;
+                    }
+                    other => {
+                        self.err("E0081", *span, format!("`for .. in` работает по срезу `[]T`, а тут `{}`", other.name()), None);
+                        self.scopes.pop();
+                        return;
+                    }
+                };
+                // длина и указатель на данные (снимок на входе в цикл).
+                let lenp = self.fresh_tmp();
+                self.emit(format!("{lenp} = getelementptr %slice, ptr {saddr}, i32 0, i32 1"));
+                let slen = self.fresh_tmp();
+                self.emit(format!("{slen} = load i64, ptr {lenp}"));
+                let datap = self.fresh_tmp();
+                self.emit(format!("{datap} = getelementptr %slice, ptr {saddr}, i32 0, i32 0"));
+                let data = self.fresh_tmp();
+                self.emit(format!("{data} = load ptr, ptr {datap}"));
+
+                let islot = self.fresh_slot("foridx");
+                self.alloca(&islot, &Ty::I64);
+                self.emit(format!("store i64 0, ptr {islot}"));
+                let vslot = self.fresh_slot(var);
+                self.alloca(&vslot, &elem);
+                self.scopes.last_mut().unwrap().insert(
+                    var.clone(),
+                    Local { slot: vslot.clone(), ty: elem.clone(), mutable: false },
+                );
+
+                let cond_l = self.fresh_label("ficond");
+                let body_l = self.fresh_label("fibody");
+                let post_l = self.fresh_label("fipost");
+                let end_l = self.fresh_label("fiend");
+                self.emit(format!("br label %{cond_l}"));
+                self.emit_label(&cond_l);
+                let iv = self.fresh_tmp();
+                self.emit(format!("{iv} = load i64, ptr {islot}"));
+                let c = self.fresh_tmp();
+                self.emit(format!("{c} = icmp slt i64 {iv}, {slen}"));
+                self.emit(format!("br i1 {c}, label %{body_l}, label %{end_l}"));
+                self.emit_label(&body_l);
+                // var = data[i]
+                let ep = self.fresh_tmp();
+                self.emit(format!("{ep} = getelementptr {ety}, ptr {data}, i64 {iv}", ety = elem.llvm()));
+                if is_aggregate(&elem) {
+                    self.store_value(&elem, &ep, &elem, &vslot);
+                } else {
+                    let ev = self.fresh_tmp();
+                    self.emit(format!("{ev} = load {ety}, ptr {ep}", ety = elem.llvm()));
+                    self.emit(format!("store {ety} {ev}, ptr {vslot}", ety = elem.llvm()));
+                }
+                self.loops.push((post_l.clone(), end_l.clone()));
+                self.gen_block(body);
+                self.loops.pop();
+                if !self.terminated {
+                    self.emit(format!("br label %{post_l}"));
+                }
+                self.emit_label(&post_l);
+                let iv2 = self.fresh_tmp();
+                self.emit(format!("{iv2} = load i64, ptr {islot}"));
+                let iv3 = self.fresh_tmp();
+                self.emit(format!("{iv3} = add i64 {iv2}, 1"));
+                self.emit(format!("store i64 {iv3}, ptr {islot}"));
+                self.emit(format!("br label %{cond_l}"));
+                self.emit_label(&end_l);
+                self.scopes.pop();
+            }
+
             Stmt::Break(span) => match self.loops.last() {
                 Some((_, brk)) => {
                     let brk = brk.clone();

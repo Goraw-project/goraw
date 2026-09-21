@@ -100,6 +100,13 @@ pub enum Stmt {
         body: Block,
         span: Span,
     },
+    /// Итерация по срезу: `for x in slice { }`.
+    ForIn {
+        var: String,
+        iter: Expr,
+        body: Block,
+        span: Span,
+    },
     Break(Span),
     Continue(Span),
     Unsafe(Block, Span),
@@ -116,6 +123,7 @@ impl Stmt {
             | Stmt::If { span, .. }
             | Stmt::While { span, .. }
             | Stmt::For { span, .. }
+            | Stmt::ForIn { span, .. }
             | Stmt::Break(span)
             | Stmt::Continue(span)
             | Stmt::Unsafe(_, span) => *span,

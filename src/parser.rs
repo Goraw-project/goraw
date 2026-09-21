@@ -387,6 +387,18 @@ impl<'a> Parser<'a> {
             return Some(Stmt::For { init: None, cond: None, post: None, body, span: sp.to(self.prev_span()) });
         }
 
+        // for x in slice { }  — итерация по срезу
+        if let Tok::Ident(var) = self.peek().clone() {
+            if matches!(self.peek2(), Tok::Ident(w) if w == "in") {
+                self.bump(); // x
+                self.bump(); // in
+                let iter = self.parse_expr()?;
+                self.no_struct_lit = false;
+                let body = self.parse_block()?;
+                return Some(Stmt::ForIn { var, iter, body, span: sp.to(self.prev_span()) });
+            }
+        }
+
         let init = if matches!(self.peek(), Tok::Semi) {
             None
         } else {
