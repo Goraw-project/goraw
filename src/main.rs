@@ -4,12 +4,7 @@
 //! -> clang -> .exe. Диагностики умеет печатать по-человечески или в
 //! LLM-дружественном JSON (`--json`).
 
-mod ast;
-mod codegen;
-mod diag;
-mod lexer;
-mod parser;
-mod types;
+use gorawc::{codegen, diag, lexer, parser, types};
 
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
