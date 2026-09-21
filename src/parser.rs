@@ -521,7 +521,42 @@ impl<'a> Parser<'a> {
     // ---- выражения (Pratt) ----
 
     pub fn parse_expr(&mut self) -> P<Expr> {
-        self.parse_binary(0)
+        self.parse_pipeline()
+    }
+
+    /// Конвейер `x |> f(a)` == `f(x, a)`; `x |> f` == `f(x)`. Лево-ассоциативен
+    /// и связывает слабее любой арифметики, так что `a + b |> f` == `f(a + b)`.
+    fn parse_pipeline(&mut self) -> P<Expr> {
+        let mut lhs = self.parse_binary(0)?;
+        while matches!(self.peek(), Tok::PipeArrow) {
+            let opsp = self.span();
+            self.bump();
+            let rhs = self.parse_unary()?; // функция или вызов (с постфиксами)
+            lhs = match rhs {
+                Expr::Call { callee, mut args, span } => {
+                    let mut newargs = Vec::with_capacity(args.len() + 1);
+                    newargs.push(lhs);
+                    newargs.append(&mut args);
+                    Expr::Call { callee, args: newargs, span }
+                }
+                Expr::Ident(..) => {
+                    let span = lhs.span().to(rhs.span());
+                    Expr::Call { callee: Box::new(rhs), args: vec![lhs], span }
+                }
+                other => {
+                    self.diags.push(
+                        Diagnostic::error(
+                            "E0018",
+                            opsp.to(other.span()),
+                            "справа от `|>` ожидается функция или вызов",
+                        )
+                        .with_hint("напр. `x |> sqrt` или `x |> pow(2.0)`"),
+                    );
+                    return None;
+                }
+            };
+        }
+        Some(lhs)
     }
 
     fn parse_binary(&mut self, min_prec: u8) -> P<Expr> {

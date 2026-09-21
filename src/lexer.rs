@@ -61,6 +61,7 @@ pub enum Tok {
     Bang,      // !
     AndAnd,    // &&
     OrOr,      // ||
+    PipeArrow, // |>  (конвейер)
     EqEq,      // ==
     Ne,        // !=
     Lt,
@@ -428,14 +429,17 @@ impl<'a> Lexer<'a> {
                     Tok::Amp
                 }
             }
-            '|' => {
-                if self.peek() == Some('|') {
+            '|' => match self.peek() {
+                Some('|') => {
                     self.bump();
                     Tok::OrOr
-                } else {
-                    Tok::Pipe
                 }
-            }
+                Some('>') => {
+                    self.bump();
+                    Tok::PipeArrow
+                }
+                _ => Tok::Pipe,
+            },
             '=' => {
                 if self.peek() == Some('=') {
                     self.bump();

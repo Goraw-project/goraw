@@ -7,7 +7,7 @@
 use crate::ast::*;
 use crate::diag::{Diagnostic, Diags, Span};
 use crate::types::{Ty, TyCtx};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone)]
 struct Local {
@@ -37,6 +37,7 @@ pub struct Codegen<'a> {
     scopes: Vec<HashMap<String, Local>>,
     loops: Vec<(String, String)>, // (continue-label, break-label)
     terminated: bool,             // текущий блок уже завершён терминатором
+    intrinsics: HashSet<String>,  // declare-строки использованных LLVM-интринзиков
 }
 
 impl<'a> Codegen<'a> {
@@ -58,12 +59,21 @@ impl<'a> Codegen<'a> {
             scopes: Vec::new(),
             loops: Vec::new(),
             terminated: false,
+            intrinsics: HashSet::new(),
         }
     }
 
     // ---------- сборка модуля ----------
 
     pub fn emit_module(mut self, prog: &Program) -> String {
+        // Сначала генерируем тела функций — попутно собираются использованные
+        // строковые константы и LLVM-интринзики, нужные для заголовка.
+        for f in &prog.fns {
+            if !f.is_extern {
+                self.gen_fn(f);
+            }
+        }
+
         let mut header = String::new();
         header.push_str("; Goraw -> LLVM IR\n");
         header.push_str("target triple = \"x86_64-w64-windows-gnu\"\n\n");
@@ -94,14 +104,15 @@ impl<'a> Codegen<'a> {
                 header.push_str(&format!("declare {} @{}({})\n", sig.ret.llvm(), f.name, plist));
             }
         }
-        header.push('\n');
 
-        // Тела функций.
-        for f in &prog.fns {
-            if !f.is_extern {
-                self.gen_fn(f);
-            }
+        // Объявления использованных интринзиков (в стабильном порядке).
+        let mut intr: Vec<&String> = self.intrinsics.iter().collect();
+        intr.sort();
+        for d in intr {
+            header.push_str(d);
+            header.push('\n');
         }
+        header.push('\n');
 
         let mut out = header;
         out.push_str(&self.strings);
@@ -981,7 +992,11 @@ impl<'a> Codegen<'a> {
         let sig = match self.ctx.fns.get(&name) {
             Some(s) => s.clone(),
             None => {
-                self.err("E0071", span, format!("вызов неизвестной функции `{name}`"), Some("объявите её или добавьте `extern fn`"));
+                // Не пользовательская функция — возможно, встроенная математика.
+                if let Some(r) = self.try_builtin(&name, args, span) {
+                    return r;
+                }
+                self.err("E0071", span, format!("вызов неизвестной функции `{name}`"), Some("объявите её, добавьте `extern fn`, либо это не встроенная math-функция"));
                 return ("0".into(), Ty::Err);
             }
         };
@@ -1051,6 +1066,178 @@ impl<'a> Codegen<'a> {
             self.emit(format!("{t} = call {rty} @{name}({})", argvals.join(", "), rty = sig.ret.llvm()));
             (t, sig.ret)
         }
+    }
+
+    /// Встроенная функциональная математика, ложащаяся на LLVM-интринзики.
+    /// Возвращает None, если имя не является builtin.
+    fn try_builtin(&mut self, name: &str, args: &[Expr], span: Span) -> Option<(String, Ty)> {
+        // Классификация builtin по имени.
+        enum Kind {
+            FUnary,             // f(x): float -> float
+            FBinary,            // f(x,y): (float,float) -> float
+            NMinMax(bool),      // min/max: float или int; bool = это max
+            Abs,                // abs: float или int
+            Clamp,              // clamp(x, lo, hi)
+            Fma,                // fma(a,b,c)
+        }
+        let (kind, intr_base): (Kind, &str) = match name {
+            "sqrt" => (Kind::FUnary, "sqrt"),
+            "sin" => (Kind::FUnary, "sin"),
+            "cos" => (Kind::FUnary, "cos"),
+            "exp" => (Kind::FUnary, "exp"),
+            "exp2" => (Kind::FUnary, "exp2"),
+            "log" => (Kind::FUnary, "log"),
+            "log2" => (Kind::FUnary, "log2"),
+            "log10" => (Kind::FUnary, "log10"),
+            "floor" => (Kind::FUnary, "floor"),
+            "ceil" => (Kind::FUnary, "ceil"),
+            "round" => (Kind::FUnary, "round"),
+            "trunc" => (Kind::FUnary, "trunc"),
+            "fabs" => (Kind::FUnary, "fabs"),
+            "pow" => (Kind::FBinary, "pow"),
+            "fma" => (Kind::Fma, "fma"),
+            "min" => (Kind::NMinMax(false), ""),
+            "max" => (Kind::NMinMax(true), ""),
+            "abs" => (Kind::Abs, ""),
+            "clamp" => (Kind::Clamp, ""),
+            _ => return None,
+        };
+
+        let want = |n: usize| -> bool { args.len() == n };
+
+        match kind {
+            Kind::FUnary => {
+                if !want(1) {
+                    self.err("E0090", span, format!("`{name}` ждёт 1 аргумент, передано {}", args.len()), None);
+                    return Some(("0".into(), Ty::Err));
+                }
+                let (v, ty) = self.gen_expr(&args[0], Some(&Ty::F64));
+                if !ty.is_float() {
+                    self.err("E0091", args[0].span(), format!("`{name}` применяется к f32/f64, а не к `{}`", ty.name()), Some("приведите через `as f64`"));
+                    return Some(("0".into(), Ty::Err));
+                }
+                let suffix = if ty == Ty::F32 { "f32" } else { "f64" };
+                let lty = ty.llvm();
+                self.use_intrinsic(format!("declare {lty} @llvm.{intr_base}.{suffix}({lty})"));
+                let t = self.fresh_tmp();
+                self.emit(format!("{t} = call {lty} @llvm.{intr_base}.{suffix}({lty} {v})"));
+                Some((t, ty))
+            }
+            Kind::FBinary => {
+                if !want(2) {
+                    self.err("E0090", span, format!("`{name}` ждёт 2 аргумента, передано {}", args.len()), None);
+                    return Some(("0".into(), Ty::Err));
+                }
+                let (a, aty) = self.gen_expr(&args[0], Some(&Ty::F64));
+                let (b, _bty) = self.gen_expr(&args[1], Some(&aty));
+                if !aty.is_float() {
+                    self.err("E0091", args[0].span(), format!("`{name}` применяется к float"), None);
+                    return Some(("0".into(), Ty::Err));
+                }
+                let suffix = if aty == Ty::F32 { "f32" } else { "f64" };
+                let lty = aty.llvm();
+                self.use_intrinsic(format!("declare {lty} @llvm.{intr_base}.{suffix}({lty}, {lty})"));
+                let t = self.fresh_tmp();
+                self.emit(format!("{t} = call {lty} @llvm.{intr_base}.{suffix}({lty} {a}, {lty} {b})"));
+                Some((t, aty))
+            }
+            Kind::Fma => {
+                if !want(3) {
+                    self.err("E0090", span, format!("`fma` ждёт 3 аргумента, передано {}", args.len()), None);
+                    return Some(("0".into(), Ty::Err));
+                }
+                let (a, aty) = self.gen_expr(&args[0], Some(&Ty::F64));
+                let (b, _) = self.gen_expr(&args[1], Some(&aty));
+                let (c, _) = self.gen_expr(&args[2], Some(&aty));
+                if !aty.is_float() {
+                    self.err("E0091", span, "`fma` применяется к float".into(), None);
+                    return Some(("0".into(), Ty::Err));
+                }
+                let suffix = if aty == Ty::F32 { "f32" } else { "f64" };
+                let lty = aty.llvm();
+                self.use_intrinsic(format!("declare {lty} @llvm.fma.{suffix}({lty}, {lty}, {lty})"));
+                let t = self.fresh_tmp();
+                self.emit(format!("{t} = call {lty} @llvm.fma.{suffix}({lty} {a}, {lty} {b}, {lty} {c})"));
+                Some((t, aty))
+            }
+            Kind::NMinMax(is_max) => {
+                if !want(2) {
+                    self.err("E0090", span, format!("`{name}` ждёт 2 аргумента, передано {}", args.len()), None);
+                    return Some(("0".into(), Ty::Err));
+                }
+                let (a, aty) = self.gen_expr(&args[0], None);
+                let (b, _) = self.gen_expr(&args[1], Some(&aty));
+                let (intr, lty) = if aty.is_float() {
+                    (format!("{}num", if is_max { "max" } else { "min" }), aty.llvm())
+                } else if aty.is_int() {
+                    let s = if aty.is_signed() { if is_max { "smax" } else { "smin" } } else if is_max { "umax" } else { "umin" };
+                    (s.to_string(), aty.llvm())
+                } else {
+                    self.err("E0091", span, format!("`{name}` применяется к числам, а не к `{}`", aty.name()), None);
+                    return Some(("0".into(), Ty::Err));
+                };
+                let suffix = self.type_suffix(&aty);
+                self.use_intrinsic(format!("declare {lty} @llvm.{intr}.{suffix}({lty}, {lty})"));
+                let t = self.fresh_tmp();
+                self.emit(format!("{t} = call {lty} @llvm.{intr}.{suffix}({lty} {a}, {lty} {b})"));
+                Some((t, aty))
+            }
+            Kind::Abs => {
+                if !want(1) {
+                    self.err("E0090", span, format!("`abs` ждёт 1 аргумент, передано {}", args.len()), None);
+                    return Some(("0".into(), Ty::Err));
+                }
+                let (v, ty) = self.gen_expr(&args[0], None);
+                if ty.is_float() {
+                    let suffix = if ty == Ty::F32 { "f32" } else { "f64" };
+                    let lty = ty.llvm();
+                    self.use_intrinsic(format!("declare {lty} @llvm.fabs.{suffix}({lty})"));
+                    let t = self.fresh_tmp();
+                    self.emit(format!("{t} = call {lty} @llvm.fabs.{suffix}({lty} {v})"));
+                    Some((t, ty))
+                } else if ty.is_int() {
+                    let suffix = self.type_suffix(&ty);
+                    let lty = ty.llvm();
+                    self.use_intrinsic(format!("declare {lty} @llvm.abs.{suffix}({lty}, i1)"));
+                    let t = self.fresh_tmp();
+                    self.emit(format!("{t} = call {lty} @llvm.abs.{suffix}({lty} {v}, i1 false)"));
+                    Some((t, ty))
+                } else {
+                    self.err("E0091", span, format!("`abs` применяется к числам, а не к `{}`", ty.name()), None);
+                    Some(("0".into(), Ty::Err))
+                }
+            }
+            Kind::Clamp => {
+                if !want(3) {
+                    self.err("E0090", span, format!("`clamp` ждёт 3 аргумента (x, lo, hi), передано {}", args.len()), None);
+                    return Some(("0".into(), Ty::Err));
+                }
+                // clamp(x, lo, hi) = min(max(x, lo), hi)
+                let inner = Expr::Call {
+                    callee: Box::new(Expr::Ident("max".into(), span)),
+                    args: vec![args[0].clone(), args[1].clone()],
+                    span,
+                };
+                let outer = Expr::Call {
+                    callee: Box::new(Expr::Ident("min".into(), span)),
+                    args: vec![inner, args[2].clone()],
+                    span,
+                };
+                Some(self.gen_expr(&outer, None))
+            }
+        }
+    }
+
+    fn type_suffix(&self, ty: &Ty) -> String {
+        match ty {
+            Ty::F32 => "f32".into(),
+            Ty::F64 => "f64".into(),
+            _ => format!("i{}", ty.int_bits()),
+        }
+    }
+
+    fn use_intrinsic(&mut self, decl: String) {
+        self.intrinsics.insert(decl);
     }
 
     /// Приведение вариадических аргументов по правилам C (default argument promotions).
