@@ -886,7 +886,23 @@ impl<'a> Codegen<'a> {
             }
             Expr::Str(s, _) => {
                 let g = self.intern_string(s);
-                (g, Ty::Ptr(Box::new(Ty::U8), false))
+                // В контексте `str` (== []u8) литерал становится срезом с длиной
+                // в байтах (без завершающего NUL); иначе — C-строка `*u8`.
+                let want_str = matches!(expected, Some(Ty::Slice(e)) if **e == Ty::U8);
+                if want_str {
+                    let len = s.as_bytes().len();
+                    let slot = self.fresh_slot("str");
+                    self.alloca(&slot, &Ty::Slice(Box::new(Ty::U8)));
+                    let pf = self.fresh_tmp();
+                    self.emit(format!("{pf} = getelementptr %slice, ptr {slot}, i32 0, i32 0"));
+                    self.emit(format!("store ptr {g}, ptr {pf}"));
+                    let lf = self.fresh_tmp();
+                    self.emit(format!("{lf} = getelementptr %slice, ptr {slot}, i32 0, i32 1"));
+                    self.emit(format!("store i64 {len}, ptr {lf}"));
+                    (slot, Ty::Slice(Box::new(Ty::U8)))
+                } else {
+                    (g, Ty::Ptr(Box::new(Ty::U8), false))
+                }
             }
             Expr::Ident(name, span) => match self.lookup(name) {
                 Some(l) => {

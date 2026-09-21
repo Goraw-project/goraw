@@ -181,6 +181,8 @@ impl TyCtx {
                 "f64" => Ty::F64,
                 "bool" => Ty::Bool,
                 "void" => Ty::Void,
+                // строка = срез байтов []u8 (с поддержкой строковых литералов)
+                "str" => Ty::Slice(Box::new(Ty::U8)),
                 other => {
                     if self.structs.contains_key(other) {
                         Ty::Struct(other.to_string())
