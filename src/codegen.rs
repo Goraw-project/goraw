@@ -611,6 +611,62 @@ impl<'a> Codegen<'a> {
                 self.unsafe_depth -= 1;
             }
 
+            Stmt::Match { scrut, arms, span } => {
+                let (v, vty) = self.gen_expr(scrut, None);
+                if !vty.is_int() && vty != Ty::Err {
+                    self.err("E0100", *span, format!("`match` работает по целым/enum, а тут `{}`", vty.name()), None);
+                    return;
+                }
+                let end_l = self.fresh_label("mend");
+                let mut default_l = end_l.clone();
+                let mut arm_infos: Vec<(String, &Block)> = Vec::new();
+                let mut cases: Vec<(i64, String)> = Vec::new();
+                let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::new();
+
+                for (pat, body) in arms {
+                    let lbl = self.fresh_label("marm");
+                    match pat {
+                        None => default_l = lbl.clone(),
+                        Some(e) => match self.eval_const(e, Some(&vty)) {
+                            Some(CVal::Int(n, _)) => {
+                                if seen.insert(n) {
+                                    cases.push((n, lbl.clone()));
+                                }
+                            }
+                            _ => self.err("E0101", e.span(), "паттерн match должен быть целочисленной константой или enum-вариантом".into(), None),
+                        },
+                    }
+                    arm_infos.push((lbl, body));
+                }
+
+                // Инструкция switch (многострочная — пишем напрямую).
+                let mut sw = format!("  switch {ty} {v}, label %{default_l} [\n", ty = vty.llvm());
+                for (n, lbl) in &cases {
+                    sw.push_str(&format!("    {ty} {n}, label %{lbl}\n", ty = vty.llvm()));
+                }
+                sw.push_str("  ]\n");
+                self.code.push_str(&sw);
+                self.terminated = true;
+
+                // Конец достижим, если switch-default идёт в end (нет `_`)
+                // или хотя бы одна ветвь проваливается в end.
+                let mut reaches_end = default_l == end_l;
+                for (lbl, body) in &arm_infos {
+                    self.emit_label(lbl);
+                    self.gen_block(body);
+                    if !self.terminated {
+                        self.emit(format!("br label %{end_l}"));
+                        reaches_end = true;
+                    }
+                }
+                self.emit_label(&end_l);
+                if !reaches_end {
+                    // Все ветви завершились — end недостижим.
+                    self.emit("unreachable".into());
+                    self.terminated = true;
+                }
+            }
+
             Stmt::Assert(expr, span) => {
                 if !self.in_test {
                     self.err("E0082", *span, "`assert` допустим только внутри test-блока".into(), Some("оберните проверку в `test \"имя\" { ... }`"));

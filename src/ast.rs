@@ -152,6 +152,13 @@ pub enum Stmt {
     Unsafe(Block, Span),
     /// `assert expr;` внутри test-блока: при ложности тест падает.
     Assert(Expr, Span),
+    /// `match expr { pat => block, _ => block }` по целым/enum (LLVM switch).
+    /// Ветвь-паттерн: `Some(const-выражение)` либо `None` для `_`.
+    Match {
+        scrut: Expr,
+        arms: Vec<(Option<Expr>, Block)>,
+        span: Span,
+    },
     /// Инлайн-ассемблер (фаза 2).
     Asm(AsmBlock),
 }
@@ -169,6 +176,7 @@ impl Stmt {
             | Stmt::Break(span)
             | Stmt::Continue(span)
             | Stmt::Assert(_, span)
+            | Stmt::Match { span, .. }
             | Stmt::Unsafe(_, span) => *span,
             Stmt::Expr(e) => e.span(),
             Stmt::Asm(a) => a.span,

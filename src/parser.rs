@@ -447,6 +447,7 @@ impl<'a> Parser<'a> {
                 Some(Stmt::While { cond, body, span: sp.to(self.prev_span()) })
             }
             Tok::For => self.parse_for(),
+            Tok::Match => self.parse_match(),
             Tok::Break => {
                 let sp = self.span();
                 self.bump();
@@ -484,6 +485,32 @@ impl<'a> Parser<'a> {
                 Some(s)
             }
         }
+    }
+
+    fn parse_match(&mut self) -> P<Stmt> {
+        let sp = self.span();
+        self.expect(&Tok::Match, "`match`")?;
+        self.no_struct_lit = true;
+        let scrut = self.parse_expr();
+        self.no_struct_lit = false;
+        let scrut = scrut?;
+        self.expect(&Tok::LBrace, "`{`")?;
+        let mut arms = Vec::new();
+        while !matches!(self.peek(), Tok::RBrace | Tok::Eof) {
+            // паттерн: `_` или константное выражение
+            let pat = if matches!(self.peek(), Tok::Ident(s) if s == "_") {
+                self.bump();
+                None
+            } else {
+                Some(self.parse_expr()?)
+            };
+            self.expect(&Tok::FatArrow, "`=>`")?;
+            let body = self.parse_block()?;
+            arms.push((pat, body));
+            let _ = self.eat(&Tok::Comma);
+        }
+        self.expect(&Tok::RBrace, "`}`")?;
+        Some(Stmt::Match { scrut, arms, span: sp.to(self.prev_span()) })
     }
 
     fn parse_if(&mut self) -> P<Stmt> {

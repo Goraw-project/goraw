@@ -37,6 +37,8 @@ pub enum Tok {
     Enum,
     Const,
     Static,
+    Match,
+    FatArrow, // =>
     ColonColon, // ::
 
     // пунктуация / операторы
@@ -267,6 +269,7 @@ impl<'a> Lexer<'a> {
             "enum" => Tok::Enum,
             "const" => Tok::Const,
             "static" => Tok::Static,
+            "match" => Tok::Match,
             _ => Tok::Ident(s),
         };
         Token { tok, span: Span::new(start, end) }
@@ -508,14 +511,17 @@ impl<'a> Lexer<'a> {
                 }
                 _ => Tok::Pipe,
             },
-            '=' => {
-                if self.peek() == Some('=') {
+            '=' => match self.peek() {
+                Some('=') => {
                     self.bump();
                     Tok::EqEq
-                } else {
-                    Tok::Assign
                 }
-            }
+                Some('>') => {
+                    self.bump();
+                    Tok::FatArrow
+                }
+                _ => Tok::Assign,
+            },
             '!' => {
                 if self.peek() == Some('=') {
                     self.bump();
