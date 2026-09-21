@@ -45,6 +45,14 @@ pub struct StructDef {
     pub span: Span,
 }
 
+/// Перечисление (C-style, представляется i32).
+#[derive(Clone, Debug)]
+pub struct EnumDef {
+    pub name: String,
+    pub variants: Vec<(String, i64)>,
+    pub span: Span,
+}
+
 #[derive(Clone, Debug)]
 pub struct FnDef {
     pub name: String,
@@ -158,6 +166,8 @@ pub enum Expr {
     Ident(String, Span),
     /// Нулевой указатель.
     Null(Span),
+    /// Путь к константе перечисления: `Enum::Variant`.
+    Path(String, String, Span),
     /// Бинарная операция.
     Binary {
         op: BinOp,
@@ -219,6 +229,7 @@ impl Expr {
             | Expr::Str(_, s)
             | Expr::Ident(_, s)
             | Expr::Null(s)
+            | Expr::Path(_, _, s)
             | Expr::Binary { span: s, .. }
             | Expr::Unary { span: s, .. }
             | Expr::Call { span: s, .. }
@@ -266,5 +277,6 @@ pub enum UnOp {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub structs: Vec<StructDef>,
+    pub enums: Vec<EnumDef>,
     pub fns: Vec<FnDef>,
 }

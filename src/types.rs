@@ -138,13 +138,20 @@ pub struct FnSig {
 pub struct TyCtx {
     pub structs: HashMap<String, StructInfo>,
     pub fns: HashMap<String, FnSig>,
+    /// Перечисления: имя -> (вариант -> значение).
+    pub enums: HashMap<String, HashMap<String, i64>>,
     /// Порядок объявления структур (для стабильного вывода IR).
     pub struct_order: Vec<String>,
 }
 
 impl TyCtx {
     pub fn new() -> TyCtx {
-        TyCtx { structs: HashMap::new(), fns: HashMap::new(), struct_order: Vec::new() }
+        TyCtx {
+            structs: HashMap::new(),
+            fns: HashMap::new(),
+            enums: HashMap::new(),
+            struct_order: Vec::new(),
+        }
     }
 
     /// Разрешает синтаксический тип в семантический. Ошибки складывает в out.
@@ -177,6 +184,9 @@ impl TyCtx {
                 other => {
                     if self.structs.contains_key(other) {
                         Ty::Struct(other.to_string())
+                    } else if self.enums.contains_key(other) {
+                        // перечисления представляются i32 (C-style)
+                        Ty::I32
                     } else {
                         out.push(
                             Diagnostic::error("E0020", *sp, format!("неизвестный тип `{other}`"))
@@ -196,10 +206,24 @@ impl TyCtx {
 /// в них), чтобы поддержать forward-ссылки. Возвращает TyCtx; ошибки в out.
 pub fn collect(
     structs: &[StructDef],
+    enums: &[crate::ast::EnumDef],
     fns: &[FnDef],
     out: &mut Vec<Diagnostic>,
 ) -> TyCtx {
     let mut ctx = TyCtx::new();
+
+    // Перечисления регистрируем первыми — на них могут ссылаться поля/типы.
+    for e in enums {
+        if ctx.enums.contains_key(&e.name) {
+            out.push(Diagnostic::error("E0024", e.span, format!("перечисление `{}` объявлено повторно", e.name)));
+            continue;
+        }
+        let mut vmap = HashMap::new();
+        for (vn, vv) in &e.variants {
+            vmap.insert(vn.clone(), *vv);
+        }
+        ctx.enums.insert(e.name.clone(), vmap);
+    }
 
     // Сначала регистрируем имена структур (пустыми), чтобы поля могли
     // ссылаться на другие структуры независимо от порядка.

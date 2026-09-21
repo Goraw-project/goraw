@@ -126,7 +126,7 @@ fn run(opts: Options) -> i32 {
 
     // Сбор типов (первый проход).
     let mut collected = Vec::new();
-    let ctx = types::collect(&prog.structs, &prog.fns, &mut collected);
+    let ctx = types::collect(&prog.structs, &prog.enums, &prog.fns, &mut collected);
     for d in collected {
         diags.push(d);
     }

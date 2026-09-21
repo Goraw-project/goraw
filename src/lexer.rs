@@ -34,6 +34,8 @@ pub enum Tok {
     Jit,
     Null,
     Import,
+    Enum,
+    ColonColon, // ::
 
     // пунктуация / операторы
     LParen,
@@ -260,6 +262,7 @@ impl<'a> Lexer<'a> {
             "jit" => Tok::Jit,
             "null" => Tok::Null,
             "import" => Tok::Import,
+            "enum" => Tok::Enum,
             _ => Tok::Ident(s),
         };
         Token { tok, span: Span::new(start, end) }
@@ -406,14 +409,17 @@ impl<'a> Lexer<'a> {
                     Tok::Dot
                 }
             }
-            ':' => {
-                if self.peek() == Some('=') {
+            ':' => match self.peek() {
+                Some('=') => {
                     self.bump();
                     Tok::ColonEq
-                } else {
-                    Tok::Colon
                 }
-            }
+                Some(':') => {
+                    self.bump();
+                    Tok::ColonColon
+                }
+                _ => Tok::Colon,
+            },
             '-' => match self.peek() {
                 Some('>') => {
                     self.bump();

@@ -109,6 +109,7 @@ impl<'a> Parser<'a> {
 
     pub fn parse_program(&mut self) -> Program {
         let mut structs = Vec::new();
+        let mut enums = Vec::new();
         let mut fns = Vec::new();
         while !self.at_eof() {
             match self.peek() {
@@ -131,6 +132,10 @@ impl<'a> Parser<'a> {
                     Some(s) => structs.push(s),
                     None => self.synchronize(),
                 },
+                Tok::Enum => match self.parse_enum() {
+                    Some(e) => enums.push(e),
+                    None => self.synchronize(),
+                },
                 Tok::Fn | Tok::Extern | Tok::Unsafe => match self.parse_fn() {
                     Some(f) => fns.push(f),
                     None => self.synchronize(),
@@ -151,7 +156,41 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        Program { structs, fns }
+        Program { structs, enums, fns }
+    }
+
+    fn parse_enum(&mut self) -> P<EnumDef> {
+        let start = self.span();
+        self.expect(&Tok::Enum, "`enum`")?;
+        let (name, _) = self.expect_ident("перечисления")?;
+        self.expect(&Tok::LBrace, "`{`")?;
+        let mut variants = Vec::new();
+        let mut next: i64 = 0;
+        while !matches!(self.peek(), Tok::RBrace | Tok::Eof) {
+            let (vname, _) = self.expect_ident("варианта")?;
+            let val = if self.eat(&Tok::Assign) {
+                match self.peek().clone() {
+                    Tok::Int(n) => {
+                        self.bump();
+                        n
+                    }
+                    _ => {
+                        self.diags.push(Diagnostic::error("E0023", self.span(), "после `=` в enum ожидалось число"));
+                        next
+                    }
+                }
+            } else {
+                next
+            };
+            next = val + 1;
+            variants.push((vname, val));
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        let end = self.span();
+        self.expect(&Tok::RBrace, "`}`")?;
+        Some(EnumDef { name, variants, span: start.to(end) })
     }
 
     fn parse_struct(&mut self) -> P<StructDef> {
@@ -807,6 +846,12 @@ impl<'a> Parser<'a> {
             Tok::Jit => self.parse_jit(),
             Tok::Ident(name) => {
                 self.bump();
+                // путь к константе перечисления: Enum::Variant
+                if matches!(self.peek(), Tok::ColonColon) {
+                    self.bump();
+                    let (variant, vsp) = self.expect_ident("варианта перечисления")?;
+                    return Some(Expr::Path(name, variant, sp.to(vsp)));
+                }
                 // литерал структуры Name { ... }
                 if !self.no_struct_lit && matches!(self.peek(), Tok::LBrace) {
                     self.bump();

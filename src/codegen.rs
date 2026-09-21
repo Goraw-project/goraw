@@ -838,6 +838,19 @@ impl<'a> Codegen<'a> {
                 _ => (fmt_float(*f, &Ty::F64), Ty::F64),
             },
             Expr::Bool(b, _) => (if *b { "true".into() } else { "false".into() }, Ty::Bool),
+            Expr::Path(en, variant, span) => {
+                match self.ctx.enums.get(en).and_then(|m| m.get(variant)) {
+                    Some(v) => ((*v as i32).to_string(), Ty::I32),
+                    None => {
+                        if self.ctx.enums.contains_key(en) {
+                            self.err("E0058", *span, format!("у перечисления `{en}` нет варианта `{variant}`"), None);
+                        } else {
+                            self.err("E0059", *span, format!("неизвестное перечисление `{en}`"), None);
+                        }
+                        ("0".into(), Ty::Err)
+                    }
+                }
+            }
             Expr::Null(_) => {
                 // Тип берём из ожидания (если это указатель), иначе *mut u8.
                 let ty = match expected {
@@ -1958,6 +1971,7 @@ impl<'a> Codegen<'a> {
             Expr::Float(..) => Ty::F64,
             Expr::Bool(..) => Ty::Bool,
             Expr::Null(..) => Ty::Ptr(Box::new(Ty::U8), true),
+            Expr::Path(..) => Ty::I32,
             Expr::Str(..) => Ty::Ptr(Box::new(Ty::U8), false),
             Expr::Ident(n, _) => self.lookup(n).map(|l| l.ty.clone()).unwrap_or(Ty::Err),
             Expr::Unary { op: UnOp::Deref, expr, .. } => match self.type_of(expr) {
