@@ -681,13 +681,19 @@ impl<'a> Codegen<'a> {
             Expr::Index { base, index, span } => {
                 let (bv, bty) = self.gen_expr(base, None);
                 match bty {
-                    // Индексация среза — безопасная операция (unsafe не нужен).
+                    // Индексация среза — безопасная операция (unsafe не нужен),
+                    // с проверкой границ: 0 <= i < len, иначе abort.
                     Ty::Slice(elem) => {
+                        let lenp = self.fresh_tmp();
+                        self.emit(format!("{lenp} = getelementptr %slice, ptr {bv}, i32 0, i32 1"));
+                        let len = self.fresh_tmp();
+                        self.emit(format!("{len} = load i64, ptr {lenp}"));
                         let dp = self.fresh_tmp();
                         self.emit(format!("{dp} = getelementptr %slice, ptr {bv}, i32 0, i32 0"));
                         let data = self.fresh_tmp();
                         self.emit(format!("{data} = load ptr, ptr {dp}"));
                         let (iv, _) = self.gen_expr(index, Some(&Ty::I64));
+                        self.emit_bounds_check(&iv, &len);
                         let t = self.fresh_tmp();
                         self.emit(format!("{t} = getelementptr {ety}, ptr {data}, i64 {iv}", ety = elem.llvm()));
                         (t, *elem, true)
@@ -729,6 +735,24 @@ impl<'a> Codegen<'a> {
                 ("%poison".into(), Ty::Err, false)
             }
         }
+    }
+
+    /// Проверка границ индекса среза: при `i < 0 || i >= len` вызывает abort.
+    fn emit_bounds_check(&mut self, idx: &str, len: &str) {
+        let lo = self.fresh_tmp();
+        self.emit(format!("{lo} = icmp slt i64 {idx}, 0"));
+        let hi = self.fresh_tmp();
+        self.emit(format!("{hi} = icmp sge i64 {idx}, {len}"));
+        let oob = self.fresh_tmp();
+        self.emit(format!("{oob} = or i1 {lo}, {hi}"));
+        let fail = self.fresh_label("oob");
+        let ok = self.fresh_label("inb");
+        self.emit(format!("br i1 {oob}, label %{fail}, label %{ok}"));
+        self.emit_label(&fail);
+        self.use_intrinsic("declare void @abort()".into());
+        self.emit("call void @abort()".into());
+        self.emit("unreachable".into());
+        self.emit_label(&ok);
     }
 
     fn field_gep(&mut self, addr: &str, sname: &str, field: &str, span: Span, mutable: bool) -> (String, Ty, bool) {
