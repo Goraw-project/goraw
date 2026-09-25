@@ -84,9 +84,16 @@ pub struct FieldD {
 }
 
 #[derive(Clone, Debug)]
+pub struct OneofD {
+    pub name: String,
+    pub fields: Vec<FieldD>,
+}
+
+#[derive(Clone, Debug)]
 pub struct MessageD {
     pub name: String, // сплющенное имя (Outer_Inner)
     pub fields: Vec<FieldD>,
+    pub oneofs: Vec<OneofD>,
 }
 
 pub struct FileD {
@@ -152,16 +159,22 @@ fn flatten_message(
     for f in &m.fields {
         fields.push(resolve_field(f, msg_feat, enum_names));
     }
-    // поля из oneof (в PB1 трактуем как обычные singular с explicit presence)
+    // поля из oneof
+    let mut oneofs = Vec::new();
     for oo in &m.oneofs {
+        let mut oo_fields = Vec::new();
         for f in &oo.fields {
             let mut fd = resolve_field(f, msg_feat, enum_names);
             fd.presence = Presence::Explicit;
-            fields.push(fd);
+            oo_fields.push(fd);
         }
+        oneofs.push(OneofD {
+            name: oo.name.clone(),
+            fields: oo_fields,
+        });
     }
 
-    out.push(MessageD { name: flat.clone(), fields });
+    out.push(MessageD { name: flat.clone(), fields, oneofs });
 
     // вложенные сообщения
     for nested in &m.messages {

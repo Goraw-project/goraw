@@ -17,7 +17,7 @@
 
 ## Текущая очередь задач по приоритету
 
-1. **Protobuf (`gorawpb`)**: `map<K,V>`, `oneof` и `repeated string` / `repeated message` (завершение PB2).
+1. **Protobuf (`gorawpb`)**: ✅ **PB2 завершён** (`map<K,V>`, `oneof`, `repeated string/msg` encode+decode доказаны end-to-end на `pb2_main.gw`).
 2. **`str`-тип**: первоклассные строки в языке (иммутабельные строки поверх срезов `[]u8` с конкатенацией, методами и срезами).
 3. **GIR (Goraw IR)**: свой типизированный промежуточный IR под мультибэкенд (десугаринг, явные узлы, разделение typecheck и кодогенерации).
 4. **Mandatory Shadow Tests**: строгий режим верификации наличия shadow-тестов для функций (`--shadow=strict`).
@@ -38,7 +38,7 @@
 | CUDA-ядра + PTX | NVPTX-бэкенд LLVM → PTX → ptxas → запуск | Высокая | Высокая | **Делать** как отдельный эпик (LLVM тащит основное) |
 | AMD: llvm-mc + amdclang++ | AMDGPU-бэкенд LLVM + HIP inline + ROCm | Средне-высокая | Высокая | **Может быть** (симметрично CUDA, если нужен AMD) |
 | SASS: cuasm / turingas | Неофициальные per-arch ассемблеры, Python, хрупкие | Нишевая | Высокая | **Пропустить/отложить** (опц. плагин) |
-| Свой Protobuf (Editions) | Wire-совместимый protobuf + схемы Editions; тул `gorawpb` | Высокая | Высокая | **🔥 Приоритет 1** (`map`, `oneof`, `repeated string/msg`) |
+| Свой Protobuf (Editions) | Wire-совместимый protobuf + схемы Editions; тул `gorawpb` | Высокая | Высокая | **✅ PB2 готов** (`map`, `oneof`, `repeated string/msg` encode+decode) |
 | Библиотеки/плагины/модули (import) | Три РАЗНЫЕ вещи: module / package / plugin | Высокая | Средне-высокая | **🚧 `import` готов** (мультифайл); namespacing/пакеты — далее |
 | Inline NASM/MASM (как в asm.gw) | Сохранить `asm(...) {}`; + faithful-путь через реальный ассемблер | Высокая | Средняя | **Оставляем и растим** (мульти-output исправлен) |
 

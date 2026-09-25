@@ -1,0 +1,400 @@
+// Сгенерировано gorawpb из .proto (edition 2023). НЕ РЕДАКТИРОВАТЬ.
+
+// --- gorawpb runtime prelude (сгенерировано) ---
+struct GpbBuf { data: *mut u8, len: i64, cap: i64 }
+
+fn gpb_buf_new() -> GpbBuf {
+    let cap: i64 = 16;
+    return GpbBuf { data: alloc(cap), len: 0, cap: cap };
+}
+
+fn gpb_push(b: *mut GpbBuf, x: u8) {
+    unsafe {
+        if b.len == b.cap {
+            let nc: i64 = b.cap * 2;
+            b.data = realloc(b.data, nc);
+            b.cap = nc;
+        }
+        b.data[b.len] = x;
+        b.len = b.len + 1;
+    }
+}
+
+fn gpb_varint(b: *mut GpbBuf, v: u64) {
+    let mut x: u64 = v;
+    while x >= 128 {
+        gpb_push(b, ((x & 127) | 128) as u8);
+        x = x >> 7;
+    }
+    gpb_push(b, x as u8);
+}
+
+fn gpb_tag(b: *mut GpbBuf, field: u64, wt: u64) {
+    gpb_varint(b, (field << 3) | wt);
+}
+
+fn gpb_zigzag32(v: i32) -> u64 {
+    let z: i32 = (v << 1) ^ (v >> 31);
+    return z as u32 as u64;
+}
+
+fn gpb_zigzag64(v: i64) -> u64 {
+    return ((v << 1) ^ (v >> 63)) as u64;
+}
+
+fn gpb_fixed32(b: *mut GpbBuf, v: u32) {
+    gpb_push(b, (v & 255) as u8);
+    gpb_push(b, ((v >> 8) & 255) as u8);
+    gpb_push(b, ((v >> 16) & 255) as u8);
+    gpb_push(b, ((v >> 24) & 255) as u8);
+}
+
+fn gpb_fixed64(b: *mut GpbBuf, v: u64) {
+    let mut x: u64 = v;
+    let mut i: i64 = 0;
+    while i < 8 {
+        gpb_push(b, (x & 255) as u8);
+        x = x >> 8;
+        i = i + 1;
+    }
+}
+
+fn gpb_bytes(b: *mut GpbBuf, data: *u8, len: i64) {
+    gpb_varint(b, len as u64);
+    let mut i: i64 = 0;
+    while i < len {
+        unsafe { gpb_push(b, data[i]); }
+        i = i + 1;
+    }
+}
+
+// --- string / slice representation ---
+struct GpbString { data: *u8, len: i64 }
+
+fn gpb_str(s: str) -> GpbString {
+    unsafe {
+        if s.len == 0 {
+            return GpbString { data: null, len: 0 };
+        }
+        return GpbString { data: &s[0], len: s.len };
+    }
+}
+
+struct GpbStringVec { data: *mut GpbString, len: i64, cap: i64 }
+
+fn gpb_strvec_new() -> GpbStringVec {
+    let cap: i64 = 8;
+    return GpbStringVec { data: alloc(cap * sizeof(GpbString)) as *mut GpbString, len: 0, cap: cap };
+}
+
+fn gpb_strvec_push(v: *mut GpbStringVec, s: GpbString) {
+    unsafe {
+        if v.len == v.cap {
+            let nc: i64 = v.cap * 2;
+            v.data = realloc(v.data as *mut u8, nc * sizeof(GpbString)) as *mut GpbString;
+            v.cap = nc;
+        }
+        v.data[v.len] = s;
+        v.len = v.len + 1;
+    }
+}
+
+struct GpbPtrVec { data: *mut *u8, len: i64, cap: i64 }
+
+fn gpb_ptrvec_new() -> GpbPtrVec {
+    let cap: i64 = 8;
+    return GpbPtrVec { data: alloc(cap * 8) as *mut *u8, len: 0, cap: cap };
+}
+
+fn gpb_ptrvec_push(v: *mut GpbPtrVec, p: *u8) {
+    unsafe {
+        if v.len == v.cap {
+            let nc: i64 = v.cap * 2;
+            v.data = realloc(v.data as *mut u8, nc * 8) as *mut *u8;
+            v.cap = nc;
+        }
+        v.data[v.len] = p;
+        v.len = v.len + 1;
+    }
+}
+
+// --- reader (decode) ---
+struct GpbReader { data: *u8, len: i64, pos: i64 }
+
+fn gpb_rd_new(data: *u8, len: i64) -> GpbReader {
+    return GpbReader { data: data, len: len, pos: 0 };
+}
+
+fn gpb_rd_eof(r: *mut GpbReader) -> bool {
+    unsafe { return r.pos >= r.len; }
+}
+
+fn gpb_rd_byte(r: *mut GpbReader) -> u8 {
+    unsafe {
+        let b: u8 = r.data[r.pos];
+        r.pos = r.pos + 1;
+        return b;
+    }
+}
+
+fn gpb_rd_varint(r: *mut GpbReader) -> u64 {
+    let mut result: u64 = 0;
+    let mut shift: u64 = 0;
+    for {
+        let b: u8 = gpb_rd_byte(r);
+        result = result | (((b & 127) as u64) << shift);
+        if (b & 128) == 0 { break; }
+        shift = shift + 7;
+    }
+    return result;
+}
+
+fn gpb_rd_fixed32(r: *mut GpbReader) -> u32 {
+    let b0: u32 = gpb_rd_byte(r) as u32;
+    let b1: u32 = gpb_rd_byte(r) as u32;
+    let b2: u32 = gpb_rd_byte(r) as u32;
+    let b3: u32 = gpb_rd_byte(r) as u32;
+    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+}
+
+fn gpb_rd_fixed64(r: *mut GpbReader) -> u64 {
+    let mut result: u64 = 0;
+    let mut shift: u64 = 0;
+    let mut i: i64 = 0;
+    while i < 8 {
+        result = result | ((gpb_rd_byte(r) as u64) << shift);
+        shift = shift + 8;
+        i = i + 1;
+    }
+    return result;
+}
+
+fn gpb_rd_skip(r: *mut GpbReader, wt: u64) {
+    if wt == 0 {
+        gpb_rd_varint(r);
+    } else if wt == 1 {
+        unsafe { r.pos = r.pos + 8; }
+    } else if wt == 5 {
+        unsafe { r.pos = r.pos + 4; }
+    } else if wt == 2 {
+        let n: i64 = gpb_rd_varint(r) as i64;
+        unsafe { r.pos = r.pos + n; }
+    }
+}
+
+fn gpb_unzigzag32(v: u64) -> i32 {
+    let u: u32 = v as u32;
+    return ((u >> 1) as i32) ^ (0 - ((u & 1) as i32));
+}
+
+fn gpb_unzigzag64(v: u64) -> i64 {
+    return ((v >> 1) as i64) ^ (0 - ((v & 1) as i64));
+}
+// --- конец prelude ---
+
+struct ComplexMessage_Scores_Entry {
+    key: GpbString,
+    value: i32,
+}
+
+struct ComplexMessage_Scores_Vec {
+    data: *mut ComplexMessage_Scores_Entry,
+    len: i64,
+    cap: i64,
+}
+
+fn complexmessage_scores_vec_new() -> ComplexMessage_Scores_Vec {
+    let cap: i64 = 8;
+    return ComplexMessage_Scores_Vec {
+        data: alloc(cap * sizeof(ComplexMessage_Scores_Entry)) as *mut ComplexMessage_Scores_Entry,
+        len: 0,
+        cap: cap,
+    };
+}
+
+fn complexmessage_scores_vec_push(v: *mut ComplexMessage_Scores_Vec, item: ComplexMessage_Scores_Entry) {
+    unsafe {
+        if v.len == v.cap {
+            let nc: i64 = v.cap * 2;
+            v.data = realloc(v.data as *mut u8, nc * sizeof(ComplexMessage_Scores_Entry)) as *mut ComplexMessage_Scores_Entry;
+            v.cap = nc;
+        }
+        v.data[v.len] = item;
+        v.len = v.len + 1;
+    }
+}
+
+const COMPLEXMESSAGE_PAYLOAD_NOT_SET: i32 = 0;
+const COMPLEXMESSAGE_PAYLOAD_TEXT_DATA: i32 = 5;
+const COMPLEXMESSAGE_PAYLOAD_CODE_DATA: i32 = 6;
+const COMPLEXMESSAGE_PAYLOAD_ITEM_DATA: i32 = 7;
+
+struct SubItem {
+    id: i32,
+    has_id: bool,
+    title_ptr: *u8,
+    title_len: i64,
+    has_title: bool,
+}
+
+struct ComplexMessage {
+    message_id: i64,
+    has_message_id: bool,
+    tags: []GpbString,
+    items: []*SubItem,
+    scores: []ComplexMessage_Scores_Entry,
+    which_payload: i32,
+    text_data_ptr: *u8,
+    text_data_len: i64,
+    code_data: i32,
+    item_data: *SubItem,
+}
+
+fn encode_SubItem(m: *SubItem, b: *mut GpbBuf) {
+    unsafe {
+        if m.has_id { gpb_tag(b, 1, 0); gpb_varint(b, m.id as i64 as u64); }
+        if m.has_title { gpb_tag(b, 2, 2); gpb_bytes(b, m.title_ptr, m.title_len); }
+    }
+}
+
+fn encode_ComplexMessage(m: *ComplexMessage, b: *mut GpbBuf) {
+    unsafe {
+        if m.has_message_id { gpb_tag(b, 1, 0); gpb_varint(b, m.message_id as u64); }
+        for i_tags := 0; i_tags < m.tags.len; i_tags++ {
+            gpb_tag(b, 2, 2);
+            gpb_bytes(b, m.tags[i_tags].data, m.tags[i_tags].len);
+        }
+        for i_items := 0; i_items < m.items.len; i_items++ {
+            let mut e_items = gpb_buf_new();
+            encode_SubItem(m.items[i_items], &mut e_items);
+            gpb_tag(b, 3, 2);
+            gpb_bytes(b, e_items.data as *u8, e_items.len);
+            free(e_items.data);
+        }
+        for i_scores := 0; i_scores < m.scores.len; i_scores++ {
+            let mut entry_buf_scores = gpb_buf_new();
+            gpb_tag(&mut entry_buf_scores, 1, 2); gpb_bytes(&mut entry_buf_scores, m.scores[i_scores].key.data, m.scores[i_scores].key.len);
+            gpb_tag(&mut entry_buf_scores, 2, 0); gpb_varint(&mut entry_buf_scores, m.scores[i_scores].value as i64 as u64);
+            gpb_tag(b, 4, 2);
+            gpb_bytes(b, entry_buf_scores.data as *u8, entry_buf_scores.len);
+            free(entry_buf_scores.data);
+        }
+        // oneof payload
+        if m.which_payload == 5 {
+            gpb_tag(b, 5, 2); gpb_bytes(b, m.text_data_ptr, m.text_data_len);
+        }
+        if m.which_payload == 6 {
+            gpb_tag(b, 6, 0); gpb_varint(b, m.code_data as i64 as u64);
+        }
+        if m.which_payload == 7 {
+            if (m.item_data as i64) != 0 {
+                let mut sub_item_data = gpb_buf_new();
+                encode_SubItem(m.item_data, &mut sub_item_data);
+                gpb_tag(b, 7, 2);
+                gpb_bytes(b, sub_item_data.data as *u8, sub_item_data.len);
+                free(sub_item_data.data);
+            }
+        }
+    }
+}
+
+fn decode_SubItem(data: *u8, len: i64) -> SubItem {
+    let mut m: SubItem = zeroed();
+    let mut r: GpbReader = gpb_rd_new(data, len);
+    unsafe {
+        for {
+            if gpb_rd_eof(&mut r) { break; }
+            let tag: u64 = gpb_rd_varint(&mut r);
+            let fnum: u64 = tag >> 3;
+            let wt: u64 = tag & 7;
+            if fnum == 1 {
+                let v: u64 = gpb_rd_varint(&mut r);
+                m.id = v as i32;
+                m.has_id = true;
+            } else if fnum == 2 {
+                let ln: i64 = gpb_rd_varint(&mut r) as i64;
+                m.title_ptr = &r.data[r.pos];
+                m.title_len = ln;
+                r.pos = r.pos + ln;
+                m.has_title = true;
+            } else { gpb_rd_skip(&mut r, wt); }
+        }
+    }
+    return m;
+}
+
+fn decode_ComplexMessage(data: *u8, len: i64) -> ComplexMessage {
+    let mut m: ComplexMessage = zeroed();
+    let mut r: GpbReader = gpb_rd_new(data, len);
+    unsafe {
+        let mut vec_tags: GpbStringVec = gpb_strvec_new();
+        let mut vec_items: GpbPtrVec = gpb_ptrvec_new();
+        let mut vec_scores: ComplexMessage_Scores_Vec = complexmessage_scores_vec_new();
+        for {
+            if gpb_rd_eof(&mut r) { break; }
+            let tag: u64 = gpb_rd_varint(&mut r);
+            let fnum: u64 = tag >> 3;
+            let wt: u64 = tag & 7;
+            if fnum == 1 {
+                let v: u64 = gpb_rd_varint(&mut r);
+                m.message_id = v as i64;
+                m.has_message_id = true;
+            } else if fnum == 2 {
+                let ln: i64 = gpb_rd_varint(&mut r) as i64;
+                let s: GpbString = GpbString { data: &r.data[r.pos], len: ln };
+                gpb_strvec_push(&mut vec_tags, s);
+                r.pos = r.pos + ln;
+            } else if fnum == 3 {
+                let ln: i64 = gpb_rd_varint(&mut r) as i64;
+                let subp_items: *u8 = &r.data[r.pos];
+                let sp_items: *mut SubItem = alloc(sizeof(SubItem)) as *mut SubItem;
+                *sp_items = decode_SubItem(subp_items, ln);
+                gpb_ptrvec_push(&mut vec_items, sp_items as *u8);
+                r.pos = r.pos + ln;
+            } else if fnum == 4 {
+                let entry_len_scores: i64 = gpb_rd_varint(&mut r) as i64;
+                let mut entry_r_scores: GpbReader = gpb_rd_new(&r.data[r.pos], entry_len_scores);
+                let mut entry_item_scores: ComplexMessage_Scores_Entry = zeroed();
+                for {
+                    if gpb_rd_eof(&mut entry_r_scores) { break; }
+                    let entry_tag: u64 = gpb_rd_varint(&mut entry_r_scores);
+                    let entry_fnum: u64 = entry_tag >> 3;
+                    let entry_wt: u64 = entry_tag & 7;
+                    if entry_fnum == 1 {
+                        let ln_k: i64 = gpb_rd_varint(&mut entry_r_scores) as i64;
+                        entry_item_scores.key = GpbString { data: &entry_r_scores.data[entry_r_scores.pos], len: ln_k };
+                        entry_r_scores.pos = entry_r_scores.pos + ln_k;
+                    } else if entry_fnum == 2 {
+                        let v: u64 = gpb_rd_varint(&mut entry_r_scores);
+                        entry_item_scores.value = v as i32;
+                    } else { gpb_rd_skip(&mut entry_r_scores, entry_wt); }
+                }
+                complexmessage_scores_vec_push(&mut vec_scores, entry_item_scores);
+                r.pos = r.pos + entry_len_scores;
+            } else if fnum == 5 {
+                let ln: i64 = gpb_rd_varint(&mut r) as i64;
+                m.text_data_ptr = &r.data[r.pos];
+                m.text_data_len = ln;
+                r.pos = r.pos + ln;
+                m.which_payload = 5;
+            } else if fnum == 6 {
+                let v: u64 = gpb_rd_varint(&mut r);
+                m.code_data = v as i32;
+                m.which_payload = 6;
+            } else if fnum == 7 {
+                let ln: i64 = gpb_rd_varint(&mut r) as i64;
+                let subp_item_data: *u8 = &r.data[r.pos];
+                let sp_item_data: *mut SubItem = alloc(sizeof(SubItem)) as *mut SubItem;
+                *sp_item_data = decode_SubItem(subp_item_data, ln);
+                m.item_data = sp_item_data;
+                r.pos = r.pos + ln;
+                m.which_payload = 7;
+            } else { gpb_rd_skip(&mut r, wt); }
+        }
+        m.tags = make_slice(vec_tags.data, vec_tags.len);
+        m.items = make_slice(vec_items.data as *mut *SubItem, vec_items.len);
+        m.scores = make_slice(vec_scores.data, vec_scores.len);
+    }
+    return m;
+}
+
