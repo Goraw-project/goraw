@@ -79,6 +79,18 @@ impl Diagnostic {
         }
     }
 
+    pub fn warning(code: &'static str, span: Span, message: impl Into<String>) -> Diagnostic {
+        Diagnostic {
+            severity: Severity::Warning,
+            code,
+            message: message.into(),
+            span,
+            hint: None,
+            notes: Vec::new(),
+        }
+    }
+
+
     pub fn with_hint(mut self, hint: impl Into<String>) -> Diagnostic {
         self.hint = Some(hint.into());
         self

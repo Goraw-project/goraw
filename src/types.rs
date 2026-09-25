@@ -78,8 +78,15 @@ impl Ty {
             Ty::FnPtr(..) => "ptr".into(),
             Ty::Slice(..) => "%slice".into(),
             Ty::Array(inner, n) => format!("[{n} x {}]", inner.llvm()),
-            Ty::Struct(name) => format!("%struct.{name}"),
+            Ty::Struct(name) => {
+                if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '$') {
+                    format!("%struct.{name}")
+                } else {
+                    format!("%\"struct.{name}\"")
+                }
+            }
             Ty::Err => "i64".into(),
+
         }
     }
 
@@ -258,7 +265,60 @@ pub fn collect(
         }
     }
 
+    // Проверка на рекурсивные структуры бесконечного размера (циклы по значению).
+    fn check_struct_cycle(
+        root: &str,
+        current: &str,
+        ctx: &TyCtx,
+        visited: &mut Vec<String>,
+    ) -> bool {
+        if let Some(info) = ctx.structs.get(current) {
+            for (_, field_ty) in &info.fields {
+                let mut direct_target = None;
+                match field_ty {
+                    Ty::Struct(name) => direct_target = Some(name.as_str()),
+                    Ty::Array(inner, _) => {
+                        let mut curr = inner;
+                        while let Ty::Array(next, _) = &**curr {
+                            curr = next;
+                        }
+                        if let Ty::Struct(name) = &**curr {
+                            direct_target = Some(name.as_str());
+                        }
+                    }
+                    _ => {}
+                }
+                if let Some(tname) = direct_target {
+                    if tname == root || visited.iter().any(|v| v == tname) {
+                        return true;
+                    }
+                    visited.push(tname.to_string());
+                    if check_struct_cycle(root, tname, ctx, visited) {
+                        return true;
+                    }
+                    visited.pop();
+                }
+            }
+        }
+        false
+    }
+
+    for s in structs {
+        let mut visited = Vec::new();
+        if check_struct_cycle(&s.name, &s.name, &ctx, &mut visited) {
+            out.push(
+                Diagnostic::error(
+                    "E0025",
+                    s.span,
+                    format!("структура `{}` имеет бесконечный размер из-за циклической зависимости по значению", s.name),
+                )
+                .with_hint("используйте указатель `*T` или `*mut T` вместо прямого вложения"),
+            );
+        }
+    }
+
     for f in fns {
+
         if ctx.fns.contains_key(&f.name) {
             out.push(Diagnostic::error(
                 "E0022",

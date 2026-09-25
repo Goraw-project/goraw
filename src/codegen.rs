@@ -136,7 +136,7 @@ impl<'a> Codegen<'a> {
         // Глобальные static-переменные с константной инициализацией.
         for s in &prog.statics {
             let ty = self.resolve(&s.ty);
-            let sym = format!("@g.{}", s.name);
+            let sym = llvm_global(&format!("g.{}", s.name));
             let init = match self.eval_const(&s.value, Some(&ty)) {
                 Some(cv) => {
                     if !compat(&ty, &cv.ty()) && cv.ty() != Ty::Err && ty != Ty::Err {
@@ -172,7 +172,8 @@ impl<'a> Codegen<'a> {
         for name in &self.ctx.struct_order {
             let info = &self.ctx.structs[name];
             let fields: Vec<String> = info.fields.iter().map(|(_, t)| t.llvm()).collect();
-            header.push_str(&format!("%struct.{name} = type {{ {} }}\n", fields.join(", ")));
+            let st_ty = Ty::Struct(name.clone()).llvm();
+            header.push_str(&format!("{st_ty} = type {{ {} }}\n", fields.join(", ")));
         }
         if !self.ctx.struct_order.is_empty() {
             header.push('\n');
@@ -191,9 +192,11 @@ impl<'a> Codegen<'a> {
                         plist.push_str(", ...");
                     }
                 }
-                header.push_str(&format!("declare {} @{}({})\n", sig.ret.llvm(), f.name, plist));
+                let fn_sym = llvm_global(&f.name);
+                header.push_str(&format!("declare {} {fn_sym}({})\n", sig.ret.llvm(), plist));
             }
         }
+
 
         // Объявления использованных интринзиков (в стабильном порядке).
         let mut intr: Vec<&String> = self.intrinsics.iter().collect();
@@ -256,12 +259,13 @@ impl<'a> Codegen<'a> {
         // Сигнатура.
         let mut params_sig = Vec::new();
         for (p, pty) in f.params.iter().zip(param_tys.iter()) {
-            params_sig.push(format!("{} %arg.{}", pty.llvm(), p.name));
+            let arg_ident = llvm_local(&format!("arg.{}", p.name));
+            params_sig.push(format!("{} {arg_ident}", pty.llvm()));
         }
+        let fn_sym = llvm_global(&f.name);
         self.body.push_str(&format!(
-            "define {} @{}({}) {{\n",
+            "define {} {fn_sym}({}) {{\n",
             ret_ty.llvm(),
-            f.name,
             params_sig.join(", ")
         ));
 
@@ -269,10 +273,12 @@ impl<'a> Codegen<'a> {
         for (p, pty) in f.params.iter().zip(param_tys.iter()) {
             let slot = self.fresh_slot(&p.name);
             self.alloca(&slot, pty);
-            self.emit(format!("store {ty} %arg.{name}, ptr {slot}", ty = pty.llvm(), name = p.name));
+            let arg_ident = llvm_local(&format!("arg.{}", p.name));
+            self.emit(format!("store {ty} {arg_ident}, ptr {slot}", ty = pty.llvm()));
             let is_self = p.name == "self" && matches!(pty, Ty::Ptr(..));
             self.scopes
                 .last_mut()
+
                 .unwrap()
                 .insert(p.name.clone(), Local { slot, ty: pty.clone(), mutable: false, safe: is_self });
         }
@@ -737,31 +743,42 @@ impl<'a> Codegen<'a> {
         constraints.push("~{fpsr}".into());
         constraints.push("~{flags}".into());
 
-        // Тип результата inline asm: один выход -> его тип, иначе void и
-        // выходы через "=*m" не поддержаны в этой простой модели.
-        let result_ty = if out_slots.len() == 1 { out_slots[0].1.clone() } else { Ty::Void };
         let cons = constraints.join(",");
         let dialect = "inteldialect"; // и masm, и nasm у нас Intel-синтаксис
 
-        if result_ty == Ty::Void {
+        if out_slots.is_empty() {
             self.emit(format!(
                 "call void asm sideeffect {dialect} \"{asm}\", \"{cons}\"({args})",
                 asm = asm_text,
                 args = call_args.join(", ")
             ));
-        } else {
+        } else if out_slots.len() == 1 {
+            let (slot, ty) = out_slots[0].clone();
             let t = self.fresh_tmp();
             self.emit(format!(
                 "{t} = call {rty} asm sideeffect {dialect} \"{asm}\", \"{cons}\"({args})",
-                rty = result_ty.llvm(),
+                rty = ty.llvm(),
                 asm = asm_text,
                 args = call_args.join(", ")
             ));
-            // Записываем единственный выход обратно в переменную.
-            let (slot, ty) = out_slots[0].clone();
             self.emit(format!("store {rty} {t}, ptr {slot}", rty = ty.llvm()));
+        } else {
+            let elem_types: Vec<String> = out_slots.iter().map(|(_, ty)| ty.llvm()).collect();
+            let struct_ty = format!("{{ {} }}", elem_types.join(", "));
+            let t = self.fresh_tmp();
+            self.emit(format!(
+                "{t} = call {struct_ty} asm sideeffect {dialect} \"{asm}\", \"{cons}\"({args})",
+                asm = asm_text,
+                args = call_args.join(", ")
+            ));
+            for (i, (slot, ty)) in out_slots.iter().enumerate() {
+                let ev = self.fresh_tmp();
+                self.emit(format!("{ev} = extractvalue {struct_ty} {t}, {i}"));
+                self.emit(format!("store {rty} {ev}, ptr {slot}", rty = ty.llvm()));
+            }
         }
     }
+
 
     fn rewrite_asm_body(&self, body: &str, names: &HashMap<String, usize>, clobbers: &mut Vec<String>) -> String {
         let mut out = String::new();
@@ -1147,8 +1164,9 @@ impl<'a> Codegen<'a> {
                             return ("0".into(), Ty::Err);
                         }
                         let ty = Ty::FnPtr(sig.params.clone(), Box::new(sig.ret.clone()));
-                        return (format!("@{name}"), ty);
+                        return (llvm_global(name), ty);
                     }
+
                     self.err("E0032", *span, format!("неизвестное имя `{name}`"), Some("объявите переменную через `let`"));
                     ("0".into(), Ty::Err)
                 }
@@ -1769,23 +1787,28 @@ impl<'a> Codegen<'a> {
             } else {
                 plist.push_str(", ...");
             }
+            let fn_sym = llvm_global(&name);
             if sig.ret == Ty::Void {
-                self.emit(format!("call void ({plist}) @{name}({})", argvals.join(", ")));
+                self.emit(format!("call void ({plist}) {fn_sym}({})", argvals.join(", ")));
                 ("".into(), Ty::Void)
             } else {
                 let t = self.fresh_tmp();
-                self.emit(format!("{t} = call {rty} ({plist}) @{name}({})", argvals.join(", "), rty = sig.ret.llvm()));
+                self.emit(format!("{t} = call {rty} ({plist}) {fn_sym}({})", argvals.join(", "), rty = sig.ret.llvm()));
                 self.spill_if_aggregate(t, sig.ret)
             }
-        } else if sig.ret == Ty::Void {
-            self.emit(format!("call void @{name}({})", argvals.join(", ")));
-            ("".into(), Ty::Void)
         } else {
-            let t = self.fresh_tmp();
-            self.emit(format!("{t} = call {rty} @{name}({})", argvals.join(", "), rty = sig.ret.llvm()));
-            self.spill_if_aggregate(t, sig.ret)
+            let fn_sym = llvm_global(&name);
+            if sig.ret == Ty::Void {
+                self.emit(format!("call void {fn_sym}({})", argvals.join(", ")));
+                ("".into(), Ty::Void)
+            } else {
+                let t = self.fresh_tmp();
+                self.emit(format!("{t} = call {rty} {fn_sym}({})", argvals.join(", "), rty = sig.ret.llvm()));
+                self.spill_if_aggregate(t, sig.ret)
+            }
         }
     }
+
 
     /// Функция, вернувшая агрегат (структуру/срез), отдаёт его ЗНАЧЕНИЕМ, а по
     /// нашему соглашению агрегаты представляются АДРЕСОМ. Спиллим во временный
@@ -2718,8 +2741,9 @@ impl<'a> Codegen<'a> {
     }
     fn fresh_slot(&mut self, base: &str) -> String {
         self.slotcount += 1;
-        format!("%{base}.{}", self.slotcount)
+        llvm_local(&format!("{base}.{}", self.slotcount))
     }
+
     fn alloca(&mut self, slot: &str, ty: &Ty) {
         self.allocas.push_str(&format!("  {slot} = alloca {}\n", ty.llvm()));
     }
@@ -2823,3 +2847,20 @@ fn fmt_float(v: f64, ty: &Ty) -> String {
     };
     format!("0x{:016X}", bits)
 }
+
+pub fn llvm_local(name: &str) -> String {
+    if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '$') {
+        format!("%{name}")
+    } else {
+        format!("%\"{name}\"")
+    }
+}
+
+pub fn llvm_global(name: &str) -> String {
+    if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '$') {
+        format!("@{name}")
+    } else {
+        format!("@\"{name}\"")
+    }
+}
+
