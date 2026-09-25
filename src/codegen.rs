@@ -53,6 +53,12 @@ pub struct Codegen<'a> {
     statics: HashMap<String, (String, Ty)>,
     /// Определения глобалов для заголовка.
     globals: String,
+    /// Включена ли встроенная обфускация строк для всех строковых литералов.
+    obfuscate_strings: bool,
+    /// Счётчик обфусцированных строк.
+    obf_count: u32,
+    /// Сгенерирован ли рантайм расшифровки строк.
+    has_obf_decrypt_runtime: bool,
 }
 
 /// Значение константы, свёрнутое в компайл-тайме.
@@ -107,7 +113,19 @@ impl<'a> Codegen<'a> {
             consts: HashMap::new(),
             statics: HashMap::new(),
             globals: String::new(),
+            obfuscate_strings: false,
+            obf_count: 0,
+            has_obf_decrypt_runtime: false,
         }
+    }
+
+    pub fn with_obfuscate_strings(mut self, obf: bool) -> Self {
+        self.obfuscate_strings = obf;
+        self
+    }
+
+    pub fn set_obfuscate_strings(&mut self, obf: bool) {
+        self.obfuscate_strings = obf;
     }
 
     // ---------- сборка модуля ----------
@@ -217,6 +235,13 @@ impl<'a> Codegen<'a> {
             out.push('\n');
         }
         out.push_str(&self.body);
+
+        if self.has_obf_decrypt_runtime {
+            out.push_str("\n; Goraw String Decryption Runtime\n");
+            out.push_str(OBF_DECRYPT_IR);
+            out.push('\n');
+        }
+
         out
     }
 
@@ -1105,6 +1130,9 @@ impl<'a> Codegen<'a> {
                 ("null".into(), ty)
             }
             Expr::Str(s, _) => {
+                if self.obfuscate_strings {
+                    return self.gen_obfuscated_string(s, expected);
+                }
                 let g = self.intern_string(s);
                 // Если ожидается сырой указатель (*u8 / *void / etc.), отдаём ptr (C-строка).
                 // Иначе по умолчанию литерал "..." — первоклассная строка str ([]u8).
@@ -1875,6 +1903,7 @@ impl<'a> Codegen<'a> {
             "zeroed" => return Some(self.bi_zeroed(expected, span)),
             "print" | "println" => return Some(self.bi_print(name == "println", args, span)),
             "str_from_cstr" => return Some(self.bi_str_from_cstr(args, span)),
+            "obf" | "obf_str" => return Some(self.bi_obf(args, span, expected)),
             _ => {}
         }
 
@@ -2581,6 +2610,114 @@ impl<'a> Codegen<'a> {
         (slot, Ty::Slice(Box::new(Ty::U8)))
     }
 
+    /// `obf("...")` / `obf_str("...")` — маркер встроенной обфускации строк.
+    fn bi_obf(&mut self, args: &[Expr], span: Span, expected: Option<&Ty>) -> (String, Ty) {
+        if args.len() != 1 {
+            self.err("E1300", span, format!("`obf` ожидает ровно 1 аргумент (строковый литерал), передано {}", args.len()), Some("пример: obf(\"secret_data\")"));
+            return ("null".into(), Ty::Slice(Box::new(Ty::U8)));
+        }
+        match &args[0] {
+            Expr::Str(s, _) => self.gen_obfuscated_string(s, expected),
+            _ => {
+                self.err("E1301", span, "аргумент `obf(...)` должен быть строковым литералом на этапе компиляции".into(), Some("передайте строку прямо в кавычках: obf(\"...\")"));
+                ("null".into(), Ty::Slice(Box::new(Ty::U8)))
+            }
+        }
+    }
+
+    /// Шифрование строки (циклический сдвиг + аддитивный XOR шифр).
+    /// data[i] = raw[i] ^ ((rotl32(key, i % 32) + i) as u8)
+    pub fn obf_encrypt_str(s: &str, key: u32) -> Vec<u8> {
+        let raw = s.as_bytes();
+        let mut data = Vec::with_capacity(raw.len() + 1);
+        for i in 0..=raw.len() {
+            let b = if i < raw.len() { raw[i] } else { 0 };
+            let shift = (i % 32) as u32;
+            let rot = key.rotate_left(shift);
+            let mask = rot.wrapping_add(i as u32) as u8;
+            data.push(b ^ mask);
+        }
+        data
+    }
+
+    /// Генерация 32-битного ключа для обфускации строки.
+    fn next_obf_key(&mut self, s: &str) -> u32 {
+        let mut h = 0x811c9dc5u32.wrapping_add((self.obf_count + 1).wrapping_mul(0x5bd1e995));
+        for &b in s.as_bytes() {
+            h = (h ^ (b as u32)).wrapping_mul(0x01000193);
+        }
+        let mix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0x1337c0de);
+        let mut key = h ^ mix;
+        if key == 0 {
+            key = 0x5a17e0b1;
+        }
+        key
+    }
+
+    /// Гарантирует наличие рантайм-функции расшифровки `@__goraw_decrypt_str` и интринзика `@llvm.fshl.i32`.
+    fn ensure_obf_decrypt_runtime(&mut self) {
+        if self.has_obf_decrypt_runtime {
+            return;
+        }
+        self.has_obf_decrypt_runtime = true;
+        self.intrinsics.insert("declare i32 @llvm.fshl.i32(i32, i32, i32)".to_string());
+    }
+
+    /// Генерация зашифрованной строковой константы и вызова расшифровки.
+    fn gen_obfuscated_string(&mut self, s: &str, expected: Option<&Ty>) -> (String, Ty) {
+        self.ensure_obf_decrypt_runtime();
+
+        let idx = self.obf_count;
+        self.obf_count += 1;
+
+        let key = self.next_obf_key(s);
+        let enc_bytes = Self::obf_encrypt_str(s, key);
+        let total_bytes = enc_bytes.len();
+
+        let enc_label = format!("@.obf.enc.{}", idx);
+        let buf_label = format!("@.obf.buf.{}", idx);
+        let init_label = format!("@.obf.init.{}", idx);
+
+        let mut enc_str = String::new();
+        for &b in &enc_bytes {
+            enc_str.push_str(&format!("\\{:02X}", b));
+        }
+
+        self.strings.push_str(&format!(
+            "{enc_label} = private unnamed_addr constant [{total_bytes} x i8] c\"{enc_str}\"\n"
+        ));
+        self.strings.push_str(&format!(
+            "{buf_label} = internal global [{total_bytes} x i8] zeroinitializer\n"
+        ));
+        self.strings.push_str(&format!(
+            "{init_label} = internal global i1 false\n"
+        ));
+
+        let dec_ptr = self.fresh_tmp();
+        self.emit(format!(
+            "{dec_ptr} = call ptr @__goraw_decrypt_str(ptr {enc_label}, ptr {buf_label}, i64 {total_bytes}, i32 {key}, ptr {init_label})"
+        ));
+
+        let want_raw_ptr = matches!(expected, Some(Ty::Ptr(..)));
+        if !want_raw_ptr {
+            let str_len = s.as_bytes().len();
+            let slot = self.fresh_slot("obfstr");
+            self.alloca(&slot, &Ty::Slice(Box::new(Ty::U8)));
+            let pf = self.fresh_tmp();
+            self.emit(format!("{pf} = getelementptr %slice, ptr {slot}, i32 0, i32 0"));
+            self.emit(format!("store ptr {dec_ptr}, ptr {pf}"));
+            let lf = self.fresh_tmp();
+            self.emit(format!("{lf} = getelementptr %slice, ptr {slot}, i32 0, i32 1"));
+            self.emit(format!("store i64 {str_len}, ptr {lf}"));
+            (slot, Ty::Slice(Box::new(Ty::U8)))
+        } else {
+            (dec_ptr, Ty::Ptr(Box::new(Ty::U8), false))
+        }
+    }
+
     /// `print(...)` и `println(...)` — полиморфный вывод строк, чисел, bool, указателей.
     fn bi_print(&mut self, newline: bool, args: &[Expr], _span: Span) -> (String, Ty) {
         if !self.ctx.fns.contains_key("printf") {
@@ -3044,7 +3181,7 @@ impl<'a> Codegen<'a> {
                 Expr::Ident(n, _) => {
                     match n.as_str() {
                         "print" | "println" => return Ty::Void,
-                        "str_from_cstr" => return Ty::Slice(Box::new(Ty::U8)),
+                        "str_from_cstr" | "obf" | "obf_str" => return Ty::Slice(Box::new(Ty::U8)),
                         _ => {}
                     }
                     if let Some(l) = self.lookup(n) {
@@ -3446,6 +3583,61 @@ pub fn llvm_global(name: &str) -> String {
         format!("@{name}")
     } else {
         format!("@\"{name}\"")
+    }
+}
+
+const OBF_DECRYPT_IR: &str = r#"define internal ptr @__goraw_decrypt_str(ptr %enc, ptr %buf, i64 %len, i32 %key, ptr %init_ptr) {
+entry:
+  %is_init = load i1, ptr %init_ptr
+  br i1 %is_init, label %exit, label %do_init
+
+do_init:
+  store i1 true, ptr %init_ptr
+  %is_zero = icmp eq i64 %len, 0
+  br i1 %is_zero, label %exit, label %loop
+
+loop:
+  %idx = phi i64 [ 0, %do_init ], [ %next_idx, %loop ]
+  %enc_gep = getelementptr inbounds i8, ptr %enc, i64 %idx
+  %b_enc = load i8, ptr %enc_gep
+  %i32 = trunc i64 %idx to i32
+  %shift = and i32 %i32, 31
+  %rot = call i32 @llvm.fshl.i32(i32 %key, i32 %key, i32 %shift)
+  %mask_i32 = add i32 %rot, %i32
+  %mask = trunc i32 %mask_i32 to i8
+  %b_dec = xor i8 %b_enc, %mask
+  %buf_gep = getelementptr inbounds i8, ptr %buf, i64 %idx
+  store i8 %b_dec, ptr %buf_gep
+  %next_idx = add i64 %idx, 1
+  %done = icmp eq i64 %next_idx, %len
+  br i1 %done, label %exit, label %loop
+
+exit:
+  ret ptr %buf
+}"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_obf_string_encryption_roundtrip() {
+        let original = "Hello, string obfuscation in Goraw!";
+        let key = 0xdeadbeef;
+        let enc = Codegen::obf_encrypt_str(original, key);
+        assert_eq!(enc.len(), original.len() + 1);
+
+        // Decrypt using the same formula as the runtime LLVM IR
+        let mut dec = Vec::with_capacity(enc.len());
+        for i in 0..enc.len() {
+            let shift = (i % 32) as u32;
+            let rot = key.rotate_left(shift);
+            let mask = rot.wrapping_add(i as u32) as u8;
+            dec.push(enc[i] ^ mask);
+        }
+
+        assert_eq!(&dec[..original.len()], original.as_bytes());
+        assert_eq!(dec[original.len()], 0); // null terminator
     }
 }
 

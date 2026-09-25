@@ -26,6 +26,7 @@ struct Options {
     keep_ll: bool,
     test: bool, // собрать и прогнать shadow-тесты
     shadow_strict: bool, // строгий режим обязательных shadow-тестов
+    obfuscate_strings: bool, // встроенная обфускация строковых литералов
 }
 
 fn main() {
@@ -54,6 +55,7 @@ fn print_help() {
     --run            запустить программу после успешной сборки\n\
     --test           собрать и прогнать shadow-тесты (test-блоки)\n\
     --shadow=strict  строгий режим: ошибка E1200 при отсутствии shadow-теста для функции\n\
+    --obfuscate-strings обфускация всех строковых литералов\n\
     -O<n>            уровень оптимизации clang (напр. -O2)\n\
     --keep-ll        не удалять промежуточный .ll при сборке .exe\n\
     --clang <путь>   путь к clang (по умолчанию `clang` из PATH)\n\
@@ -74,6 +76,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut keep_ll = false;
     let mut test = false;
     let mut shadow_strict = false;
+    let mut obfuscate_strings = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -92,6 +95,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--run" => run = true,
             "--test" => test = true,
             "--shadow=strict" => shadow_strict = true,
+            "--obfuscate-strings" | "--obf-strings" => obfuscate_strings = true,
             "--keep-ll" => keep_ll = true,
             "--clang" => {
                 i += 1;
@@ -130,6 +134,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         keep_ll,
         test,
         shadow_strict,
+        obfuscate_strings,
     })
 }
 
@@ -194,7 +199,8 @@ fn run(opts: Options) -> i32 {
 
     // Кодоген + семантика (второй проход).
     let ir = {
-        let cg = codegen::Codegen::new(&ctx, &mut diags);
+        let cg = codegen::Codegen::new(&ctx, &mut diags)
+            .with_obfuscate_strings(opts.obfuscate_strings);
         cg.emit_module(&prog)
     };
 
