@@ -12,7 +12,8 @@
 
 use crate::diag::{Diagnostic, Diags, Pos, Span};
 use iced_x86::code_asm::*;
-use iced_x86::{BlockEncoder, BlockEncoderOptions, InstructionBlock};
+use iced_x86::BlockEncoderOptions;
+use std::collections::HashMap;
 
 use object::write::{Object, Symbol, SymbolSection};
 use object::{
@@ -42,24 +43,24 @@ enum Item {
     Insn { mnem: String, ops: Vec<Operand>, span: Span },
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum Operand {
     R64(AsmRegister64),
     R32(AsmRegister32),
     Imm(i64),
     Mem(AsmMemoryOperand),
+    Label(String),
 }
+
 
 struct Program {
     items: Vec<Item>,
-    globals: Vec<String>,
 }
 
 /// Разбор построчно: `;` — комментарий, `name:` — метка, `section/global` —
 /// директивы, иначе инструкция `mnem op, op`.
 fn parse(src: &str, diags: &mut Diags) -> Program {
     let mut items = Vec::new();
-    let mut globals = Vec::new();
 
     for (i, raw) in src.lines().enumerate() {
         let line_no = (i + 1) as u32;
@@ -94,9 +95,7 @@ fn parse(src: &str, diags: &mut Diags) -> Program {
         match head.to_lowercase().as_str() {
             "section" => items.push(Item::Section(rest.trim().to_string())),
             "global" | "globl" => {
-                let name = rest.trim().to_string();
-                globals.push(name.clone());
-                items.push(Item::Global(name));
+                items.push(Item::Global(rest.trim().to_string()));
             }
             _ => {
                 // инструкция
@@ -113,7 +112,7 @@ fn parse(src: &str, diags: &mut Diags) -> Program {
                                         span,
                                         format!("не разобрать операнд `{part}`"),
                                     )
-                                    .with_hint("поддержаны регистры (rax/eax/...) и числа"),
+                                    .with_hint("поддержаны регистры (rax/eax/...), числа и метки"),
                                 );
                             }
                         }
@@ -124,8 +123,9 @@ fn parse(src: &str, diags: &mut Diags) -> Program {
         }
     }
 
-    Program { items, globals }
+    Program { items }
 }
+
 
 fn is_ident(s: &str) -> bool {
     !s.is_empty()
@@ -151,8 +151,15 @@ fn parse_operand(s: &str) -> Option<Operand> {
     if s.starts_with('[') && s.ends_with(']') {
         return parse_mem(&s[1..s.len() - 1]).map(Operand::Mem);
     }
-    parse_imm(s).map(Operand::Imm)
+    if let Some(imm) = parse_imm(s) {
+        return Some(Operand::Imm(imm));
+    }
+    if is_ident(s) {
+        return Some(Operand::Label(s.to_string()));
+    }
+    None
 }
+
 
 /// Разбор адреса памяти `base [+ index [* scale]] [+/- disp]` (64-битные
 /// регистры). Возвращает AsmMemoryOperand без размера — размер задаётся при
@@ -260,18 +267,41 @@ fn reg32(s: &str) -> Option<AsmRegister32> {
 fn encode(prog: &Program, diags: &mut Diags) -> Option<Vec<u8>> {
     let mut a = CodeAssembler::new(64).ok()?;
 
-    // Метка -> индекс инструкции, перед которой она стоит.
-    let mut label_at: Vec<(String, usize)> = Vec::new();
+    // 1. Предварительно создаём CodeLabel для каждой метки в программе.
+    let mut labels: HashMap<String, CodeLabel> = HashMap::new();
+    let mut label_order: Vec<String> = Vec::new();
 
+    for item in &prog.items {
+        if let Item::Label(name) = item {
+            if !labels.contains_key(name) {
+                labels.insert(name.clone(), a.create_label());
+                label_order.push(name.clone());
+            }
+        }
+    }
+
+    // 2. Кодируем инструкции и привязываем метки.
     for item in &prog.items {
         match item {
             Item::Label(name) => {
-                let idx = a.instructions().len();
-                label_at.push((name.clone(), idx));
+                if let Some(lbl) = labels.get_mut(name) {
+                    if let Err(e) = a.set_label(lbl) {
+                        diags.push(Diagnostic::error("A0103", Span::dummy(), format!("ошибка метки `{name}`: {e}")));
+                    }
+                }
             }
-            Item::Global(_) | Item::Section(_) => {}
+            Item::Global(_) => {}
+            Item::Section(sec) => {
+                if sec != ".text" && sec != "text" {
+                    diags.push(Diagnostic::warning(
+                        "A0007",
+                        Span::dummy(),
+                        format!("секция `{sec}` пока сливается в .text"),
+                    ));
+                }
+            }
             Item::Insn { mnem, ops, span } => {
-                emit_insn(&mut a, mnem, ops, *span, diags);
+                emit_insn(&mut a, mnem, ops, *span, &labels, diags);
             }
         }
     }
@@ -279,35 +309,34 @@ fn encode(prog: &Program, diags: &mut Diags) -> Option<Vec<u8>> {
         return None;
     }
 
-    // Кодируем блок и получаем смещение каждой инструкции.
-    let instrs = a.instructions().to_vec();
-    let block = InstructionBlock::new(&instrs, 0);
-    let result = match BlockEncoder::encode(64, block, BlockEncoderOptions::RETURN_NEW_INSTRUCTION_OFFSETS) {
+    // 3. Кодируем блок и получаем смещения через assemble_options.
+    let result = match a.assemble_options(0, BlockEncoderOptions::RETURN_NEW_INSTRUCTION_OFFSETS) {
         Ok(r) => r,
         Err(e) => {
             diags.push(Diagnostic::error("A0100", Span::dummy(), format!("ошибка кодирования: {e}")));
             return None;
         }
     };
-    let code = result.code_buffer;
-    let offsets = result.new_instruction_offsets;
+    // 4. Снимаем смещения меток до перемещения code_buffer.
+    let label_offsets: Vec<(String, u64)> = label_order
+        .iter()
+        .map(|name| {
+            let off = labels.get(name).and_then(|lbl| result.label_ip(lbl).ok()).unwrap_or(0);
+            (name.clone(), off)
+        })
+        .collect();
 
-    let label_off = |idx: usize| -> u64 {
-        if idx < offsets.len() {
-            offsets[idx] as u64
-        } else {
-            code.len() as u64
-        }
-    };
+    let code = result.inner.code_buffer;
 
-    // Собираем COFF-объектник.
+    // 5. Собираем COFF-объектник.
     let mut obj = Object::new(BinaryFormat::Coff, Architecture::X86_64, Endianness::Little);
     let text = obj.add_section(Vec::new(), b".text".to_vec(), SectionKind::Text);
     let base = obj.append_section_data(text, &code, 16);
 
-    for (name, idx) in &label_at {
-        let is_global = prog.globals.iter().any(|g| g == name);
-        let value = base + label_off(*idx);
+    for (name, off) in &label_offsets {
+        let is_global = prog.items.iter().any(|it| matches!(it, Item::Global(g) if g == name));
+        let value = base + off;
+
         obj.add_symbol(Symbol {
             name: name.clone().into_bytes(),
             value,
@@ -320,6 +349,7 @@ fn encode(prog: &Program, diags: &mut Diags) -> Option<Vec<u8>> {
         });
     }
 
+
     match obj.write() {
         Ok(bytes) => Some(bytes),
         Err(e) => {
@@ -329,9 +359,95 @@ fn encode(prog: &Program, diags: &mut Diags) -> Option<Vec<u8>> {
     }
 }
 
+fn is_branch_mnem(mnem: &str) -> bool {
+    matches!(
+        mnem,
+        "jmp"
+            | "je"
+            | "jne"
+            | "jz"
+            | "jnz"
+            | "ja"
+            | "jae"
+            | "jb"
+            | "jbe"
+            | "jg"
+            | "jge"
+            | "jl"
+            | "jle"
+            | "js"
+            | "jns"
+            | "call"
+            | "loop"
+    )
+}
+
+fn emit_branch(
+    a: &mut CodeAssembler,
+    mnem: &str,
+    target: &str,
+    span: Span,
+    labels: &HashMap<String, CodeLabel>,
+    diags: &mut Diags,
+) -> Result<(), iced_x86::IcedError> {
+    let lbl = match labels.get(target) {
+        Some(l) => *l,
+        None => {
+            diags.push(
+                Diagnostic::error("A0006", span, format!("неизвестная метка перехода `{target}`"))
+                    .with_hint(format!("объявите метку `{target}:` внутри файла")),
+            );
+            return Ok(());
+        }
+    };
+    match mnem {
+        "jmp" => a.jmp(lbl),
+        "call" => a.call(lbl),
+        "je" | "jz" => a.je(lbl),
+        "jne" | "jnz" => a.jne(lbl),
+        "jl" => a.jl(lbl),
+        "jle" => a.jle(lbl),
+        "jg" => a.jg(lbl),
+        "jge" => a.jge(lbl),
+        "ja" => a.ja(lbl),
+        "jae" => a.jae(lbl),
+        "jb" => a.jb(lbl),
+        "jbe" => a.jbe(lbl),
+        "js" => a.js(lbl),
+        "jns" => a.jns(lbl),
+        "loop" => a.loop_(lbl),
+        _ => unreachable!(),
+    }
+}
+
 /// Кодирует одну инструкцию, добавляя её в ассемблер `a`.
-fn emit_insn(a: &mut CodeAssembler, mnem: &str, ops: &[Operand], span: Span, diags: &mut Diags) {
+fn emit_insn(
+    a: &mut CodeAssembler,
+    mnem: &str,
+    ops: &[Operand],
+    span: Span,
+    labels: &HashMap<String, CodeLabel>,
+    diags: &mut Diags,
+) {
     use Operand::*;
+
+    // Ветвления и вызовы
+    if is_branch_mnem(mnem) {
+        if let [Label(target)] = ops {
+            if let Err(e) = emit_branch(a, mnem, target, span, labels, diags) {
+                diags.push(Diagnostic::error("A0102", span, format!("не закодировать `{mnem}`: {e}")));
+            }
+            return;
+        } else if matches!(mnem, "jmp" | "call") {
+            if let [R64(r)] = ops {
+                let res = if mnem == "jmp" { a.jmp(*r) } else { a.call(*r) };
+                if let Err(e) = res {
+                    diags.push(Diagnostic::error("A0102", span, format!("не закодировать `{mnem}`: {e}")));
+                }
+                return;
+            }
+        }
+    }
 
     // Семейство двухоперандных ALU с одинаковыми формами — отдельно.
     if matches!(mnem, "add" | "sub" | "and" | "or" | "xor" | "cmp") {
@@ -374,7 +490,7 @@ fn emit_insn(a: &mut CodeAssembler, mnem: &str, ops: &[Operand], span: Span, dia
         _ => {
             diags.push(
                 Diagnostic::error("A0004", span, format!("не поддержанная инструкция или форма: `{mnem}`"))
-                    .with_hint("в этом срезе: mov/add/sub/and/or/xor/cmp/push/pop/inc/dec/neg/not/imul/ret/nop/syscall"),
+                    .with_hint("поддержаны: mov/add/sub/and/or/xor/cmp/push/pop/inc/dec/neg/not/imul/ret/nop/syscall, а также jmp/jcc/call/loop"),
             );
             return;
         }
