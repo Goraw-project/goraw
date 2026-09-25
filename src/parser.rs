@@ -190,8 +190,8 @@ impl<'a> Parser<'a> {
                     Some(s) => statics.push(s),
                     None => self.synchronize(),
                 },
-                // `test "name" { ... }` — контекстно (test не зарезервирован)
-                Tok::Ident(s) if s == "test" => match self.parse_test() {
+                // `test "name" { ... }` или `shadow name { ... }` — контекстно
+                Tok::Ident(s) if s == "test" || s == "shadow" => match self.parse_test() {
                     Some(t) => tests.push(t),
                     None => self.synchronize(),
                 },
@@ -248,14 +248,18 @@ impl<'a> Parser<'a> {
 
     fn parse_test(&mut self) -> P<TestDef> {
         let start = self.span();
-        self.bump(); // `test`
+        self.bump(); // `test` или `shadow`
         let name = match self.peek().clone() {
             Tok::Str(s) => {
                 self.bump();
                 s
             }
+            Tok::Ident(s) => {
+                self.bump();
+                s
+            }
             _ => {
-                self.diags.push(Diagnostic::error("E0025", self.span(), "после `test` ожидалось имя-строка, напр. `test \"складывает\" { ... }`"));
+                self.diags.push(Diagnostic::error("E0025", self.span(), "после `test`/`shadow` ожидалось имя (строка или идентификатор), напр. `test \"сложение\" { ... }` или `shadow add { ... }`"));
                 String::from("<unnamed>")
             }
         };

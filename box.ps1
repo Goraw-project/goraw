@@ -13,11 +13,7 @@
     .\box.ps1 gorawc --run examples/strings_v2.gw
 #>
 
-[CmdletBinding()]
-param(
-    [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]]$CommandAndArgs
-)
+$CommandAndArgs = $args
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $scriptDir) { $scriptDir = (Get-Location).Path }
@@ -59,6 +55,8 @@ if ($CommandAndArgs.Count -eq 0) {
     Write-Host "  .\box.ps1 check                  - запуск cargo check под лимитом 16 ГБ"
     Write-Host "  .\box.ps1 run [args]             - запуск cargo run под лимитом 16 ГБ"
     Write-Host "  .\box.ps1 gorawc [args]          - запуск скомпилированного gorawc под лимитом 16 ГБ"
+    Write-Host "  .\box.ps1 gorawas [args]         - запуск ассемблера gorawas под лимитом 16 ГБ"
+    Write-Host "  .\box.ps1 gorawpb [args]         - запуск генератора gorawpb под лимитом 16 ГБ"
     Write-Host "  .\box.ps1 <любая команда>        - запуск произвольной команды в изолированном контейнере"
     Write-Host ""
     Write-Host "Телеметрия: отслеживание Peak RAM, CPU Time, Wall Clock, I/O и кодов завершения."
@@ -94,6 +92,24 @@ switch ($first) {
         if (-not (Test-Path $exePath)) {
             Write-Host "[BOX] gorawc.exe не найден, выполняем сборку..." -ForegroundColor Yellow
             cargo build --bin gorawc
+        }
+        $targetExe = $exePath
+        $targetArgs = @($rest)
+    }
+    "gorawas" {
+        $exePath = Join-Path $scriptDir "target\debug\gorawas.exe"
+        if (-not (Test-Path $exePath)) {
+            Write-Host "[BOX] gorawas.exe не найден, выполняем сборку..." -ForegroundColor Yellow
+            cargo build --bin gorawas
+        }
+        $targetExe = $exePath
+        $targetArgs = @($rest)
+    }
+    "gorawpb" {
+        $exePath = Join-Path $scriptDir "target\debug\gorawpb.exe"
+        if (-not (Test-Path $exePath)) {
+            Write-Host "[BOX] gorawpb.exe не найден, выполняем сборку..." -ForegroundColor Yellow
+            cargo build --bin gorawpb
         }
         $targetExe = $exePath
         $targetArgs = @($rest)

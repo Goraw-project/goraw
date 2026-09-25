@@ -15,6 +15,8 @@ const JIT_RUNTIME_C: &str = include_str!("../runtime/goraw_jit.c");
 
 struct Options {
     input: PathBuf,
+    extra_objects: Vec<PathBuf>,
+    extra_asms: Vec<PathBuf>,
     output: Option<PathBuf>,
     emit_llvm: bool,   // остановиться на .ll
     json: bool,        // диагностика в JSON
@@ -23,6 +25,7 @@ struct Options {
     clang: String,
     keep_ll: bool,
     test: bool, // собрать и прогнать shadow-тесты
+    shadow_strict: bool, // строгий режим обязательных shadow-тестов
 }
 
 fn main() {
@@ -42,7 +45,7 @@ fn print_help() {
         "gorawc — компилятор языка Goraw (LLVM backend)\n\
 \n\
 ИСПОЛЬЗОВАНИЕ:\n\
-    gorawc <файл.gw> [опции]\n\
+    gorawc <файл.gw> [helper.asm ...] [lib.obj ...] [опции]\n\
 \n\
 ОПЦИИ:\n\
     -o <путь>        имя выходного файла (.exe или .ll)\n\
@@ -50,6 +53,7 @@ fn print_help() {
     --json           печатать диагностику в LLM-формате (JSON + XML-нотки)\n\
     --run            запустить программу после успешной сборки\n\
     --test           собрать и прогнать shadow-тесты (test-блоки)\n\
+    --shadow=strict  строгий режим: ошибка E1200 при отсутствии shadow-теста для функции\n\
     -O<n>            уровень оптимизации clang (напр. -O2)\n\
     --keep-ll        не удалять промежуточный .ll при сборке .exe\n\
     --clang <путь>   путь к clang (по умолчанию `clang` из PATH)\n\
@@ -59,6 +63,8 @@ fn print_help() {
 
 fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut input: Option<PathBuf> = None;
+    let mut extra_objects: Vec<PathBuf> = Vec::new();
+    let mut extra_asms: Vec<PathBuf> = Vec::new();
     let mut output = None;
     let mut emit_llvm = false;
     let mut json = false;
@@ -67,6 +73,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut clang = "clang".to_string();
     let mut keep_ll = false;
     let mut test = false;
+    let mut shadow_strict = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -84,6 +91,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--json" => json = true,
             "--run" => run = true,
             "--test" => test = true,
+            "--shadow=strict" => shadow_strict = true,
             "--keep-ll" => keep_ll = true,
             "--clang" => {
                 i += 1;
@@ -92,17 +100,37 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             s if s.starts_with("-O") => opt = Some(s[2..].to_string()),
             s if s.starts_with('-') => return Err(format!("неизвестная опция `{s}` (см. --help)")),
             s => {
-                if input.is_some() {
+                let p = PathBuf::from(s);
+                let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if ext == "asm" {
+                    extra_asms.push(p);
+                } else if ext == "obj" || ext == "o" {
+                    extra_objects.push(p);
+                } else if input.is_none() {
+                    input = Some(p);
+                } else {
                     return Err(format!("лишний аргумент `{s}`"));
                 }
-                input = Some(PathBuf::from(s));
             }
         }
         i += 1;
     }
 
     let input = input.ok_or("не указан входной файл (см. --help)")?;
-    Ok(Options { input, output, emit_llvm, json, run, opt, clang, keep_ll, test })
+    Ok(Options {
+        input,
+        extra_objects,
+        extra_asms,
+        output,
+        emit_llvm,
+        json,
+        run,
+        opt,
+        clang,
+        keep_ll,
+        test,
+        shadow_strict,
+    })
 }
 
 fn run(opts: Options) -> i32 {
@@ -127,6 +155,30 @@ fn run(opts: Options) -> i32 {
         let mut p = parser::Parser::new(toks, &src, &mut diags);
         p.parse_program()
     };
+
+    // Проверка строгого режима shadow-тестов (--shadow=strict)
+    if opts.shadow_strict {
+        for f in &prog.fns {
+            if !f.is_extern && f.name != "main" && !f.is_test {
+                let has_test = prog.tests.iter().any(|t| {
+                    t.name == f.name
+                        || t.name == format!("shadow {}", f.name)
+                        || t.name.starts_with(&format!("{} ", f.name))
+                        || t.name.contains(&f.name)
+                });
+                if !has_test {
+                    diags.push(
+                        diag::Diagnostic::error(
+                            "E1200",
+                            f.span,
+                            format!("функция `{}` не имеет обязательного shadow-теста (--shadow=strict)", f.name),
+                        )
+                        .with_hint(format!("добавьте `shadow {} {{ ... }}` или `test \"{}\" {{ ... }}`", f.name, f.name)),
+                    );
+                }
+            }
+        }
+    }
 
     // Режим тестов: превращаем test-блоки в функции и генерируем harness-main.
     if opts.test {
@@ -169,6 +221,31 @@ fn run(opts: Options) -> i32 {
         return 0;
     }
 
+    // Сборка внешних .asm файлов через нативный gorawas
+    let mut temp_objs = Vec::new();
+    for asm_path in &opts.extra_asms {
+        let asm_src = match std::fs::read_to_string(asm_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("не удалось прочитать `{}`: {e}", asm_path.display());
+                return 2;
+            }
+        };
+        let (obj_bytes, asm_diags) = gorawc::asm::assemble(&asm_path.display().to_string(), &asm_src);
+        if asm_diags.has_errors() {
+            emit_diags(&asm_diags, opts.json);
+            return 1;
+        }
+        let out_obj = asm_path.with_extension("obj");
+        if let Some(bytes) = obj_bytes {
+            if let Err(e) = std::fs::write(&out_obj, bytes) {
+                eprintln!("не удалось записать `{}`: {e}", out_obj.display());
+                return 2;
+            }
+            temp_objs.push(out_obj);
+        }
+    }
+
     // Если программа использует jit-блоки — рядом кладём C-рантайм и линкуем его.
     let uses_jit = ir.contains("@goraw_jit_compile(");
     let mut jit_rt_path: Option<PathBuf> = None;
@@ -190,6 +267,12 @@ fn run(opts: Options) -> i32 {
     cmd.arg(&ll_path);
     if let Some(rt) = &jit_rt_path {
         cmd.arg(rt);
+    }
+    for obj in &opts.extra_objects {
+        cmd.arg(obj);
+    }
+    for obj in &temp_objs {
+        cmd.arg(obj);
     }
     cmd.arg("-o").arg(&exe_path);
     // Подавляем предупреждение о переопределении triple (у нас он корректный).
