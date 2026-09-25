@@ -46,11 +46,30 @@ fn main() -> i32 {
 }
 ```
 
+## Документация проекта
+
+Подробные руководства по всем компонентам экосистемы:
+
+- 📖 **[docs/LANGUAGE_REFERENCE.md](docs/LANGUAGE_REFERENCE.md)** — Полный справочник по языку Goraw (система типов, первоклассный `str`, срезы `[]T`, безопасные/небезопасные указатели, методы, конвейеры `|>`, JIT).
+- ⚙️ **[docs/GORAWAS_MANUAL.md](docs/GORAWAS_MANUAL.md)** — Руководство по нативному ассемблеру `gorawas` (диалект Goraw-asm, адресация памяти, RIP-relative, секции `.data`/`.rdata`, директивы `db..dq`, COFF-релокации).
+- 🛡️ **[docs/CONTAINER_BOX.md](docs/CONTAINER_BOX.md)** — Контейнеризация и изоляция сборки через `box` (жесткий лимит памяти 16 ГБ, телеметрия ядра Windows Job Objects, защита от OOM).
+- 🧪 **[docs/SHADOW_TESTS.md](docs/SHADOW_TESTS.md)** — Система обязательных Shadow-тестов (`shadow`, `assert`, раннер `--test`, строгий режим `--shadow=strict`).
+- 🏛️ **[docs/COMPILER_ARCHITECTURE.md](docs/COMPILER_ARCHITECTURE.md)** — Архитектура компилятора, защита от зацикливания (Circuit Breaker) и машиночитаемая диагностика для LLM (`--json`).
+- 📦 **[docs/PROTOBUF.md](docs/PROTOBUF.md)** — Генератор схем Protobuf Editions / PB2 (`gorawpb`, wire-совместимость с Google `protoc`).
+- 🗺️ **[docs/ROADMAP.md](docs/ROADMAP.md)** — Дорожная карта развития проекта.
+
+---
+
 ## Сборка компилятора
 
-Нужны **Rust** (1.97+) и **LLVM/clang** в `PATH` (проверялось на LLVM 22,
-цель `x86_64-w64-windows-gnu`).
+Рекомендуется запускать сборку и тесты через контейнерный раннер `box` с аппаратным лимитом 16 ГБ памяти и подробной телеметрией:
 
+```sh
+.\box.cmd build                  # Сборка проекта под лимитом 16 ГБ
+.\box.cmd test                   # Прогон всех unit-тестов
+```
+
+Стандартная сборка через Cargo:
 ```sh
 cargo build --release
 # бинари: target/release/{gorawc, gorawas, gorawpb}
@@ -66,16 +85,17 @@ gorawpb schema.proto -o schema.gw       # .proto (Editions) → Goraw
 Protobuf-пример (encode+decode, байты идентичны protoc) —
 [examples/proto/](examples/proto/).
 
-## Использование
+## Использование компилятора
 
 ```
-gorawc <файл.gw> [опции]
+gorawc <файл.gw> [helper.asm ...] [lib.obj ...] [опции]
 
   -o <путь>        имя выходного файла (.exe или .ll)
   --emit-llvm      остановиться на LLVM IR (.ll), не звать clang
   --json           диагностика в LLM-формате (JSON + XML-нотки)
   --run            запустить программу после успешной сборки
   --test           собрать и прогнать shadow-тесты (test-блоки)
+  --shadow=strict  строгий режим: ошибка E1200 при отсутствии shadow-теста
   -O<n>            уровень оптимизации clang (напр. -O2)
   --keep-ll        не удалять промежуточный .ll
   --clang <путь>   путь к clang (по умолчанию из PATH)
@@ -84,9 +104,10 @@ gorawc <файл.gw> [опции]
 Примеры:
 
 ```sh
-gorawc examples/tour.gw --run          # собрать и запустить
-gorawc examples/math.gw --emit-llvm    # посмотреть сгенерированный IR
-gorawc broken.gw --json                # ошибки в JSON для LLM
+gorawc examples/tour.gw --run                          # собрать и запустить
+gorawc examples/shadow_strict_demo.gw --shadow=strict --test # строгие shadow-тесты
+gorawc main.gw helper.asm --run                        # Goraw + нативный ассемблер вместе
+gorawc broken.gw --json                                # ошибки в JSON для LLM
 ```
 
 ## Язык
