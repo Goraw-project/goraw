@@ -1106,10 +1106,10 @@ impl<'a> Codegen<'a> {
             }
             Expr::Str(s, _) => {
                 let g = self.intern_string(s);
-                // В контексте `str` (== []u8) литерал становится срезом с длиной
-                // в байтах (без завершающего NUL); иначе — C-строка `*u8`.
-                let want_str = matches!(expected, Some(Ty::Slice(e)) if **e == Ty::U8);
-                if want_str {
+                // Если ожидается сырой указатель (*u8 / *void / etc.), отдаём ptr (C-строка).
+                // Иначе по умолчанию литерал "..." — первоклассная строка str ([]u8).
+                let want_raw_ptr = matches!(expected, Some(Ty::Ptr(..)));
+                if !want_raw_ptr {
                     let len = s.as_bytes().len();
                     let slot = self.fresh_slot("str");
                     self.alloca(&slot, &Ty::Slice(Box::new(Ty::U8)));
@@ -1226,6 +1226,9 @@ impl<'a> Codegen<'a> {
                 let t = self.fresh_tmp();
                 self.emit(format!("{t} = load {lty}, ptr {ptr}", lty = ty.llvm()));
                 (t, ty)
+            }
+            Expr::Slice { base, start, end, span } => {
+                self.gen_slice(base, start.as_deref(), end.as_deref(), *span)
             }
             Expr::StructLit { name, fields, span } => self.gen_struct_lit(name, fields, *span),
             Expr::ArrayLit(elems, span) => self.gen_array_lit(elems, expected, *span),
@@ -1524,6 +1527,16 @@ impl<'a> Codegen<'a> {
 
         let is_cmp = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge);
 
+        // Операции над первоклассными строками str ([]u8).
+        if is_str(&lty) && is_str(&rty) {
+            if op == BinOp::Add {
+                return self.gen_str_concat(&lv, &rv);
+            }
+            if op == BinOp::Eq || op == BinOp::Ne {
+                return self.gen_str_cmp(op, &lv, &rv);
+            }
+        }
+
         // Сравнение указателей допустимо для == и !=.
         if lty.is_ptr() && rty.is_ptr() && matches!(op, BinOp::Eq | BinOp::Ne) {
             let t = self.fresh_tmp();
@@ -1635,6 +1648,18 @@ impl<'a> Codegen<'a> {
         if src == dst {
             return (v, dst);
         }
+        // Коэрция среза str -> сырой указатель *u8.
+        if let Ty::Slice(ref elem) = src {
+            if let Ty::Ptr(ref delem, _) = dst {
+                if **delem == **elem {
+                    let pf = self.fresh_tmp();
+                    self.emit(format!("{pf} = getelementptr %slice, ptr {v}, i32 0, i32 0"));
+                    let p = self.fresh_tmp();
+                    self.emit(format!("{p} = load ptr, ptr {pf}"));
+                    return (p, dst);
+                }
+            }
+        }
         // Указатели: требуют unsafe.
         if src.is_ptr() && dst.is_ptr() {
             return (v, dst); // непрозрачные ptr — без инструкции
@@ -1675,9 +1700,18 @@ impl<'a> Codegen<'a> {
     }
 
     fn gen_call(&mut self, callee: &Expr, args: &[Expr], span: Span, expected: Option<&Ty>) -> (String, Ty) {
-        // Вызов метода: expr.method(args) -> Type__method(self, args).
+        // Вызов метода: expr.method(args) -> Type__method(self, args) или встроенный метод str.
         if let Expr::Field { base, field, .. } = callee {
             let bt = self.type_of(base);
+            if is_str(&bt) {
+                match field.as_str() {
+                    "starts_with" => return self.gen_str_starts_with(base, args, span),
+                    "ends_with" => return self.gen_str_ends_with(base, args, span),
+                    "clone" => return self.gen_str_clone(base, args, span),
+                    "is_empty" => return self.gen_str_is_empty(base, args, span),
+                    _ => {}
+                }
+            }
             let tname = match &bt {
                 Ty::Struct(n) => Some(n.clone()),
                 Ty::Ptr(inner, _) => match &**inner {
@@ -1839,6 +1873,8 @@ impl<'a> Codegen<'a> {
             "f32_from_bits" | "f64_from_bits" => return Some(self.bi_from_bits(name, args, span)),
             "sizeof" => return Some(self.bi_sizeof(args, span)),
             "zeroed" => return Some(self.bi_zeroed(expected, span)),
+            "print" | "println" => return Some(self.bi_print(name == "println", args, span)),
+            "str_from_cstr" => return Some(self.bi_str_from_cstr(args, span)),
             _ => {}
         }
 
@@ -2103,6 +2139,524 @@ impl<'a> Codegen<'a> {
         (slot, Ty::Slice(Box::new(elem)))
     }
 
+    /// Срез: `base[start..end]`, `base[start..]`, `base[..end]`, `base[..]`.
+    fn gen_slice(
+        &mut self,
+        base: &Expr,
+        start_expr: Option<&Expr>,
+        end_expr: Option<&Expr>,
+        span: Span,
+    ) -> (String, Ty) {
+        let (bv, bty) = self.gen_expr(base, None);
+        let (elem, data_ptr, cur_len) = match bty {
+            Ty::Slice(elem) => {
+                let dp = self.fresh_tmp();
+                self.emit(format!("{dp} = getelementptr %slice, ptr {bv}, i32 0, i32 0"));
+                let data = self.fresh_tmp();
+                self.emit(format!("{data} = load ptr, ptr {dp}"));
+                let lp = self.fresh_tmp();
+                self.emit(format!("{lp} = getelementptr %slice, ptr {bv}, i32 0, i32 1"));
+                let len = self.fresh_tmp();
+                self.emit(format!("{len} = load i64, ptr {lp}"));
+                (*elem, data, len)
+            }
+            Ty::Array(elem, n) => {
+                let len = n.to_string();
+                let data = self.fresh_tmp();
+                self.emit(format!("{data} = getelementptr [{n} x {ety}], ptr {bv}, i64 0, i64 0", ety = elem.llvm()));
+                (*elem, data, len)
+            }
+            Ty::Ptr(elem, _) => {
+                if end_expr.is_none() {
+                    self.err(
+                        "E0096",
+                        span,
+                        "для взятия среза от сырого указателя необходимо указать верхнюю границу: `ptr[start..end]`".into(),
+                        None,
+                    );
+                    return ("null".into(), Ty::Err);
+                }
+                (*elem, bv, "".to_string())
+            }
+            Ty::Err => return ("null".into(), Ty::Err),
+            other => {
+                self.err(
+                    "E0097",
+                    base.span(),
+                    format!("срез можно брать только от среза, массива или указателя, а тут `{}`", other.name()),
+                    None,
+                );
+                return ("null".into(), Ty::Err);
+            }
+        };
+
+        let start_val = if let Some(se) = start_expr {
+            let (sv, _) = self.gen_expr(se, Some(&Ty::I64));
+            sv
+        } else {
+            "0".to_string()
+        };
+
+        let end_val = if let Some(ee) = end_expr {
+            let (ev, _) = self.gen_expr(ee, Some(&Ty::I64));
+            ev
+        } else {
+            cur_len.clone()
+        };
+
+        if !cur_len.is_empty() {
+            self.emit_slice_bounds_check(&start_val, &end_val, &cur_len);
+        } else {
+            let s_lt_0 = self.fresh_tmp();
+            self.emit(format!("{s_lt_0} = icmp slt i64 {start_val}, 0"));
+            let e_lt_s = self.fresh_tmp();
+            self.emit(format!("{e_lt_s} = icmp slt i64 {end_val}, {start_val}"));
+            let bad = self.fresh_tmp();
+            self.emit(format!("{bad} = or i1 {s_lt_0}, {e_lt_s}"));
+            let fail = self.fresh_label("ptr_slice_oob");
+            let ok = self.fresh_label("ptr_slice_inb");
+            self.emit(format!("br i1 {bad}, label %{fail}, label %{ok}"));
+            self.emit_label(&fail);
+            if !self.ctx.fns.contains_key("abort") {
+                self.use_intrinsic("declare void @abort()".into());
+            }
+            self.emit("call void @abort()".into());
+            self.emit("unreachable".into());
+            self.emit_label(&ok);
+        }
+
+        let new_len = self.fresh_tmp();
+        self.emit(format!("{new_len} = sub i64 {end_val}, {start_val}"));
+        let new_data = self.fresh_tmp();
+        self.emit(format!("{new_data} = getelementptr {ety}, ptr {data_ptr}, i64 {start_val}", ety = elem.llvm()));
+
+        let slot = self.fresh_slot("slice");
+        self.alloca(&slot, &Ty::Slice(Box::new(elem.clone())));
+        let pf = self.fresh_tmp();
+        self.emit(format!("{pf} = getelementptr %slice, ptr {slot}, i32 0, i32 0"));
+        self.emit(format!("store ptr {new_data}, ptr {pf}"));
+        let lf = self.fresh_tmp();
+        self.emit(format!("{lf} = getelementptr %slice, ptr {slot}, i32 0, i32 1"));
+        self.emit(format!("store i64 {new_len}, ptr {lf}"));
+        (slot, Ty::Slice(Box::new(elem)))
+    }
+
+    /// Проверка границ среза: 0 <= start <= end <= len.
+    fn emit_slice_bounds_check(&mut self, start: &str, end: &str, len: &str) {
+        let s_lt_0 = self.fresh_tmp();
+        self.emit(format!("{s_lt_0} = icmp slt i64 {start}, 0"));
+        let e_lt_s = self.fresh_tmp();
+        self.emit(format!("{e_lt_s} = icmp slt i64 {end}, {start}"));
+        let e_gt_l = self.fresh_tmp();
+        self.emit(format!("{e_gt_l} = icmp sgt i64 {end}, {len}"));
+
+        let bad1 = self.fresh_tmp();
+        self.emit(format!("{bad1} = or i1 {s_lt_0}, {e_lt_s}"));
+        let bad2 = self.fresh_tmp();
+        self.emit(format!("{bad2} = or i1 {bad1}, {e_gt_l}"));
+
+        let fail = self.fresh_label("slice_oob");
+        let ok = self.fresh_label("slice_inb");
+        self.emit(format!("br i1 {bad2}, label %{fail}, label %{ok}"));
+        self.emit_label(&fail);
+        if !self.ctx.fns.contains_key("abort") {
+            self.use_intrinsic("declare void @abort()".into());
+        }
+        self.emit("call void @abort()".into());
+        self.emit("unreachable".into());
+        self.emit_label(&ok);
+    }
+
+    /// Конкатенация строк `+`: выделяет память через malloc, копирует байты обеих строк,
+    /// ставит завершающий NUL-байт для C-совместимости и возвращает срез `str`.
+    fn gen_str_concat(&mut self, lv: &str, rv: &str) -> (String, Ty) {
+        let l_dp = self.fresh_tmp();
+        self.emit(format!("{l_dp} = getelementptr %slice, ptr {lv}, i32 0, i32 0"));
+        let l_data = self.fresh_tmp();
+        self.emit(format!("{l_data} = load ptr, ptr {l_dp}"));
+        let l_lp = self.fresh_tmp();
+        self.emit(format!("{l_lp} = getelementptr %slice, ptr {lv}, i32 0, i32 1"));
+        let l_len = self.fresh_tmp();
+        self.emit(format!("{l_len} = load i64, ptr {l_lp}"));
+
+        let r_dp = self.fresh_tmp();
+        self.emit(format!("{r_dp} = getelementptr %slice, ptr {rv}, i32 0, i32 0"));
+        let r_data = self.fresh_tmp();
+        self.emit(format!("{r_data} = load ptr, ptr {r_dp}"));
+        let r_lp = self.fresh_tmp();
+        self.emit(format!("{r_lp} = getelementptr %slice, ptr {rv}, i32 0, i32 1"));
+        let r_len = self.fresh_tmp();
+        self.emit(format!("{r_len} = load i64, ptr {r_lp}"));
+
+        let total_len = self.fresh_tmp();
+        self.emit(format!("{total_len} = add i64 {l_len}, {r_len}"));
+        let alloc_len = self.fresh_tmp();
+        self.emit(format!("{alloc_len} = add i64 {total_len}, 1"));
+
+        if !self.ctx.fns.contains_key("malloc") {
+            self.use_intrinsic("declare ptr @malloc(i64)".into());
+        }
+        let buf = self.fresh_tmp();
+        self.emit(format!("{buf} = call ptr @malloc(i64 {alloc_len})"));
+
+        self.use_intrinsic("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)".into());
+        self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {buf}, ptr {l_data}, i64 {l_len}, i1 false)"));
+
+        let dest_r = self.fresh_tmp();
+        self.emit(format!("{dest_r} = getelementptr i8, ptr {buf}, i64 {l_len}"));
+        self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {dest_r}, ptr {r_data}, i64 {r_len}, i1 false)"));
+
+        let nul_p = self.fresh_tmp();
+        self.emit(format!("{nul_p} = getelementptr i8, ptr {buf}, i64 {total_len}"));
+        self.emit(format!("store i8 0, ptr {nul_p}"));
+
+        let slot = self.fresh_slot("strconcat");
+        self.alloca(&slot, &Ty::Slice(Box::new(Ty::U8)));
+        let pf = self.fresh_tmp();
+        self.emit(format!("{pf} = getelementptr %slice, ptr {slot}, i32 0, i32 0"));
+        self.emit(format!("store ptr {buf}, ptr {pf}"));
+        let lf = self.fresh_tmp();
+        self.emit(format!("{lf} = getelementptr %slice, ptr {slot}, i32 0, i32 1"));
+        self.emit(format!("store i64 {total_len}, ptr {lf}"));
+        (slot, Ty::Slice(Box::new(Ty::U8)))
+    }
+
+    /// Сравнение строк `==` и `!=`: сначала сравнивает длины, при совпадении — `memcmp`.
+    fn gen_str_cmp(&mut self, op: BinOp, lv: &str, rv: &str) -> (String, Ty) {
+        let l_dp = self.fresh_tmp();
+        self.emit(format!("{l_dp} = getelementptr %slice, ptr {lv}, i32 0, i32 0"));
+        let l_data = self.fresh_tmp();
+        self.emit(format!("{l_data} = load ptr, ptr {l_dp}"));
+        let l_lp = self.fresh_tmp();
+        self.emit(format!("{l_lp} = getelementptr %slice, ptr {lv}, i32 0, i32 1"));
+        let l_len = self.fresh_tmp();
+        self.emit(format!("{l_len} = load i64, ptr {l_lp}"));
+
+        let r_dp = self.fresh_tmp();
+        self.emit(format!("{r_dp} = getelementptr %slice, ptr {rv}, i32 0, i32 0"));
+        let r_data = self.fresh_tmp();
+        self.emit(format!("{r_data} = load ptr, ptr {r_dp}"));
+        let r_lp = self.fresh_tmp();
+        self.emit(format!("{r_lp} = getelementptr %slice, ptr {rv}, i32 0, i32 1"));
+        let r_len = self.fresh_tmp();
+        self.emit(format!("{r_len} = load i64, ptr {r_lp}"));
+
+        let len_eq = self.fresh_tmp();
+        self.emit(format!("{len_eq} = icmp eq i64 {l_len}, {r_len}"));
+
+        let cmp_bb = self.fresh_label("streq_cmp");
+        let end_bb = self.fresh_label("streq_end");
+        let res_slot = self.fresh_slot("streq_res");
+        self.alloca(&res_slot, &Ty::Bool);
+        self.emit(format!("store i1 {}, ptr {res_slot}", if op == BinOp::Eq { "false" } else { "true" }));
+        self.emit(format!("br i1 {len_eq}, label %{cmp_bb}, label %{end_bb}"));
+
+        self.emit_label(&cmp_bb);
+        if !self.ctx.fns.contains_key("memcmp") {
+            self.use_intrinsic("declare i32 @memcmp(ptr, ptr, i64)".into());
+        }
+        let cmp = self.fresh_tmp();
+        self.emit(format!("{cmp} = call i32 @memcmp(ptr {l_data}, ptr {r_data}, i64 {l_len})"));
+        let is_zero = self.fresh_tmp();
+        let pred = if op == BinOp::Eq { "eq" } else { "ne" };
+        self.emit(format!("{is_zero} = icmp {pred} i32 {cmp}, 0"));
+        self.emit(format!("store i1 {is_zero}, ptr {res_slot}"));
+        self.emit(format!("br label %{end_bb}"));
+
+        self.emit_label(&end_bb);
+        let final_res = self.fresh_tmp();
+        self.emit(format!("{final_res} = load i1, ptr {res_slot}"));
+        (final_res, Ty::Bool)
+    }
+
+    fn gen_str_starts_with(&mut self, base: &Expr, args: &[Expr], span: Span) -> (String, Ty) {
+        if args.len() != 1 {
+            self.err("E0098", span, format!("`starts_with` ждёт 1 аргумент (prefix: str), передано {}", args.len()), None);
+            return ("0".into(), Ty::Bool);
+        }
+        let (sv, sty) = self.gen_expr(base, None);
+        let (pv, pty) = self.gen_expr(&args[0], Some(&Ty::Slice(Box::new(Ty::U8))));
+        if !is_str(&sty) || !is_str(&pty) {
+            self.err("E0098", span, "`starts_with` вызывается на str с аргументом str".into(), None);
+            return ("0".into(), Ty::Bool);
+        }
+
+        let slen_p = self.fresh_tmp();
+        self.emit(format!("{slen_p} = getelementptr %slice, ptr {sv}, i32 0, i32 1"));
+        let slen = self.fresh_tmp();
+        self.emit(format!("{slen} = load i64, ptr {slen_p}"));
+
+        let plen_p = self.fresh_tmp();
+        self.emit(format!("{plen_p} = getelementptr %slice, ptr {pv}, i32 0, i32 1"));
+        let plen = self.fresh_tmp();
+        self.emit(format!("{plen} = load i64, ptr {plen_p}"));
+
+        let can_fit = self.fresh_tmp();
+        self.emit(format!("{can_fit} = icmp sge i64 {slen}, {plen}"));
+
+        let cmp_bb = self.fresh_label("sw_cmp");
+        let end_bb = self.fresh_label("sw_end");
+        let res_slot = self.fresh_slot("sw_res");
+        self.alloca(&res_slot, &Ty::Bool);
+        self.emit(format!("store i1 false, ptr {res_slot}"));
+        self.emit(format!("br i1 {can_fit}, label %{cmp_bb}, label %{end_bb}"));
+
+        self.emit_label(&cmp_bb);
+        let sdata_p = self.fresh_tmp();
+        self.emit(format!("{sdata_p} = getelementptr %slice, ptr {sv}, i32 0, i32 0"));
+        let sdata = self.fresh_tmp();
+        self.emit(format!("{sdata} = load ptr, ptr {sdata_p}"));
+
+        let pdata_p = self.fresh_tmp();
+        self.emit(format!("{pdata_p} = getelementptr %slice, ptr {pv}, i32 0, i32 0"));
+        let pdata = self.fresh_tmp();
+        self.emit(format!("{pdata} = load ptr, ptr {pdata_p}"));
+
+        if !self.ctx.fns.contains_key("memcmp") {
+            self.use_intrinsic("declare i32 @memcmp(ptr, ptr, i64)".into());
+        }
+        let cmp = self.fresh_tmp();
+        self.emit(format!("{cmp} = call i32 @memcmp(ptr {sdata}, ptr {pdata}, i64 {plen})"));
+        let is_eq = self.fresh_tmp();
+        self.emit(format!("{is_eq} = icmp eq i32 {cmp}, 0"));
+        self.emit(format!("store i1 {is_eq}, ptr {res_slot}"));
+        self.emit(format!("br label %{end_bb}"));
+
+        self.emit_label(&end_bb);
+        let res = self.fresh_tmp();
+        self.emit(format!("{res} = load i1, ptr {res_slot}"));
+        (res, Ty::Bool)
+    }
+
+    fn gen_str_ends_with(&mut self, base: &Expr, args: &[Expr], span: Span) -> (String, Ty) {
+        if args.len() != 1 {
+            self.err("E0098", span, format!("`ends_with` ждёт 1 аргумент (suffix: str), передано {}", args.len()), None);
+            return ("0".into(), Ty::Bool);
+        }
+        let (sv, sty) = self.gen_expr(base, None);
+        let (pv, pty) = self.gen_expr(&args[0], Some(&Ty::Slice(Box::new(Ty::U8))));
+        if !is_str(&sty) || !is_str(&pty) {
+            self.err("E0098", span, "`ends_with` вызывается на str с аргументом str".into(), None);
+            return ("0".into(), Ty::Bool);
+        }
+
+        let slen_p = self.fresh_tmp();
+        self.emit(format!("{slen_p} = getelementptr %slice, ptr {sv}, i32 0, i32 1"));
+        let slen = self.fresh_tmp();
+        self.emit(format!("{slen} = load i64, ptr {slen_p}"));
+
+        let plen_p = self.fresh_tmp();
+        self.emit(format!("{plen_p} = getelementptr %slice, ptr {pv}, i32 0, i32 1"));
+        let plen = self.fresh_tmp();
+        self.emit(format!("{plen} = load i64, ptr {plen_p}"));
+
+        let can_fit = self.fresh_tmp();
+        self.emit(format!("{can_fit} = icmp sge i64 {slen}, {plen}"));
+
+        let cmp_bb = self.fresh_label("ew_cmp");
+        let end_bb = self.fresh_label("ew_end");
+        let res_slot = self.fresh_slot("ew_res");
+        self.alloca(&res_slot, &Ty::Bool);
+        self.emit(format!("store i1 false, ptr {res_slot}"));
+        self.emit(format!("br i1 {can_fit}, label %{cmp_bb}, label %{end_bb}"));
+
+        self.emit_label(&cmp_bb);
+        let sdata_p = self.fresh_tmp();
+        self.emit(format!("{sdata_p} = getelementptr %slice, ptr {sv}, i32 0, i32 0"));
+        let sdata = self.fresh_tmp();
+        self.emit(format!("{sdata} = load ptr, ptr {sdata_p}"));
+
+        let pdata_p = self.fresh_tmp();
+        self.emit(format!("{pdata_p} = getelementptr %slice, ptr {pv}, i32 0, i32 0"));
+        let pdata = self.fresh_tmp();
+        self.emit(format!("{pdata} = load ptr, ptr {pdata_p}"));
+
+        let offset = self.fresh_tmp();
+        self.emit(format!("{offset} = sub i64 {slen}, {plen}"));
+        let sub_ptr = self.fresh_tmp();
+        self.emit(format!("{sub_ptr} = getelementptr i8, ptr {sdata}, i64 {offset}"));
+
+        if !self.ctx.fns.contains_key("memcmp") {
+            self.use_intrinsic("declare i32 @memcmp(ptr, ptr, i64)".into());
+        }
+        let cmp = self.fresh_tmp();
+        self.emit(format!("{cmp} = call i32 @memcmp(ptr {sub_ptr}, ptr {pdata}, i64 {plen})"));
+        let is_eq = self.fresh_tmp();
+        self.emit(format!("{is_eq} = icmp eq i32 {cmp}, 0"));
+        self.emit(format!("store i1 {is_eq}, ptr {res_slot}"));
+        self.emit(format!("br label %{end_bb}"));
+
+        self.emit_label(&end_bb);
+        let res = self.fresh_tmp();
+        self.emit(format!("{res} = load i1, ptr {res_slot}"));
+        (res, Ty::Bool)
+    }
+
+    fn gen_str_clone(&mut self, base: &Expr, args: &[Expr], span: Span) -> (String, Ty) {
+        if !args.is_empty() {
+            self.err("E0098", span, format!("`clone` не принимает аргументов, передано {}", args.len()), None);
+        }
+        let (sv, sty) = self.gen_expr(base, None);
+        if !is_str(&sty) {
+            self.err("E0098", span, "`clone` вызывается на str".into(), None);
+            return ("null".into(), Ty::Err);
+        }
+
+        let sdata_p = self.fresh_tmp();
+        self.emit(format!("{sdata_p} = getelementptr %slice, ptr {sv}, i32 0, i32 0"));
+        let sdata = self.fresh_tmp();
+        self.emit(format!("{sdata} = load ptr, ptr {sdata_p}"));
+
+        let slen_p = self.fresh_tmp();
+        self.emit(format!("{slen_p} = getelementptr %slice, ptr {sv}, i32 0, i32 1"));
+        let slen = self.fresh_tmp();
+        self.emit(format!("{slen} = load i64, ptr {slen_p}"));
+
+        let alloc_len = self.fresh_tmp();
+        self.emit(format!("{alloc_len} = add i64 {slen}, 1"));
+
+        if !self.ctx.fns.contains_key("malloc") {
+            self.use_intrinsic("declare ptr @malloc(i64)".into());
+        }
+        let buf = self.fresh_tmp();
+        self.emit(format!("{buf} = call ptr @malloc(i64 {alloc_len})"));
+
+        self.use_intrinsic("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)".into());
+        self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {buf}, ptr {sdata}, i64 {slen}, i1 false)"));
+
+        let nul_p = self.fresh_tmp();
+        self.emit(format!("{nul_p} = getelementptr i8, ptr {buf}, i64 {slen}"));
+        self.emit(format!("store i8 0, ptr {nul_p}"));
+
+        let slot = self.fresh_slot("strclone");
+        self.alloca(&slot, &Ty::Slice(Box::new(Ty::U8)));
+        let pf = self.fresh_tmp();
+        self.emit(format!("{pf} = getelementptr %slice, ptr {slot}, i32 0, i32 0"));
+        self.emit(format!("store ptr {buf}, ptr {pf}"));
+        let lf = self.fresh_tmp();
+        self.emit(format!("{lf} = getelementptr %slice, ptr {slot}, i32 0, i32 1"));
+        self.emit(format!("store i64 {slen}, ptr {lf}"));
+        (slot, Ty::Slice(Box::new(Ty::U8)))
+    }
+
+    fn gen_str_is_empty(&mut self, base: &Expr, args: &[Expr], span: Span) -> (String, Ty) {
+        if !args.is_empty() {
+            self.err("E0098", span, format!("`is_empty` не принимает аргументов, передано {}", args.len()), None);
+        }
+        let (sv, sty) = self.gen_expr(base, None);
+        if !is_str(&sty) {
+            self.err("E0098", span, "`is_empty` вызывается на str".into(), None);
+            return ("0".into(), Ty::Bool);
+        }
+        let slen_p = self.fresh_tmp();
+        self.emit(format!("{slen_p} = getelementptr %slice, ptr {sv}, i32 0, i32 1"));
+        let slen = self.fresh_tmp();
+        self.emit(format!("{slen} = load i64, ptr {slen_p}"));
+        let is_z = self.fresh_tmp();
+        self.emit(format!("{is_z} = icmp eq i64 {slen}, 0"));
+        (is_z, Ty::Bool)
+    }
+
+    /// `str_from_cstr(ptr)` — срез `str` из C-строки (*u8) через `strlen`.
+    fn bi_str_from_cstr(&mut self, args: &[Expr], span: Span) -> (String, Ty) {
+        if args.len() != 1 {
+            self.err("E0094", span, format!("`str_from_cstr` ждёт 1 аргумент (*u8), передано {}", args.len()), None);
+            return ("null".into(), Ty::Err);
+        }
+        let (p, _) = self.gen_expr(&args[0], Some(&Ty::Ptr(Box::new(Ty::U8), false)));
+        if !self.ctx.fns.contains_key("strlen") {
+            self.use_intrinsic("declare i64 @strlen(ptr)".into());
+        }
+        let len = self.fresh_tmp();
+        self.emit(format!("{len} = call i64 @strlen(ptr {p})"));
+
+        let slot = self.fresh_slot("from_cstr");
+        self.alloca(&slot, &Ty::Slice(Box::new(Ty::U8)));
+        let pf = self.fresh_tmp();
+        self.emit(format!("{pf} = getelementptr %slice, ptr {slot}, i32 0, i32 0"));
+        self.emit(format!("store ptr {p}, ptr {pf}"));
+        let lf = self.fresh_tmp();
+        self.emit(format!("{lf} = getelementptr %slice, ptr {slot}, i32 0, i32 1"));
+        self.emit(format!("store i64 {len}, ptr {lf}"));
+        (slot, Ty::Slice(Box::new(Ty::U8)))
+    }
+
+    /// `print(...)` и `println(...)` — полиморфный вывод строк, чисел, bool, указателей.
+    fn bi_print(&mut self, newline: bool, args: &[Expr], _span: Span) -> (String, Ty) {
+        if !self.ctx.fns.contains_key("printf") {
+            self.use_intrinsic("declare i32 @printf(ptr, ...)".into());
+        }
+        for arg in args {
+            let (v, ty) = self.gen_expr(arg, None);
+            if is_str(&ty) {
+                let dp = self.fresh_tmp();
+                self.emit(format!("{dp} = getelementptr %slice, ptr {v}, i32 0, i32 0"));
+                let data = self.fresh_tmp();
+                self.emit(format!("{data} = load ptr, ptr {dp}"));
+                let lp = self.fresh_tmp();
+                self.emit(format!("{lp} = getelementptr %slice, ptr {v}, i32 0, i32 1"));
+                let len = self.fresh_tmp();
+                self.emit(format!("{len} = load i64, ptr {lp}"));
+                let len32 = self.fresh_tmp();
+                self.emit(format!("{len32} = trunc i64 {len} to i32"));
+                let fmt = self.intern_string("%.*s");
+                self.emit(format!("call i32 (ptr, ...) @printf(ptr {fmt}, i32 {len32}, ptr {data})"));
+            } else if ty.is_int() {
+                if ty.is_signed() {
+                    let v64 = if ty == Ty::I64 {
+                        v
+                    } else {
+                        let t = self.fresh_tmp();
+                        self.emit(format!("{t} = sext {} {v} to i64", ty.llvm()));
+                        t
+                    };
+                    let fmt = self.intern_string("%lld");
+                    self.emit(format!("call i32 (ptr, ...) @printf(ptr {fmt}, i64 {v64})"));
+                } else {
+                    let v64 = if ty == Ty::U64 {
+                        v
+                    } else {
+                        let t = self.fresh_tmp();
+                        self.emit(format!("{t} = zext {} {v} to i64", ty.llvm()));
+                        t
+                    };
+                    let fmt = self.intern_string("%llu");
+                    self.emit(format!("call i32 (ptr, ...) @printf(ptr {fmt}, i64 {v64})"));
+                }
+            } else if ty.is_float() {
+                let v64 = if ty == Ty::F64 {
+                    v
+                } else {
+                    let t = self.fresh_tmp();
+                    self.emit(format!("{t} = fpext float {v} to double"));
+                    t
+                };
+                let fmt = self.intern_string("%g");
+                self.emit(format!("call i32 (ptr, ...) @printf(ptr {fmt}, double {v64})"));
+            } else if ty == Ty::Bool {
+                let t_str = self.intern_string("true");
+                let f_str = self.intern_string("false");
+                let b_str = self.fresh_tmp();
+                self.emit(format!("{b_str} = select i1 {v}, ptr {t_str}, ptr {f_str}"));
+                let fmt = self.intern_string("%s");
+                self.emit(format!("call i32 (ptr, ...) @printf(ptr {fmt}, ptr {b_str})"));
+            } else if let Ty::Ptr(inner, _) = &ty {
+                if **inner == Ty::U8 {
+                    let fmt = self.intern_string("%s");
+                    self.emit(format!("call i32 (ptr, ...) @printf(ptr {fmt}, ptr {v})"));
+                } else {
+                    let fmt = self.intern_string("%p");
+                    self.emit(format!("call i32 (ptr, ...) @printf(ptr {fmt}, ptr {v})"));
+                }
+            }
+        }
+        if newline {
+            let nl = self.intern_string("\n");
+            self.emit(format!("call i32 (ptr, ...) @printf(ptr {nl})"));
+        }
+        ("".into(), Ty::Void)
+    }
+
     /// Побитовое представление float как целого (bitcast, не преобразование
     /// значения): `f32_bits(x) -> u32`, `f64_bits(x) -> u64`. Нужно для
     /// fixed32/fixed64/float/double protobuf.
@@ -2323,6 +2877,13 @@ impl<'a> Codegen<'a> {
                 self.emit(format!("{t} = zext {s} {v} to i32", s = ty.llvm()));
                 (t, Ty::I32)
             }
+            Ty::Slice(ref elem) if **elem == Ty::U8 => {
+                let pf = self.fresh_tmp();
+                self.emit(format!("{pf} = getelementptr %slice, ptr {v}, i32 0, i32 0"));
+                let p = self.fresh_tmp();
+                self.emit(format!("{p} = load ptr, ptr {pf}"));
+                (p, Ty::Ptr(elem.clone(), false))
+            }
             other => (v, other),
         }
     }
@@ -2447,7 +3008,7 @@ impl<'a> Codegen<'a> {
             Expr::Bool(..) => Ty::Bool,
             Expr::Null(..) => Ty::Ptr(Box::new(Ty::U8), true),
             Expr::Path(..) => Ty::I32,
-            Expr::Str(..) => Ty::Ptr(Box::new(Ty::U8), false),
+            Expr::Str(..) => Ty::Slice(Box::new(Ty::U8)),
             Expr::Ident(n, _) => self
                 .lookup(n)
                 .map(|l| l.ty.clone())
@@ -2481,6 +3042,11 @@ impl<'a> Codegen<'a> {
             }
             Expr::Call { callee, .. } => match &**callee {
                 Expr::Ident(n, _) => {
+                    match n.as_str() {
+                        "print" | "println" => return Ty::Void,
+                        "str_from_cstr" => return Ty::Slice(Box::new(Ty::U8)),
+                        _ => {}
+                    }
                     if let Some(l) = self.lookup(n) {
                         if let Ty::FnPtr(_, ret) = &l.ty {
                             return (**ret).clone();
@@ -2490,7 +3056,15 @@ impl<'a> Codegen<'a> {
                 }
                 // метод base.m(...)
                 Expr::Field { base, field, .. } => {
-                    let tn = match self.type_of(base) {
+                    let bt = self.type_of(base);
+                    if is_str(&bt) {
+                        return match field.as_str() {
+                            "starts_with" | "ends_with" | "is_empty" => Ty::Bool,
+                            "clone" => Ty::Slice(Box::new(Ty::U8)),
+                            _ => Ty::Err,
+                        };
+                    }
+                    let tn = match bt {
                         Ty::Struct(n) => Some(n),
                         Ty::Ptr(inner, _) => match *inner {
                             Ty::Struct(n) => Some(n),
@@ -2550,6 +3124,12 @@ impl<'a> Codegen<'a> {
                 Ty::Ptr(inner, _) => *inner,
                 Ty::Slice(elem) => *elem,
                 Ty::Array(elem, _) => *elem,
+                _ => Ty::Err,
+            },
+            Expr::Slice { base, .. } => match self.type_of(base) {
+                Ty::Slice(elem) => Ty::Slice(elem),
+                Ty::Array(elem, _) => Ty::Slice(elem),
+                Ty::Ptr(elem, _) => Ty::Slice(elem),
                 _ => Ty::Err,
             },
             Expr::StructLit { name, .. } => Ty::Struct(name.clone()),
@@ -2775,6 +3355,11 @@ fn is_x86_reg(s: &str) -> bool {
 /// скалярным значением: их читают/пишут через load/store агрегата.
 fn is_aggregate(ty: &Ty) -> bool {
     matches!(ty, Ty::Struct(_) | Ty::Slice(_) | Ty::Array(..))
+}
+
+/// Является ли тип первоклассной строкой Goraw (`str` == `[]u8`).
+fn is_str(ty: &Ty) -> bool {
+    matches!(ty, Ty::Slice(elem) if **elem == Ty::U8)
 }
 
 /// Совместимы ли типы при передаче/присваивании. Точное равенство, плюс

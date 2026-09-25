@@ -52,6 +52,7 @@ pub enum Tok {
     Colon,
     Semi,
     Dot,
+    DotDot,    // ..
     Arrow,     // ->
     Ellipsis,  // ...
     ColonEq,   // :=  (Go-style)
@@ -413,6 +414,9 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     self.bump();
                     Tok::Ellipsis
+                } else if self.peek() == Some('.') {
+                    self.bump();
+                    Tok::DotDot
                 } else {
                     Tok::Dot
                 }

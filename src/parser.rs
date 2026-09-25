@@ -15,13 +15,25 @@ pub struct Parser<'a> {
     /// Пока true, идентификатор перед `{` НЕ считается началом
     /// литерала структуры (нужно для `if x {`, `for x {`).
     no_struct_lit: bool,
+    /// Индекс токена последней зафиксированной ошибки (анти-цикл)
+    last_error_i: usize,
+    /// Счётчик повторов ошибок на том же токене
+    stuck_repeats: usize,
 }
 
 type P<T> = Option<T>;
 
 impl<'a> Parser<'a> {
     pub fn new(toks: Vec<Token>, src: &'a str, diags: &'a mut Diags) -> Parser<'a> {
-        Parser { toks, i: 0, src, diags, no_struct_lit: false }
+        Parser {
+            toks,
+            i: 0,
+            src,
+            diags,
+            no_struct_lit: false,
+            last_error_i: usize::MAX,
+            stuck_repeats: 0,
+        }
     }
 
     // ---- низкоуровневые помощники ----
@@ -89,19 +101,50 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Анти-цикл (circuit breaker): если парсер 3 раза подряд застрял на одном и том же
+    /// токене без продвижения вперёд — аварийно глушим разбор во избежание бесконечного цикла.
+    fn check_anti_loop(&mut self) {
+        if self.i == self.last_error_i {
+            self.stuck_repeats += 1;
+            if self.stuck_repeats >= 3 {
+                eprintln!(
+                    "[CIRCUIT BREAKER] Парсер зациклился на токене {:?} ({}:{}) 3 раза подряд без прогресса. Вырубаем поток нахуй! P.s Мне систему раза 2 положило",
+                    self.peek(),
+                    self.span().lo.line,
+                    self.span().lo.col
+                );
+                self.diags.push(Diagnostic::error(
+                    "E9998",
+                    self.span(),
+                    "аварийная остановка: обнаружен бесконечный цикл парсера (anti-loop tripwire сработал на 3 повторах)",
+                ));
+                eprint!("{}", self.diags.render_human());
+                std::process::exit(1);
+            }
+        } else {
+            self.last_error_i = self.i;
+            self.stuck_repeats = 1;
+        }
+    }
+
     /// Пропуск токенов до вероятной границы (для восстановления).
     fn synchronize(&mut self) {
+        self.check_anti_loop();
+        let prev_i = self.i;
         while !self.at_eof() {
             match self.peek() {
-                Tok::Semi => {
+                Tok::Semi | Tok::RBrace => {
                     self.bump();
                     return;
                 }
-                Tok::RBrace | Tok::Fn | Tok::Struct | Tok::Extern => return,
+                Tok::Fn | Tok::Struct | Tok::Extern => return,
                 _ => {
                     self.bump();
                 }
             }
+        }
+        if self.i == prev_i && !self.at_eof() {
+            self.bump();
         }
     }
 
@@ -157,6 +200,7 @@ impl<'a> Parser<'a> {
                     None => self.synchronize(),
                 },
                 _ => {
+                    self.check_anti_loop();
                     self.diags.push(
                         Diagnostic::error(
                             "E0012",
@@ -168,7 +212,11 @@ impl<'a> Parser<'a> {
                         )
                         .with_hint("объявления верхнего уровня начинаются с `fn`, `struct`, `extern`"),
                     );
+                    let cur_i = self.i;
                     self.synchronize();
+                    if self.i == cur_i && !self.at_eof() {
+                        self.bump();
+                    }
                 }
             }
         }
@@ -317,7 +365,28 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(&Tok::RParen, "`)`")?;
-        let ret = if self.eat(&Tok::Arrow) { Some(self.parse_type()?) } else { None };
+        let ret = if self.eat(&Tok::Arrow) {
+            Some(self.parse_type()?)
+        } else if self.peek() == &Tok::Colon || self.peek() == &Tok::Gt || self.peek() == &Tok::FatArrow {
+            let sp = self.span();
+            let bad = self.bump();
+            let (sym, hint) = match bad.tok {
+                Tok::Colon => (":", "в Goraw тип возврата функции указывается через `->`, а не `:`"),
+                Tok::Gt => (">", "для возвращаемого типа функции используется `->`, а не `>` (возможно, пропущен дефис)"),
+                _ => ("=>", "для возвращаемого типа функции используется `->`, а не `=>`"),
+            };
+            self.diags.push(
+                Diagnostic::error(
+                    "E0028",
+                    sp,
+                    format!("неверный синтаксис типа возврата: ожидалось `->`, а найдено `{sym}`"),
+                )
+                .with_hint(format!("{hint}; замените `{sym}` на `->`, напр. `fn {name}() -> i32`")),
+            );
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
 
         let body = if is_extern {
             self.expect(&Tok::Semi, "`;` после extern-объявления")?;
@@ -384,6 +453,23 @@ impl<'a> Parser<'a> {
                 self.expect(&Tok::RParen, "`)`")?;
                 let ret = if self.eat(&Tok::Arrow) {
                     Some(Box::new(self.parse_type()?))
+                } else if self.peek() == &Tok::Colon || self.peek() == &Tok::Gt || self.peek() == &Tok::FatArrow {
+                    let sp = self.span();
+                    let bad = self.bump();
+                    let sym = match bad.tok {
+                        Tok::Colon => ":",
+                        Tok::Gt => ">",
+                        _ => "=>",
+                    };
+                    self.diags.push(
+                        Diagnostic::error(
+                            "E0028",
+                            sp,
+                            format!("неверный синтаксис типа возврата: ожидалось `->`, а найдено `{sym}`"),
+                        )
+                        .with_hint(format!("в Goraw тип возврата функции указывается через `->`, а не `{sym}`")),
+                    );
+                    Some(Box::new(self.parse_type()?))
                 } else {
                     None
                 };
@@ -410,7 +496,11 @@ impl<'a> Parser<'a> {
             match self.parse_stmt() {
                 Some(s) => stmts.push(s),
                 None => {
+                    let cur_i = self.i;
                     self.synchronize();
+                    if self.i == cur_i && !self.at_eof() {
+                        self.bump();
+                    }
                     if matches!(self.peek(), Tok::RBrace | Tok::Eof) {
                         break;
                     }
@@ -917,11 +1007,45 @@ impl<'a> Parser<'a> {
                     self.bump();
                     let saved = self.no_struct_lit;
                     self.no_struct_lit = false;
-                    let index = self.parse_expr()?;
-                    self.no_struct_lit = saved;
-                    let end = self.span();
-                    self.expect(&Tok::RBracket, "`]`")?;
-                    e = Expr::Index { span: e.span().to(end), base: Box::new(e), index: Box::new(index) };
+                    if self.eat(&Tok::DotDot) {
+                        let end_expr = if self.peek() == &Tok::RBracket {
+                            None
+                        } else {
+                            Some(Box::new(self.parse_expr()?))
+                        };
+                        self.no_struct_lit = saved;
+                        let end = self.span();
+                        self.expect(&Tok::RBracket, "`]`")?;
+                        e = Expr::Slice {
+                            span: e.span().to(end),
+                            base: Box::new(e),
+                            start: None,
+                            end: end_expr,
+                        };
+                    } else {
+                        let index = self.parse_expr()?;
+                        if self.eat(&Tok::DotDot) {
+                            let end_expr = if self.peek() == &Tok::RBracket {
+                                None
+                            } else {
+                                Some(Box::new(self.parse_expr()?))
+                            };
+                            self.no_struct_lit = saved;
+                            let end = self.span();
+                            self.expect(&Tok::RBracket, "`]`")?;
+                            e = Expr::Slice {
+                                span: e.span().to(end),
+                                base: Box::new(e),
+                                start: Some(Box::new(index)),
+                                end: end_expr,
+                            };
+                        } else {
+                            self.no_struct_lit = saved;
+                            let end = self.span();
+                            self.expect(&Tok::RBracket, "`]`")?;
+                            e = Expr::Index { span: e.span().to(end), base: Box::new(e), index: Box::new(index) };
+                        }
+                    }
                 }
                 Tok::Dot => {
                     self.bump();

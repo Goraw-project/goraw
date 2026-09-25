@@ -139,6 +139,21 @@ impl Diags {
     }
 
     pub fn push(&mut self, d: Diagnostic) {
+        const MAX_DIAGNOSTICS_CAP: usize = 50;
+        if self.items.len() >= MAX_DIAGNOSTICS_CAP {
+            if self.items.len() == MAX_DIAGNOSTICS_CAP {
+                eprintln!(
+                    "[CIRCUIT BREAKER] Превышен лимит ошибок (>{MAX_DIAGNOSTICS_CAP}), аварийная остановка потока компилятора!"
+                );
+                self.items.push(Diagnostic::error(
+                    "E9999",
+                    d.span,
+                    "превышен лимит ошибок (circuit breaker), дальнейший разбор остановлен во избежание утечки памяти",
+                ));
+            }
+            eprint!("{}", self.render_human());
+            std::process::exit(1);
+        }
         self.items.push(d);
     }
 

@@ -240,6 +240,13 @@ pub enum Expr {
         index: Box<Expr>,
         span: Span,
     },
+    /// Взятие среза: `expr[start..end]`, `expr[start..]`, `expr[..end]`, `expr[..]`.
+    Slice {
+        base: Box<Expr>,
+        start: Option<Box<Expr>>,
+        end: Option<Box<Expr>>,
+        span: Span,
+    },
     /// Литерал массива: `[e1, e2, ...]`.
     ArrayLit(Vec<Expr>, Span),
     /// if-выражение: `if cond { a } else { b }` (обе ветви дают значение).
@@ -287,6 +294,7 @@ impl Expr {
             | Expr::Call { span: s, .. }
             | Expr::Field { span: s, .. }
             | Expr::Index { span: s, .. }
+            | Expr::Slice { span: s, .. }
             | Expr::StructLit { span: s, .. }
             | Expr::Cast { span: s, .. }
             | Expr::ArrayLit(_, s)
