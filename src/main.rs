@@ -92,6 +92,7 @@ fn print_help() {
     --json           печатать диагностику в LLM-формате (JSON + XML-нотки)\n\
     --run            запустить программу после успешной сборки\n\
     --test, test     собрать и прогнать shadow-тесты (test-блоки)\n\
+    lsp              запустить Goraw Language Server Protocol (LSP) сервер для IDE\n\
     --silent, -s     автопропуск предупреждений безопасности при запуске тестов вне песочницы\n\
     --shadow=strict  строгий режим: ошибка E1200 при отсутствии shadow-теста для функции\n\
     --obfuscate-strings обфускация всех строковых литералов\n\
@@ -155,6 +156,13 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--json" => json = true,
             "--run" => run = true,
             "--test" | "test" => test = true,
+            "lsp" | "--lsp" => {
+                if let Err(e) = gorawc::lsp::run_lsp_server() {
+                    eprintln!("ошибка LSP сервера: {e}");
+                    exit(1);
+                }
+                exit(0);
+            }
             "--silent" | "-s" => silent = true,
             "--shadow=strict" => shadow_strict = true,
             "--obfuscate-strings" | "--obf-strings" => obfuscate_strings = true,
