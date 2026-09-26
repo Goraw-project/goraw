@@ -3,9 +3,11 @@
 
 pub mod asm;
 pub mod ast;
+pub mod c_interop;
 pub mod codegen;
 pub mod diag;
 pub mod lexer;
+pub mod mono;
 pub mod parser;
 pub mod proto;
 pub mod types;

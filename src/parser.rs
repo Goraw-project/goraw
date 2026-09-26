@@ -157,6 +157,7 @@ impl<'a> Parser<'a> {
         let mut statics = Vec::new();
         let mut fns = Vec::new();
         let mut tests = Vec::new();
+        let mut c_blocks = Vec::new();
         while !self.at_eof() {
             match self.peek() {
                 // `import "path";` — резолвится драйвером (мульти-файловая
@@ -173,6 +174,13 @@ impl<'a> Parser<'a> {
                         ));
                     }
                     let _ = self.eat(&Tok::Semi);
+                }
+                Tok::Ident(s) if (s == "c" || s == "cpp") && matches!(self.peek2(), Tok::LBrace) => {
+                    let is_cpp = s == "cpp";
+                    match self.parse_inline_c_block(is_cpp) {
+                        Some(b) => c_blocks.push(b),
+                        None => self.synchronize(),
+                    }
                 }
                 Tok::Struct => match self.parse_struct() {
                     Some(s) => structs.push(s),
@@ -206,11 +214,11 @@ impl<'a> Parser<'a> {
                             "E0012",
                             self.span(),
                             format!(
-                                "на верхнем уровне ожидалось `fn`, `struct` или `extern`, а найдено {}",
+                                "на верхнем уровне ожидалось `fn`, `struct`, `extern`, `c` или `cpp`, а найдено {}",
                                 describe(self.peek())
                             ),
                         )
-                        .with_hint("объявления верхнего уровня начинаются с `fn`, `struct`, `extern`"),
+                        .with_hint("объявления верхнего уровня: `fn`, `struct`, `extern`, `c { ... }`, `cpp { ... }`"),
                     );
                     let cur_i = self.i;
                     self.synchronize();
@@ -220,7 +228,7 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        Program { structs, enums, consts, statics, fns, tests }
+        Program { structs, enums, consts, statics, fns, tests, c_blocks }
     }
 
     fn parse_static(&mut self) -> P<StaticDef> {
@@ -301,10 +309,28 @@ impl<'a> Parser<'a> {
         Some(EnumDef { name, variants, span: start.to(end) })
     }
 
+    fn parse_optional_type_params(&mut self) -> P<Vec<String>> {
+        if self.eat(&Tok::Lt) {
+            let mut params = Vec::new();
+            while !matches!(self.peek(), Tok::Gt | Tok::Eof) {
+                let (p, _) = self.expect_ident("параметра типа")?;
+                params.push(p);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Tok::Gt, "`>`")?;
+            Some(params)
+        } else {
+            Some(Vec::new())
+        }
+    }
+
     fn parse_struct(&mut self) -> P<StructDef> {
         let start = self.span();
         self.expect(&Tok::Struct, "`struct`")?;
         let (name, _) = self.expect_ident("структуры")?;
+        let type_params = self.parse_optional_type_params()?;
         self.expect(&Tok::LBrace, "`{`")?;
         let mut fields = Vec::new();
         while !matches!(self.peek(), Tok::RBrace | Tok::Eof) {
@@ -319,7 +345,7 @@ impl<'a> Parser<'a> {
         }
         let end = self.span();
         self.expect(&Tok::RBrace, "`}`")?;
-        Some(StructDef { name, fields, span: start.to(end) })
+        Some(StructDef { name, type_params, fields, span: start.to(end) })
     }
 
     fn parse_fn(&mut self) -> P<FnDef> {
@@ -328,9 +354,12 @@ impl<'a> Parser<'a> {
         let is_unsafe = self.eat(&Tok::Unsafe);
         self.expect(&Tok::Fn, "`fn`")?;
         let (name0, name_sp) = self.expect_ident("функции")?;
+        let mut type_params = self.parse_optional_type_params()?;
         // Метод: `fn Type::method(self, ...)` — мангл имени + приёмник self.
         let (name, method_recv) = if self.eat(&Tok::ColonColon) {
             let (m, _) = self.expect_ident("метода")?;
+            let method_tps = self.parse_optional_type_params()?;
+            type_params.extend(method_tps);
             (format!("{name0}__{m}"), Some(name0))
         } else {
             (name0, None)
@@ -345,11 +374,20 @@ impl<'a> Parser<'a> {
             }
             let psp = self.span();
             let (pname, _) = self.expect_ident("параметра")?;
-            // `self` без типа в методе -> приёмник `*mut Type`.
+            // `self` без типа в методе -> приёмник `*mut Type` (или `*mut Type<T>`).
             if pname == "self" && !matches!(self.peek(), Tok::Colon) {
                 match &method_recv {
                     Some(recv) => {
-                        let ty = TypeExpr::PtrMut(Box::new(TypeExpr::Named(recv.clone(), name_sp)), psp);
+                        let inner_ty = if type_params.is_empty() {
+                            TypeExpr::Named(recv.clone(), name_sp)
+                        } else {
+                            TypeExpr::Generic(
+                                recv.clone(),
+                                type_params.iter().map(|tp| TypeExpr::Named(tp.clone(), name_sp)).collect(),
+                                name_sp,
+                            )
+                        };
+                        let ty = TypeExpr::PtrMut(Box::new(inner_ty), psp);
                         params.push(Param { name: "self".into(), ty, span: psp });
                     }
                     None => {
@@ -401,6 +439,7 @@ impl<'a> Parser<'a> {
         let end = self.prev_span();
         Some(FnDef {
             name,
+            type_params,
             params,
             variadic,
             ret,
@@ -427,7 +466,19 @@ impl<'a> Parser<'a> {
             }
             Tok::Ident(name) => {
                 self.bump();
-                Some(TypeExpr::Named(name, sp))
+                if self.eat(&Tok::Lt) {
+                    let mut args = Vec::new();
+                    while !matches!(self.peek(), Tok::Gt | Tok::Eof) {
+                        args.push(self.parse_type()?);
+                        if !self.eat(&Tok::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&Tok::Gt, "`>`")?;
+                    Some(TypeExpr::Generic(name, args, sp.to(self.prev_span())))
+                } else {
+                    Some(TypeExpr::Named(name, sp))
+                }
             }
             Tok::LBracket => {
                 // срез `[]T` либо массив `[N]T`
@@ -487,6 +538,39 @@ impl<'a> Parser<'a> {
                 ));
                 None
             }
+        }
+    }
+
+    fn try_parse_generic_args(&mut self) -> Option<Vec<TypeExpr>> {
+        let saved_i = self.i;
+        let saved_diags_len = self.diags.items.len();
+        if !self.eat(&Tok::Lt) {
+            return None;
+        }
+        let mut args = Vec::new();
+        while !matches!(self.peek(), Tok::Gt | Tok::Eof) {
+            if let Some(ty) = self.parse_type() {
+                args.push(ty);
+            } else {
+                self.i = saved_i;
+                self.diags.items.truncate(saved_diags_len);
+                return None;
+            }
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        if !self.eat(&Tok::Gt) {
+            self.i = saved_i;
+            self.diags.items.truncate(saved_diags_len);
+            return None;
+        }
+        if matches!(self.peek(), Tok::ColonColon) || (!self.no_struct_lit && matches!(self.peek(), Tok::LBrace)) {
+            Some(args)
+        } else {
+            self.i = saved_i;
+            self.diags.items.truncate(saved_diags_len);
+            None
         }
     }
 
@@ -567,6 +651,13 @@ impl<'a> Parser<'a> {
                 let e = self.parse_expr()?;
                 self.expect(&Tok::Semi, "`;`")?;
                 Some(Stmt::Assert(e, sp.to(self.prev_span())))
+            }
+            // `c { ... }` или `cpp { ... }` либо `c(inputs: [...], outputs: [...]) { ... }`
+            Tok::Ident(s) if (s == "c" || s == "cpp") && matches!(self.peek2(), Tok::LBrace | Tok::LParen) => {
+                let is_cpp = s == "cpp";
+                let stmt = self.parse_inline_c_stmt(is_cpp)?;
+                let _ = self.eat(&Tok::Semi);
+                Some(stmt)
             }
             Tok::Asm => {
                 let a = self.parse_asm()?;
@@ -832,6 +923,89 @@ impl<'a> Parser<'a> {
         let body = self.src.get(body_start..body_end).unwrap_or("").trim().to_string();
         self.expect(&Tok::RBrace, "`}`")?;
         Some(AsmBlock { dialect, inputs, outputs, body, span: sp.to(self.prev_span()) })
+    }
+
+    /// `c { ... }` или `cpp { ... }` на верхнем уровне
+    fn parse_inline_c_block(&mut self, is_cpp: bool) -> P<InlineCBlock> {
+        let sp = self.span();
+        self.bump(); // съедаем `c` или `cpp`
+        let lbrace = self.span();
+        self.expect(&Tok::LBrace, "`{`")?;
+        let body_start = lbrace.hi.offset;
+        let mut depth = 1;
+        while depth > 0 && !self.at_eof() {
+            match self.peek() {
+                Tok::LBrace => depth += 1,
+                Tok::RBrace => depth -= 1,
+                _ => {}
+            }
+            if depth == 0 {
+                break;
+            }
+            self.bump();
+        }
+        let body_end = self.span().lo.offset;
+        let code = self.src.get(body_start..body_end).unwrap_or("").trim().to_string();
+        self.expect(&Tok::RBrace, "`}`")?;
+        Some(InlineCBlock { is_cpp, code, span: sp.to(self.prev_span()) })
+    }
+
+    /// `c { ... }` или `c(inputs: [...], outputs: [...]) { ... }` внутри функций
+    fn parse_inline_c_stmt(&mut self, is_cpp: bool) -> P<Stmt> {
+        let sp = self.span();
+        self.bump(); // съедаем `c` или `cpp`
+        let mut inputs = Vec::new();
+        let mut outputs = Vec::new();
+        if self.eat(&Tok::LParen) {
+            while !matches!(self.peek(), Tok::RParen | Tok::Eof) {
+                let (key, _) = self.expect_ident("`inputs` или `outputs`")?;
+                self.expect(&Tok::Colon, "`:`")?;
+                self.expect(&Tok::LBracket, "`[`")?;
+                let mut list = Vec::new();
+                while !matches!(self.peek(), Tok::RBracket | Tok::Eof) {
+                    let (n, _) = self.expect_ident("переменной")?;
+                    list.push(n);
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&Tok::RBracket, "`]`")?;
+                match key.as_str() {
+                    "inputs" => inputs = list,
+                    "outputs" => outputs = list,
+                    other => {
+                        self.diags.push(Diagnostic::error(
+                            "E0016",
+                            sp,
+                            format!("неизвестный параметр `{other}`"),
+                        ).with_hint("допустимы `inputs` и `outputs`"));
+                    }
+                }
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Tok::RParen, "`)`")?;
+        }
+        let lbrace = self.span();
+        self.expect(&Tok::LBrace, "`{`")?;
+        let body_start = lbrace.hi.offset;
+        let mut depth = 1;
+        while depth > 0 && !self.at_eof() {
+            match self.peek() {
+                Tok::LBrace => depth += 1,
+                Tok::RBrace => depth -= 1,
+                _ => {}
+            }
+            if depth == 0 {
+                break;
+            }
+            self.bump();
+        }
+        let body_end = self.span().lo.offset;
+        let body = self.src.get(body_start..body_end).unwrap_or("").trim().to_string();
+        self.expect(&Tok::RBrace, "`}`")?;
+        Some(Stmt::InlineC { is_cpp, inputs, outputs, body, span: sp.to(self.prev_span()) })
     }
 
     /// jit(captures: [a, b]) { fn execute(params) -> R { ... } }
@@ -1140,11 +1314,28 @@ impl<'a> Parser<'a> {
             }
             Tok::Ident(name) => {
                 self.bump();
-                // путь к константе перечисления: Enum::Variant
+                let gen_args = self.try_parse_generic_args();
+                let full_name = if let Some(ref args) = gen_args {
+                    let mut s = name.clone();
+                    for a in args {
+                        s.push_str("__");
+                        s.push_str(&type_expr_to_mangle_suffix(a));
+                    }
+                    s
+                } else {
+                    name.clone()
+                };
+
+                // путь к константе перечисления или функции: Enum::Variant или Type::func
                 if matches!(self.peek(), Tok::ColonColon) {
                     self.bump();
-                    let (variant, vsp) = self.expect_ident("варианта перечисления")?;
-                    return Some(Expr::Path(name, variant, sp.to(vsp)));
+                    let (member, msp) = self.expect_ident("имени")?;
+                    let total_span = sp.to(msp);
+                    if matches!(self.peek(), Tok::LParen) || gen_args.is_some() {
+                        return Some(Expr::Ident(format!("{full_name}__{member}"), total_span));
+                    } else {
+                        return Some(Expr::Path(name, member, total_span));
+                    }
                 }
                 // литерал структуры Name { ... }
                 if !self.no_struct_lit && matches!(self.peek(), Tok::LBrace) {
@@ -1161,9 +1352,9 @@ impl<'a> Parser<'a> {
                     }
                     let end = self.span();
                     self.expect(&Tok::RBrace, "`}`")?;
-                    Some(Expr::StructLit { name, fields, span: sp.to(end) })
+                    Some(Expr::StructLit { name: full_name, fields, span: sp.to(end) })
                 } else {
-                    Some(Expr::Ident(name, sp))
+                    Some(Expr::Ident(full_name, sp))
                 }
             }
             other => {
@@ -1240,5 +1431,27 @@ fn describe(t: &Tok) -> String {
         Tok::Comma => "`,`".into(),
         Tok::Fn => "`fn`".into(),
         other => format!("{other:?}"),
+    }
+}
+
+pub(crate) fn type_expr_to_mangle_suffix(ty: &TypeExpr) -> String {
+    match ty {
+        TypeExpr::Named(n, _) => n.clone(),
+        TypeExpr::Generic(n, args, _) => {
+            let inner: Vec<String> = args.iter().map(type_expr_to_mangle_suffix).collect();
+            format!("{n}__{}", inner.join("__"))
+        }
+        TypeExpr::Ptr(inner, _) => format!("ptr_{}", type_expr_to_mangle_suffix(inner)),
+        TypeExpr::PtrMut(inner, _) => format!("ptrmut_{}", type_expr_to_mangle_suffix(inner)),
+        TypeExpr::Slice(inner, _) => format!("slice_{}", type_expr_to_mangle_suffix(inner)),
+        TypeExpr::Array(inner, n, _) => format!("arr{n}_{}", type_expr_to_mangle_suffix(inner)),
+        TypeExpr::Fn(params, ret, _) => {
+            let plist: Vec<String> = params.iter().map(type_expr_to_mangle_suffix).collect();
+            let r = match ret {
+                Some(rt) => format!("__{}", type_expr_to_mangle_suffix(rt)),
+                None => String::new(),
+            };
+            format!("fn_{}{}", plist.join("_"), r)
+        }
     }
 }

@@ -212,7 +212,64 @@ impl TyCtx {
                     }
                 }
             },
+            TypeExpr::Generic(name, args, sp) => {
+                let arg_tys: Vec<Ty> = args.iter().map(|a| self.resolve(a, out)).collect();
+                let mangled = mangle_generic_name(name, &arg_tys);
+                if self.structs.contains_key(&mangled) {
+                    Ty::Struct(mangled)
+                } else if self.structs.contains_key(name) {
+                    Ty::Struct(name.clone())
+                } else {
+                    out.push(
+                        Diagnostic::error(
+                            "E0020",
+                            *sp,
+                            format!("неизвестный дженерик-тип `{name}` (специализация `{mangled}`)"),
+                        )
+                        .with_hint("убедитесь, что структура объявлена с параметрами типа, напр. `struct Vec<T> { ... }`"),
+                    );
+                    Ty::Err
+                }
+            }
         }
+    }
+}
+
+pub fn mangle_generic_name(name: &str, args: &[Ty]) -> String {
+    let mut s = name.to_string();
+    for a in args {
+        s.push('_');
+        s.push('_');
+        s.push_str(&mangle_ty(a));
+    }
+    s
+}
+
+pub fn mangle_ty(ty: &Ty) -> String {
+    match ty {
+        Ty::I8 => "i8".into(),
+        Ty::I16 => "i16".into(),
+        Ty::I32 => "i32".into(),
+        Ty::I64 => "i64".into(),
+        Ty::U8 => "u8".into(),
+        Ty::U16 => "u16".into(),
+        Ty::U32 => "u32".into(),
+        Ty::U64 => "u64".into(),
+        Ty::F32 => "f32".into(),
+        Ty::F64 => "f64".into(),
+        Ty::Bool => "bool".into(),
+        Ty::Void => "void".into(),
+        Ty::Ptr(inner, is_mut) => {
+            if *is_mut {
+                format!("ptrmut_{}", mangle_ty(inner))
+            } else {
+                format!("ptr_{}", mangle_ty(inner))
+            }
+        }
+        Ty::Slice(inner) => format!("slice_{}", mangle_ty(inner)),
+        Ty::Array(inner, n) => format!("arr{n}_{}", mangle_ty(inner)),
+        Ty::Struct(n) => n.clone(),
+        _ => "any".into(),
     }
 }
 
@@ -319,7 +376,10 @@ pub fn collect(
 
     for f in fns {
 
-        if ctx.fns.contains_key(&f.name) {
+        if let Some(existing) = ctx.fns.get(&f.name) {
+            if f.is_extern && existing.is_extern {
+                continue;
+            }
             out.push(Diagnostic::error(
                 "E0022",
                 f.span,

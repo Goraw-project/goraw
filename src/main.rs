@@ -14,7 +14,8 @@ use std::process::{exit, Command};
 const JIT_RUNTIME_C: &str = include_str!("../runtime/goraw_jit.c");
 
 struct Options {
-    input: PathBuf,
+    input: Option<PathBuf>,
+    bind_c: Option<PathBuf>,
     extra_objects: Vec<PathBuf>,
     extra_asms: Vec<PathBuf>,
     output: Option<PathBuf>,
@@ -38,6 +39,28 @@ fn main() {
             exit(2);
         }
     };
+
+    if let Some(header) = &opts.bind_c {
+        match gorawc::c_interop::generate_bindings_from_header(header, &opts.clang) {
+            Ok(bindings) => {
+                if let Some(out) = &opts.output {
+                    if let Err(e) = std::fs::write(out, &bindings) {
+                        eprintln!("не удалось записать `{}`: {e}", out.display());
+                        exit(2);
+                    }
+                    eprintln!("биндинги сохранены в `{}`", out.display());
+                } else {
+                    print!("{bindings}");
+                }
+                exit(0);
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                exit(1);
+            }
+        }
+    }
+
     exit(run(opts));
 }
 
@@ -56,6 +79,7 @@ fn print_help() {
     --test           собрать и прогнать shadow-тесты (test-блоки)\n\
     --shadow=strict  строгий режим: ошибка E1200 при отсутствии shadow-теста для функции\n\
     --obfuscate-strings обфускация всех строковых литералов\n\
+    --bind-c <header.h> сгенерировать Goraw-биндинги из C-заголовка\n\
     -O<n>            уровень оптимизации clang (напр. -O2)\n\
     --keep-ll        не удалять промежуточный .ll при сборке .exe\n\
     --clang <путь>   путь к clang (по умолчанию `clang` из PATH)\n\
@@ -65,6 +89,7 @@ fn print_help() {
 
 fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut input: Option<PathBuf> = None;
+    let mut bind_c: Option<PathBuf> = None;
     let mut extra_objects: Vec<PathBuf> = Vec::new();
     let mut extra_asms: Vec<PathBuf> = Vec::new();
     let mut output = None;
@@ -90,6 +115,10 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                 i += 1;
                 output = Some(PathBuf::from(args.get(i).ok_or("-o требует аргумент")?));
             }
+            "--bind-c" => {
+                i += 1;
+                bind_c = Some(PathBuf::from(args.get(i).ok_or("--bind-c требует аргумент")?));
+            }
             "--emit-llvm" => emit_llvm = true,
             "--json" => json = true,
             "--run" => run = true,
@@ -108,7 +137,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                 let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
                 if ext == "asm" {
                     extra_asms.push(p);
-                } else if ext == "obj" || ext == "o" {
+                } else if ext == "obj" || ext == "o" || ext == "lib" || ext == "a" || ext == "ll" || ext == "bc" {
                     extra_objects.push(p);
                 } else if input.is_none() {
                     input = Some(p);
@@ -120,9 +149,13 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         i += 1;
     }
 
-    let input = input.ok_or("не указан входной файл (см. --help)")?;
+    if input.is_none() && bind_c.is_none() {
+        return Err("не указан входной файл (см. --help)".into());
+    }
+
     Ok(Options {
         input,
+        bind_c,
         extra_objects,
         extra_asms,
         output,
@@ -139,15 +172,16 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
 }
 
 fn run(opts: Options) -> i32 {
+    let input_path = opts.input.as_ref().expect("входной файл");
     // Собираем главный файл и все, что он тянет через `import "..."`.
-    let (src, line_map) = match gather_sources(&opts.input) {
+    let (src, line_map) = match gather_sources(input_path) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("{e}");
             return 2;
         }
     };
-    let file = opts.input.display().to_string();
+    let file = input_path.display().to_string();
     let mut diags = diag::Diags::new(file.clone(), src.clone());
     diags.set_line_map(line_map);
 
@@ -160,6 +194,53 @@ fn run(opts: Options) -> i32 {
         let mut p = parser::Parser::new(toks, &src, &mut diags);
         p.parse_program()
     };
+
+    // 1. Мономорфизация дженериков (дженерик-структуры и методы -> конкретные специализации)
+    gorawc::mono::monomorphize(&mut prog);
+
+    // 2. Десахаризация statement-level инлайн C блоков в синтезированные функции
+    let mut inline_c_code = String::new();
+    let mut inline_cpp_code = String::new();
+    let mut inline_counter = 0usize;
+    let mut new_inline_fns = Vec::new();
+    for f in &mut prog.fns {
+        if let Some(b) = &mut f.body {
+            desugar_inline_c_stmts(b, &mut inline_counter, &mut inline_c_code, &mut inline_cpp_code, &mut new_inline_fns);
+        }
+    }
+    prog.fns.extend(new_inline_fns);
+
+    // 3. Сборка top-level инлайн C / C++ блоков (`c { ... }` и `cpp { ... }`)
+    for b in &prog.c_blocks {
+        if b.is_cpp {
+            inline_cpp_code.push_str(&b.code);
+            inline_cpp_code.push('\n');
+        } else {
+            inline_c_code.push_str(&b.code);
+            inline_c_code.push('\n');
+        }
+    }
+
+    // 4. Извлечение функций из C / C++ кода (чтобы тайпчекер и кодоген знали сигнатуры)
+    if !inline_c_code.trim().is_empty() {
+        if let Ok(c_fns) = gorawc::c_interop::extract_functions_from_code(&inline_c_code, false, &opts.clang) {
+            for f in c_fns {
+                if !prog.fns.iter().any(|existing| existing.name == f.name) {
+                    prog.fns.push(f);
+                }
+            }
+        }
+    }
+
+    if !inline_cpp_code.trim().is_empty() {
+        if let Ok(cpp_fns) = gorawc::c_interop::extract_functions_from_code(&inline_cpp_code, true, &opts.clang) {
+            for f in cpp_fns {
+                if !prog.fns.iter().any(|existing| existing.name == f.name) {
+                    prog.fns.push(f);
+                }
+            }
+        }
+    }
 
     // Проверка строгого режима shadow-тестов (--shadow=strict)
     if opts.shadow_strict {
@@ -264,6 +345,25 @@ fn run(opts: Options) -> i32 {
         jit_rt_path = Some(rt);
     }
 
+    // Компиляция инлайн C / C++ блоков в .bc файлы
+    let mut temp_c_objs = Vec::new();
+    if !inline_c_code.trim().is_empty() {
+        let c_bc = ll_path.with_extension("c.bc");
+        if let Err(e) = gorawc::c_interop::compile_inline_snippet(&inline_c_code, false, &opts.clang, &c_bc) {
+            eprintln!("{e}");
+            return 1;
+        }
+        temp_c_objs.push(c_bc);
+    }
+    if !inline_cpp_code.trim().is_empty() {
+        let cpp_bc = ll_path.with_extension("cpp.bc");
+        if let Err(e) = gorawc::c_interop::compile_inline_snippet(&inline_cpp_code, true, &opts.clang, &cpp_bc) {
+            eprintln!("{e}");
+            return 1;
+        }
+        temp_c_objs.push(cpp_bc);
+    }
+
     // Линковка через clang.
     let mut cmd = Command::new(&opts.clang);
     cmd.arg("--target=x86_64-w64-windows-gnu");
@@ -280,6 +380,14 @@ fn run(opts: Options) -> i32 {
     for obj in &temp_objs {
         cmd.arg(obj);
     }
+    for obj in &temp_c_objs {
+        cmd.arg(obj);
+    }
+    // Если в программе есть C++ блоки или вызовы, подключаем рантайм C++
+    if !inline_cpp_code.trim().is_empty() {
+        cmd.arg("-lstdc++");
+    }
+
     cmd.arg("-o").arg(&exe_path);
     // Подавляем предупреждение о переопределении triple (у нас он корректный).
     cmd.arg("-Wno-override-module");
@@ -303,6 +411,9 @@ fn run(opts: Options) -> i32 {
         let _ = std::fs::remove_file(&ll_path);
         if let Some(rt) = &jit_rt_path {
             let _ = std::fs::remove_file(rt);
+        }
+        for obj in &temp_c_objs {
+            let _ = std::fs::remove_file(obj);
         }
     }
 
@@ -338,6 +449,7 @@ fn transform_tests(prog: &mut ast::Program) {
     for (i, t) in tests.iter().enumerate() {
         fns.push(FnDef {
             name: format!("__test_{i}"),
+            type_params: Vec::new(),
             params: Vec::new(),
             variadic: false,
             ret: Some(TypeExpr::Named("i64".into(), dummy)),
@@ -396,7 +508,13 @@ fn gather_sources(main: &Path) -> Result<(String, Vec<(u32, String)>), String> {
         let dir = path.parent().unwrap_or(Path::new("."));
         for imp in scan_imports(&src) {
             let resolved = dir.join(&imp);
-            visit(&resolved, seen, order)?;
+            if imp.ends_with(".h") || imp.ends_with(".hpp") {
+                let bindings = gorawc::c_interop::generate_bindings_from_header(&resolved, "clang")
+                    .map_err(|e| format!("ошибка генерации биндингов из `{}`: {e}", resolved.display()))?;
+                order.push((resolved.display().to_string(), bindings));
+            } else {
+                visit(&resolved, seen, order)?;
+            }
         }
         order.push((path.display().to_string(), src));
         Ok(())
@@ -439,8 +557,9 @@ fn scan_imports(src: &str) -> Vec<String> {
 }
 
 fn output_paths(opts: &Options) -> (PathBuf, PathBuf) {
-    let stem = opts.input.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "out".into());
-    let dir = opts.input.parent().unwrap_or(Path::new("."));
+    let inp = opts.input.as_ref().expect("входной файл");
+    let stem = inp.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "out".into());
+    let dir = inp.parent().unwrap_or(Path::new("."));
     match &opts.output {
         Some(o) => {
             if opts.emit_llvm {
@@ -466,5 +585,126 @@ fn emit_diags(diags: &diag::Diags, json: bool) {
         print!("{}", diags.render_llm_json());
     } else {
         eprint!("{}", diags.render_human());
+    }
+}
+
+fn desugar_inline_c_stmts(
+    b: &mut ast::Block,
+    counter: &mut usize,
+    c_out: &mut String,
+    cpp_out: &mut String,
+    fns_out: &mut Vec<ast::FnDef>,
+) {
+    for s in &mut b.stmts {
+        match s {
+            ast::Stmt::InlineC { is_cpp, inputs, outputs, body, span } => {
+                *counter += 1;
+                let fn_name = format!("__gw_inline_{}_{}", if *is_cpp { "cpp" } else { "c" }, *counter);
+
+                let mut c_func = String::new();
+                if *is_cpp {
+                    c_func.push_str("extern \"C\" ");
+                }
+                c_func.push_str(&format!("void {fn_name}("));
+                let mut params = Vec::new();
+                let mut fn_params = Vec::new();
+                let mut call_args = Vec::new();
+
+                for (idx, inp) in inputs.iter().enumerate() {
+                    let pname = format!("__in_{idx}");
+                    params.push(format!("long long {pname}"));
+                    fn_params.push(ast::Param {
+                        name: pname.clone(),
+                        ty: ast::TypeExpr::Named("i64".into(), *span),
+                        span: *span,
+                    });
+                    call_args.push(ast::Expr::Cast {
+                        expr: Box::new(ast::Expr::Ident(inp.clone(), *span)),
+                        ty: ast::TypeExpr::Named("i64".into(), *span),
+                        span: *span,
+                    });
+                }
+
+                for (idx, out) in outputs.iter().enumerate() {
+                    let pname = format!("__out_{idx}");
+                    params.push(format!("long long* {pname}"));
+                    fn_params.push(ast::Param {
+                        name: pname.clone(),
+                        ty: ast::TypeExpr::PtrMut(Box::new(ast::TypeExpr::Named("i64".into(), *span)), *span),
+                        span: *span,
+                    });
+                    call_args.push(ast::Expr::Unary {
+                        op: ast::UnOp::RefMut,
+                        expr: Box::new(ast::Expr::Ident(out.clone(), *span)),
+                        span: *span,
+                    });
+                }
+
+                c_func.push_str(&params.join(", "));
+                c_func.push_str(") {\n");
+
+                for (idx, inp) in inputs.iter().enumerate() {
+                    c_func.push_str(&format!("    #define {inp} __in_{idx}\n"));
+                }
+                for (idx, out) in outputs.iter().enumerate() {
+                    c_func.push_str(&format!("    #define {out} __out_{idx}\n"));
+                }
+
+                c_func.push_str("    ");
+                c_func.push_str(body);
+                c_func.push('\n');
+
+                for inp in inputs {
+                    c_func.push_str(&format!("    #undef {inp}\n"));
+                }
+                for out in outputs {
+                    c_func.push_str(&format!("    #undef {out}\n"));
+                }
+                c_func.push_str("}\n\n");
+
+                if *is_cpp {
+                    cpp_out.push_str(&c_func);
+                } else {
+                    c_out.push_str(&c_func);
+                }
+
+                fns_out.push(ast::FnDef {
+                    name: fn_name.clone(),
+                    type_params: Vec::new(),
+                    params: fn_params,
+                    variadic: false,
+                    ret: None,
+                    body: None,
+                    is_unsafe: false,
+                    is_extern: true,
+                    is_test: false,
+                    span: *span,
+                });
+
+                *s = ast::Stmt::Expr(ast::Expr::Call {
+                    callee: Box::new(ast::Expr::Ident(fn_name, *span)),
+                    args: call_args,
+                    span: *span,
+                });
+            }
+            ast::Stmt::If { then, els, .. } => {
+                desugar_inline_c_stmts(then, counter, c_out, cpp_out, fns_out);
+                if let Some(el) = els {
+                    desugar_inline_c_stmts(el, counter, c_out, cpp_out, fns_out);
+                }
+            }
+            ast::Stmt::While { body, .. } => {
+                desugar_inline_c_stmts(body, counter, c_out, cpp_out, fns_out);
+            }
+            ast::Stmt::For { body, .. } | ast::Stmt::ForIn { body, .. } | ast::Stmt::Unsafe(body, _) => {
+                desugar_inline_c_stmts(body, counter, c_out, cpp_out, fns_out);
+            }
+            ast::Stmt::Match { arms, .. } => {
+                for (_, arm_b) in arms {
+                    desugar_inline_c_stmts(arm_b, counter, c_out, cpp_out, fns_out);
+                }
+            }
+            _ => {}
+        }
     }
 }

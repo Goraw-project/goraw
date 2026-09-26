@@ -198,8 +198,12 @@ impl<'a> Codegen<'a> {
         }
 
         // extern-объявления.
+        let mut emitted_externs = HashSet::new();
         for f in &prog.fns {
             if f.is_extern {
+                if !emitted_externs.insert(&f.name) {
+                    continue;
+                }
                 let sig = &self.ctx.fns[&f.name];
                 let params: Vec<String> = sig.params.iter().map(|t| t.llvm()).collect();
                 let mut plist = params.join(", ");
@@ -318,8 +322,12 @@ impl<'a> Codegen<'a> {
                 // Дошли до конца теста — все assert прошли: возвращаем 0 (ок).
                 self.emit("ret i64 0".into());
             } else {
-            match &self.cur_ret {
-                Ty::Void => self.emit("ret void".into()),
+            let cur_ret = self.cur_ret.clone();
+            match &cur_ret {
+                Ty::Void => {
+                    self.emit_drops_for_all_scopes(None);
+                    self.emit("ret void".into());
+                }
                 other => {
                     if f.body.is_some() {
                         self.diags.push(
@@ -334,6 +342,7 @@ impl<'a> Codegen<'a> {
                     // Заполнитель, чтобы IR оставался валидным (не используется —
                     // при ошибках модуль не компилируется).
                     let z = self.zero_of(other);
+                    self.emit_drops_for_all_scopes(None);
                     self.emit(format!("ret {} {}", other.llvm(), z));
                 }
             }
@@ -357,6 +366,9 @@ impl<'a> Codegen<'a> {
                 break;
             }
             self.gen_stmt(s);
+        }
+        if !self.terminated {
+            self.emit_drops_for_current_scope();
         }
         self.scopes.pop();
     }
@@ -426,9 +438,13 @@ impl<'a> Codegen<'a> {
                 match (value, &self.cur_ret.clone()) {
                     (Some(e), Ty::Void) => {
                         self.err("E0041", e.span(), "функция ничего не возвращает, а `return` со значением".into(), None);
+                        self.emit_drops_for_all_scopes(None);
                         self.emit("ret void".into());
                     }
-                    (None, Ty::Void) => self.emit("ret void".into()),
+                    (None, Ty::Void) => {
+                        self.emit_drops_for_all_scopes(None);
+                        self.emit("ret void".into());
+                    }
                     (None, ret) => {
                         self.err(
                             "E0042",
@@ -436,6 +452,7 @@ impl<'a> Codegen<'a> {
                             format!("`return` без значения, а функция возвращает `{}`", ret.name()),
                             None,
                         );
+                        self.emit_drops_for_all_scopes(None);
                         let z = self.zero_of(ret);
                         self.emit(format!("ret {} {}", ret.llvm(), z));
                     }
@@ -450,11 +467,13 @@ impl<'a> Codegen<'a> {
                             );
                         }
                         if is_aggregate(ret) {
-                            // структура по значению: грузим агрегат из адреса.
+                            // структура по значению: грузим агрегат из адреса до вызова деструкторов!
                             let t = self.fresh_tmp();
                             self.emit(format!("{t} = load {ty}, ptr {val}", ty = ret.llvm()));
+                            self.emit_drops_for_all_scopes(Some(&val));
                             self.emit(format!("ret {} {}", ret.llvm(), t));
                         } else {
+                            self.emit_drops_for_all_scopes(None);
                             self.emit(format!("ret {} {}", ret.llvm(), val));
                         }
                     }
@@ -715,7 +734,74 @@ impl<'a> Codegen<'a> {
             }
 
             Stmt::Asm(a) => self.gen_asm(a),
+            Stmt::InlineC { is_cpp, inputs, outputs, body, span } => {
+                self.gen_inline_c(*is_cpp, inputs, outputs, body, *span);
+            }
         }
+    }
+
+    // ---------- RAII / Деструкторы ----------
+
+    fn emit_drop_for_local(&mut self, local: &Local) {
+        if let Ty::Struct(sname) = &local.ty {
+            let drop_fn = format!("{sname}__drop");
+            if self.ctx.fns.contains_key(&drop_fn) {
+                let sym = llvm_global(&drop_fn);
+                self.emit(format!("call void {sym}(ptr {})", local.slot));
+            }
+        }
+    }
+
+    fn emit_drops_for_current_scope(&mut self) {
+        let locals: Vec<Local> = self.scopes.last().map(|s| s.values().cloned().collect()).unwrap_or_default();
+        for local in &locals {
+            self.emit_drop_for_local(local);
+        }
+    }
+
+    fn emit_drops_for_all_scopes(&mut self, skip_slot: Option<&str>) {
+        let locals: Vec<Local> = self.scopes.iter().rev().flat_map(|s| s.values().cloned()).collect();
+        for local in &locals {
+            if let Some(skip) = skip_slot {
+                if local.slot == skip {
+                    continue;
+                }
+            }
+            self.emit_drop_for_local(local);
+        }
+    }
+
+    // ---------- инлайн C / C++ ----------
+
+    fn gen_inline_c(
+        &mut self,
+        is_cpp: bool,
+        inputs: &[String],
+        outputs: &[String],
+        _body: &str,
+        span: Span,
+    ) {
+        let mut arg_vals = Vec::new();
+        let mut arg_types = Vec::new();
+
+        for inp in inputs {
+            let (v, ty) = self.gen_expr(&Expr::Ident(inp.clone(), span), None);
+            arg_vals.push(format!("{} {v}", ty.llvm()));
+            arg_types.push(ty.llvm());
+        }
+
+        for out in outputs {
+            let (ptr, _ty, _) = self.gen_lvalue(&Expr::Ident(out.clone(), span));
+            arg_vals.push(format!("ptr {ptr}"));
+            arg_types.push("ptr".into());
+        }
+
+        self.tmp += 1;
+        let fn_name = format!("__gw_inline_{}_{}", if is_cpp { "cpp" } else { "c" }, self.tmp);
+        let proto = format!("declare void @{fn_name}({})", arg_types.join(", "));
+        self.intrinsics.insert(proto);
+
+        self.emit(format!("call void @{fn_name}({})", arg_vals.join(", ")));
     }
 
     // ---------- инлайн-ассемблер (Intel/MASM/NASM -> LLVM inline asm) ----------

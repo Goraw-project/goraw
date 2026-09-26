@@ -9,6 +9,8 @@ use crate::diag::Span;
 pub enum TypeExpr {
     /// Именованный тип: i32, f64, bool, void или имя структуры.
     Named(String, Span),
+    /// Дженерик-тип: `Vec<T>`, `Box<i32>`, `Map<K, V>`.
+    Generic(String, Vec<TypeExpr>, Span),
     /// `*T` — неизменяемый сырой указатель.
     Ptr(Box<TypeExpr>, Span),
     /// `*mut T` — изменяемый сырой указатель.
@@ -25,6 +27,7 @@ impl TypeExpr {
     pub fn span(&self) -> Span {
         match self {
             TypeExpr::Named(_, s)
+            | TypeExpr::Generic(_, _, s)
             | TypeExpr::Ptr(_, s)
             | TypeExpr::PtrMut(_, s)
             | TypeExpr::Fn(_, _, s)
@@ -44,6 +47,7 @@ pub struct Param {
 #[derive(Clone, Debug)]
 pub struct StructDef {
     pub name: String,
+    pub type_params: Vec<String>,
     pub fields: Vec<Param>,
     pub span: Span,
 }
@@ -77,6 +81,7 @@ pub struct EnumDef {
 #[derive(Clone, Debug)]
 pub struct FnDef {
     pub name: String,
+    pub type_params: Vec<String>,
     pub params: Vec<Param>,
     pub variadic: bool,
     pub ret: Option<TypeExpr>,
@@ -85,6 +90,14 @@ pub struct FnDef {
     pub is_extern: bool,
     /// Функция сгенерирована из test-блока (в теле разрешён `assert`).
     pub is_test: bool,
+    pub span: Span,
+}
+
+/// Инлайн C/C++ блок верхнего уровня: `c { ... }` или `cpp { ... }`.
+#[derive(Clone, Debug)]
+pub struct InlineCBlock {
+    pub is_cpp: bool,
+    pub code: String,
     pub span: Span,
 }
 
@@ -161,6 +174,14 @@ pub enum Stmt {
     },
     /// Инлайн-ассемблер (фаза 2).
     Asm(AsmBlock),
+    /// Инлайн C/C++ блок внутри функции: `c(inputs: [...], outputs: [...]) { ... }` или `c { ... }`
+    InlineC {
+        is_cpp: bool,
+        inputs: Vec<String>,
+        outputs: Vec<String>,
+        body: String,
+        span: Span,
+    },
 }
 
 impl Stmt {
@@ -177,7 +198,8 @@ impl Stmt {
             | Stmt::Continue(span)
             | Stmt::Assert(_, span)
             | Stmt::Match { span, .. }
-            | Stmt::Unsafe(_, span) => *span,
+            | Stmt::Unsafe(_, span)
+            | Stmt::InlineC { span, .. } => *span,
             Stmt::Expr(e) => e.span(),
             Stmt::Asm(a) => a.span,
         }
@@ -345,4 +367,5 @@ pub struct Program {
     pub statics: Vec<StaticDef>,
     pub fns: Vec<FnDef>,
     pub tests: Vec<TestDef>,
+    pub c_blocks: Vec<InlineCBlock>,
 }

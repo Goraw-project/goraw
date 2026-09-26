@@ -93,6 +93,11 @@ pub enum Tok {
     ShlEq,
     ShrEq,
 
+    Hash,      // #
+    Dollar,    // $
+    At,        // @
+    Backslash, // \
+
     Eof,
 }
 
@@ -568,6 +573,10 @@ impl<'a> Lexer<'a> {
                 }
                 _ => Tok::Gt,
             },
+            '#' => Tok::Hash,
+            '$' => Tok::Dollar,
+            '@' => Tok::At,
+            '\\' => Tok::Backslash,
             other => {
                 diags.push(
                     Diagnostic::error(
