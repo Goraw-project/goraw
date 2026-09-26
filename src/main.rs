@@ -7,6 +7,7 @@
 use gorawc::{ast, codegen, diag, lexer, parser, types};
 
 use std::path::{Path, PathBuf};
+use std::io::Write;
 use std::process::{exit, Command};
 
 /// Рантайм JIT-специализации встроен в компилятор и разворачивается рядом с
@@ -30,9 +31,10 @@ struct Options {
     obfuscate_strings: bool, // встроенная обфускация строковых литералов
     cpp_std: String, // стандарт C++ для инлайн-вставок (по умолчанию c++23)
     c_std: String,   // стандарт C для инлайн-вставок (по умолчанию c23)
+    silent: bool,    // авто-байпас предупреждений безопасности песочницы
 }
 
-fn main() {
+pub fn main() {
     let args: Vec<String> = std::env::args().collect();
     let opts = match parse_args(&args) {
         Ok(o) => o,
@@ -72,13 +74,15 @@ fn print_help() {
 \n\
 ИСПОЛЬЗОВАНИЕ:\n\
     gorawc <файл.gw> [helper.asm ...] [lib.obj ...] [опции]\n\
+    goraw  <файл.gw> [helper.asm ...] [lib.obj ...] [опции]\n\
 \n\
 ОПЦИИ:\n\
     -o <путь>        имя выходного файла (.exe или .ll)\n\
     --emit-llvm      остановиться на LLVM IR (.ll), не звать clang\n\
     --json           печатать диагностику в LLM-формате (JSON + XML-нотки)\n\
     --run            запустить программу после успешной сборки\n\
-    --test           собрать и прогнать shadow-тесты (test-блоки)\n\
+    --test, test     собрать и прогнать shadow-тесты (test-блоки)\n\
+    --silent, -s     автопропуск предупреждений безопасности при запуске тестов вне песочницы\n\
     --shadow=strict  строгий режим: ошибка E1200 при отсутствии shadow-теста для функции\n\
     --obfuscate-strings обфускация всех строковых литералов\n\
     --bind-c <header.h> сгенерировать Goraw-биндинги из C-заголовка\n\
@@ -108,6 +112,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut obfuscate_strings = false;
     let mut cpp_std = "c++23".to_string();
     let mut c_std = "c23".to_string();
+    let mut silent = std::env::var("GORAW_SILENT").map(|v| v == "1").unwrap_or(false)
+        || std::env::var("GORAW_BOX_SILENT").map(|v| v == "1").unwrap_or(false)
+        || std::env::var("SILENT").map(|v| v == "1").unwrap_or(false);
 
     let mut i = 1;
     while i < args.len() {
@@ -128,7 +135,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--emit-llvm" => emit_llvm = true,
             "--json" => json = true,
             "--run" => run = true,
-            "--test" => test = true,
+            "--test" | "test" => test = true,
+            "--silent" | "-s" => silent = true,
             "--shadow=strict" => shadow_strict = true,
             "--obfuscate-strings" | "--obf-strings" => obfuscate_strings = true,
             "--keep-ll" => keep_ll = true,
@@ -184,10 +192,73 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         obfuscate_strings,
         cpp_std,
         c_std,
+        silent,
     })
 }
 
+/// Проверяет, запущены ли тесты внутри подписанной песочницы.
+/// Если подпись песочницы отсутствует (например, запуск на голой ОС), выводит WARN
+/// и запрашивает Y/N у пользователя (если не указан флаг --silent / -s).
+fn check_sandbox_security(silent: bool) -> bool {
+    let in_sandbox = std::env::var("GORAW_SANDBOX_ACTIVE").map(|v| v == "1").unwrap_or(false);
+    let is_signed = std::env::var("GORAW_SANDBOX_SIGNED").map(|v| v == "1").unwrap_or(false);
+
+    if in_sandbox && is_signed {
+        return true;
+    }
+
+    if silent {
+        eprintln!("⚠️  [WARN] Запуск тестов вне подписанной песочницы (Silent bypass активирован).");
+        return true;
+    }
+
+    let reason = if !in_sandbox {
+        "Обнаружен прямой запуск тестов на голой ОС без активной песочницы!"
+    } else {
+        "Обнаружен запуск тестов в песочнице, но цифровая подпись компонентов не найдена!"
+    };
+
+    eprintln!(
+        "================================================================================\n\
+         ⚠️  [WARN] ПРЕДУПРЕЖДЕНИЕ БЕЗОПАСНОСТИ: ПОДПИСЬ ПЕСОЧНИЦЫ НЕ НАЙДЕНА\n\
+         ================================================================================\n\
+         {reason}\n\
+         Тесты выполняют машинный код без подтверждённых гарантий изоляции и без лимита 16 ГБ.\n\
+         \n\
+         Рекомендуется запускать через подписанную песочницу:\n\
+             .\\box.cmd goraw <файл.gw> --test\n\
+         или подписать компоненты песочницы:\n\
+             .\\box.cmd --sign\n\
+         ================================================================================"
+    );
+
+    eprint!("Продолжить выполнение тестов без подписанной песочницы? [Y/N] (по умолчанию: N): ");
+    let _ = std::io::stderr().flush();
+
+    let mut input = String::new();
+    match std::io::stdin().read_line(&mut input) {
+        Ok(n) if n > 0 => {
+            let choice = input.trim().to_lowercase();
+            if choice == "y" || choice == "yes" || choice == "да" || choice == "д" {
+                eprintln!("[INFO] Выполнение тестов разрешено пользователем.\n");
+                true
+            } else {
+                eprintln!("[ABORT] Выполнение тестов прервано пользователем.");
+                false
+            }
+        }
+        _ => {
+            eprintln!("\n[ABORT] Неинтерактивный ввод (EOF). Для автоматического пропуска используйте флаг --silent (-s).");
+            false
+        }
+    }
+}
+
 fn run(opts: Options) -> i32 {
+    if opts.test && !check_sandbox_security(opts.silent) {
+        return 1;
+    }
+
     let input_path = opts.input.as_ref().expect("входной файл");
     // Собираем главный файл и все, что он тянет через `import "..."`.
     let (src, line_map) = match gather_sources(input_path) {

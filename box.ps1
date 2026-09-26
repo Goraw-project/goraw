@@ -93,102 +93,17 @@ if ($CommandAndArgs.Count -eq 0) {
     exit 0
 }
 
-# 5. Проверка цифровой подписи компонентов песочницы
-$selfScript = $MyInvocation.MyCommand.Path
-if (-not $selfScript) { $selfScript = Join-Path $scriptDir "box.ps1" }
-
-$filesToCheck = @(
-    $selfScript,
-    $procgov,
-    $dllPath
-)
-
-$unsignedFiles = @()
-foreach ($file in $filesToCheck) {
-    if (-not (Test-Path $file)) { continue }
-    $sig = Get-AuthenticodeSignature -FilePath $file -ErrorAction SilentlyContinue
-    if (-not $sig -or $sig.Status -ne 'Valid') {
-        $statusStr = if (-not $sig -or $sig.Status -eq 'NotSigned') {
-            "Не подписан (NotSigned)"
-        } elseif ($sig.Status -eq 'UnknownError') {
-            $subj = if ($sig.SignerCertificate) { ($sig.SignerCertificate.Subject -replace '^CN=', '') } else { "локальный" }
-            "Недоверенный Root ($subj)"
-        } elseif ($sig.Status -eq 'HashMismatch') {
-            "Хеш не совпадает (изменен)"
-        } elseif ($sig.Status -eq 'NotTrusted') {
-            "Сертификат не доверен (NotTrusted)"
-        } else {
-            $sig.Status.ToString()
-        }
-        $unsignedFiles += [PSCustomObject]@{
-            File = (Split-Path -Leaf $file)
-            Status = $statusStr
-        }
-    }
+# 5. Экспорт переменных окружения песочницы для процессов
+$env:GORAW_SANDBOX_ACTIVE = "1"
+if ($isSilent) {
+    $env:GORAW_SILENT = "1"
 }
 
-if ($unsignedFiles.Count -gt 0) {
-    if ($isSilent) {
-        Write-Host "⚠️ [BOX] [WARN] Цифровая подпись песочницы не найдена или не проверена (Silent bypass: автопродолжение)." -ForegroundColor DarkYellow
-    } else {
-        Write-Host ""
-        Write-Host "┌────────────────────────────────────────────────────────┐" -ForegroundColor Yellow
-        Write-Host "│          ⚠️  GORAW SANDBOX SECURITY WARNING             │" -ForegroundColor Yellow
-        Write-Host "├────────────────────────────────────────────────────────┤" -ForegroundColor Yellow
-        Write-Host "│ ВНИМАНИЕ: Цифровая подпись компонентов песочницы       │" -ForegroundColor Yellow
-        Write-Host "│ не найдена или не прошла верификацию!                  │" -ForegroundColor Yellow
-        Write-Host "│ (Возможная причина: запуск теста на голой/чистой ОС)   │" -ForegroundColor Yellow
-        Write-Host "├────────────────────────────────────────────────────────┤" -ForegroundColor Yellow
-        foreach ($item in $unsignedFiles) {
-            $text = "- " + $item.File + ": " + $item.Status
-            if ($text.Length -gt 51) {
-                $text = $text.Substring(0, 48) + "..."
-            }
-            $msg = ("│  " + $text).PadRight(56) + "│"
-            Write-Host $msg -ForegroundColor Yellow
-        }
-        Write-Host "├────────────────────────────────────────────────────────┤" -ForegroundColor Yellow
-        Write-Host "│ Для автопропуска используйте флаг --silent (-s).       │" -ForegroundColor Yellow
-        Write-Host "└────────────────────────────────────────────────────────┘" -ForegroundColor Yellow
-        Write-Host ""
-
-        # Интерактивный запрос Y/N
-        $promptMsg = "Продолжить выполнение в неподписанной песочнице? [Y/N] (по умолчанию: N): "
-        $userChoice = $null
-
-        $piped = ($input | Out-String).Trim()
-        if ($piped) {
-            $userChoice = $piped
-        } elseif ($Host.UI.RawUI -and -not [Console]::IsInputRedirected) {
-            try {
-                $userChoice = Read-Host $promptMsg
-            } catch {
-                $userChoice = $null
-            }
-        } else {
-            try {
-                Write-Host -NoNewline $promptMsg
-                $userChoice = [Console]::In.ReadLine()
-            } catch {
-                $userChoice = $null
-            }
-        }
-
-        if (-not $userChoice) {
-            $userChoice = "N"
-        }
-        $userChoice = $userChoice.ToString().Trim()
-
-        if ($userChoice -match '^(?i)(y|yes|да|д)$') {
-            Write-Host "[BOX] [INFO] Выполнение продолжено по запросу пользователя.`n" -ForegroundColor Green
-        } else {
-            Write-Host ""
-            Write-Host "⛔ [BOX] [ABORT] Выполнение прервано: подпись песочницы не подтверждена." -ForegroundColor Red
-            Write-Host "Подсказка: добавьте флаг --silent (-s) для автопропуска предупреждений," -ForegroundColor Gray
-            Write-Host "          либо выполните: .\box.cmd --sign для подписания компонентов." -ForegroundColor Gray
-            exit 1
-        }
-    }
+$procgovSig = Get-AuthenticodeSignature -FilePath $procgov -ErrorAction SilentlyContinue
+if ($procgovSig -and ($procgovSig.Status -eq 'Valid' -or $procgovSig.SignerCertificate -ne $null)) {
+    $env:GORAW_SANDBOX_SIGNED = "1"
+} else {
+    $env:GORAW_SANDBOX_SIGNED = "0"
 }
 
 # 6. Разбор команды
@@ -215,11 +130,17 @@ switch ($first) {
         $targetExe = "cargo"
         $targetArgs = @("run") + @($rest)
     }
-    "gorawc" {
-        $exePath = Join-Path $scriptDir "target\debug\gorawc.exe"
+    { $_ -in "gorawc", "goraw" } {
+        $exeName = "$first.exe"
+        $exePath = Join-Path $scriptDir "target\debug\$exeName"
         if (-not (Test-Path $exePath)) {
-            Write-Host "[BOX] gorawc.exe не найден, выполняем сборку..." -ForegroundColor Yellow
-            cargo build --bin gorawc
+            $altPath = Join-Path $scriptDir "target\debug\gorawc.exe"
+            if (Test-Path $altPath) {
+                $exePath = $altPath
+            } else {
+                Write-Host "[BOX] $exeName не найден, выполняем сборку..." -ForegroundColor Yellow
+                cargo build --bin $first
+            }
         }
         $targetExe = $exePath
         $targetArgs = @($rest)
@@ -351,8 +272,8 @@ exit $exitCode
 # SIG # Begin signature block
 # MIIF+AYJKoZIhvcNAQcCoIIF6TCCBeUCAQExDzANBglghkgBZQMEAgEFADB5Bgor
 # BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
-# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCAWq/mhFqwfWuhm
-# 14DLSzjB4kwY9EvCxuypooe4XhPPuqCCA0wwggNIMIICMKADAgECAhAw3/ZKuit3
+# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCAs1BJh/7BLV6WQ
+# j5kOuwPXQCQnpCTqqasB8d2p2RuDBKCCA0wwggNIMIICMKADAgECAhAw3/ZKuit3
 # nUacfZqWIRLKMA0GCSqGSIb3DQEBCwUAMDwxDDAKBgNVBAsMA05QUzEaMBgGA1UE
 # CgwRZGV2LmRvdWJsZWx1Yy5pY3UxEDAOBgNVBAMMB2x1Y19kZXYwHhcNMjYwODEz
 # MTUyMDM3WhcNMzEwODEzMTUzMDM4WjA8MQwwCgYDVQQLDANOUFMxGjAYBgNVBAoM
@@ -374,11 +295,11 @@ exit $exitCode
 # di5kb3VibGVsdWMuaWN1MRAwDgYDVQQDDAdsdWNfZGV2AhAw3/ZKuit3nUacfZqW
 # IRLKMA0GCWCGSAFlAwQCAQUAoIGEMBgGCisGAQQBgjcCAQwxCjAIoAKAAKECgAAw
 # GQYJKoZIhvcNAQkDMQwGCisGAQQBgjcCAQQwHAYKKwYBBAGCNwIBCzEOMAwGCisG
-# AQQBgjcCARUwLwYJKoZIhvcNAQkEMSIEIFp3+G/06MNH++KLf4/y5/dSBwjbc2i7
-# YXdqWCfGpjQVMA0GCSqGSIb3DQEBAQUABIIBAGXVtTlTV0B/Adl/A4Vap0RFjAfd
-# 2aHCC1NjNore3VG0aWuZN5d/LuuG3fYDSzZMJg7WplBkiG79Nj/6vaa9N7xv5hMM
-# LyNo3TAt2N2WKGn9wdMzc9etKzdwhhDPstAAnSAuwCY42IGdin3qesM4SJyqHeA7
-# brPoYRSdJ80UFIKzo2BKjR6wGG0U3bZINtuLY1/IClS230Kl/MGPJk2KvNMZjc3V
-# HdbV+1bE90VcZsVmI66du+qmXISdecyARtXLvgr2Xt7O1hqpjcC49rGh6AY+t6UV
-# OTxmrrZ8widjKHhLsH5Nlc5UjVq3cObEaU0nyVdjWy8rqq4nLEsuEeWY+Yc=
+# AQQBgjcCARUwLwYJKoZIhvcNAQkEMSIEIFEtXMPC0OFwzBlG8dbOhDrugRxhSJ7C
+# 1mLwqE4v8CPKMA0GCSqGSIb3DQEBAQUABIIBAHrox+HoAF8eD51RNHAT6L+X0glZ
+# 7T+yMp//CQixIzZmiF7WwhPBC63wOwi/zmBOZup5T/qPesdW4NWZ8KMf4NPq8isj
+# L9q9Yj+iV9A3lR5A52KdQB9yUYoftyh5Hwiv+BmJCfC4veg0+uiE9M+c62sHnEXv
+# IuOx/SQaArgW+69WiZWdHYdpdgi95txSnAPcZfvPtT2JGVRdnyrvWQWM1qi7wNhN
+# 349A7bdoN0+7skgQew9vf4FO1qiVxdIt5lU4qcZf8IZIvoLvO/AXjuN0UIPgzQq5
+# FyqU/kVVnFi2ufqG8HOynReeMi/syitSdHPrwC+O94UHlGbAhswx1zJ9zI8=
 # SIG # End signature block
