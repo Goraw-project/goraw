@@ -28,6 +28,8 @@ struct Options {
     test: bool, // собрать и прогнать shadow-тесты
     shadow_strict: bool, // строгий режим обязательных shadow-тестов
     obfuscate_strings: bool, // встроенная обфускация строковых литералов
+    cpp_std: String, // стандарт C++ для инлайн-вставок (по умолчанию c++23)
+    c_std: String,   // стандарт C для инлайн-вставок (по умолчанию c23)
 }
 
 fn main() {
@@ -80,6 +82,8 @@ fn print_help() {
     --shadow=strict  строгий режим: ошибка E1200 при отсутствии shadow-теста для функции\n\
     --obfuscate-strings обфускация всех строковых литералов\n\
     --bind-c <header.h> сгенерировать Goraw-биндинги из C-заголовка\n\
+    --cpp-std <std>  стандарт C++ для инлайн-вставок (по умолчанию `c++23`, также `c++26`, `c++20`)\n\
+    --c-std <std>    стандарт C для инлайн-вставок (по умолчанию `c23`, также `c17`, `c11`)\n\
     -O<n>            уровень оптимизации clang (напр. -O2)\n\
     --keep-ll        не удалять промежуточный .ll при сборке .exe\n\
     --clang <путь>   путь к clang (по умолчанию `clang` из PATH)\n\
@@ -102,6 +106,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut test = false;
     let mut shadow_strict = false;
     let mut obfuscate_strings = false;
+    let mut cpp_std = "c++23".to_string();
+    let mut c_std = "c23".to_string();
 
     let mut i = 1;
     while i < args.len() {
@@ -129,6 +135,14 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--clang" => {
                 i += 1;
                 clang = args.get(i).ok_or("--clang требует аргумент")?.clone();
+            }
+            "--cpp-std" => {
+                i += 1;
+                cpp_std = args.get(i).ok_or("--cpp-std требует аргумент")?.clone();
+            }
+            "--c-std" => {
+                i += 1;
+                c_std = args.get(i).ok_or("--c-std требует аргумент")?.clone();
             }
             s if s.starts_with("-O") => opt = Some(s[2..].to_string()),
             s if s.starts_with('-') => return Err(format!("неизвестная опция `{s}` (см. --help)")),
@@ -168,6 +182,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         test,
         shadow_strict,
         obfuscate_strings,
+        cpp_std,
+        c_std,
     })
 }
 
@@ -211,19 +227,25 @@ fn run(opts: Options) -> i32 {
     prog.fns.extend(new_inline_fns);
 
     // 3. Сборка top-level инлайн C / C++ блоков (`c { ... }` и `cpp { ... }`)
+    let mut top_level_c = String::new();
+    let mut top_level_cpp = String::new();
     for b in &prog.c_blocks {
         if b.is_cpp {
+            top_level_cpp.push_str(&b.code);
+            top_level_cpp.push('\n');
             inline_cpp_code.push_str(&b.code);
             inline_cpp_code.push('\n');
         } else {
+            top_level_c.push_str(&b.code);
+            top_level_c.push('\n');
             inline_c_code.push_str(&b.code);
             inline_c_code.push('\n');
         }
     }
 
-    // 4. Извлечение функций из C / C++ кода (чтобы тайпчекер и кодоген знали сигнатуры)
-    if !inline_c_code.trim().is_empty() {
-        if let Ok(c_fns) = gorawc::c_interop::extract_functions_from_code(&inline_c_code, false, &opts.clang) {
+    // 4. Извлечение функций из top-level C / C++ кода (чтобы тайпчекер и кодоген знали сигнатуры)
+    if !top_level_c.trim().is_empty() {
+        if let Ok(c_fns) = gorawc::c_interop::extract_functions_from_code(&top_level_c, false, Some(&opts.c_std), &opts.clang) {
             for f in c_fns {
                 if !prog.fns.iter().any(|existing| existing.name == f.name) {
                     prog.fns.push(f);
@@ -232,8 +254,8 @@ fn run(opts: Options) -> i32 {
         }
     }
 
-    if !inline_cpp_code.trim().is_empty() {
-        if let Ok(cpp_fns) = gorawc::c_interop::extract_functions_from_code(&inline_cpp_code, true, &opts.clang) {
+    if !top_level_cpp.trim().is_empty() {
+        if let Ok(cpp_fns) = gorawc::c_interop::extract_functions_from_code(&top_level_cpp, true, Some(&opts.cpp_std), &opts.clang) {
             for f in cpp_fns {
                 if !prog.fns.iter().any(|existing| existing.name == f.name) {
                     prog.fns.push(f);
@@ -349,7 +371,7 @@ fn run(opts: Options) -> i32 {
     let mut temp_c_objs = Vec::new();
     if !inline_c_code.trim().is_empty() {
         let c_bc = ll_path.with_extension("c.bc");
-        if let Err(e) = gorawc::c_interop::compile_inline_snippet(&inline_c_code, false, &opts.clang, &c_bc) {
+        if let Err(e) = gorawc::c_interop::compile_inline_snippet(&inline_c_code, false, Some(&opts.c_std), &opts.clang, &c_bc) {
             eprintln!("{e}");
             return 1;
         }
@@ -357,7 +379,7 @@ fn run(opts: Options) -> i32 {
     }
     if !inline_cpp_code.trim().is_empty() {
         let cpp_bc = ll_path.with_extension("cpp.bc");
-        if let Err(e) = gorawc::c_interop::compile_inline_snippet(&inline_cpp_code, true, &opts.clang, &cpp_bc) {
+        if let Err(e) = gorawc::c_interop::compile_inline_snippet(&inline_cpp_code, true, Some(&opts.cpp_std), &opts.clang, &cpp_bc) {
             eprintln!("{e}");
             return 1;
         }

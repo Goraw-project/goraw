@@ -8,6 +8,7 @@
 use crate::ast::{FnDef, Param, TypeExpr};
 use crate::diag::Span;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -110,6 +111,7 @@ pub fn get_sdk_paths() -> &'static SdkPaths {
 pub fn compile_inline_snippet(
     code: &str,
     is_cpp: bool,
+    std_version: Option<&str>,
     clang_path: &str,
     output_bc: &Path,
 ) -> Result<(), String> {
@@ -127,7 +129,13 @@ pub fn compile_inline_snippet(
     cmd.arg("--target=x86_64-w64-windows-gnu");
     cmd.arg("-c")
         .arg("-x")
-        .arg(if is_cpp { "c++" } else { "c" })
+        .arg(if is_cpp { "c++" } else { "c" });
+
+    let std_arg = match std_version {
+        Some(v) => format!("-std={v}"),
+        None => if is_cpp { "-std=c++23".to_string() } else { "-std=c23".to_string() },
+    };
+    cmd.arg(std_arg)
         .arg("-emit-llvm")
         .arg("-O2");
 
@@ -165,10 +173,65 @@ pub fn compile_inline_snippet(
     Ok(())
 }
 
+fn find_candidate_function_names(code: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut seen = HashSet::new();
+    let keywords: HashSet<&str> = [
+        "if", "while", "for", "switch", "catch", "sizeof", "decltype", "return",
+        "struct", "class", "enum", "union", "namespace", "template", "typedef",
+        "alignas", "alignof", "static_assert", "case", "default", "goto", "throw",
+        "consteval", "constexpr", "constinit", "operator", "export", "import", "module"
+    ].into_iter().collect();
+
+    let bytes = code.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            while i < bytes.len() && bytes[i] != b'\n' { i += 1; }
+            continue;
+        }
+        if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') { i += 1; }
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'"' {
+            i += 1;
+            while i < bytes.len() && bytes[i] != b'"' {
+                if bytes[i] == b'\\' { i += 1; }
+                i += 1;
+            }
+            if i < bytes.len() { i += 1; }
+            continue;
+        }
+        if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            let ident = &code[start..i];
+            let mut j = i;
+            while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t' || bytes[j] == b'\r' || bytes[j] == b'\n') {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'(' && !keywords.contains(ident) {
+                if seen.insert(ident.to_string()) {
+                    names.push(ident.to_string());
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    names
+}
+
 /// Извлечение функций из C/C++ кода через Clang AST JSON dump.
 pub fn extract_functions_from_code(
     code: &str,
     is_cpp: bool,
+    std_version: Option<&str>,
     clang_path: &str,
 ) -> Result<Vec<FnDef>, String> {
     let compiler = if is_cpp {
@@ -181,48 +244,83 @@ pub fn extract_functions_from_code(
         clang_path.to_string()
     };
 
-    let mut cmd = Command::new(&compiler);
-    cmd.arg("--target=x86_64-w64-windows-gnu");
-    cmd.arg("-x")
-        .arg(if is_cpp { "c++" } else { "c" })
-        .arg("-Xclang")
-        .arg("-ast-dump=json")
-        .arg("-fsyntax-only");
+    let std_arg = match std_version {
+        Some(v) => format!("-std={v}"),
+        None => if is_cpp { "-std=c++23".to_string() } else { "-std=c23".to_string() },
+    };
 
-    cmd.arg("-");
+    let candidates = if code.contains("#include") {
+        find_candidate_function_names(code)
+    } else {
+        Vec::new()
+    };
 
-    let mut child = cmd
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("не удалось запустить `{compiler}`: {e}"))?;
+    let filters: Vec<Option<String>> = if candidates.is_empty() {
+        vec![None]
+    } else {
+        candidates.into_iter().map(Some).collect()
+    };
 
-    if let Some(mut stdin) = child.stdin.take() {
-        use std::io::Write;
-        let _ = stdin.write_all(code.as_bytes());
-    }
+    let mut all_fns = Vec::new();
+    let mut seen_fn_names = HashSet::new();
 
-    let out = child
-        .wait_with_output()
-        .map_err(|e| format!("ошибка ожидания `{compiler}`: {e}"))?;
+    for filter in filters {
+        let mut cmd = Command::new(&compiler);
+        cmd.arg("--target=x86_64-w64-windows-gnu");
+        cmd.arg("-x")
+            .arg(if is_cpp { "c++" } else { "c" });
 
-    let json_str = String::from_utf8_lossy(&out.stdout);
-    if json_str.trim().is_empty() {
-        return Ok(Vec::new());
-    }
+        cmd.arg(&std_arg)
+            .arg("-Xclang")
+            .arg("-ast-dump=json")
+            .arg("-fsyntax-only");
 
-    let v: Value = serde_json::from_str(&json_str)
-        .map_err(|e| format!("ошибка парсинга AST JSON от Clang: {e}"))?;
+        if let Some(ref flt) = filter {
+            cmd.arg("-Xclang")
+                .arg("-ast-dump-filter")
+                .arg("-Xclang")
+                .arg(flt);
+        }
 
-    let mut fns = Vec::new();
-    if let Some(inner) = v.get("inner").and_then(|i| i.as_array()) {
-        for node in inner {
-            collect_functions_recursive(node, &mut fns);
+        cmd.arg("-");
+
+        let mut child = cmd
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("не удалось запустить `{compiler}`: {e}"))?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            let _ = stdin.write_all(code.as_bytes());
+        }
+
+        let out = child
+            .wait_with_output()
+            .map_err(|e| format!("ошибка ожидания `{compiler}`: {e}"))?;
+
+        let json_str = String::from_utf8_lossy(&out.stdout);
+        if json_str.trim().is_empty() {
+            continue;
+        }
+
+        let stream = serde_json::Deserializer::from_str(&json_str).into_iter::<Value>();
+        for item in stream {
+            if let Ok(v) = item {
+                let mut fns = Vec::new();
+                collect_functions_recursive(&v, &mut fns);
+
+                for f in fns {
+                    if seen_fn_names.insert(f.name.clone()) {
+                        all_fns.push(f);
+                    }
+                }
+            }
         }
     }
 
-    Ok(fns)
+    Ok(all_fns)
 }
 
 fn collect_functions_recursive(node: &Value, fns: &mut Vec<FnDef>) {
@@ -231,13 +329,56 @@ fn collect_functions_recursive(node: &Value, fns: &mut Vec<FnDef>) {
         if let Some(f) = parse_ast_function_node(node) {
             fns.push(f);
         }
-    } else if kind == "LinkageSpecDecl" || kind == "NamespaceDecl" {
+    } else {
         if let Some(inner) = node.get("inner").and_then(|i| i.as_array()) {
             for child in inner {
                 collect_functions_recursive(child, fns);
             }
         }
     }
+}
+
+fn is_loc_included(loc: &Value) -> bool {
+    if loc.get("includedFrom").is_some() {
+        return true;
+    }
+    if let Some(f) = loc.get("file").and_then(|f| f.as_str()) {
+        if f != "<stdin>" {
+            return true;
+        }
+    }
+    if let Some(sloc) = loc.get("spellingLoc") {
+        if is_loc_included(sloc) {
+            return true;
+        }
+    }
+    if let Some(eloc) = loc.get("expansionLoc") {
+        if is_loc_included(eloc) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_from_input_code(node: &Value) -> bool {
+    if let Some(loc) = node.get("loc") {
+        if is_loc_included(loc) {
+            return false;
+        }
+    }
+    if let Some(range) = node.get("range") {
+        if let Some(begin) = range.get("begin") {
+            if is_loc_included(begin) {
+                return false;
+            }
+        }
+        if let Some(end) = range.get("end") {
+            if is_loc_included(end) {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn parse_ast_function_node(node: &Value) -> Option<FnDef> {
@@ -251,16 +392,8 @@ fn parse_ast_function_node(node: &Value) -> Option<FnDef> {
         return None; // пропускаем внутренние CRT и компиляторные интринзики
     }
 
-    // Проверяем: если узел пришёл из внешнего файла (include / SDK), пропускаем его
-    if let Some(loc) = node.get("loc") {
-        if let Some(file) = loc.get("file").and_then(|f| f.as_str()) {
-            if file.contains("include") || file.contains("Include") || file.contains("MSVC") || file.contains("Windows Kits") {
-                return None;
-            }
-        }
-        if loc.get("includedFrom").is_some() {
-            return None;
-        }
+    if !is_from_input_code(node) {
+        return None;
     }
 
     // Только функции с телом (определённые пользователем в блоке)
@@ -383,7 +516,7 @@ pub fn generate_bindings_from_header(header_path: &Path, clang_path: &str) -> Re
     let header_src = std::fs::read_to_string(header_path)
         .map_err(|e| format!("не удалось прочитать `{}`: {e}", header_path.display()))?;
 
-    let fns = extract_functions_from_code(&header_src, false, clang_path)?;
+    let fns = extract_functions_from_code(&header_src, false, None, clang_path)?;
     let mut out = String::new();
     out.push_str(&format!("// Автоматические биндинги Goraw для `{}`\n\n", header_path.display()));
 
