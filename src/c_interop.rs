@@ -114,6 +114,7 @@ pub fn compile_inline_snippet(
     std_version: Option<&str>,
     clang_path: &str,
     output_bc: &Path,
+    opt_level: Option<&str>,
 ) -> Result<(), String> {
     let compiler = if is_cpp {
         if clang_path.ends_with("clang.exe") || clang_path == "clang" {
@@ -135,9 +136,14 @@ pub fn compile_inline_snippet(
         Some(v) => format!("-std={v}"),
         None => if is_cpp { "-std=c++23".to_string() } else { "-std=c23".to_string() },
     };
+    let opt = opt_level.unwrap_or("2");
     cmd.arg(std_arg)
         .arg("-emit-llvm")
-        .arg("-O2");
+        .arg(format!("-O{opt}"));
+
+    if opt == "0" {
+        cmd.arg("-g");
+    }
 
     if is_cpp {
         cmd.arg("-fno-exceptions");

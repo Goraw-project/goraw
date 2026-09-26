@@ -14,6 +14,12 @@ use std::process::{exit, Command};
 /// .ll только когда программа реально использует jit-блоки.
 const JIT_RUNTIME_C: &str = include_str!("../runtime/goraw_jit.c");
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Profile {
+    Debug,
+    Release,
+}
+
 struct Options {
     input: Option<PathBuf>,
     bind_c: Option<PathBuf>,
@@ -32,6 +38,7 @@ struct Options {
     cpp_std: String, // стандарт C++ для инлайн-вставок (по умолчанию c++23)
     c_std: String,   // стандарт C для инлайн-вставок (по умолчанию c23)
     silent: bool,    // авто-байпас предупреждений безопасности песочницы
+    profile: Profile, // профиль сборки (Debug / Release)
 }
 
 pub fn main() {
@@ -78,6 +85,8 @@ fn print_help() {
 \n\
 ОПЦИИ:\n\
     -o <путь>        имя выходного файла (.exe или .ll)\n\
+    --release, -r    собрать в релизном профиле (-O3, удаление мёртвого кода, стриппинг)\n\
+    --debug          собрать в отладочном профиле (-O0, -g отладочные символы, по умолчанию)\n\
     --emit-llvm      остановиться на LLVM IR (.ll), не звать clang\n\
     --json           печатать диагностику в LLM-формате (JSON + XML-нотки)\n\
     --run            запустить программу после успешной сборки\n\
@@ -88,7 +97,7 @@ fn print_help() {
     --bind-c <header.h> сгенерировать Goraw-биндинги из C-заголовка\n\
     --cpp-std <std>  стандарт C++ для инлайн-вставок (по умолчанию `c++23`, также `c++26`, `c++20`)\n\
     --c-std <std>    стандарт C для инлайн-вставок (по умолчанию `c23`, также `c17`, `c11`)\n\
-    -O<n>            уровень оптимизации clang (напр. -O2)\n\
+    -O<n>            уровень оптимизации clang (напр. -O2, переопределяет профиль)\n\
     --keep-ll        не удалять промежуточный .ll при сборке .exe\n\
     --clang <путь>   путь к clang (по умолчанию `clang` из PATH)\n\
     -h, --help       показать эту справку\n"
@@ -112,6 +121,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut obfuscate_strings = false;
     let mut cpp_std = "c++23".to_string();
     let mut c_std = "c23".to_string();
+    let mut profile = Profile::Debug;
     let mut silent = std::env::var("GORAW_SILENT").map(|v| v == "1").unwrap_or(false)
         || std::env::var("GORAW_BOX_SILENT").map(|v| v == "1").unwrap_or(false)
         || std::env::var("SILENT").map(|v| v == "1").unwrap_or(false);
@@ -132,6 +142,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                 i += 1;
                 bind_c = Some(PathBuf::from(args.get(i).ok_or("--bind-c требует аргумент")?));
             }
+            "--release" | "-r" => profile = Profile::Release,
+            "--debug" => profile = Profile::Debug,
             "--emit-llvm" => emit_llvm = true,
             "--json" => json = true,
             "--run" => run = true,
@@ -193,6 +205,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         cpp_std,
         c_std,
         silent,
+        profile,
     })
 }
 
@@ -438,11 +451,18 @@ fn run(opts: Options) -> i32 {
         jit_rt_path = Some(rt);
     }
 
+    let effective_opt = opts.opt.clone().unwrap_or_else(|| {
+        match opts.profile {
+            Profile::Release => "3".to_string(),
+            Profile::Debug => "0".to_string(),
+        }
+    });
+
     // Компиляция инлайн C / C++ блоков в .bc файлы
     let mut temp_c_objs = Vec::new();
     if !inline_c_code.trim().is_empty() {
         let c_bc = ll_path.with_extension("c.bc");
-        if let Err(e) = gorawc::c_interop::compile_inline_snippet(&inline_c_code, false, Some(&opts.c_std), &opts.clang, &c_bc) {
+        if let Err(e) = gorawc::c_interop::compile_inline_snippet(&inline_c_code, false, Some(&opts.c_std), &opts.clang, &c_bc, Some(&effective_opt)) {
             eprintln!("{e}");
             return 1;
         }
@@ -450,7 +470,7 @@ fn run(opts: Options) -> i32 {
     }
     if !inline_cpp_code.trim().is_empty() {
         let cpp_bc = ll_path.with_extension("cpp.bc");
-        if let Err(e) = gorawc::c_interop::compile_inline_snippet(&inline_cpp_code, true, Some(&opts.cpp_std), &opts.clang, &cpp_bc) {
+        if let Err(e) = gorawc::c_interop::compile_inline_snippet(&inline_cpp_code, true, Some(&opts.cpp_std), &opts.clang, &cpp_bc, Some(&effective_opt)) {
             eprintln!("{e}");
             return 1;
         }
@@ -460,9 +480,15 @@ fn run(opts: Options) -> i32 {
     // Линковка через clang.
     let mut cmd = Command::new(&opts.clang);
     cmd.arg("--target=x86_64-w64-windows-gnu");
-    if let Some(o) = &opts.opt {
-        cmd.arg(format!("-O{o}"));
+    cmd.arg(format!("-O{effective_opt}"));
+
+    if opts.profile == Profile::Debug {
+        cmd.arg("-g");
+    } else {
+        cmd.arg("-Wl,--gc-sections");
+        cmd.arg("-Wl,-s");
     }
+
     cmd.arg(&ll_path);
     if let Some(rt) = &jit_rt_path {
         cmd.arg(rt);
@@ -510,7 +536,11 @@ fn run(opts: Options) -> i32 {
         }
     }
 
-    eprintln!("собрано: `{}`", exe_path.display());
+    let profile_desc = match opts.profile {
+        Profile::Release => "release [optimized + stripped]",
+        Profile::Debug => "debug [unoptimized + debuginfo]",
+    };
+    eprintln!("собрано ({profile_desc}): `{}`", exe_path.display());
 
     if opts.run || opts.test {
         let status = Command::new(&exe_path).status();
