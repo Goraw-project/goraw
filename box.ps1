@@ -13,12 +13,38 @@
     .\box.ps1 gorawc --run examples/strings_v2.gw
 #>
 
-$CommandAndArgs = $args
+# 1. Извлечение флага Silent / --silent / -s / /silent и переменных окружения
+$isSilent = $false
+if ($env:GORAW_BOX_SILENT -eq "1" -or $env:SILENT -eq "1" -or $env:CI -eq "1") {
+    $isSilent = $true
+}
+
+$filteredArgs = [System.Collections.Generic.List[string]]::new()
+foreach ($arg in $args) {
+    if ($arg -match '^(?i)(--?silent|-s|/silent)$') {
+        $isSilent = $true
+    } else {
+        $filteredArgs.Add($arg)
+    }
+}
+$CommandAndArgs = $filteredArgs.ToArray()
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $scriptDir) { $scriptDir = (Get-Location).Path }
 
-# 1. Поиск procgov64.exe
+# Поддержка команды подписания песочницы: .\box.ps1 --sign
+if ($CommandAndArgs.Count -eq 1 -and $CommandAndArgs[0] -match '^(?i)(--?sign|-sign|/sign)$') {
+    $signScript = Join-Path $scriptDir "tools\sign_sandbox.ps1"
+    if (Test-Path $signScript) {
+        & $signScript
+        exit $LASTEXITCODE
+    } else {
+        Write-Error "[BOX] Скрипт tools\sign_sandbox.ps1 не найден!"
+        exit 1
+    }
+}
+
+# 2. Поиск procgov64.exe
 $procgov = Join-Path $scriptDir "tools\procgov\procgov64.exe"
 if (-not (Test-Path $procgov)) {
     $procgov = (Get-Command procgov64, procgov -ErrorAction SilentlyContinue | Select-Object -First 1).Source
@@ -29,7 +55,7 @@ if (-not $procgov -or -not (Test-Path $procgov)) {
     exit 1
 }
 
-# 2. Инициализация C# хелпера телеметрии Job Object
+# 3. Инициализация C# хелпера телеметрии Job Object
 $dllPath = Join-Path $scriptDir "tools\procgov\GorawJobHelper.dll"
 $csPath = Join-Path $scriptDir "tools\procgov\GorawJobHelper.cs"
 
@@ -44,7 +70,7 @@ if (-not ([System.Management.Automation.PSTypeName]'Goraw.Box.JobHelper').Type) 
 
 $hasTelemetry = ([System.Management.Automation.PSTypeName]'Goraw.Box.JobHelper').Type -ne $null
 
-# 3. Вывод справки, если аргументы не переданы
+# 4. Вывод справки, если аргументы не переданы
 if ($CommandAndArgs.Count -eq 0) {
     Write-Host "==========================================================" -ForegroundColor Cyan
     Write-Host "        Goraw Container Box Runner (16 GB Hard Limit)     " -ForegroundColor Cyan
@@ -59,11 +85,113 @@ if ($CommandAndArgs.Count -eq 0) {
     Write-Host "  .\box.ps1 gorawpb [args]         - запуск генератора gorawpb под лимитом 16 ГБ"
     Write-Host "  .\box.ps1 <любая команда>        - запуск произвольной команды в изолированном контейнере"
     Write-Host ""
+    Write-Host "Флаги безопасности и режимы:"
+    Write-Host "  --silent, -s                     - автопропуск предупреждений неподписанной песочницы"
+    Write-Host "  --sign                           - создание сертификата и подписание компонентов песочницы"
+    Write-Host ""
     Write-Host "Телеметрия: отслеживание Peak RAM, CPU Time, Wall Clock, I/O и кодов завершения."
     exit 0
 }
 
-# 4. Разбор команды
+# 5. Проверка цифровой подписи компонентов песочницы
+$selfScript = $MyInvocation.MyCommand.Path
+if (-not $selfScript) { $selfScript = Join-Path $scriptDir "box.ps1" }
+
+$filesToCheck = @(
+    $selfScript,
+    $procgov,
+    $dllPath
+)
+
+$unsignedFiles = @()
+foreach ($file in $filesToCheck) {
+    if (-not (Test-Path $file)) { continue }
+    $sig = Get-AuthenticodeSignature -FilePath $file -ErrorAction SilentlyContinue
+    if (-not $sig -or $sig.Status -ne 'Valid') {
+        $statusStr = if (-not $sig -or $sig.Status -eq 'NotSigned') {
+            "Не подписан (NotSigned)"
+        } elseif ($sig.Status -eq 'UnknownError') {
+            $subj = if ($sig.SignerCertificate) { ($sig.SignerCertificate.Subject -replace '^CN=', '') } else { "локальный" }
+            "Недоверенный Root ($subj)"
+        } elseif ($sig.Status -eq 'HashMismatch') {
+            "Хеш не совпадает (изменен)"
+        } elseif ($sig.Status -eq 'NotTrusted') {
+            "Сертификат не доверен (NotTrusted)"
+        } else {
+            $sig.Status.ToString()
+        }
+        $unsignedFiles += [PSCustomObject]@{
+            File = (Split-Path -Leaf $file)
+            Status = $statusStr
+        }
+    }
+}
+
+if ($unsignedFiles.Count -gt 0) {
+    if ($isSilent) {
+        Write-Host "⚠️ [BOX] [WARN] Цифровая подпись песочницы не найдена или не проверена (Silent bypass: автопродолжение)." -ForegroundColor DarkYellow
+    } else {
+        Write-Host ""
+        Write-Host "┌────────────────────────────────────────────────────────┐" -ForegroundColor Yellow
+        Write-Host "│          ⚠️  GORAW SANDBOX SECURITY WARNING             │" -ForegroundColor Yellow
+        Write-Host "├────────────────────────────────────────────────────────┤" -ForegroundColor Yellow
+        Write-Host "│ ВНИМАНИЕ: Цифровая подпись компонентов песочницы       │" -ForegroundColor Yellow
+        Write-Host "│ не найдена или не прошла верификацию!                  │" -ForegroundColor Yellow
+        Write-Host "│ (Возможная причина: запуск теста на голой/чистой ОС)   │" -ForegroundColor Yellow
+        Write-Host "├────────────────────────────────────────────────────────┤" -ForegroundColor Yellow
+        foreach ($item in $unsignedFiles) {
+            $text = "- " + $item.File + ": " + $item.Status
+            if ($text.Length -gt 51) {
+                $text = $text.Substring(0, 48) + "..."
+            }
+            $msg = ("│  " + $text).PadRight(56) + "│"
+            Write-Host $msg -ForegroundColor Yellow
+        }
+        Write-Host "├────────────────────────────────────────────────────────┤" -ForegroundColor Yellow
+        Write-Host "│ Для автопропуска используйте флаг --silent (-s).       │" -ForegroundColor Yellow
+        Write-Host "└────────────────────────────────────────────────────────┘" -ForegroundColor Yellow
+        Write-Host ""
+
+        # Интерактивный запрос Y/N
+        $promptMsg = "Продолжить выполнение в неподписанной песочнице? [Y/N] (по умолчанию: N): "
+        $userChoice = $null
+
+        $piped = ($input | Out-String).Trim()
+        if ($piped) {
+            $userChoice = $piped
+        } elseif ($Host.UI.RawUI -and -not [Console]::IsInputRedirected) {
+            try {
+                $userChoice = Read-Host $promptMsg
+            } catch {
+                $userChoice = $null
+            }
+        } else {
+            try {
+                Write-Host -NoNewline $promptMsg
+                $userChoice = [Console]::In.ReadLine()
+            } catch {
+                $userChoice = $null
+            }
+        }
+
+        if (-not $userChoice) {
+            $userChoice = "N"
+        }
+        $userChoice = $userChoice.ToString().Trim()
+
+        if ($userChoice -match '^(?i)(y|yes|да|д)$') {
+            Write-Host "[BOX] [INFO] Выполнение продолжено по запросу пользователя.`n" -ForegroundColor Green
+        } else {
+            Write-Host ""
+            Write-Host "⛔ [BOX] [ABORT] Выполнение прервано: подпись песочницы не подтверждена." -ForegroundColor Red
+            Write-Host "Подсказка: добавьте флаг --silent (-s) для автопропуска предупреждений," -ForegroundColor Gray
+            Write-Host "          либо выполните: .\box.cmd --sign для подписания компонентов." -ForegroundColor Gray
+            exit 1
+        }
+    }
+}
+
+# 6. Разбор команды
 $first = $CommandAndArgs[0]
 $rest = if ($CommandAndArgs.Count -gt 1) { @($CommandAndArgs[1..($CommandAndArgs.Count - 1)]) } else { @() }
 
@@ -122,7 +250,7 @@ switch ($first) {
 
 $fullCmd = @($targetExe) + @($targetArgs)
 
-# 5. Подготовка Job Object и запуск под Process Governor
+# 7. Подготовка Job Object и запуск под Process Governor
 $jobName = "goraw_box_" + [System.Guid]::NewGuid().ToString("N")
 $hJob = [IntPtr]::Zero
 
@@ -144,7 +272,7 @@ try {
     $sw.Stop()
 }
 
-# 6. Сбор метрик и форматирование телеметрии
+# 8. Сбор метрик и форматирование телеметрии
 $snap = $null
 if ($hasTelemetry -and ($hJob -ne [IntPtr]::Zero)) {
     $snap = [Goraw.Box.JobHelper]::QueryJob($hJob)
@@ -219,3 +347,38 @@ if ($snap -and ($snap.PeakJobMemoryMB -ge 14000.0)) {
 }
 
 exit $exitCode
+
+# SIG # Begin signature block
+# MIIF+AYJKoZIhvcNAQcCoIIF6TCCBeUCAQExDzANBglghkgBZQMEAgEFADB5Bgor
+# BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
+# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCAWq/mhFqwfWuhm
+# 14DLSzjB4kwY9EvCxuypooe4XhPPuqCCA0wwggNIMIICMKADAgECAhAw3/ZKuit3
+# nUacfZqWIRLKMA0GCSqGSIb3DQEBCwUAMDwxDDAKBgNVBAsMA05QUzEaMBgGA1UE
+# CgwRZGV2LmRvdWJsZWx1Yy5pY3UxEDAOBgNVBAMMB2x1Y19kZXYwHhcNMjYwODEz
+# MTUyMDM3WhcNMzEwODEzMTUzMDM4WjA8MQwwCgYDVQQLDANOUFMxGjAYBgNVBAoM
+# EWRldi5kb3VibGVsdWMuaWN1MRAwDgYDVQQDDAdsdWNfZGV2MIIBIjANBgkqhkiG
+# 9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt+QxIUKtn3YIz4iH/Sqg1+IieXzqkGB++SbV
+# avo8hSDmYweout4oSaWPm4rImBMz8rpat8wupTO1eClAzasM8x1UHhob1au9mizT
+# L3IiU4R09Oa2Yh0h7hFU2CFvDKGUvzrWOeiLNc5KxpVEe1gxNigWnpEhsUGfwxkK
+# 9zUsj1fPuL7Q/smd8FlRF5sj4rijExgbC9Kz1/VHu0prTfJ7Lzuczb44Sci75swf
+# LBwEN8rrtnmBx2qSWllRi0TdxmBy08jOgQnYQxCZIQzCjj0dLsY87GK2yYiHriRT
+# DZ8ojO+s4DDwvnrZTyWn2tR3uc7+ICFQHMyGMWlEABzVNBSb8QIDAQABo0YwRDAO
+# BgNVHQ8BAf8EBAMCB4AwEwYDVR0lBAwwCgYIKwYBBQUHAwMwHQYDVR0OBBYEFIGx
+# C7Hok8SOl4/HM+/OwA6WxsCLMA0GCSqGSIb3DQEBCwUAA4IBAQBHiiuq6UaGSELQ
+# qERrG8fphE0wogQlx1h63pwtj10xO04tRZHTJuw27gkL1SKJ9N57ZRZKKgBtFMTD
+# a86a/ChJcXEWtuOT8f9f5r+XtKEXCaVMXmDiChpHBewXSjZBH85BAQYuYvAb1pJW
+# YKxh9ErDtfdaDBlb1U5LAHVEshbXU5b3MB6MeY5LRcEWkHjY0K/L1cplMjUdPQ3e
+# QbAn5SlIkea/jljGrBo6duu3+oejp03DdtMCoC3sHkoC6QKdbswVT6x0sVvYOOea
+# wPQ/6RcnRn4t7BSlqhFPl//K0KxBanUMOZJtwWaY3mwpWPjBQsKD5Ao2FJ6HG/B1
+# /HuHK2fxMYICAjCCAf4CAQEwUDA8MQwwCgYDVQQLDANOUFMxGjAYBgNVBAoMEWRl
+# di5kb3VibGVsdWMuaWN1MRAwDgYDVQQDDAdsdWNfZGV2AhAw3/ZKuit3nUacfZqW
+# IRLKMA0GCWCGSAFlAwQCAQUAoIGEMBgGCisGAQQBgjcCAQwxCjAIoAKAAKECgAAw
+# GQYJKoZIhvcNAQkDMQwGCisGAQQBgjcCAQQwHAYKKwYBBAGCNwIBCzEOMAwGCisG
+# AQQBgjcCARUwLwYJKoZIhvcNAQkEMSIEIFp3+G/06MNH++KLf4/y5/dSBwjbc2i7
+# YXdqWCfGpjQVMA0GCSqGSIb3DQEBAQUABIIBAGXVtTlTV0B/Adl/A4Vap0RFjAfd
+# 2aHCC1NjNore3VG0aWuZN5d/LuuG3fYDSzZMJg7WplBkiG79Nj/6vaa9N7xv5hMM
+# LyNo3TAt2N2WKGn9wdMzc9etKzdwhhDPstAAnSAuwCY42IGdin3qesM4SJyqHeA7
+# brPoYRSdJ80UFIKzo2BKjR6wGG0U3bZINtuLY1/IClS230Kl/MGPJk2KvNMZjc3V
+# HdbV+1bE90VcZsVmI66du+qmXISdecyARtXLvgr2Xt7O1hqpjcC49rGh6AY+t6UV
+# OTxmrrZ8widjKHhLsH5Nlc5UjVq3cObEaU0nyVdjWy8rqq4nLEsuEeWY+Yc=
+# SIG # End signature block
