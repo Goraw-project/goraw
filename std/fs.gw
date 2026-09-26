@@ -1,0 +1,150 @@
+// Goraw Standard Library: std/fs.gw
+// File system and path utility wrappers.
+
+import "std/result.gw";
+
+extern fn fopen(filename: *u8, mode: *u8) -> *mut u8;
+extern fn fclose(stream: *mut u8) -> i32;
+extern fn fread(ptr: *mut u8, size: i64, count: i64, stream: *mut u8) -> i64;
+extern fn fwrite(ptr: *u8, size: i64, count: i64, stream: *mut u8) -> i64;
+extern fn fseek(stream: *mut u8, offset: i64, whence: i32) -> i32;
+extern fn ftell(stream: *mut u8) -> i64;
+extern fn remove(filename: *u8) -> i32;
+
+struct File {
+    handle: *mut u8,
+}
+
+fn File::open(path: *u8, mode: *u8) -> Result<File, i32> {
+    let f = fopen(path, mode);
+    if f == null {
+        return Result<File, i32>::err(-1);
+    }
+    return Result<File, i32>::ok(File { handle: f });
+}
+
+fn File::read(self, buf: *mut u8, count: i64) -> i64 {
+    if self.handle == null {
+        return -1;
+    }
+    return fread(buf, 1, count, self.handle);
+}
+
+fn File::write(self, buf: *u8, count: i64) -> i64 {
+    if self.handle == null {
+        return -1;
+    }
+    return fwrite(buf, 1, count, self.handle);
+}
+
+fn File::seek(self, offset: i64, whence: i32) -> i32 {
+    if self.handle == null {
+        return -1;
+    }
+    return fseek(self.handle, offset, whence);
+}
+
+fn File::tell(self) -> i64 {
+    if self.handle == null {
+        return -1;
+    }
+    return ftell(self.handle);
+}
+
+fn File::close(self) -> i32 {
+    if self.handle != null {
+        let res = fclose(self.handle);
+        self.handle = null;
+        return res;
+    }
+    return 0;
+}
+
+// Проверка существования файла
+fn file_exists(path: *u8) -> bool {
+    let mode = "rb" as *u8;
+    let f = fopen(path, mode);
+    if f != null {
+        fclose(f);
+        return true;
+    }
+    return false;
+}
+
+// Получение размера файла в байтах
+fn file_size(path: *u8) -> i64 {
+    let mode = "rb" as *u8;
+    let f = fopen(path, mode);
+    if f == null {
+        return -1;
+    }
+    fseek(f, 0, 2); // SEEK_END = 2
+    let sz = ftell(f);
+    fclose(f);
+    return sz;
+}
+
+// Удаление файла
+fn remove_file(path: *u8) -> bool {
+    let res = remove(path);
+    return res == 0;
+}
+
+// Чтение файла целиком в срез []u8
+fn read_to_string(path: *u8) -> Result<[]u8, i32> {
+    let sz = file_size(path);
+    if sz < 0 {
+        return Result<[]u8, i32>::err(-1);
+    }
+    let mode = "rb" as *u8;
+    let file = File::open(path, mode)?;
+    let buf = alloc(sz + 1);
+    let bytes_read = file.read(buf, sz);
+    unsafe {
+        buf[bytes_read] = 0;
+    }
+    file.close();
+    let sl = make_slice(buf, bytes_read);
+    return Result<[]u8, i32>::ok(sl);
+}
+
+// Запись среза байт в файл
+fn write_file(path: *u8, data: []u8) -> Result<i64, i32> {
+    let mode = "wb" as *u8;
+    let file = File::open(path, mode)?;
+    let written = file.write(data.ptr, data.len);
+    file.close();
+    return Result<i64, i32>::ok(written);
+}
+
+// Извлечение имени файла из пути (напр. "dir/foo.txt" -> "foo.txt")
+fn path_file_name(path: *u8) -> *u8 {
+    let mut last = path;
+    let mut i: i64 = 0;
+    unsafe {
+        while path[i] != 0 {
+            let ch = path[i];
+            if ch == 47 || ch == 92 { // '/' or '\'
+                last = &path[i + 1];
+            }
+            i = i + 1;
+        }
+    }
+    return last;
+}
+
+// Извлечение расширения файла (напр. "foo.txt" -> "txt", либо null)
+fn path_extension(path: *u8) -> *u8 {
+    let fname = path_file_name(path);
+    let mut dot: *u8 = null;
+    let mut i: i64 = 0;
+    unsafe {
+        while fname[i] != 0 {
+            if fname[i] == 46 { // '.'
+                dot = &fname[i + 1];
+            }
+            i = i + 1;
+        }
+    }
+    return dot;
+}

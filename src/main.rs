@@ -39,6 +39,7 @@ struct Options {
     c_std: String,   // стандарт C для инлайн-вставок (по умолчанию c23)
     silent: bool,    // авто-байпас предупреждений безопасности песочницы
     profile: Profile, // профиль сборки (Debug / Release)
+    target: String,  // целевой triple платформы (напр. x86_64-w64-windows-gnu)
 }
 
 pub fn main() {
@@ -97,6 +98,7 @@ fn print_help() {
     --bind-c <header.h> сгенерировать Goraw-биндинги из C-заголовка\n\
     --cpp-std <std>  стандарт C++ для инлайн-вставок (по умолчанию `c++23`, также `c++26`, `c++20`)\n\
     --c-std <std>    стандарт C для инлайн-вставок (по умолчанию `c23`, также `c17`, `c11`)\n\
+    --target <triple> целевая платформа clang/LLVM (по умолчанию `x86_64-w64-windows-gnu`)\n\
     -O<n>            уровень оптимизации clang (напр. -O2, переопределяет профиль)\n\
     --keep-ll        не удалять промежуточный .ll при сборке .exe\n\
     --clang <путь>   путь к clang (по умолчанию `clang` из PATH)\n\
@@ -122,6 +124,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut cpp_std = "c++23".to_string();
     let mut c_std = "c23".to_string();
     let mut profile = Profile::Debug;
+    let mut target = "x86_64-w64-windows-gnu".to_string();
     let mut silent = std::env::var("GORAW_SILENT").map(|v| v == "1").unwrap_or(false)
         || std::env::var("GORAW_BOX_SILENT").map(|v| v == "1").unwrap_or(false)
         || std::env::var("SILENT").map(|v| v == "1").unwrap_or(false);
@@ -144,6 +147,10 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             }
             "--release" | "-r" => profile = Profile::Release,
             "--debug" => profile = Profile::Debug,
+            "--target" => {
+                i += 1;
+                target = args.get(i).ok_or("--target требует аргумент")?.clone();
+            }
             "--emit-llvm" => emit_llvm = true,
             "--json" => json = true,
             "--run" => run = true,
@@ -206,6 +213,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         c_std,
         silent,
         profile,
+        target,
     })
 }
 
@@ -387,6 +395,7 @@ fn run(opts: Options) -> i32 {
     // Кодоген + семантика (второй проход).
     let ir = {
         let cg = codegen::Codegen::new(&ctx, &mut diags)
+            .with_target_triple(opts.target.clone())
             .with_obfuscate_strings(opts.obfuscate_strings);
         cg.emit_module(&prog)
     };
@@ -462,7 +471,7 @@ fn run(opts: Options) -> i32 {
     let mut temp_c_objs = Vec::new();
     if !inline_c_code.trim().is_empty() {
         let c_bc = ll_path.with_extension("c.bc");
-        if let Err(e) = gorawc::c_interop::compile_inline_snippet(&inline_c_code, false, Some(&opts.c_std), &opts.clang, &c_bc, Some(&effective_opt)) {
+        if let Err(e) = gorawc::c_interop::compile_inline_snippet(&inline_c_code, false, Some(&opts.c_std), &opts.clang, &c_bc, Some(&effective_opt), Some(&opts.target)) {
             eprintln!("{e}");
             return 1;
         }
@@ -470,7 +479,7 @@ fn run(opts: Options) -> i32 {
     }
     if !inline_cpp_code.trim().is_empty() {
         let cpp_bc = ll_path.with_extension("cpp.bc");
-        if let Err(e) = gorawc::c_interop::compile_inline_snippet(&inline_cpp_code, true, Some(&opts.cpp_std), &opts.clang, &cpp_bc, Some(&effective_opt)) {
+        if let Err(e) = gorawc::c_interop::compile_inline_snippet(&inline_cpp_code, true, Some(&opts.cpp_std), &opts.clang, &cpp_bc, Some(&effective_opt), Some(&opts.target)) {
             eprintln!("{e}");
             return 1;
         }
@@ -479,7 +488,7 @@ fn run(opts: Options) -> i32 {
 
     // Линковка через clang.
     let mut cmd = Command::new(&opts.clang);
-    cmd.arg("--target=x86_64-w64-windows-gnu");
+    cmd.arg(format!("--target={}", opts.target));
     cmd.arg(format!("-O{effective_opt}"));
 
     if opts.profile == Profile::Debug {
@@ -630,7 +639,30 @@ fn gather_sources(main: &Path) -> Result<(String, Vec<(u32, String)>), String> {
             .map_err(|e| format!("не удалось прочитать `{}`: {e}", path.display()))?;
         let dir = path.parent().unwrap_or(Path::new("."));
         for imp in scan_imports(&src) {
-            let resolved = dir.join(&imp);
+            let mut resolved = dir.join(&imp);
+            if !resolved.exists() {
+                if let Ok(cwd) = std::env::current_dir() {
+                    let candidate = cwd.join(&imp);
+                    if candidate.exists() {
+                        resolved = candidate;
+                    }
+                }
+            }
+            if !resolved.exists() {
+                if let Ok(exe) = std::env::current_exe() {
+                    if let Some(exe_dir) = exe.parent() {
+                        let candidate = exe_dir.join(&imp);
+                        if candidate.exists() {
+                            resolved = candidate;
+                        } else if let Some(parent) = exe_dir.parent() {
+                            let candidate2 = parent.join(&imp);
+                            if candidate2.exists() {
+                                resolved = candidate2;
+                            }
+                        }
+                    }
+                }
+            }
             if imp.ends_with(".h") || imp.ends_with(".hpp") {
                 let bindings = gorawc::c_interop::generate_bindings_from_header(&resolved, "clang")
                     .map_err(|e| format!("ошибка генерации биндингов из `{}`: {e}", resolved.display()))?;

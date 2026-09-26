@@ -115,6 +115,7 @@ pub fn compile_inline_snippet(
     clang_path: &str,
     output_bc: &Path,
     opt_level: Option<&str>,
+    target_triple: Option<&str>,
 ) -> Result<(), String> {
     let compiler = if is_cpp {
         if clang_path.ends_with("clang.exe") || clang_path == "clang" {
@@ -127,7 +128,8 @@ pub fn compile_inline_snippet(
     };
 
     let mut cmd = Command::new(&compiler);
-    cmd.arg("--target=x86_64-w64-windows-gnu");
+    let target = target_triple.unwrap_or("x86_64-w64-windows-gnu");
+    cmd.arg(format!("--target={target}"));
     cmd.arg("-c")
         .arg("-x")
         .arg(if is_cpp { "c++" } else { "c" });

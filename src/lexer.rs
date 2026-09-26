@@ -97,6 +97,7 @@ pub enum Tok {
     Dollar,    // $
     At,        // @
     Backslash, // \
+    Question,  // ?
 
     Eof,
 }
@@ -577,6 +578,7 @@ impl<'a> Lexer<'a> {
             '$' => Tok::Dollar,
             '@' => Tok::At,
             '\\' => Tok::Backslash,
+            '?' => Tok::Question,
             other => {
                 diags.push(
                     Diagnostic::error(

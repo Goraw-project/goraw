@@ -1230,6 +1230,12 @@ impl<'a> Parser<'a> {
                     let (field, fsp) = self.expect_ident("поля")?;
                     e = Expr::Field { span: e.span().to(fsp), base: Box::new(e), field };
                 }
+                Tok::Question => {
+                    let end = self.span();
+                    self.bump();
+                    let sp = e.span().to(end);
+                    e = Expr::Try(Box::new(e), sp);
+                }
                 _ => break,
             }
         }

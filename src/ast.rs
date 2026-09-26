@@ -299,6 +299,8 @@ pub enum Expr {
         inner: Box<FnDef>,
         span: Span,
     },
+    /// Оператор `?`: ранний выход при ошибке / разворачивание значения.
+    Try(Box<Expr>, Span),
 }
 
 impl Expr {
@@ -321,7 +323,8 @@ impl Expr {
             | Expr::Cast { span: s, .. }
             | Expr::ArrayLit(_, s)
             | Expr::IfExpr { span: s, .. }
-            | Expr::Jit { span: s, .. } => *s,
+            | Expr::Jit { span: s, .. }
+            | Expr::Try(_, s) => *s,
         }
     }
 }

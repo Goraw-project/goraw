@@ -59,6 +59,8 @@ pub struct Codegen<'a> {
     obf_count: u32,
     /// Сгенерирован ли рантайм расшифровки строк.
     has_obf_decrypt_runtime: bool,
+    /// Целевой triple для заголовка LLVM IR.
+    target_triple: String,
 }
 
 /// Значение константы, свёрнутое в компайл-тайме.
@@ -116,7 +118,13 @@ impl<'a> Codegen<'a> {
             obfuscate_strings: false,
             obf_count: 0,
             has_obf_decrypt_runtime: false,
+            target_triple: "x86_64-w64-windows-gnu".to_string(),
         }
+    }
+
+    pub fn with_target_triple(mut self, target: String) -> Self {
+        self.target_triple = target;
+        self
     }
 
     pub fn with_obfuscate_strings(mut self, obf: bool) -> Self {
@@ -181,7 +189,7 @@ impl<'a> Codegen<'a> {
 
         let mut header = String::new();
         header.push_str("; Goraw -> LLVM IR\n");
-        header.push_str("target triple = \"x86_64-w64-windows-gnu\"\n\n");
+        header.push_str(&format!("target triple = \"{}\"\n\n", self.target_triple));
 
         // Тип среза (fat-pointer): указатель на элементы + длина.
         header.push_str("%slice = type { ptr, i64 }\n\n");
@@ -1348,6 +1356,7 @@ impl<'a> Codegen<'a> {
             Expr::ArrayLit(elems, span) => self.gen_array_lit(elems, expected, *span),
             Expr::IfExpr { cond, then, els, span } => self.gen_if_expr(cond, then, els, expected, *span),
             Expr::Jit { captures, inner, span } => self.gen_jit(captures, inner, *span),
+            Expr::Try(inner, span) => self.gen_try(inner, *span),
         }
     }
 
@@ -1414,6 +1423,162 @@ impl<'a> Codegen<'a> {
             "{res} = call ptr @goraw_jit_compile(ptr {tmpl_ptr}, ptr {name_ptr}, i32 {n}, ptr {bits_arr}, ptr {kinds_arr})"
         ));
         (res, fnptr_ty)
+    }
+
+    /// Реализация оператора `?`: проверка статуса и ранний выход при ошибке.
+    fn gen_try(&mut self, inner: &Expr, span: Span) -> (String, Ty) {
+        let (val, ty) = self.gen_expr(inner, None);
+        match ty.clone() {
+            Ty::Struct(sname) => {
+                let info = match self.ctx.structs.get(&sname).cloned() {
+                    Some(i) => i,
+                    None => {
+                        self.err("E0101", span, format!("неизвестная структура `{sname}` в `?`"), None);
+                        return ("0".into(), Ty::Err);
+                    }
+                };
+
+                let status_field = if info.field_index("is_ok").is_some() {
+                    "is_ok"
+                } else if info.field_index("ok").is_some() {
+                    "ok"
+                } else if info.field_index("is_some").is_some() {
+                    "is_some"
+                } else {
+                    self.err("E0102", span, format!("структура `{sname}` не имеет поля `is_ok` или `is_some` для оператора `?`"), None);
+                    return ("0".into(), Ty::Err);
+                };
+
+                let val_idx = match info.field_index("value") {
+                    Some(idx) => idx,
+                    None => {
+                        self.err("E0103", span, format!("структура `{sname}` не имеет поля `value` для оператора `?`"), None);
+                        return ("0".into(), Ty::Err);
+                    }
+                };
+
+                let val_ty = info.fields[val_idx].1.clone();
+                let status_idx = info.field_index(status_field).unwrap();
+
+                // Загружаем флаг статуса (i1)
+                let status_ptr = self.fresh_tmp();
+                self.emit(format!("{status_ptr} = getelementptr %struct.{sname}, ptr {val}, i32 0, i32 {status_idx}"));
+                let status_val = self.fresh_tmp();
+                self.emit(format!("{status_val} = load i1, ptr {status_ptr}"));
+
+                let ok_l = self.fresh_label("try_ok");
+                let err_l = self.fresh_label("try_err");
+                self.emit(format!("br i1 {status_val}, label %{ok_l}, label %{err_l}"));
+
+                // Ветвь ошибки (err_l): ранний возврат из текущей функции
+                self.emit_label(&err_l);
+                let current_ret = self.cur_ret.clone();
+                if let Ty::Struct(ret_sname) = &current_ret {
+                    if let Some(ret_info) = self.ctx.structs.get(ret_sname).cloned() {
+                        let ret_slot = self.fresh_slot("try_ret");
+                        self.alloca(&ret_slot, &current_ret);
+                        self.emit(format!("store %struct.{ret_sname} zeroinitializer, ptr {ret_slot}"));
+                        if let Some(err_idx) = info.field_index("error") {
+                            if let Some(ret_err_idx) = ret_info.field_index("error") {
+                                let err_src_ptr = self.fresh_tmp();
+                                self.emit(format!("{err_src_ptr} = getelementptr %struct.{sname}, ptr {val}, i32 0, i32 {err_idx}"));
+                                let err_ty = info.fields[err_idx].1.clone();
+                                let err_val = self.fresh_tmp();
+                                self.emit(format!("{err_val} = load {ety}, ptr {err_src_ptr}", ety = err_ty.llvm()));
+                                let err_dst_ptr = self.fresh_tmp();
+                                self.emit(format!("{err_dst_ptr} = getelementptr %struct.{ret_sname}, ptr {ret_slot}, i32 0, i32 {ret_err_idx}"));
+                                self.emit(format!("store {ety} {err_val}, ptr {err_dst_ptr}", ety = err_ty.llvm()));
+                            }
+                        }
+                        let ret_val = self.fresh_tmp();
+                        self.emit(format!("{ret_val} = load %struct.{ret_sname}, ptr {ret_slot}"));
+                        self.emit_drops_for_all_scopes(Some(&ret_slot));
+                        self.emit(format!("ret %struct.{ret_sname} {ret_val}"));
+                    } else {
+                        self.emit_drops_for_all_scopes(None);
+                        self.emit(format!("ret {} {}", current_ret.llvm(), self.zero_of(&current_ret)));
+                    }
+                } else if current_ret.is_int() {
+                    let err_code = if let Some(err_idx) = info.field_index("error") {
+                        let err_ptr = self.fresh_tmp();
+                        self.emit(format!("{err_ptr} = getelementptr %struct.{sname}, ptr {val}, i32 0, i32 {err_idx}"));
+                        let err_v = self.fresh_tmp();
+                        self.emit(format!("{err_v} = load i64, ptr {err_ptr}"));
+                        if current_ret != Ty::I64 {
+                            let tr = self.fresh_tmp();
+                            self.emit(format!("{tr} = trunc i64 {err_v} to {}", current_ret.llvm()));
+                            tr
+                        } else {
+                            err_v
+                        }
+                    } else {
+                        "1".to_string()
+                    };
+                    self.emit_drops_for_all_scopes(None);
+                    self.emit(format!("ret {} {err_code}", current_ret.llvm()));
+                } else if current_ret == Ty::Void {
+                    self.emit_drops_for_all_scopes(None);
+                    self.emit("ret void".into());
+                } else {
+                    self.emit_drops_for_all_scopes(None);
+                    self.emit(format!("ret {} {}", current_ret.llvm(), self.zero_of(&current_ret)));
+                }
+
+                // Ветвь успеха (ok_l): извлекаем value
+                self.emit_label(&ok_l);
+                let val_ptr = self.fresh_tmp();
+                self.emit(format!("{val_ptr} = getelementptr %struct.{sname}, ptr {val}, i32 0, i32 {val_idx}"));
+                if is_aggregate(&val_ty) {
+                    (val_ptr, val_ty)
+                } else {
+                    let res = self.fresh_tmp();
+                    self.emit(format!("{res} = load {vty}, ptr {val_ptr}", vty = val_ty.llvm()));
+                    (res, val_ty)
+                }
+            }
+            Ty::Ptr(inner, is_mut) => {
+                let is_null = self.fresh_tmp();
+                self.emit(format!("{is_null} = icmp eq ptr {val}, null"));
+                let ok_l = self.fresh_label("try_ok");
+                let err_l = self.fresh_label("try_err");
+                self.emit(format!("br i1 {is_null}, label %{err_l}, label %{ok_l}"));
+
+                self.emit_label(&err_l);
+                self.emit_drops_for_all_scopes(None);
+                let current_ret = self.cur_ret.clone();
+                if current_ret == Ty::Void {
+                    self.emit("ret void".into());
+                } else {
+                    self.emit(format!("ret {} {}", current_ret.llvm(), self.zero_of(&current_ret)));
+                }
+
+                self.emit_label(&ok_l);
+                (val, Ty::Ptr(inner, is_mut))
+            }
+            other if other.is_int() => {
+                let is_err = self.fresh_tmp();
+                self.emit(format!("{is_err} = icmp slt {ty_s} {val}, 0", ty_s = other.llvm()));
+                let ok_l = self.fresh_label("try_ok");
+                let err_l = self.fresh_label("try_err");
+                self.emit(format!("br i1 {is_err}, label %{err_l}, label %{ok_l}"));
+
+                self.emit_label(&err_l);
+                self.emit_drops_for_all_scopes(None);
+                let current_ret = self.cur_ret.clone();
+                if current_ret == Ty::Void {
+                    self.emit("ret void".into());
+                } else {
+                    self.emit(format!("ret {} {val}", current_ret.llvm()));
+                }
+
+                self.emit_label(&ok_l);
+                (val, other)
+            }
+            other => {
+                self.err("E0104", span, format!("оператор `?` не применим к типу `{}`", other.name()), None);
+                ("0".into(), Ty::Err)
+            }
+        }
     }
 
     /// Загружает захват из слота и приводит к паре (i64-биты, код-типа) для рантайма.
@@ -3356,6 +3521,25 @@ impl<'a> Codegen<'a> {
                 _ => Ty::Err,
             },
             Expr::StructLit { name, .. } => Ty::Struct(name.clone()),
+            Expr::Try(inner, _) => {
+                let ty = self.type_of(inner);
+                match ty {
+                    Ty::Struct(name) => {
+                        if let Some(i) = self.ctx.structs.get(&name) {
+                            if let Some(idx) = i.field_index("value") {
+                                i.fields[idx].1.clone()
+                            } else {
+                                Ty::Err
+                            }
+                        } else {
+                            Ty::Err
+                        }
+                    }
+                    Ty::Ptr(..) => ty,
+                    other if other.is_int() => other,
+                    _ => Ty::Err,
+                }
+            }
         }
     }
 

@@ -1,0 +1,298 @@
+// Goraw Standard Library: std/map.gw
+// Generic open-addressing hash table (HashMap<K, V>) with linear probing.
+
+import "std/result.gw";
+
+struct HashMap<K, V> {
+    keys: *mut K,
+    vals: *mut V,
+    occupied: *mut bool,
+    len: i64,
+    cap: i64,
+}
+
+fn HashMap<K, V>::new() -> HashMap<K, V> {
+    return HashMap {
+        keys: null,
+        vals: null,
+        occupied: null,
+        len: 0,
+        cap: 0,
+    };
+}
+
+fn HashMap<K, V>::with_capacity(initial_cap: i64) -> HashMap<K, V> {
+    let mut cap = initial_cap;
+    if cap < 8 {
+        cap = 8;
+    }
+    let k_sz = sizeof(K);
+    let v_sz = sizeof(V);
+    let b_sz = sizeof(bool);
+    let k_ptr = alloc(cap * k_sz) as *mut K;
+    let v_ptr = alloc(cap * v_sz) as *mut V;
+    let occ_ptr = alloc(cap * b_sz) as *mut bool;
+    unsafe {
+        mem_set(occ_ptr as *mut u8, 0, cap * b_sz);
+    }
+    return HashMap {
+        keys: k_ptr,
+        vals: v_ptr,
+        occupied: occ_ptr,
+        len: 0,
+        cap: cap,
+    };
+}
+
+unsafe fn HashMap<K, V>::hash_key(key_ptr: *mut u8) -> i64 {
+    let sz = sizeof(K);
+    let mut h: i64 = -3750763034362895579;
+    let mut i: i64 = 0;
+    while i < sz {
+        let b = key_ptr[i] as i64;
+        h = (h ^ b) * 1099511628211;
+        i = i + 1;
+    }
+    if h < 0 {
+        h = -h;
+    }
+    return h;
+}
+
+unsafe fn HashMap<K, V>::keys_equal(a: *mut u8, b: *mut u8) -> bool {
+    let sz = sizeof(K);
+    let mut i: i64 = 0;
+    while i < sz {
+        let b1 = a[i];
+        let b2 = b[i];
+        if b1 != b2 {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+unsafe fn HashMap<K, V>::grow(self) {
+    let old_cap = self.cap;
+    let new_cap = old_cap * 2;
+    let k_sz = sizeof(K);
+    let v_sz = sizeof(V);
+    let b_sz = sizeof(bool);
+
+    let new_keys = alloc(new_cap * k_sz) as *mut K;
+    let new_vals = alloc(new_cap * v_sz) as *mut V;
+    let new_occ = alloc(new_cap * b_sz) as *mut bool;
+    mem_set(new_occ as *mut u8, 0, new_cap * b_sz);
+
+    let mut i: i64 = 0;
+    while i < old_cap {
+        let is_occ = self.occupied[i];
+        if is_occ {
+            let k = self.keys[i];
+            let v = self.vals[i];
+            let mut k_var = k;
+            let k_ptr = &k_var as *mut u8;
+            let hash = HashMap<K, V>::hash_key(k_ptr);
+            let mut j: i64 = 0;
+            while j < new_cap {
+                let slot = (hash + j) % new_cap;
+                let occ_j = new_occ[slot];
+                if !occ_j {
+                    new_keys[slot] = k;
+                    new_vals[slot] = v;
+                    new_occ[slot] = true;
+                    break;
+                }
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    if self.keys != null {
+        free(self.keys as *mut u8);
+        free(self.vals as *mut u8);
+        free(self.occupied as *mut u8);
+    }
+
+    self.keys = new_keys;
+    self.vals = new_vals;
+    self.occupied = new_occ;
+    self.cap = new_cap;
+}
+
+fn HashMap<K, V>::insert(self, key: K, val: V) -> bool {
+    if self.cap == 0 {
+        let cap: i64 = 16;
+        let k_sz = sizeof(K);
+        let v_sz = sizeof(V);
+        let b_sz = sizeof(bool);
+        self.keys = alloc(cap * k_sz) as *mut K;
+        self.vals = alloc(cap * v_sz) as *mut V;
+        self.occupied = alloc(cap * b_sz) as *mut bool;
+        unsafe {
+            mem_set(self.occupied as *mut u8, 0, cap * b_sz);
+        }
+        self.cap = cap;
+        self.len = 0;
+    } else {
+        if (self.len + 1) * 10 >= self.cap * 7 {
+            unsafe {
+                self.grow();
+            }
+        }
+    }
+
+    let mut key_var = key;
+    let key_ptr = &key_var as *mut u8;
+    unsafe {
+        let hash = HashMap<K, V>::hash_key(key_ptr);
+        let mut i: i64 = 0;
+        while i < self.cap {
+            let slot = (hash + i) % self.cap;
+            let is_occ = self.occupied[slot];
+            if !is_occ {
+                self.keys[slot] = key;
+                self.vals[slot] = val;
+                self.occupied[slot] = true;
+                self.len = self.len + 1;
+                return true;
+            }
+            let slot_k = &self.keys[slot] as *mut u8;
+            let eq = HashMap<K, V>::keys_equal(slot_k, key_ptr);
+            if eq {
+                self.vals[slot] = val;
+                return false;
+            }
+            i = i + 1;
+        }
+    }
+    return false;
+}
+
+fn HashMap<K, V>::get_ptr(self, key: K) -> *mut V {
+    if self.len == 0 || self.cap == 0 {
+        return null;
+    }
+    let mut key_var = key;
+    let key_ptr = &key_var as *mut u8;
+    unsafe {
+        let hash = HashMap<K, V>::hash_key(key_ptr);
+        let mut i: i64 = 0;
+        while i < self.cap {
+            let slot = (hash + i) % self.cap;
+            let is_occ = self.occupied[slot];
+            if !is_occ {
+                return null;
+            }
+            let slot_k = &self.keys[slot] as *mut u8;
+            let eq = HashMap<K, V>::keys_equal(slot_k, key_ptr);
+            if eq {
+                return &self.vals[slot] as *mut V;
+            }
+            i = i + 1;
+        }
+    }
+    return null;
+}
+
+fn HashMap<K, V>::contains_key(self, key: K) -> bool {
+    let p = self.get_ptr(key);
+    return p != null;
+}
+
+fn HashMap<K, V>::get(self, key: K) -> Option<V> {
+    let p = self.get_ptr(key);
+    if p == null {
+        return Option<V>::none();
+    }
+    let mut val: V = zeroed();
+    unsafe {
+        val = *p;
+    }
+    return Option<V>::some(val);
+}
+
+fn HashMap<K, V>::remove(self, key: K) -> bool {
+    if self.len == 0 || self.cap == 0 {
+        return false;
+    }
+    let mut key_var = key;
+    let key_ptr = &key_var as *mut u8;
+    unsafe {
+        let hash = HashMap<K, V>::hash_key(key_ptr);
+        let mut i: i64 = 0;
+        while i < self.cap {
+            let slot = (hash + i) % self.cap;
+            let is_occ = self.occupied[slot];
+            if !is_occ {
+                return false;
+            }
+            let slot_k = &self.keys[slot] as *mut u8;
+            let eq = HashMap<K, V>::keys_equal(slot_k, key_ptr);
+            if eq {
+                self.occupied[slot] = false;
+                self.len = self.len - 1;
+                // Re-hash subsequent cluster
+                let mut j: i64 = (slot + 1) % self.cap;
+                let mut keep_rehashing: bool = true;
+                while keep_rehashing {
+                    let occ_j = self.occupied[j];
+                    if !occ_j {
+                        keep_rehashing = false;
+                    } else {
+                        let k_re = self.keys[j];
+                        let v_re = self.vals[j];
+                        self.occupied[j] = false;
+                        self.len = self.len - 1;
+                        self.insert(k_re, v_re);
+                        j = (j + 1) % self.cap;
+                    }
+                }
+                return true;
+            }
+            i = i + 1;
+        }
+    }
+    return false;
+}
+
+fn HashMap<K, V>::len(self) -> i64 {
+    return self.len;
+}
+
+fn HashMap<K, V>::cap(self) -> i64 {
+    return self.cap;
+}
+
+fn HashMap<K, V>::is_empty(self) -> bool {
+    return self.len == 0;
+}
+
+fn HashMap<K, V>::clear(self) {
+    if self.occupied != null && self.cap > 0 {
+        let b_sz = sizeof(bool);
+        unsafe {
+            mem_set(self.occupied as *mut u8, 0, self.cap * b_sz);
+        }
+    }
+    self.len = 0;
+}
+
+fn HashMap<K, V>::drop(self) {
+    if self.keys != null {
+        free(self.keys as *mut u8);
+        self.keys = null;
+    }
+    if self.vals != null {
+        free(self.vals as *mut u8);
+        self.vals = null;
+    }
+    if self.occupied != null {
+        free(self.occupied as *mut u8);
+        self.occupied = null;
+    }
+    self.len = 0;
+    self.cap = 0;
+}

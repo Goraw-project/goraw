@@ -452,6 +452,7 @@ fn find_in_expr(
             find_in_expr(then, generic_structs, insts);
             find_in_expr(els, generic_structs, insts);
         }
+        Expr::Try(inner, _) => find_in_expr(inner, generic_structs, insts),
         _ => {}
     }
 }
@@ -468,6 +469,19 @@ fn substitute_type_expr(
                 *te = replacement.clone();
             } else if n == generic_name {
                 *n = spec_name.to_string();
+            } else if n.contains("__") {
+                for (p, rep) in subst {
+                    let rep_key = TypeExprKey::from_type_expr(rep).0;
+                    let target_mid = format!("__{p}__");
+                    let repl_mid = format!("__{rep_key}__");
+                    *n = n.replace(&target_mid, &repl_mid);
+                    let target_end = format!("__{p}");
+                    if n.ends_with(&target_end) {
+                        let len = n.len();
+                        n.truncate(len - target_end.len());
+                        n.push_str(&format!("__{rep_key}"));
+                    }
+                }
             }
         }
         TypeExpr::Generic(n, args, sp) => {
@@ -610,6 +624,19 @@ fn substitute_expr(
         Expr::StructLit { name, fields, .. } => {
             if name == generic_name {
                 *name = spec_name.to_string();
+            } else if name.contains("__") {
+                for (p, rep) in subst {
+                    let rep_key = TypeExprKey::from_type_expr(rep).0;
+                    let target_mid = format!("__{p}__");
+                    let repl_mid = format!("__{rep_key}__");
+                    *name = name.replace(&target_mid, &repl_mid);
+                    let target_end = format!("__{p}");
+                    if name.ends_with(&target_end) {
+                        let len = name.len();
+                        name.truncate(len - target_end.len());
+                        name.push_str(&format!("__{rep_key}"));
+                    }
+                }
             }
             for (_, val, _) in fields {
                 substitute_expr(val, subst, generic_name, spec_name);
@@ -624,6 +651,25 @@ fn substitute_expr(
             substitute_expr(cond, subst, generic_name, spec_name);
             substitute_expr(then, subst, generic_name, spec_name);
             substitute_expr(els, subst, generic_name, spec_name);
+        }
+        Expr::Try(inner, _) => substitute_expr(inner, subst, generic_name, spec_name),
+        Expr::Ident(name, _) => {
+            if let Some(TypeExpr::Named(actual, _)) = subst.get(name) {
+                *name = actual.clone();
+            } else if name.contains("__") {
+                for (p, rep) in subst {
+                    let rep_key = TypeExprKey::from_type_expr(rep).0;
+                    let target_mid = format!("__{p}__");
+                    let repl_mid = format!("__{rep_key}__");
+                    *name = name.replace(&target_mid, &repl_mid);
+                    let target_end = format!("__{p}");
+                    if name.ends_with(&target_end) {
+                        let len = name.len();
+                        name.truncate(len - target_end.len());
+                        name.push_str(&format!("__{rep_key}"));
+                    }
+                }
+            }
         }
         _ => {}
     }
@@ -769,6 +815,7 @@ fn rewrite_expr_generics(e: &mut Expr) {
             rewrite_expr_generics(then);
             rewrite_expr_generics(els);
         }
+        Expr::Try(inner, _) => rewrite_expr_generics(inner),
         _ => {}
     }
 }
