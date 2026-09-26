@@ -276,6 +276,7 @@ impl<'a> Parser<'a> {
             options: Vec::new(),
             messages: Vec::new(),
             enums: Vec::new(),
+            services: Vec::new(),
             span: start,
         };
 
@@ -327,10 +328,11 @@ impl<'a> Parser<'a> {
                     None => self.recover(),
                 }
             } else if self.is_kw("service") {
-                // сервисы парсим-и-пропускаем (PB3)
                 self.bump();
-                let _ = self.expect_ident();
-                self.skip_block();
+                match self.parse_service() {
+                    Some(s) => file.services.push(s),
+                    None => self.recover(),
+                }
             } else {
                 self.err(format!("неожиданный токен на верхнем уровне: {:?}", self.peek()));
                 self.recover();
@@ -626,6 +628,116 @@ impl<'a> Parser<'a> {
         Some(EnumDef { name, values, options, span })
     }
 
+    fn parse_service(&mut self) -> Option<Service> {
+        let span = self.span();
+        let name = self.expect_ident()?;
+        self.expect_punct('{')?;
+        let mut methods = Vec::new();
+        let mut options = Vec::new();
+
+        while !self.is_punct('}') && !self.at_eof() {
+            if self.eat_punct(';') {
+                continue;
+            }
+            if self.is_kw("option") {
+                self.bump();
+                if let Some(o) = self.parse_option_body() {
+                    options.push(o);
+                }
+                continue;
+            }
+            if self.is_kw("rpc") {
+                self.bump();
+                let m_span = self.span();
+                let m_name = match self.expect_ident() {
+                    Some(id) => id,
+                    None => { self.recover(); continue; }
+                };
+                if self.expect_punct('(').is_none() {
+                    self.recover();
+                    continue;
+                }
+                let client_streaming = if self.is_kw("stream") {
+                    self.bump();
+                    true
+                } else {
+                    false
+                };
+                let input_type = match self.parse_dotted() {
+                    Some(t) => t,
+                    None => { self.recover(); continue; }
+                };
+                if self.expect_punct(')').is_none() {
+                    self.recover();
+                    continue;
+                }
+                if !self.is_kw("returns") {
+                    self.err("ожидалось ключевое слово 'returns'".into());
+                    self.recover();
+                    continue;
+                }
+                self.bump(); // eat returns
+                if self.expect_punct('(').is_none() {
+                    self.recover();
+                    continue;
+                }
+                let server_streaming = if self.is_kw("stream") {
+                    self.bump();
+                    true
+                } else {
+                    false
+                };
+                let output_type = match self.parse_dotted() {
+                    Some(t) => t,
+                    None => { self.recover(); continue; }
+                };
+                if self.expect_punct(')').is_none() {
+                    self.recover();
+                    continue;
+                }
+
+                let mut method_opts = Vec::new();
+                if self.is_punct('{') {
+                    self.bump();
+                    while !self.is_punct('}') && !self.at_eof() {
+                        if self.is_kw("option") {
+                            self.bump();
+                            if let Some(o) = self.parse_option_body() {
+                                method_opts.push(o);
+                            }
+                        } else {
+                            self.bump();
+                        }
+                    }
+                    let _ = self.expect_punct('}');
+                } else {
+                    let _ = self.expect_punct(';');
+                }
+
+                methods.push(RpcMethod {
+                    name: m_name,
+                    input_type,
+                    output_type,
+                    client_streaming,
+                    server_streaming,
+                    options: method_opts,
+                    span: m_span,
+                });
+            } else {
+                self.err(format!("неожиданный токен внутри service: {:?}", self.peek()));
+                self.recover();
+            }
+        }
+        self.expect_punct('}')?;
+        Some(Service {
+            name,
+            methods,
+            options,
+            span,
+        })
+    }
+
+    #[allow(dead_code)]
     fn skip_block(&mut self) {
         // пропускает `{ ... }` с балансировкой
         if self.eat_punct('{') {

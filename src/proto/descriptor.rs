@@ -96,9 +96,25 @@ pub struct MessageD {
     pub oneofs: Vec<OneofD>,
 }
 
+#[derive(Clone, Debug)]
+pub struct ServiceD {
+    pub name: String,
+    pub methods: Vec<RpcMethodD>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RpcMethodD {
+    pub name: String,
+    pub input_type: String,
+    pub output_type: String,
+    pub client_streaming: bool,
+    pub server_streaming: bool,
+}
+
 pub struct FileD {
     pub edition: String,
     pub messages: Vec<MessageD>,
+    pub services: Vec<ServiceD>,
     pub message_names: HashSet<String>, // простые имена сообщений
     pub enum_names: HashSet<String>,    // простые имена enum
 }
@@ -123,7 +139,25 @@ pub fn resolve(file: &ProtoFile) -> FileD {
         flatten_message(m, "", file_feat, &enum_names, &mut messages);
     }
 
-    FileD { edition, messages, message_names, enum_names }
+    let mut services = Vec::new();
+    for s in &file.services {
+        let mut methods = Vec::new();
+        for m in &s.methods {
+            methods.push(RpcMethodD {
+                name: m.name.clone(),
+                input_type: simple_name(&m.input_type).to_string(),
+                output_type: simple_name(&m.output_type).to_string(),
+                client_streaming: m.client_streaming,
+                server_streaming: m.server_streaming,
+            });
+        }
+        services.push(ServiceD {
+            name: s.name.clone(),
+            methods,
+        });
+    }
+
+    FileD { edition, messages, services, message_names, enum_names }
 }
 
 fn collect_names(

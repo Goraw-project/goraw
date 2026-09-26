@@ -13,7 +13,7 @@
 //! - Map<K, V> (flat []Entry слайсы, wire-совместимые со спекой protobuf)
 
 use crate::proto::ast::FieldType;
-use crate::proto::descriptor::{FieldD, FileD, MessageD, OneofD, Presence};
+use crate::proto::descriptor::{FieldD, FileD, MessageD, OneofD, Presence, ServiceD};
 use std::fmt::Write as _;
 
 const PRELUDE: &str = r#"// --- gorawpb runtime prelude (сгенерировано) ---
@@ -215,11 +215,17 @@ const WT_LEN: u64 = 2;
 const WT_I32: u64 = 5;
 
 pub fn generate(file: &FileD) -> String {
+    generate_ext(file, true)
+}
+
+pub fn generate_ext(file: &FileD, include_prelude: bool) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "// Сгенерировано gorawpb из .proto (edition {}). НЕ РЕДАКТИРОВАТЬ.", file.edition);
     out.push('\n');
-    out.push_str(PRELUDE);
-    out.push('\n');
+    if include_prelude {
+        out.push_str(PRELUDE);
+        out.push('\n');
+    }
 
     // 1. Генерация вспомогательных структур и векторов для Map-полей
     for m in &file.messages {
@@ -256,7 +262,67 @@ pub fn generate(file: &FileD) -> String {
         gen_decode(&mut out, file, m);
         out.push('\n');
     }
+
+    // 6. Сервисы RPC (клиентские и серверные хелперы + пути)
+    for s in &file.services {
+        gen_service(&mut out, file, s);
+        out.push('\n');
+    }
+
     out
+}
+
+fn gen_service(out: &mut String, _file: &FileD, s: &ServiceD) {
+    let _ = writeln!(out, "// --- RPC Service: {} ---", s.name);
+    let s_upper = s.name.to_uppercase();
+    let _ = writeln!(out, "const RPC_{s_upper}_METHOD_COUNT: i32 = {};", s.methods.len());
+
+    for (idx, m) in s.methods.iter().enumerate() {
+        let id = idx + 1;
+        let m_upper = m.name.to_uppercase();
+        let _ = writeln!(out, "const RPC_{s_upper}_{m_upper}_ID: i32 = {id};");
+        let _ = writeln!(out, "fn rpc_{}_{}_path() -> str {{ return \"/{}/{}\"; }}", s.name, m.name, s.name, m.name);
+
+        // Client helpers
+        let _ = writeln!(out, "fn rpc_{}_{}_encode_request(req: *{}, out_buf: *mut GpbBuf) {{", s.name, m.name, m.input_type);
+        let _ = writeln!(out, "    encode_{}(req, out_buf);", m.input_type);
+        let _ = writeln!(out, "}}");
+
+        let _ = writeln!(out, "fn rpc_{}_{}_decode_response(data: *u8, len: i64) -> {} {{", s.name, m.name, m.output_type);
+        let _ = writeln!(out, "    return decode_{}(data, len);", m.output_type);
+        let _ = writeln!(out, "}}");
+
+        // Server helpers
+        let _ = writeln!(out, "fn rpc_{}_{}_decode_request(data: *u8, len: i64) -> {} {{", s.name, m.name, m.input_type);
+        let _ = writeln!(out, "    return decode_{}(data, len);", m.input_type);
+        let _ = writeln!(out, "}}");
+
+        let _ = writeln!(out, "fn rpc_{}_{}_encode_response(resp: *{}, out_buf: *mut GpbBuf) {{", s.name, m.name, m.output_type);
+        let _ = writeln!(out, "    encode_{}(resp, out_buf);", m.output_type);
+        let _ = writeln!(out, "}}");
+    }
+
+    // Method dispatch identifier helper
+    let _ = writeln!(out, "fn rpc_{}_method_id(method: str) -> i32 {{", s.name);
+    for (idx, m) in s.methods.iter().enumerate() {
+        let id = idx + 1;
+        let _ = writeln!(out, "    if method == \"{}\" || method == \"/{}/{}\" {{", m.name, s.name, m.name);
+        let _ = writeln!(out, "        return {id};");
+        let _ = writeln!(out, "    }}");
+    }
+    let _ = writeln!(out, "    return 0;");
+    let _ = writeln!(out, "}}");
+
+    // Method path helper
+    let _ = writeln!(out, "fn rpc_{}_method_path(id: i32) -> str {{", s.name);
+    for (idx, m) in s.methods.iter().enumerate() {
+        let id = idx + 1;
+        let _ = writeln!(out, "    if id == {id} {{");
+        let _ = writeln!(out, "        return \"/{}/{}\";", s.name, m.name);
+        let _ = writeln!(out, "    }}");
+    }
+    let _ = writeln!(out, "    return \"\";");
+    let _ = writeln!(out, "}}");
 }
 
 fn to_pascal_case(s: &str) -> String {

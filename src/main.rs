@@ -25,6 +25,7 @@ struct Options {
     bind_c: Option<PathBuf>,
     extra_objects: Vec<PathBuf>,
     extra_asms: Vec<PathBuf>,
+    extra_protos: Vec<PathBuf>,
     output: Option<PathBuf>,
     emit_llvm: bool,   // остановиться на .ll
     json: bool,        // диагностика в JSON
@@ -44,6 +45,20 @@ struct Options {
 
 pub fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 {
+        let sub = args[1].as_str();
+        if sub == "proto" || sub == "pb" {
+            exit(handle_proto_subcommand(&args[2..]));
+        }
+        if sub == "lsp" || sub == "--lsp" {
+            if let Err(e) = gorawc::lsp::run_lsp_server() {
+                eprintln!("ошибка LSP сервера: {e}");
+                exit(1);
+            }
+            exit(0);
+        }
+    }
+
     let opts = match parse_args(&args) {
         Ok(o) => o,
         Err(msg) => {
@@ -76,13 +91,108 @@ pub fn main() {
     exit(run(opts));
 }
 
+fn handle_proto_subcommand(args: &[String]) -> i32 {
+    let mut input: Option<PathBuf> = None;
+    let mut output: Option<PathBuf> = None;
+    let mut json = false;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-h" | "--help" => {
+                println!(
+                    "goraw proto — компилятор Protobuf (Editions / proto2 / proto3) в Goraw\n\n\
+                     ИСПОЛЬЗОВАНИЕ:\n    goraw proto <схема.proto> [-o out.gw] [--json]\n    goraw pb    <схема.proto> [-o out.gw] [--json]\n\n\
+                     ОПЦИИ:\n    -o <путь>   имя выходного файла (по умолчанию <схема>.gw, '-' для stdout)\n    --json      вывод диагностик в JSON\n    -h, --help  показать справку"
+                );
+                return 0;
+            }
+            "-o" => {
+                i += 1;
+                match args.get(i) {
+                    Some(o) => output = Some(PathBuf::from(o)),
+                    None => {
+                        eprintln!("-o требует аргумент");
+                        return 2;
+                    }
+                }
+            }
+            "--json" => json = true,
+            s if s.starts_with('-') => {
+                eprintln!("неизвестная опция `{s}` (см. goraw proto --help)");
+                return 2;
+            }
+            s => {
+                if input.is_none() {
+                    input = Some(PathBuf::from(s));
+                } else {
+                    eprintln!("лишний аргумент `{s}`");
+                    return 2;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    let input = match input {
+        Some(p) => p,
+        None => {
+            eprintln!("не указан входной файл .proto (см. goraw proto --help)");
+            return 2;
+        }
+    };
+    let src = match std::fs::read_to_string(&input) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("не удалось прочитать `{}`: {e}", input.display());
+            return 2;
+        }
+    };
+
+    let file = input.display().to_string();
+    let (code, diags) = gorawc::proto::compile(&file, &src);
+
+    if !diags.items.is_empty() {
+        if json {
+            print!("{}", diags.render_llm_json());
+        } else {
+            eprint!("{}", diags.render_human());
+        }
+    }
+
+    let code = match code {
+        Some(c) => c,
+        None => return 1,
+    };
+
+    if let Some(out) = &output {
+        if out.to_str() == Some("-") {
+            print!("{code}");
+            return 0;
+        }
+    }
+
+    let out = output.unwrap_or_else(|| input.with_extension("gw"));
+    if let Err(e) = std::fs::write(&out, &code) {
+        eprintln!("не удалось записать `{}`: {e}", out.display());
+        return 2;
+    }
+    eprintln!("сгенерировано: `{}`", out.display());
+    0
+}
+
 fn print_help() {
     println!(
         "gorawc — компилятор языка Goraw (LLVM backend)\n\
 \n\
 ИСПОЛЬЗОВАНИЕ:\n\
-    gorawc <файл.gw> [helper.asm ...] [lib.obj ...] [опции]\n\
-    goraw  <файл.gw> [helper.asm ...] [lib.obj ...] [опции]\n\
+    gorawc <файл.gw> [schema.proto ...] [helper.asm ...] [lib.obj ...] [опции]\n\
+    goraw  <файл.gw> [schema.proto ...] [helper.asm ...] [lib.obj ...] [опции]\n\
+    goraw  proto <схема.proto> [-o out.gw] [--json]\n\
+\n\
+ПОДКОМАНДЫ:\n\
+    proto, pb        скомпилировать .proto схему в Goraw-код\n\
+    lsp              запустить Goraw Language Server Protocol (LSP) сервер для IDE\n\
 \n\
 ОПЦИИ:\n\
     -o <путь>        имя выходного файла (.exe или .ll)\n\
@@ -112,6 +222,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut bind_c: Option<PathBuf> = None;
     let mut extra_objects: Vec<PathBuf> = Vec::new();
     let mut extra_asms: Vec<PathBuf> = Vec::new();
+    let mut extra_protos: Vec<PathBuf> = Vec::new();
     let mut output = None;
     let mut emit_llvm = false;
     let mut json = false;
@@ -188,6 +299,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                     extra_asms.push(p);
                 } else if ext == "obj" || ext == "o" || ext == "lib" || ext == "a" || ext == "ll" || ext == "bc" {
                     extra_objects.push(p);
+                } else if ext == "proto" {
+                    extra_protos.push(p);
                 } else if input.is_none() {
                     input = Some(p);
                 } else {
@@ -199,6 +312,19 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     }
 
     if input.is_none() && bind_c.is_none() {
+        if !extra_protos.is_empty() && !run && !test {
+            // Прямой запуск компилятора: goraw schema.proto -> компиляция proto в .gw
+            let proto_file = extra_protos.remove(0);
+            let mut proto_args = vec![proto_file.to_string_lossy().to_string()];
+            if let Some(o) = output {
+                proto_args.push("-o".into());
+                proto_args.push(o.to_string_lossy().to_string());
+            }
+            if json {
+                proto_args.push("--json".into());
+            }
+            exit(handle_proto_subcommand(&proto_args));
+        }
         return Err("не указан входной файл (см. --help)".into());
     }
 
@@ -207,6 +333,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         bind_c,
         extra_objects,
         extra_asms,
+        extra_protos,
         output,
         emit_llvm,
         json,
@@ -289,8 +416,8 @@ fn run(opts: Options) -> i32 {
     }
 
     let input_path = opts.input.as_ref().expect("входной файл");
-    // Собираем главный файл и все, что он тянет через `import "..."`.
-    let (src, line_map) = match gather_sources(input_path) {
+    // Собираем главный файл, внешние .proto и все, что подтягивается через `import "..."`.
+    let (src, line_map) = match gather_sources(input_path, &opts.extra_protos) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("{e}");
@@ -629,15 +756,44 @@ fn transform_tests(prog: &mut ast::Program) {
 /// Рекурсивно собирает главный файл и все импортируемые (`import "path";`) в
 /// один объединённый источник + карту строк (для диагностик по файлам).
 /// Порядок: зависимости раньше импортёра; дубли включаются один раз.
-fn gather_sources(main: &Path) -> Result<(String, Vec<(u32, String)>), String> {
+/// Рекурсивно собирает главный файл, переданные .proto схемы и все импортируемые
+/// (`import "path";`, в т.ч. .gw, .proto, .h) в один объединённый источник + карту строк.
+/// Порядок: зависимости раньше импортёра; дубли включаются один раз.
+fn gather_sources(main: &Path, extra_protos: &[PathBuf]) -> Result<(String, Vec<(u32, String)>), String> {
     use std::collections::HashSet;
     let mut order: Vec<(String, String)> = Vec::new(); // (отображаемый путь, src)
     let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut proto_prelude_emitted = false;
+
+    // 1. Сначала компилируем все явно переданные .proto файлы (extra_protos)
+    for proto_path in extra_protos {
+        let canon = std::fs::canonicalize(proto_path).unwrap_or_else(|_| proto_path.to_path_buf());
+        if !seen.insert(canon.clone()) {
+            continue;
+        }
+        let proto_src = std::fs::read_to_string(proto_path)
+            .map_err(|e| format!("не удалось прочитать `{}`: {e}", proto_path.display()))?;
+        let (code, diags) = gorawc::proto::compile_ext(
+            &proto_path.display().to_string(),
+            &proto_src,
+            !proto_prelude_emitted,
+        );
+        if diags.has_errors() {
+            return Err(format!(
+                "ошибка компиляции Protobuf из `{}`:\n{}",
+                proto_path.display(),
+                diags.render_human()
+            ));
+        }
+        proto_prelude_emitted = true;
+        order.push((proto_path.display().to_string(), code.unwrap_or_default()));
+    }
 
     fn visit(
         path: &Path,
         seen: &mut HashSet<PathBuf>,
         order: &mut Vec<(String, String)>,
+        proto_prelude_emitted: &mut bool,
     ) -> Result<(), String> {
         let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         if !seen.insert(canon.clone()) {
@@ -675,15 +831,35 @@ fn gather_sources(main: &Path) -> Result<(String, Vec<(u32, String)>), String> {
                 let bindings = gorawc::c_interop::generate_bindings_from_header(&resolved, "clang")
                     .map_err(|e| format!("ошибка генерации биндингов из `{}`: {e}", resolved.display()))?;
                 order.push((resolved.display().to_string(), bindings));
+            } else if imp.ends_with(".proto") {
+                let r_canon = std::fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
+                if seen.insert(r_canon) {
+                    let proto_src = std::fs::read_to_string(&resolved)
+                        .map_err(|e| format!("не удалось прочитать `{}`: {e}", resolved.display()))?;
+                    let (code, diags) = gorawc::proto::compile_ext(
+                        &resolved.display().to_string(),
+                        &proto_src,
+                        !*proto_prelude_emitted,
+                    );
+                    if diags.has_errors() {
+                        return Err(format!(
+                            "ошибка компиляции Protobuf из `{}`:\n{}",
+                            resolved.display(),
+                            diags.render_human()
+                        ));
+                    }
+                    *proto_prelude_emitted = true;
+                    order.push((resolved.display().to_string(), code.unwrap_or_default()));
+                }
             } else {
-                visit(&resolved, seen, order)?;
+                visit(&resolved, seen, order, proto_prelude_emitted)?;
             }
         }
         order.push((path.display().to_string(), src));
         Ok(())
     }
 
-    visit(main, &mut seen, &mut order)?;
+    visit(main, &mut seen, &mut order, &mut proto_prelude_emitted)?;
 
     let mut combined = String::new();
     let mut map = Vec::new();

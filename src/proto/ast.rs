@@ -11,6 +11,26 @@ pub struct ProtoFile {
     pub options: Vec<Opt>,         // file-level, включая features.*
     pub messages: Vec<Message>,
     pub enums: Vec<EnumDef>,
+    pub services: Vec<Service>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct Service {
+    pub name: String,
+    pub methods: Vec<RpcMethod>,
+    pub options: Vec<Opt>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct RpcMethod {
+    pub name: String,
+    pub input_type: String,
+    pub output_type: String,
+    pub client_streaming: bool,
+    pub server_streaming: bool,
+    pub options: Vec<Opt>,
     pub span: Span,
 }
 

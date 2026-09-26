@@ -12,6 +12,11 @@ use crate::diag::Diags;
 
 /// Компилирует `.proto` в исходник Goraw. При ошибках возвращает None и Diags.
 pub fn compile(file: &str, src: &str) -> (Option<String>, Diags) {
+    compile_ext(file, src, true)
+}
+
+/// Компилирует `.proto` в исходник Goraw с возможностью отключить повтор prelude.
+pub fn compile_ext(file: &str, src: &str, include_prelude: bool) -> (Option<String>, Diags) {
     let mut diags = Diags::new(file, src);
     let ast = {
         let mut p = parser::Parser::new(src, &mut diags);
@@ -21,7 +26,7 @@ pub fn compile(file: &str, src: &str) -> (Option<String>, Diags) {
         return (None, diags);
     }
     let desc = descriptor::resolve(&ast);
-    let code = codegen_goraw::generate(&desc);
+    let code = codegen_goraw::generate_ext(&desc, include_prelude);
     (Some(code), diags)
 }
 
@@ -59,6 +64,36 @@ message Bundle {
         assert!(gw.contains("const BUNDLE_PAYLOAD_CODE: i32 = 5;"));
         assert!(gw.contains("encode_Bundle"));
         assert!(gw.contains("decode_Bundle"));
+    }
+
+    #[test]
+    fn test_proto_service_rpc_compilation() {
+        let proto_src = r#"
+edition = "2023";
+package api;
+
+message HelloRequest {
+    string name = 1;
+}
+
+message HelloReply {
+    string message = 1;
+}
+
+service Greeter {
+    rpc SayHello (HelloRequest) returns (HelloReply);
+}
+"#;
+        let (code, diags) = compile("greeter.proto", proto_src);
+        assert!(!diags.has_errors(), "diags: {:?}", diags.items);
+        let gw = code.expect("generated code");
+        assert!(gw.contains("const RPC_GREETER_SAYHELLO_ID: i32 = 1;"));
+        assert!(gw.contains("fn rpc_Greeter_SayHello_path() -> str"));
+        assert!(gw.contains("fn rpc_Greeter_SayHello_encode_request"));
+        assert!(gw.contains("fn rpc_Greeter_SayHello_decode_response"));
+        assert!(gw.contains("fn rpc_Greeter_SayHello_decode_request"));
+        assert!(gw.contains("fn rpc_Greeter_SayHello_encode_response"));
+        assert!(gw.contains("fn rpc_Greeter_method_id"));
     }
 }
 
