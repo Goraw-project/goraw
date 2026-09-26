@@ -10,5 +10,6 @@ pub mod lexer;
 pub mod lsp;
 pub mod mono;
 pub mod parser;
+pub mod pkg;
 pub mod proto;
 pub mod types;

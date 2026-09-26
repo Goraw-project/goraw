@@ -44,19 +44,77 @@ struct Options {
 }
 
 pub fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
     if args.len() > 1 {
-        let sub = args[1].as_str();
-        if sub == "proto" || sub == "pb" {
-            exit(handle_proto_subcommand(&args[2..]));
-        }
-        if sub == "lsp" || sub == "--lsp" {
-            if let Err(e) = gorawc::lsp::run_lsp_server() {
-                eprintln!("ошибка LSP сервера: {e}");
-                exit(1);
+        match args[1].as_str() {
+            "proto" | "pb" => exit(handle_proto_subcommand(&args[2..])),
+            "lsp" | "--lsp" => {
+                if let Err(e) = gorawc::lsp::run_lsp_server() {
+                    eprintln!("ошибка LSP сервера: {e}");
+                    exit(1);
+                }
+                exit(0);
             }
-            exit(0);
+            "init" => {
+                let name = args.get(2).map(|s| s.as_str());
+                let cwd = match std::env::current_dir() {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!("не удалось определить текущую директорию: {e}");
+                        exit(1);
+                    }
+                };
+                if let Err(e) = gorawc::pkg::init_project(name, &cwd) {
+                    eprintln!("ошибка инициализации проекта: {e}");
+                    exit(1);
+                }
+                exit(0);
+            }
+            "get" => {
+                let mut dep_spec = None;
+                let mut is_global = false;
+                for a in &args[2..] {
+                    if a == "-g" || a == "--global" {
+                        is_global = true;
+                    } else if !a.starts_with('-') && dep_spec.is_none() {
+                        dep_spec = Some(a.as_str());
+                    }
+                }
+                if let Err(e) = gorawc::pkg::get(dep_spec, is_global) {
+                    eprintln!("ошибка goraw get: {e}");
+                    exit(1);
+                }
+                exit(0);
+            }
+            "vendor" => {
+                if let Err(e) = gorawc::pkg::get(None, false) {
+                    eprintln!("ошибка вендоринга: {e}");
+                    exit(1);
+                }
+                exit(0);
+            }
+            "build" => {
+                args.remove(1);
+                check_manifest_entry(&mut args);
+            }
+            "run" => {
+                args.remove(1);
+                if !args.iter().any(|a| a == "--run") {
+                    args.push("--run".to_string());
+                }
+                check_manifest_entry(&mut args);
+            }
+            "test" => {
+                args.remove(1);
+                if !args.iter().any(|a| a == "--test" || a == "test") {
+                    args.push("--test".to_string());
+                }
+                check_manifest_entry(&mut args);
+            }
+            _ => {}
         }
+    } else {
+        check_manifest_entry(&mut args);
     }
 
     let opts = match parse_args(&args) {
@@ -181,16 +239,45 @@ fn handle_proto_subcommand(args: &[String]) -> i32 {
     0
 }
 
+fn check_manifest_entry(args: &mut Vec<String>) {
+    let has_file = args.iter().skip(1).any(|a| {
+        !a.starts_with('-') && (a.ends_with(".gw") || a.ends_with(".proto") || a.ends_with(".obj") || a.ends_with(".asm"))
+    });
+    if !has_file {
+        if let Ok(cwd) = std::env::current_dir() {
+            if let Some(manifest) = gorawc::pkg::load_manifest(&cwd) {
+                if let Some(pkg) = manifest.package {
+                    let entry_str = pkg.entry.unwrap_or_else(|| "src/main.gw".to_string());
+                    let entry_path = cwd.join(&entry_str);
+                    if entry_path.exists() {
+                        args.insert(1, entry_str);
+                        return;
+                    }
+                }
+            }
+        }
+        if args.len() <= 1 {
+            print_help();
+            exit(0);
+        }
+    }
+}
+
 fn print_help() {
     println!(
-        "gorawc — компилятор языка Goraw (LLVM backend)\n\
+        "goraw — компилятор и пакетный менеджер языка Goraw (LLVM backend)\n\
 \n\
 ИСПОЛЬЗОВАНИЕ:\n\
-    gorawc <файл.gw> [schema.proto ...] [helper.asm ...] [lib.obj ...] [опции]\n\
-    goraw  <файл.gw> [schema.proto ...] [helper.asm ...] [lib.obj ...] [опции]\n\
-    goraw  proto <схема.proto> [-o out.gw] [--json]\n\
+    goraw [подкоманда] [опции]\n\
+    goraw <файл.gw> [schema.proto ...] [helper.asm ...] [lib.obj ...] [опции]\n\
 \n\
 ПОДКОМАНДЫ:\n\
+    init [имя]       инициализировать новый проект (goraw.toml, src/main.gw)\n\
+    get [url] [-g]   скачать зависимость в ./vendor/ (или -g в ~/.goraw/pkg/)\n\
+    vendor           синхронизировать все зависимости из goraw.toml в ./vendor/\n\
+    build            собрать проект из goraw.toml\n\
+    run              собрать и запустить проект из goraw.toml\n\
+    test             собрать и запустить shadow-тесты проекта\n\
     proto, pb        скомпилировать .proto схему в Goraw-код\n\
     lsp              запустить Goraw Language Server Protocol (LSP) сервер для IDE\n\
 \n\
@@ -201,8 +288,7 @@ fn print_help() {
     --emit-llvm      остановиться на LLVM IR (.ll), не звать clang\n\
     --json           печатать диагностику в LLM-формате (JSON + XML-нотки)\n\
     --run            запустить программу после успешной сборки\n\
-    --test, test     собрать и прогнать shadow-тесты (test-блоки)\n\
-    lsp              запустить Goraw Language Server Protocol (LSP) сервер для IDE\n\
+    --test           собрать и прогнать shadow-тесты (test-блоки)\n\
     --silent, -s     автопропуск предупреждений безопасности при запуске тестов вне песочницы\n\
     --shadow=strict  строгий режим: ошибка E1200 при отсутствии shadow-теста для функции\n\
     --obfuscate-strings обфускация всех строковых литералов\n\
@@ -548,6 +634,12 @@ fn run(opts: Options) -> i32 {
     // Пути вывода.
     let (ll_path, exe_path) = output_paths(&opts);
 
+    if let Some(parent) = ll_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+
     if let Err(e) = std::fs::write(&ll_path, &ir) {
         eprintln!("не удалось записать `{}`: {e}", ll_path.display());
         return 2;
@@ -803,35 +895,16 @@ fn gather_sources(main: &Path, extra_protos: &[PathBuf]) -> Result<(String, Vec<
             .map_err(|e| format!("не удалось прочитать `{}`: {e}", path.display()))?;
         let dir = path.parent().unwrap_or(Path::new("."));
         for imp in scan_imports(&src) {
-            let mut resolved = dir.join(&imp);
-            if !resolved.exists() {
-                if let Ok(cwd) = std::env::current_dir() {
-                    let candidate = cwd.join(&imp);
-                    if candidate.exists() {
-                        resolved = candidate;
-                    }
-                }
-            }
-            if !resolved.exists() {
-                if let Ok(exe) = std::env::current_exe() {
-                    if let Some(exe_dir) = exe.parent() {
-                        let candidate = exe_dir.join(&imp);
-                        if candidate.exists() {
-                            resolved = candidate;
-                        } else if let Some(parent) = exe_dir.parent() {
-                            let candidate2 = parent.join(&imp);
-                            if candidate2.exists() {
-                                resolved = candidate2;
-                            }
-                        }
-                    }
-                }
-            }
-            if imp.ends_with(".h") || imp.ends_with(".hpp") {
+            let resolved = match gorawc::pkg::resolve_import(dir, &imp) {
+                Some(p) => p,
+                None => return Err(format!("не удалось найти импортируемый модуль `{imp}` (импорт из `{}`)", path.display())),
+            };
+            let resolved_str = resolved.to_string_lossy().to_string();
+            if resolved_str.ends_with(".h") || resolved_str.ends_with(".hpp") {
                 let bindings = gorawc::c_interop::generate_bindings_from_header(&resolved, "clang")
                     .map_err(|e| format!("ошибка генерации биндингов из `{}`: {e}", resolved.display()))?;
                 order.push((resolved.display().to_string(), bindings));
-            } else if imp.ends_with(".proto") {
+            } else if resolved_str.ends_with(".proto") {
                 let r_canon = std::fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
                 if seen.insert(r_canon) {
                     let proto_src = std::fs::read_to_string(&resolved)
