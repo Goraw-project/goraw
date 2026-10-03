@@ -347,18 +347,7 @@ impl Transpiler {
         }
 
         self.out.push_str(
-            "\n// Базовые скалярные псевдонимы типов Goraw\n\
-             using i8  = int8_t;\n\
-             using i16 = int16_t;\n\
-             using i32 = int32_t;\n\
-             using i64 = int64_t;\n\
-             using u8  = uint8_t;\n\
-             using u16 = uint16_t;\n\
-             using u32 = uint32_t;\n\
-             using u64 = uint64_t;\n\
-             using f32 = float;\n\
-             using f64 = double;\n\n\
-             inline void* alloc(int64_t sz) noexcept { return std::malloc(sz); }\n\
+            "\ninline void* alloc(int64_t sz) noexcept { return std::malloc(sz); }\n\
              inline void goraw_panic(const char* msg) noexcept {\n\
                  std::fprintf(stderr, \"[GORAW PANIC] %s\\n\", msg);\n\
                  std::abort();\n\
