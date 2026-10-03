@@ -7,7 +7,6 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
-#include <cassert>
 #include <ctime>
 
 inline void* alloc(int64_t sz) noexcept { return std::malloc(sz); }
@@ -89,8 +88,8 @@ int64_t solve_manhattan_mst(int64_t* orig_x, int64_t* orig_y, int64_t n);
 int64_t solve_manhattan_mst_pure_heapsort(int64_t* orig_x, int64_t* orig_y, int64_t n);
 int64_t solve_manhattan_mst_bruteforce(int64_t* orig_x, int64_t* orig_y, int64_t n);
 void benchmark_100k();
-namespace contracts { void run_all_contracts(); }
-namespace integration_tests { void run_all_tests(); }
+namespace contracts { void run_all_contracts(int64_t& __p, int64_t& __f); }
+namespace integration_tests { void run_all_tests(int64_t& __p, int64_t& __f); }
 int32_t run_all_goraw_tests();
 
 // --- Определения функций ---
@@ -788,16 +787,16 @@ void benchmark_100k() {
         }
     }
     printf("Running benchmark on N = %lld points (Hard constraint)...\n", n);
-    auto t0 = clock();
+    auto t0 = static_cast<int64_t>(std::clock());
     auto mst = solve_manhattan_mst(x, y, n);
-    auto t1 = clock();
+    auto t1 = static_cast<int64_t>(std::clock());
     auto elapsed_ms = (t1 - t0);
     printf("100,000 points MST computed successfully: Total weight = %lld in %lld ms\n", mst, elapsed_ms);
     free(((uint8_t*)(x)));
     free(((uint8_t*)(y)));
 }
 
-int32_t main(int argc, char** argv) {
+int main(int argc, char** argv) {
     #ifdef GORAW_TEST
     return run_all_goraw_tests();
     #else
@@ -843,6 +842,7 @@ int32_t main(int argc, char** argv) {
     benchmark_100k();
     printf("\nDone! Manhattan MST completed successfully.\n");
     return 0;
+    return 0;
 }
 
 // --- Деструкторы и операторы перемещения структур (RAII) ---
@@ -861,14 +861,15 @@ inline BufferGuard& BufferGuard::operator=(BufferGuard&& other) noexcept {
 
 // --- Shadow-контракты и интеграционные тесты ---
 namespace contracts {
-    inline void contract_abs_i64() {
-        assert((abs_i64(10) == 10));
-        assert((abs_i64((-42)) == 42));
-        assert((abs_i64(0) == 0));
-        assert((abs_i64(((-9223372036854775807LL) - 1)) == 9223372036854775807LL));
+    inline int64_t contract_abs_i64() {
+        if (!((abs_i64(10) == 10))) return 52;
+        if (!((abs_i64((-42)) == 42))) return 53;
+        if (!((abs_i64(0) == 0))) return 54;
+        if (!((abs_i64(((-9223372036854775807LL) - 1)) == 9223372036854775807LL))) return 55;
+        return 0;
     }
 
-    inline void contract_validate_coordinates() {
+    inline int64_t contract_validate_coordinates() {
         int64_t n = 2;
         auto x_buf = BufferGuard__new((n * sizeof(int64_t)));
         auto y_buf = BufferGuard__new((n * sizeof(int64_t)));
@@ -880,35 +881,55 @@ namespace contracts {
             x[1] = COORD_MAX;
             y[1] = COORD_MIN;
         }
-        assert((validate_coordinates(x, y, n) == true));
+        if (!((validate_coordinates(x, y, n) == true))) return 82;
         { // unsafe
             x[1] = (COORD_MAX + 1);
         }
-        assert((validate_coordinates(x, y, n) == false));
+        if (!((validate_coordinates(x, y, n) == false))) return 86;
+        return 0;
     }
 
-    inline void contract_point_greater() {
-        assert((point_greater(5, 2, 3, 10) == true));
-        assert((point_greater(3, 10, 5, 2) == false));
-        assert((point_greater(4, 7, 4, 3) == true));
-        assert((point_greater(4, 3, 4, 7) == false));
-        assert((point_greater(4, 3, 4, 3) == false));
+    inline int64_t contract_point_greater() {
+        if (!((point_greater(5, 2, 3, 10) == true))) return 97;
+        if (!((point_greater(3, 10, 5, 2) == false))) return 98;
+        if (!((point_greater(4, 7, 4, 3) == true))) return 99;
+        if (!((point_greater(4, 3, 4, 7) == false))) return 100;
+        if (!((point_greater(4, 3, 4, 3) == false))) return 101;
+        return 0;
     }
 
-    inline void run_all_contracts() {
+    inline void run_all_contracts(int64_t& __p, int64_t& __f) {
         std::printf("\n--- Shadow Contracts ---\n");
-        contract_abs_i64();
-        std::printf("[CONTRACT ok] abs_i64\n");
-        contract_validate_coordinates();
-        std::printf("[CONTRACT ok] validate_coordinates\n");
-        contract_point_greater();
-        std::printf("[CONTRACT ok] point_greater\n");
+        int64_t r_contract_abs_i64 = contract_abs_i64();
+        if (r_contract_abs_i64 != 0) {
+            std::printf("[CONTRACT FAIL] abs_i64 (line %lld)\n", (long long)r_contract_abs_i64);
+            __f += 1;
+        } else {
+            std::printf("[CONTRACT ok] abs_i64\n");
+            __p += 1;
+        }
+        int64_t r_contract_validate_coordinates = contract_validate_coordinates();
+        if (r_contract_validate_coordinates != 0) {
+            std::printf("[CONTRACT FAIL] validate_coordinates (line %lld)\n", (long long)r_contract_validate_coordinates);
+            __f += 1;
+        } else {
+            std::printf("[CONTRACT ok] validate_coordinates\n");
+            __p += 1;
+        }
+        int64_t r_contract_point_greater = contract_point_greater();
+        if (r_contract_point_greater != 0) {
+            std::printf("[CONTRACT FAIL] point_greater (line %lld)\n", (long long)r_contract_point_greater);
+            __f += 1;
+        } else {
+            std::printf("[CONTRACT ok] point_greater\n");
+            __p += 1;
+        }
     }
 
 } // namespace contracts
 
 namespace integration_tests {
-    inline void test_sample_3_points() {
+    inline int64_t test_sample_3_points() {
         int64_t n = 3;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
@@ -924,11 +945,12 @@ namespace integration_tests {
         auto bf = solve_manhattan_mst_bruteforce(x, y, n);
         free(((uint8_t*)(x)));
         free(((uint8_t*)(y)));
-        assert((mst == 5));
-        assert((bf == 5));
+        if (!((mst == 5))) return 805;
+        if (!((bf == 5))) return 806;
+        return 0;
     }
 
-    inline void test_sample_square() {
+    inline int64_t test_sample_square() {
         int64_t n = 4;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
@@ -946,11 +968,12 @@ namespace integration_tests {
         auto bf = solve_manhattan_mst_bruteforce(x, y, n);
         free(((uint8_t*)(x)));
         free(((uint8_t*)(y)));
-        assert((mst == 30));
-        assert((bf == 30));
+        if (!((mst == 30))) return 823;
+        if (!((bf == 30))) return 824;
+        return 0;
     }
 
-    inline void test_stress_random_100() {
+    inline int64_t test_stress_random_100() {
         int64_t count = 100;
         int64_t* x = ((int64_t*)(alloc((count * sizeof(int64_t)))));
         int64_t* y = ((int64_t*)(alloc((count * sizeof(int64_t)))));
@@ -967,10 +990,11 @@ namespace integration_tests {
         auto bf = solve_manhattan_mst_bruteforce(x, y, count);
         free(((uint8_t*)(x)));
         free(((uint8_t*)(y)));
-        assert((mst == bf));
+        if (!((mst == bf))) return 848;
+        return 0;
     }
 
-    inline void test_collinear_horizontal() {
+    inline int64_t test_collinear_horizontal() {
         int64_t n = 6;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
@@ -992,11 +1016,12 @@ namespace integration_tests {
         auto bf = solve_manhattan_mst_bruteforce(x, y, n);
         free(((uint8_t*)(x)));
         free(((uint8_t*)(y)));
-        assert((mst == 15));
-        assert((bf == 15));
+        if (!((mst == 15))) return 867;
+        if (!((bf == 15))) return 868;
+        return 0;
     }
 
-    inline void test_collinear_vertical() {
+    inline int64_t test_collinear_vertical() {
         int64_t n = 6;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
@@ -1018,11 +1043,12 @@ namespace integration_tests {
         auto bf = solve_manhattan_mst_bruteforce(x, y, n);
         free(((uint8_t*)(x)));
         free(((uint8_t*)(y)));
-        assert((mst == 15));
-        assert((bf == 15));
+        if (!((mst == 15))) return 887;
+        if (!((bf == 15))) return 888;
+        return 0;
     }
 
-    inline void test_collinear_diagonal_pos() {
+    inline int64_t test_collinear_diagonal_pos() {
         int64_t n = 5;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
@@ -1042,11 +1068,12 @@ namespace integration_tests {
         auto bf = solve_manhattan_mst_bruteforce(x, y, n);
         free(((uint8_t*)(x)));
         free(((uint8_t*)(y)));
-        assert((mst == 8));
-        assert((bf == 8));
+        if (!((mst == 8))) return 906;
+        if (!((bf == 8))) return 907;
+        return 0;
     }
 
-    inline void test_collinear_diagonal_neg() {
+    inline int64_t test_collinear_diagonal_neg() {
         int64_t n = 5;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
@@ -1066,11 +1093,12 @@ namespace integration_tests {
         auto bf = solve_manhattan_mst_bruteforce(x, y, n);
         free(((uint8_t*)(x)));
         free(((uint8_t*)(y)));
-        assert((mst == 8));
-        assert((bf == 8));
+        if (!((mst == 8))) return 925;
+        if (!((bf == 8))) return 926;
+        return 0;
     }
 
-    inline void test_grid_4x4() {
+    inline int64_t test_grid_4x4() {
         int64_t n = 16;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
@@ -1088,11 +1116,12 @@ namespace integration_tests {
         auto bf = solve_manhattan_mst_bruteforce(x, y, n);
         free(((uint8_t*)(x)));
         free(((uint8_t*)(y)));
-        assert((mst == 150));
-        assert((bf == 150));
+        if (!((mst == 150))) return 947;
+        if (!((bf == 150))) return 948;
+        return 0;
     }
 
-    inline void test_stress_collinear_random() {
+    inline int64_t test_stress_collinear_random() {
         int64_t count = 80;
         int64_t* x = ((int64_t*)(alloc((count * sizeof(int64_t)))));
         int64_t* y = ((int64_t*)(alloc((count * sizeof(int64_t)))));
@@ -1119,10 +1148,11 @@ namespace integration_tests {
         auto bf = solve_manhattan_mst_bruteforce(x, y, count);
         free(((uint8_t*)(x)));
         free(((uint8_t*)(y)));
-        assert((mst == bf));
+        if (!((mst == bf))) return 981;
+        return 0;
     }
 
-    inline void test_introsort_adversarial_patterns() {
+    inline int64_t test_introsort_adversarial_patterns() {
         int64_t n = 10000;
         auto buf = BufferGuard__new((n * sizeof(int64_t)));
         auto arr = ((int64_t*)(buf.ptr));
@@ -1134,10 +1164,10 @@ namespace integration_tests {
         sort_i64(arr, 0, (n - 1));
         { // unsafe
             for (auto i = 0; (i < (n - 1)); i = (i + 1)) {
-                assert((arr[i] <= arr[(i + 1)]));
+                if (!((arr[i] <= arr[(i + 1)]))) return 998;
             }
-            assert((arr[0] == 0));
-            assert((arr[(n - 1)] == (n - 1)));
+            if (!((arr[0] == 0))) return 1000;
+            if (!((arr[(n - 1)] == (n - 1)))) return 1001;
         }
         { // unsafe
             for (auto i = 0; (i < n); i = (i + 1)) {
@@ -1147,10 +1177,10 @@ namespace integration_tests {
         sort_i64(arr, 0, (n - 1));
         { // unsafe
             for (auto i = 0; (i < (n - 1)); i = (i + 1)) {
-                assert((arr[i] <= arr[(i + 1)]));
+                if (!((arr[i] <= arr[(i + 1)]))) return 1013;
             }
-            assert((arr[0] == 1));
-            assert((arr[(n - 1)] == n));
+            if (!((arr[0] == 1))) return 1015;
+            if (!((arr[(n - 1)] == n))) return 1016;
         }
         auto half = (n / 2);
         { // unsafe
@@ -1162,11 +1192,11 @@ namespace integration_tests {
         sort_i64(arr, 0, (n - 1));
         { // unsafe
             for (auto i = 0; (i < (n - 1)); i = (i + 1)) {
-                assert((arr[i] <= arr[(i + 1)]));
+                if (!((arr[i] <= arr[(i + 1)]))) return 1030;
             }
-            assert((arr[0] == 0));
-            assert((arr[1] == 0));
-            assert((arr[(n - 1)] == (half - 1)));
+            if (!((arr[0] == 0))) return 1032;
+            if (!((arr[1] == 0))) return 1033;
+            if (!((arr[(n - 1)] == (half - 1)))) return 1034;
         }
         { // unsafe
             for (auto i = 0; (i < n); i = (i + 1)) {
@@ -1176,12 +1206,13 @@ namespace integration_tests {
         sort_i64(arr, 0, (n - 1));
         { // unsafe
             for (auto i = 0; (i < n); i = (i + 1)) {
-                assert((arr[i] == 42));
+                if (!((arr[i] == 42))) return 1046;
             }
         }
+        return 0;
     }
 
-    inline void test_heapsort_points_direct_verification() {
+    inline int64_t test_heapsort_points_direct_verification() {
         int64_t n = 200;
         auto buf = BufferGuard__new((n * sizeof(Point)));
         auto pts = ((Point*)(buf.ptr));
@@ -1199,19 +1230,20 @@ namespace integration_tests {
         { // unsafe
             for (auto i = 0; (i < (n - 1)); i = (i + 1)) {
                 auto next_is_greater = point_greater(pts[(i + 1)].x, pts[(i + 1)].y, pts[i].x, pts[i].y);
-                assert((!next_is_greater));
+                if (!((!next_is_greater))) return 1076;
             }
         }
         heapsort_points(pts, 20, 150);
         { // unsafe
             for (auto i = 20; (i < 150); i = (i + 1)) {
                 auto next_is_greater = point_greater(pts[(i + 1)].x, pts[(i + 1)].y, pts[i].x, pts[i].y);
-                assert((!next_is_greater));
+                if (!((!next_is_greater))) return 1085;
             }
         }
+        return 0;
     }
 
-    inline void test_forced_pure_heapsort_mst() {
+    inline int64_t test_forced_pure_heapsort_mst() {
         int64_t count = 150;
         auto x_buf = BufferGuard__new((count * sizeof(int64_t)));
         auto y_buf = BufferGuard__new((count * sizeof(int64_t)));
@@ -1229,47 +1261,122 @@ namespace integration_tests {
         auto intro_mst = solve_manhattan_mst(x, y, count);
         auto heap_mst = solve_manhattan_mst_pure_heapsort(x, y, count);
         auto bf_mst = solve_manhattan_mst_bruteforce(x, y, count);
-        assert((heap_mst == bf_mst));
-        assert((intro_mst == heap_mst));
+        if (!((heap_mst == bf_mst))) return 1111;
+        if (!((intro_mst == heap_mst))) return 1112;
+        return 0;
     }
 
-    inline void run_all_tests() {
+    inline void run_all_tests(int64_t& __p, int64_t& __f) {
         std::printf("\n--- Integration Tests ---\n");
-        test_sample_3_points();
-        std::printf("[TEST ok] sample_3_points\n");
-        test_sample_square();
-        std::printf("[TEST ok] sample_square\n");
-        test_stress_random_100();
-        std::printf("[TEST ok] stress_random_100\n");
-        test_collinear_horizontal();
-        std::printf("[TEST ok] collinear_horizontal\n");
-        test_collinear_vertical();
-        std::printf("[TEST ok] collinear_vertical\n");
-        test_collinear_diagonal_pos();
-        std::printf("[TEST ok] collinear_diagonal_pos\n");
-        test_collinear_diagonal_neg();
-        std::printf("[TEST ok] collinear_diagonal_neg\n");
-        test_grid_4x4();
-        std::printf("[TEST ok] grid_4x4\n");
-        test_stress_collinear_random();
-        std::printf("[TEST ok] stress_collinear_random\n");
-        test_introsort_adversarial_patterns();
-        std::printf("[TEST ok] introsort_adversarial_patterns\n");
-        test_heapsort_points_direct_verification();
-        std::printf("[TEST ok] heapsort_points_direct_verification\n");
-        test_forced_pure_heapsort_mst();
-        std::printf("[TEST ok] forced_pure_heapsort_mst\n");
+        int64_t r_test_sample_3_points = test_sample_3_points();
+        if (r_test_sample_3_points != 0) {
+            std::printf("[TEST FAIL] sample_3_points (line %lld)\n", (long long)r_test_sample_3_points);
+            __f += 1;
+        } else {
+            std::printf("[TEST ok] sample_3_points\n");
+            __p += 1;
+        }
+        int64_t r_test_sample_square = test_sample_square();
+        if (r_test_sample_square != 0) {
+            std::printf("[TEST FAIL] sample_square (line %lld)\n", (long long)r_test_sample_square);
+            __f += 1;
+        } else {
+            std::printf("[TEST ok] sample_square\n");
+            __p += 1;
+        }
+        int64_t r_test_stress_random_100 = test_stress_random_100();
+        if (r_test_stress_random_100 != 0) {
+            std::printf("[TEST FAIL] stress_random_100 (line %lld)\n", (long long)r_test_stress_random_100);
+            __f += 1;
+        } else {
+            std::printf("[TEST ok] stress_random_100\n");
+            __p += 1;
+        }
+        int64_t r_test_collinear_horizontal = test_collinear_horizontal();
+        if (r_test_collinear_horizontal != 0) {
+            std::printf("[TEST FAIL] collinear_horizontal (line %lld)\n", (long long)r_test_collinear_horizontal);
+            __f += 1;
+        } else {
+            std::printf("[TEST ok] collinear_horizontal\n");
+            __p += 1;
+        }
+        int64_t r_test_collinear_vertical = test_collinear_vertical();
+        if (r_test_collinear_vertical != 0) {
+            std::printf("[TEST FAIL] collinear_vertical (line %lld)\n", (long long)r_test_collinear_vertical);
+            __f += 1;
+        } else {
+            std::printf("[TEST ok] collinear_vertical\n");
+            __p += 1;
+        }
+        int64_t r_test_collinear_diagonal_pos = test_collinear_diagonal_pos();
+        if (r_test_collinear_diagonal_pos != 0) {
+            std::printf("[TEST FAIL] collinear_diagonal_pos (line %lld)\n", (long long)r_test_collinear_diagonal_pos);
+            __f += 1;
+        } else {
+            std::printf("[TEST ok] collinear_diagonal_pos\n");
+            __p += 1;
+        }
+        int64_t r_test_collinear_diagonal_neg = test_collinear_diagonal_neg();
+        if (r_test_collinear_diagonal_neg != 0) {
+            std::printf("[TEST FAIL] collinear_diagonal_neg (line %lld)\n", (long long)r_test_collinear_diagonal_neg);
+            __f += 1;
+        } else {
+            std::printf("[TEST ok] collinear_diagonal_neg\n");
+            __p += 1;
+        }
+        int64_t r_test_grid_4x4 = test_grid_4x4();
+        if (r_test_grid_4x4 != 0) {
+            std::printf("[TEST FAIL] grid_4x4 (line %lld)\n", (long long)r_test_grid_4x4);
+            __f += 1;
+        } else {
+            std::printf("[TEST ok] grid_4x4\n");
+            __p += 1;
+        }
+        int64_t r_test_stress_collinear_random = test_stress_collinear_random();
+        if (r_test_stress_collinear_random != 0) {
+            std::printf("[TEST FAIL] stress_collinear_random (line %lld)\n", (long long)r_test_stress_collinear_random);
+            __f += 1;
+        } else {
+            std::printf("[TEST ok] stress_collinear_random\n");
+            __p += 1;
+        }
+        int64_t r_test_introsort_adversarial_patterns = test_introsort_adversarial_patterns();
+        if (r_test_introsort_adversarial_patterns != 0) {
+            std::printf("[TEST FAIL] introsort_adversarial_patterns (line %lld)\n", (long long)r_test_introsort_adversarial_patterns);
+            __f += 1;
+        } else {
+            std::printf("[TEST ok] introsort_adversarial_patterns\n");
+            __p += 1;
+        }
+        int64_t r_test_heapsort_points_direct_verification = test_heapsort_points_direct_verification();
+        if (r_test_heapsort_points_direct_verification != 0) {
+            std::printf("[TEST FAIL] heapsort_points_direct_verification (line %lld)\n", (long long)r_test_heapsort_points_direct_verification);
+            __f += 1;
+        } else {
+            std::printf("[TEST ok] heapsort_points_direct_verification\n");
+            __p += 1;
+        }
+        int64_t r_test_forced_pure_heapsort_mst = test_forced_pure_heapsort_mst();
+        if (r_test_forced_pure_heapsort_mst != 0) {
+            std::printf("[TEST FAIL] forced_pure_heapsort_mst (line %lld)\n", (long long)r_test_forced_pure_heapsort_mst);
+            __f += 1;
+        } else {
+            std::printf("[TEST ok] forced_pure_heapsort_mst\n");
+            __p += 1;
+        }
     }
 
 } // namespace integration_tests
 
 inline int32_t run_all_goraw_tests() {
+    int64_t __p = 0;
+    int64_t __f = 0;
     std::printf("============================================================\n");
     std::printf("  Running Goraw Contracts & Tests in C++23                 \n");
     std::printf("============================================================\n");
-    contracts::run_all_contracts();
-    integration_tests::run_all_tests();
-    std::printf("\n[C++23] All 15 tests PASSED successfully!\n\n");
-    return 0;
+    contracts::run_all_contracts(__p, __f);
+    integration_tests::run_all_tests(__p, __f);
+    std::printf("\n[C++23] All 15 tests finished: %lld passed, %lld failed\n\n", (long long)__p, (long long)__f);
+    return static_cast<int32_t>(__f);
 }
 

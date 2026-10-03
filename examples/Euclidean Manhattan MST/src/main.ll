@@ -8,7 +8,7 @@ target triple = "x86_64-w64-windows-gnu"
 %struct.BufferGuard = type { ptr }
 
 declare i32 @printf(ptr, ...)
-declare i64 @clock()
+declare i32 @clock()
 declare i32 @strcmp(ptr, ptr)
 declare ptr @malloc(i64)
 declare void @free(ptr)
@@ -3476,26 +3476,28 @@ fpost3:
 fend4:
   %t34 = load i64, ptr %n.1
   %t35 = call i32 (ptr, ...) @printf(ptr @.str.1, i64 %t34)
-  %t36 = call i64 @clock()
-  store i64 %t36, ptr %t0.6
-  %t37 = load ptr, ptr %x.2
-  %t38 = load ptr, ptr %y.3
-  %t39 = load i64, ptr %n.1
-  %t40 = call i64 @solve_manhattan_mst(ptr %t37, ptr %t38, i64 %t39)
-  store i64 %t40, ptr %mst.7
-  %t41 = call i64 @clock()
-  store i64 %t41, ptr %t1.8
-  %t42 = load i64, ptr %t1.8
-  %t43 = load i64, ptr %t0.6
-  %t44 = sub i64 %t42, %t43
-  store i64 %t44, ptr %elapsed_ms.9
-  %t45 = load i64, ptr %mst.7
-  %t46 = load i64, ptr %elapsed_ms.9
-  %t47 = call i32 (ptr, ...) @printf(ptr @.str.2, i64 %t45, i64 %t46)
-  %t48 = load ptr, ptr %x.2
-  call void @free(ptr %t48)
-  %t49 = load ptr, ptr %y.3
-  call void @free(ptr %t49)
+  %t36 = call i32 @clock()
+  %t37 = sext i32 %t36 to i64
+  store i64 %t37, ptr %t0.6
+  %t38 = load ptr, ptr %x.2
+  %t39 = load ptr, ptr %y.3
+  %t40 = load i64, ptr %n.1
+  %t41 = call i64 @solve_manhattan_mst(ptr %t38, ptr %t39, i64 %t40)
+  store i64 %t41, ptr %mst.7
+  %t42 = call i32 @clock()
+  %t43 = sext i32 %t42 to i64
+  store i64 %t43, ptr %t1.8
+  %t44 = load i64, ptr %t1.8
+  %t45 = load i64, ptr %t0.6
+  %t46 = sub i64 %t44, %t45
+  store i64 %t46, ptr %elapsed_ms.9
+  %t47 = load i64, ptr %mst.7
+  %t48 = load i64, ptr %elapsed_ms.9
+  %t49 = call i32 (ptr, ...) @printf(ptr @.str.2, i64 %t47, i64 %t48)
+  %t50 = load ptr, ptr %x.2
+  call void @free(ptr %t50)
+  %t51 = load ptr, ptr %y.3
+  call void @free(ptr %t51)
   ret void
 }
 
@@ -3707,6 +3709,8 @@ entry:
   %t30 = icmp eq i1 %t29, true
   br i1 %t30, label %asok1, label %asfail2
 asfail2:
+  call void @BufferGuard__drop(ptr %y_buf.5)
+  call void @BufferGuard__drop(ptr %x_buf.3)
   ret i64 82
 asok1:
   %t31 = load ptr, ptr %x.6
@@ -3720,6 +3724,8 @@ asok1:
   %t38 = icmp eq i1 %t37, false
   br i1 %t38, label %asok3, label %asfail4
 asfail4:
+  call void @BufferGuard__drop(ptr %y_buf.5)
+  call void @BufferGuard__drop(ptr %x_buf.3)
   ret i64 86
 asok3:
   call void @BufferGuard__drop(ptr %y_buf.5)
@@ -4611,6 +4617,7 @@ fbody6:
   %t34 = icmp sle i64 %t28, %t33
   br i1 %t34, label %asok9, label %asfail10
 asfail10:
+  call void @BufferGuard__drop(ptr %buf.3)
   ret i64 998
 asok9:
   br label %fpost7
@@ -4626,6 +4633,7 @@ fend8:
   %t40 = icmp eq i64 %t39, 0
   br i1 %t40, label %asok11, label %asfail12
 asfail12:
+  call void @BufferGuard__drop(ptr %buf.3)
   ret i64 1000
 asok11:
   %t41 = load ptr, ptr %arr.4
@@ -4638,6 +4646,7 @@ asok11:
   %t48 = icmp eq i64 %t45, %t47
   br i1 %t48, label %asok13, label %asfail14
 asfail14:
+  call void @BufferGuard__drop(ptr %buf.3)
   ret i64 1001
 asok13:
   store i64 0, ptr %i.7
@@ -4687,6 +4696,7 @@ fbody20:
   %t76 = icmp sle i64 %t70, %t75
   br i1 %t76, label %asok23, label %asfail24
 asfail24:
+  call void @BufferGuard__drop(ptr %buf.3)
   ret i64 1013
 asok23:
   br label %fpost21
@@ -4702,6 +4712,7 @@ fend22:
   %t82 = icmp eq i64 %t81, 1
   br i1 %t82, label %asok25, label %asfail26
 asfail26:
+  call void @BufferGuard__drop(ptr %buf.3)
   ret i64 1015
 asok25:
   %t83 = load ptr, ptr %arr.4
@@ -4713,6 +4724,7 @@ asok25:
   %t89 = icmp eq i64 %t87, %t88
   br i1 %t89, label %asok27, label %asfail28
 asfail28:
+  call void @BufferGuard__drop(ptr %buf.3)
   ret i64 1016
 asok27:
   %t90 = load i64, ptr %n.1
@@ -4771,6 +4783,7 @@ fbody34:
   %t124 = icmp sle i64 %t118, %t123
   br i1 %t124, label %asok37, label %asfail38
 asfail38:
+  call void @BufferGuard__drop(ptr %buf.3)
   ret i64 1030
 asok37:
   br label %fpost35
@@ -4786,6 +4799,7 @@ fend36:
   %t130 = icmp eq i64 %t129, 0
   br i1 %t130, label %asok39, label %asfail40
 asfail40:
+  call void @BufferGuard__drop(ptr %buf.3)
   ret i64 1032
 asok39:
   %t131 = load ptr, ptr %arr.4
@@ -4794,6 +4808,7 @@ asok39:
   %t134 = icmp eq i64 %t133, 0
   br i1 %t134, label %asok41, label %asfail42
 asfail42:
+  call void @BufferGuard__drop(ptr %buf.3)
   ret i64 1033
 asok41:
   %t135 = load ptr, ptr %arr.4
@@ -4806,6 +4821,7 @@ asok41:
   %t142 = icmp eq i64 %t139, %t141
   br i1 %t142, label %asok43, label %asfail44
 asfail44:
+  call void @BufferGuard__drop(ptr %buf.3)
   ret i64 1034
 asok43:
   store i64 0, ptr %i.12
@@ -4846,6 +4862,7 @@ fbody50:
   %t161 = icmp eq i64 %t160, 42
   br i1 %t161, label %asok53, label %asfail54
 asfail54:
+  call void @BufferGuard__drop(ptr %buf.3)
   ret i64 1046
 asok53:
   br label %fpost51
@@ -4973,6 +4990,7 @@ fbody6:
   %t67 = xor i1 %t66, true
   br i1 %t67, label %asok9, label %asfail10
 asfail10:
+  call void @BufferGuard__drop(ptr %buf.3)
   ret i64 1076
 asok9:
   br label %fpost7
@@ -5019,6 +5037,7 @@ fbody12:
   %t97 = xor i1 %t96, true
   br i1 %t97, label %asok15, label %asfail16
 asfail16:
+  call void @BufferGuard__drop(ptr %buf.3)
   ret i64 1085
 asok15:
   br label %fpost13
@@ -5127,6 +5146,8 @@ fend4:
   %t54 = icmp eq i64 %t52, %t53
   br i1 %t54, label %asok5, label %asfail6
 asfail6:
+  call void @BufferGuard__drop(ptr %y_buf.5)
+  call void @BufferGuard__drop(ptr %x_buf.3)
   ret i64 1111
 asok5:
   %t55 = load i64, ptr %intro_mst.10
@@ -5134,6 +5155,8 @@ asok5:
   %t57 = icmp eq i64 %t55, %t56
   br i1 %t57, label %asok7, label %asfail8
 asfail8:
+  call void @BufferGuard__drop(ptr %y_buf.5)
+  call void @BufferGuard__drop(ptr %x_buf.3)
   ret i64 1112
 asok7:
   call void @BufferGuard__drop(ptr %y_buf.5)

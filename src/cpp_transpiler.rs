@@ -11,8 +11,8 @@
 use crate::ast::*;
 use std::collections::{HashMap, HashSet};
 
-pub fn transpile(prog: &Program, test_mode: bool) -> Result<String, String> {
-    let mut tr = Transpiler::new(test_mode);
+pub fn transpile(prog: &Program, test_mode: bool, line_map: &[(u32, String)]) -> Result<String, String> {
+    let mut tr = Transpiler::new(test_mode, line_map);
     tr.run(prog)
 }
 
@@ -38,6 +38,8 @@ struct Transpiler {
     out: String,
     indent_level: usize,
     test_mode: bool,
+    in_test: bool,
+    line_map: Vec<(u32, String)>,
     scopes: Vec<HashMap<String, VarMeta>>,
     struct_defs: HashMap<String, StructMeta>,
     fns: HashMap<String, FnMeta>,
@@ -47,11 +49,13 @@ struct Transpiler {
 }
 
 impl Transpiler {
-    fn new(test_mode: bool) -> Self {
+    fn new(test_mode: bool, line_map: &[(u32, String)]) -> Self {
         Self {
             out: String::with_capacity(32 * 1024),
             indent_level: 0,
             test_mode,
+            in_test: false,
+            line_map: line_map.to_vec(),
             scopes: Vec::new(),
             struct_defs: HashMap::new(),
             fns: HashMap::new(),
@@ -59,6 +63,21 @@ impl Transpiler {
             needs_str: false,
             needs_slice: false,
         }
+    }
+
+    fn locate_line(&self, line: u32) -> u32 {
+        if self.line_map.is_empty() {
+            return line;
+        }
+        let mut best = &self.line_map[0];
+        for e in &self.line_map {
+            if e.0 <= line {
+                best = e;
+            } else {
+                break;
+            }
+        }
+        line.saturating_sub(best.0) + 1
     }
 
     fn indent(&self) -> String {
@@ -332,7 +351,6 @@ impl Transpiler {
              #include <cstdlib>\n\
              #include <cstdio>\n\
              #include <cstring>\n\
-             #include <cassert>\n\
              #include <ctime>\n"
         );
 
@@ -550,10 +568,10 @@ impl Transpiler {
         let has_contracts = prog.tests.iter().any(|t| t.is_shadow);
         let has_integration_tests = prog.tests.iter().any(|t| !t.is_shadow);
         if has_contracts {
-            self.write_line("namespace contracts { void run_all_contracts(); }");
+            self.write_line("namespace contracts { void run_all_contracts(int64_t& __p, int64_t& __f); }");
         }
         if has_integration_tests {
-            self.write_line("namespace integration_tests { void run_all_tests(); }");
+            self.write_line("namespace integration_tests { void run_all_tests(int64_t& __p, int64_t& __f); }");
         }
         if !prog.tests.is_empty() {
             self.write_line("int32_t run_all_goraw_tests();");
@@ -566,9 +584,13 @@ impl Transpiler {
             if f.is_extern {
                 continue;
             }
-            let ret_s = match &f.ret {
-                Some(t) => self.transpile_type(t),
-                None => "void".to_string(),
+            let ret_s = if f.name == "main" {
+                "int".to_string()
+            } else {
+                match &f.ret {
+                    Some(t) => self.transpile_type(t),
+                    None => "void".to_string(),
+                }
             };
             let mut params_s = Vec::new();
             self.scopes.clear();
@@ -609,6 +631,9 @@ impl Transpiler {
 
             if let Some(body) = &f.body {
                 self.transpile_block(body);
+            }
+            if f.name == "main" {
+                self.write_line("return 0;");
             }
             self.indent_level -= 1;
             self.write_line("}\n");
@@ -654,25 +679,46 @@ impl Transpiler {
             if has_contracts {
                 self.write_line("namespace contracts {");
                 self.indent_level += 1;
+                let mut used_names = HashSet::new();
+                let mut contracts_meta = Vec::new();
                 for t in prog.tests.iter().filter(|t| t.is_shadow) {
-                    let clean_name = sanitize_test_name(&t.name);
-                    self.write_line(&format!("inline void contract_{}() {{", clean_name));
+                    let clean = sanitize_test_name(&t.name);
+                    let mut fn_name = format!("contract_{clean}");
+                    let mut idx = 1;
+                    while !used_names.insert(fn_name.clone()) {
+                        idx += 1;
+                        fn_name = format!("contract_{clean}_{idx}");
+                    }
+                    contracts_meta.push((fn_name.clone(), t.name.clone()));
+                    self.write_line(&format!("inline int64_t {}() {{", fn_name));
                     self.indent_level += 1;
                     self.scopes.clear();
                     self.scopes.push(HashMap::new());
+                    self.in_test = true;
                     self.transpile_block(&t.body);
+                    self.in_test = false;
+                    self.write_line("return 0;");
                     self.indent_level -= 1;
                     self.write_line("}\n");
                 }
 
-                self.write_line("inline void run_all_contracts() {");
+                self.write_line("inline void run_all_contracts(int64_t& __p, int64_t& __f) {");
                 self.indent_level += 1;
                 self.write_line("std::printf(\"\\n--- Shadow Contracts ---\\n\");");
-                for t in prog.tests.iter().filter(|t| t.is_shadow) {
-                    let clean_name = sanitize_test_name(&t.name);
-                    let escaped_name = t.name.replace('\\', "\\\\").replace('"', "\\\"");
-                    self.write_line(&format!("contract_{}();", clean_name));
-                    self.write_line(&format!("std::printf(\"[CONTRACT ok] {}\\n\");", escaped_name));
+                for (fn_name, orig_name) in contracts_meta {
+                    let escaped_name = orig_name.replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%");
+                    self.write_line(&format!("int64_t r_{fn_name} = {fn_name}();"));
+                    self.write_line(&format!("if (r_{fn_name} != 0) {{"));
+                    self.indent_level += 1;
+                    self.write_line(&format!("std::printf(\"[CONTRACT FAIL] {escaped_name} (line %lld)\\n\", (long long)r_{fn_name});"));
+                    self.write_line("__f += 1;");
+                    self.indent_level -= 1;
+                    self.write_line("} else {");
+                    self.indent_level += 1;
+                    self.write_line(&format!("std::printf(\"[CONTRACT ok] {escaped_name}\\n\");"));
+                    self.write_line("__p += 1;");
+                    self.indent_level -= 1;
+                    self.write_line("}");
                 }
                 self.indent_level -= 1;
                 self.write_line("}\n");
@@ -683,25 +729,46 @@ impl Transpiler {
             if has_integration_tests {
                 self.write_line("namespace integration_tests {");
                 self.indent_level += 1;
+                let mut used_names = HashSet::new();
+                let mut tests_meta = Vec::new();
                 for t in prog.tests.iter().filter(|t| !t.is_shadow) {
-                    let clean_name = sanitize_test_name(&t.name);
-                    self.write_line(&format!("inline void test_{}() {{", clean_name));
+                    let clean = sanitize_test_name(&t.name);
+                    let mut fn_name = format!("test_{clean}");
+                    let mut idx = 1;
+                    while !used_names.insert(fn_name.clone()) {
+                        idx += 1;
+                        fn_name = format!("test_{clean}_{idx}");
+                    }
+                    tests_meta.push((fn_name.clone(), t.name.clone()));
+                    self.write_line(&format!("inline int64_t {}() {{", fn_name));
                     self.indent_level += 1;
                     self.scopes.clear();
                     self.scopes.push(HashMap::new());
+                    self.in_test = true;
                     self.transpile_block(&t.body);
+                    self.in_test = false;
+                    self.write_line("return 0;");
                     self.indent_level -= 1;
                     self.write_line("}\n");
                 }
 
-                self.write_line("inline void run_all_tests() {");
+                self.write_line("inline void run_all_tests(int64_t& __p, int64_t& __f) {");
                 self.indent_level += 1;
                 self.write_line("std::printf(\"\\n--- Integration Tests ---\\n\");");
-                for t in prog.tests.iter().filter(|t| !t.is_shadow) {
-                    let clean_name = sanitize_test_name(&t.name);
-                    let escaped_name = t.name.replace('\\', "\\\\").replace('"', "\\\"");
-                    self.write_line(&format!("test_{}();", clean_name));
-                    self.write_line(&format!("std::printf(\"[TEST ok] {}\\n\");", escaped_name));
+                for (fn_name, orig_name) in tests_meta {
+                    let escaped_name = orig_name.replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%");
+                    self.write_line(&format!("int64_t r_{fn_name} = {fn_name}();"));
+                    self.write_line(&format!("if (r_{fn_name} != 0) {{"));
+                    self.indent_level += 1;
+                    self.write_line(&format!("std::printf(\"[TEST FAIL] {escaped_name} (line %lld)\\n\", (long long)r_{fn_name});"));
+                    self.write_line("__f += 1;");
+                    self.indent_level -= 1;
+                    self.write_line("} else {");
+                    self.indent_level += 1;
+                    self.write_line(&format!("std::printf(\"[TEST ok] {escaped_name}\\n\");"));
+                    self.write_line("__p += 1;");
+                    self.indent_level -= 1;
+                    self.write_line("}");
                 }
                 self.indent_level -= 1;
                 self.write_line("}\n");
@@ -711,20 +778,22 @@ impl Transpiler {
 
             self.write_line("inline int32_t run_all_goraw_tests() {");
             self.indent_level += 1;
+            self.write_line("int64_t __p = 0;");
+            self.write_line("int64_t __f = 0;");
             self.write_line("std::printf(\"============================================================\\n\");");
             self.write_line("std::printf(\"  Running Goraw Contracts & Tests in C++23                 \\n\");");
             self.write_line("std::printf(\"============================================================\\n\");");
             if has_contracts {
-                self.write_line("contracts::run_all_contracts();");
+                self.write_line("contracts::run_all_contracts(__p, __f);");
             }
             if has_integration_tests {
-                self.write_line("integration_tests::run_all_tests();");
+                self.write_line("integration_tests::run_all_tests(__p, __f);");
             }
+            let total = prog.tests.len();
             self.write_line(&format!(
-                "std::printf(\"\\n[C++23] All {} tests PASSED successfully!\\n\\n\");",
-                prog.tests.len()
+                "std::printf(\"\\n[C++23] All {total} tests finished: %lld passed, %lld failed\\n\\n\", (long long)__p, (long long)__f);"
             ));
-            self.write_line("return 0;");
+            self.write_line("return static_cast<int32_t>(__f);");
             self.indent_level -= 1;
             self.write_line("}\n");
         }
@@ -813,7 +882,11 @@ impl Transpiler {
                         self.write_line(&format!("return {};", e_s));
                     }
                     None => {
-                        self.write_line("return;");
+                        if self.in_test {
+                            self.write_line("return 0;");
+                        } else {
+                            self.write_line("return;");
+                        }
                     }
                 }
             }
@@ -912,9 +985,10 @@ impl Transpiler {
                 self.indent_level -= 1;
                 self.write_line("}");
             }
-            Stmt::Assert(expr, _) => {
+            Stmt::Assert(expr, span) => {
                 let e_s = self.transpile_expr(expr);
-                self.write_line(&format!("assert({});", e_s));
+                let local_line = self.locate_line(span.lo.line);
+                self.write_line(&format!("if (!({e_s})) return {local_line};"));
             }
             Stmt::Match { scrut, arms, .. } => {
                 let s_s = self.transpile_expr(scrut);
@@ -1027,6 +1101,9 @@ impl Transpiler {
                 let args_s: Vec<String> = args.iter().map(|a| self.transpile_expr(a)).collect();
                 let joined = args_s.join(", ");
                 match &**callee {
+                    Expr::Ident(name, _) if name == "clock" && args.is_empty() => {
+                        "static_cast<int64_t>(std::clock())".to_string()
+                    }
                     Expr::Ident(name, _) if name == "sizeof" && args.len() == 1 => {
                         let arg_s = match &args[0] {
                             Expr::Ident(tname, _) => match tname.as_str() {

@@ -535,7 +535,7 @@ fn run(opts: Options) -> i32 {
     };
     let file = input_path.display().to_string();
     let mut diags = diag::Diags::new(file.clone(), src.clone());
-    diags.set_line_map(line_map);
+    diags.set_line_map(line_map.clone());
 
     // Лексер.
     let mut lx = lexer::Lexer::new(&src);
@@ -625,7 +625,7 @@ fn run(opts: Options) -> i32 {
     }
 
     if opts.emit_cpp {
-        let cpp_code = match gorawc::cpp_transpiler::transpile(&prog, opts.test) {
+        let cpp_code = match gorawc::cpp_transpiler::transpile(&prog, opts.test, &line_map) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("ошибка C++ трансляции: {e}");
