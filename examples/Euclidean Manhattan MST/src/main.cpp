@@ -155,6 +155,8 @@ struct BufferGuard {
         other.ptr = nullptr;
     }
     BufferGuard& operator=(BufferGuard&& other) noexcept;
+    template <typename... Args>
+    auto gw_new(this auto&& self, Args&&... args) { return BufferGuard__gw_new(self, std::forward<Args>(args)...); }
 };
 
 // --- Константы ---

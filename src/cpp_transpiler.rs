@@ -60,6 +60,8 @@ struct Transpiler {
     needs_len: bool,
     needs_try: bool,
     needs_type_traits: bool,
+    cur_fn_is_void: bool,
+    struct_methods: HashMap<String, Vec<(String, bool)>>,
 }
 
 impl Transpiler {
@@ -85,6 +87,8 @@ impl Transpiler {
             needs_len: false,
             needs_try: false,
             needs_type_traits: false,
+            cur_fn_is_void: false,
+            struct_methods: HashMap::new(),
         }
     }
 
@@ -505,6 +509,11 @@ impl Transpiler {
                 self.needs_try = true;
                 self.scan_expr(inner);
             }
+            Expr::Jit { inner, .. } => {
+                if let Some(body) = &inner.body {
+                    self.scan_block(body);
+                }
+            }
             _ => {}
         }
     }
@@ -540,6 +549,29 @@ impl Transpiler {
             let meta = FnMeta { is_ret_pointer: is_p, is_ret_str: is_s, ret_struct_name: ret_s, first_param_is_ptr: first_ptr };
             self.fns.insert(f.name.clone(), meta.clone());
             self.fns.insert(escape_fn_name(&f.name), meta);
+
+            // Сбор методов структур для поддержки Chained UFCS
+            for s in &prog.structs {
+                let prefix_colon = format!("{}::", s.name);
+                let prefix_under = format!("{}__", s.name);
+                if f.name.starts_with(&prefix_colon) {
+                    let mname = &f.name[prefix_colon.len()..];
+                    if mname != "drop" {
+                        let list = self.struct_methods.entry(s.name.clone()).or_default();
+                        if !list.iter().any(|(n, _)| n == mname) {
+                            list.push((mname.to_string(), first_ptr));
+                        }
+                    }
+                } else if f.name.starts_with(&prefix_under) {
+                    let mname = &f.name[prefix_under.len()..];
+                    if mname != "drop" && !mname.is_empty() {
+                        let list = self.struct_methods.entry(s.name.clone()).or_default();
+                        if !list.iter().any(|(n, _)| n == mname) {
+                            list.push((mname.to_string(), first_ptr));
+                        }
+                    }
+                }
+            }
         }
 
         self.scan_usage(prog);
@@ -949,6 +981,27 @@ impl Transpiler {
                     self.write_line(&format!("{}& operator=({}&& other) noexcept;", escape_ident(&s.name), escape_ident(&s.name)));
                 }
 
+                // Генерация методов-членов (Member Forwarders для поддержки Chained UFCS)
+                if let Some(methods) = self.struct_methods.get(&s.name).cloned() {
+                    for (mname, is_ptr) in methods {
+                        let fn_call = escape_fn_name(&format!("{}::{}", s.name, mname));
+                        self.write_line("template <typename... Args>");
+                        if is_ptr {
+                            self.write_line(&format!(
+                                "auto {}(this auto&& self, Args&&... args) {{ return {}(&self, std::forward<Args>(args)...); }}",
+                                escape_ident(&mname),
+                                fn_call
+                            ));
+                        } else {
+                            self.write_line(&format!(
+                                "auto {}(this auto&& self, Args&&... args) {{ return {}(self, std::forward<Args>(args)...); }}",
+                                escape_ident(&mname),
+                                fn_call
+                            ));
+                        }
+                    }
+                }
+
                 self.indent_level -= 1;
                 self.write_line("};\n");
             }
@@ -1042,6 +1095,7 @@ impl Transpiler {
                     None => "void".to_string(),
                 }
             };
+            self.cur_fn_is_void = f.ret.is_none() && f.name != "main";
             let mut params_s = Vec::new();
             self.scopes.clear();
             self.scopes.push(HashMap::new());
@@ -1512,8 +1566,57 @@ impl Transpiler {
             }
             Stmt::Asm(asm) => {
                 self.write_line("// inline asm");
-                let escaped_body = asm.body.replace('\n', "\\n\n").replace('"', "\\\"");
-                self.write_line(&format!("__asm__ volatile (\"{escaped_body}\");"));
+                let mut name_to_operand = HashMap::new();
+                let mut out_constraints = Vec::new();
+                let mut in_constraints = Vec::new();
+
+                for (i, out) in asm.outputs.iter().enumerate() {
+                    name_to_operand.insert(out.clone(), format!("%{i}"));
+                    out_constraints.push(format!("\"=r\"({})", escape_ident(out)));
+                }
+                for (j, inp) in asm.inputs.iter().enumerate() {
+                    let idx = asm.outputs.len() + j;
+                    name_to_operand.insert(inp.clone(), format!("%{idx}"));
+                    in_constraints.push(format!("\"r\"({})", escape_ident(inp)));
+                }
+
+                let mut rewritten_lines = Vec::new();
+                for line in asm.body.lines() {
+                    let line_trimmed = line.trim();
+                    if line_trimmed.starts_with(';') {
+                        continue;
+                    }
+                    let code_part = if let Some(pos) = line.find(';') {
+                        &line[..pos]
+                    } else {
+                        line
+                    };
+                    let mut cur_line = code_part.trim().to_string();
+                    for (name, op) in &name_to_operand {
+                        let pat = format!("${name}");
+                        cur_line = cur_line.replace(&pat, op);
+                    }
+                    if !cur_line.is_empty() {
+                        let escaped = cur_line.replace('\\', "\\\\").replace('"', "\\\"");
+                        rewritten_lines.push(format!("\"{escaped}\\n\\t\""));
+                    }
+                }
+
+                let out_s = out_constraints.join(", ");
+                let in_s = in_constraints.join(", ");
+
+                self.write_line("__asm__ volatile (");
+                self.indent_level += 1;
+                self.write_line("\".intel_syntax noprefix\\n\\t\"");
+                for rl in rewritten_lines {
+                    self.write_line(&rl);
+                }
+                self.write_line("\".att_syntax prefix\"");
+                self.write_line(&format!(": {out_s}"));
+                self.write_line(&format!(": {in_s}"));
+                self.write_line(": \"memory\", \"cc\"");
+                self.indent_level -= 1;
+                self.write_line(");");
             }
         }
     }
@@ -1724,12 +1827,60 @@ impl Transpiler {
                 let e_s = self.transpile_expr(expr);
                 format!("(({})({}))", ty_s, e_s)
             }
-            Expr::Jit { .. } => {
-                "/* JIT-блок не поддержан в статической трансляции */ nullptr".into()
+            Expr::Jit { captures, inner, .. } => {
+                let cap_list: Vec<String> = captures.iter().map(|(c, _)| escape_ident(c)).collect();
+                let cap_s = if cap_list.is_empty() {
+                    "=".to_string()
+                } else {
+                    cap_list.join(", ")
+                };
+                let mut param_strs = Vec::new();
+                for p in &inner.params {
+                    let ty_s = self.transpile_type(&p.ty);
+                    param_strs.push(format!("{} {}", ty_s, escape_ident(&p.name)));
+                }
+                let ret_s = match &inner.ret {
+                    Some(t) => format!(" -> {}", self.transpile_type(t)),
+                    None => String::new(),
+                };
+                let mut body_str = String::new();
+                if let Some(body) = &inner.body {
+                    let mut sub_tr = Transpiler::new(self.test_mode, &self.line_map);
+                    sub_tr.indent_level = self.indent_level + 1;
+                    sub_tr.struct_defs = self.struct_defs.clone();
+                    sub_tr.fns = self.fns.clone();
+                    sub_tr.scopes = self.scopes.clone();
+                    sub_tr.scopes.push(HashMap::new());
+                    for p in &inner.params {
+                        let is_p = matches!(&p.ty, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..));
+                        let is_s = matches!(&p.ty, TypeExpr::Named(name, ..) if name == "str");
+                        let sname = Self::extract_struct_name(&p.ty);
+                        sub_tr.insert_var(&p.name, VarMeta { is_pointer: is_p, is_str: is_s, struct_name: sname });
+                    }
+                    for stmt in &body.stmts {
+                        sub_tr.transpile_stmt(stmt);
+                    }
+                    body_str = sub_tr.out;
+                }
+                format!("[{cap_s}]({}){ret_s} {{\n{body_str}{}}}", param_strs.join(", "), self.indent())
             }
             Expr::Try(inner, ..) => {
                 let in_s = self.transpile_expr(inner);
-                format!("gw_try({})", in_s)
+                let early_ret = if self.cur_fn_is_void { "return;" } else { "return {};" };
+                format!(
+                    "({{ auto&& __try_v = ({in_s}); \
+                        bool __try_failed = [](auto&& __v) {{ \
+                            if constexpr (requires {{ __v.is_ok; }}) return !__v.is_ok; \
+                            else if constexpr (requires {{ __v.ok; }}) return !__v.ok; \
+                            else if constexpr (requires {{ __v.is_some; }}) return !__v.is_some; \
+                            else return false; \
+                        }}(__try_v); \
+                        if (__try_failed) {early_ret} \
+                        [](auto&& __v) -> auto& {{ \
+                            if constexpr (requires {{ __v.value; }}) return __v.value; \
+                            else return __v; \
+                        }}(__try_v); }})"
+                )
             }
         }
     }
