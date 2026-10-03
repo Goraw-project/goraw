@@ -612,11 +612,11 @@ int64_t solve_manhattan_mst_core(int64_t* orig_x, int64_t* orig_y, int64_t n, bo
     }
     auto pts_buf = BufferGuard__new((n * sizeof(Point)));
     Point* pts = ((Point*)(pts_buf.ptr));
-    auto z_buf = BufferGuard__new((n * sizeof(i64)));
+    auto z_buf = BufferGuard__new((n * sizeof(int64_t)));
     int64_t* z_vals = ((int64_t*)(z_buf.ptr));
-    auto bit_val_buf = BufferGuard__new(((n + 4) * sizeof(i64)));
+    auto bit_val_buf = BufferGuard__new(((n + 4) * sizeof(int64_t)));
     int64_t* bit_val = ((int64_t*)(bit_val_buf.ptr));
-    auto bit_id_buf = BufferGuard__new(((n + 4) * sizeof(i64)));
+    auto bit_id_buf = BufferGuard__new(((n + 4) * sizeof(int64_t)));
     int64_t* bit_id = ((int64_t*)(bit_id_buf.ptr));
     int64_t max_edges = ((4 * n) + 10);
     auto edges_buf = BufferGuard__new((max_edges * sizeof(Edge)));
@@ -711,9 +711,9 @@ int64_t solve_manhattan_mst_core(int64_t* orig_x, int64_t* orig_y, int64_t n, bo
             sort_edges(edges, 0, (edge_count - 1));
         }
     }
-    auto parent_buf = BufferGuard__new((n * sizeof(i64)));
+    auto parent_buf = BufferGuard__new((n * sizeof(int64_t)));
     int64_t* parent = ((int64_t*)(parent_buf.ptr));
-    auto rank_buf = BufferGuard__new((n * sizeof(i64)));
+    auto rank_buf = BufferGuard__new((n * sizeof(int64_t)));
     int64_t* rank = ((int64_t*)(rank_buf.ptr));
     { // unsafe
         for (auto i = 0; (i < n); i = (i + 1)) {
@@ -750,7 +750,7 @@ int64_t solve_manhattan_mst_bruteforce(int64_t* orig_x, int64_t* orig_y, int64_t
     if (n <= 1) {
         return 0;
     }
-    auto min_dist_buf = BufferGuard__new((n * sizeof(i64)));
+    auto min_dist_buf = BufferGuard__new((n * sizeof(int64_t)));
     int64_t* min_dist = ((int64_t*)(min_dist_buf.ptr));
     auto visited_buf = BufferGuard__new((n * sizeof(bool)));
     bool* visited = ((bool*)(visited_buf.ptr));
@@ -788,8 +788,8 @@ int64_t solve_manhattan_mst_bruteforce(int64_t* orig_x, int64_t* orig_y, int64_t
 
 void benchmark_100k() {
     int64_t n = 100000;
-    int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
-    int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
+    int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
+    int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
     int64_t rng = 987654321;
     { // unsafe
         for (auto i = 0; (i < n); i = (i + 1)) {
@@ -821,8 +821,8 @@ int32_t main(int argc, char** argv) {
     printf("  Manhattan MST - O(N log N) Algorithm in Goraw   \n");
     printf("============================================================\n\n");
     int64_t n3 = 3;
-    int64_t* x3 = ((int64_t*)(alloc((n3 * sizeof(i64)))));
-    int64_t* y3 = ((int64_t*)(alloc((n3 * sizeof(i64)))));
+    int64_t* x3 = ((int64_t*)(alloc((n3 * sizeof(int64_t)))));
+    int64_t* y3 = ((int64_t*)(alloc((n3 * sizeof(int64_t)))));
     { // unsafe
         x3[0] = 0;
         y3[0] = 0;
@@ -836,8 +836,8 @@ int32_t main(int argc, char** argv) {
     free(((uint8_t*)(x3)));
     free(((uint8_t*)(y3)));
     int64_t n4 = 4;
-    int64_t* x4 = ((int64_t*)(alloc((n4 * sizeof(i64)))));
-    int64_t* y4 = ((int64_t*)(alloc((n4 * sizeof(i64)))));
+    int64_t* x4 = ((int64_t*)(alloc((n4 * sizeof(int64_t)))));
+    int64_t* y4 = ((int64_t*)(alloc((n4 * sizeof(int64_t)))));
     { // unsafe
         x4[0] = 0;
         y4[0] = 0;
@@ -882,8 +882,8 @@ namespace contracts {
 
     inline void contract_validate_coordinates() {
         int64_t n = 2;
-        auto x_buf = BufferGuard__new((n * sizeof(i64)));
-        auto y_buf = BufferGuard__new((n * sizeof(i64)));
+        auto x_buf = BufferGuard__new((n * sizeof(int64_t)));
+        auto y_buf = BufferGuard__new((n * sizeof(int64_t)));
         auto x = ((int64_t*)(x_buf.ptr));
         auto y = ((int64_t*)(y_buf.ptr));
         { // unsafe
@@ -922,8 +922,8 @@ namespace contracts {
 namespace integration_tests {
     inline void test_sample_3_points() {
         int64_t n = 3;
-        int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
-        int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
+        int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
+        int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         { // unsafe
             x[0] = 0;
             y[0] = 0;
@@ -942,8 +942,8 @@ namespace integration_tests {
 
     inline void test_sample_square() {
         int64_t n = 4;
-        int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
-        int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
+        int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
+        int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         { // unsafe
             x[0] = 0;
             y[0] = 0;
@@ -964,8 +964,8 @@ namespace integration_tests {
 
     inline void test_stress_random_100() {
         int64_t count = 100;
-        int64_t* x = ((int64_t*)(alloc((count * sizeof(i64)))));
-        int64_t* y = ((int64_t*)(alloc((count * sizeof(i64)))));
+        int64_t* x = ((int64_t*)(alloc((count * sizeof(int64_t)))));
+        int64_t* y = ((int64_t*)(alloc((count * sizeof(int64_t)))));
         int64_t rng = 123456789;
         { // unsafe
             for (auto i = 0; (i < count); i = (i + 1)) {
@@ -984,8 +984,8 @@ namespace integration_tests {
 
     inline void test_collinear_horizontal() {
         int64_t n = 6;
-        int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
-        int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
+        int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
+        int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         { // unsafe
             x[0] = 10;
             y[0] = 5;
@@ -1010,8 +1010,8 @@ namespace integration_tests {
 
     inline void test_collinear_vertical() {
         int64_t n = 6;
-        int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
-        int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
+        int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
+        int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         { // unsafe
             x[0] = (-3);
             y[0] = 10;
@@ -1036,8 +1036,8 @@ namespace integration_tests {
 
     inline void test_collinear_diagonal_pos() {
         int64_t n = 5;
-        int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
-        int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
+        int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
+        int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         { // unsafe
             x[0] = 1;
             y[0] = 1;
@@ -1060,8 +1060,8 @@ namespace integration_tests {
 
     inline void test_collinear_diagonal_neg() {
         int64_t n = 5;
-        int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
-        int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
+        int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
+        int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         { // unsafe
             x[0] = 1;
             y[0] = (-1);
@@ -1084,8 +1084,8 @@ namespace integration_tests {
 
     inline void test_grid_4x4() {
         int64_t n = 16;
-        int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
-        int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
+        int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
+        int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         { // unsafe
             int64_t idx = 0;
             for (auto r = 0; (r < 4); r = (r + 1)) {
@@ -1106,8 +1106,8 @@ namespace integration_tests {
 
     inline void test_stress_collinear_random() {
         int64_t count = 80;
-        int64_t* x = ((int64_t*)(alloc((count * sizeof(i64)))));
-        int64_t* y = ((int64_t*)(alloc((count * sizeof(i64)))));
+        int64_t* x = ((int64_t*)(alloc((count * sizeof(int64_t)))));
+        int64_t* y = ((int64_t*)(alloc((count * sizeof(int64_t)))));
         int64_t rng = 99991;
         { // unsafe
             for (auto i = 0; (i < count); i = (i + 1)) {
@@ -1136,7 +1136,7 @@ namespace integration_tests {
 
     inline void test_introsort_adversarial_patterns() {
         int64_t n = 10000;
-        auto buf = BufferGuard__new((n * sizeof(i64)));
+        auto buf = BufferGuard__new((n * sizeof(int64_t)));
         auto arr = ((int64_t*)(buf.ptr));
         { // unsafe
             for (auto i = 0; (i < n); i = (i + 1)) {
@@ -1225,8 +1225,8 @@ namespace integration_tests {
 
     inline void test_forced_pure_heapsort_mst() {
         int64_t count = 150;
-        auto x_buf = BufferGuard__new((count * sizeof(i64)));
-        auto y_buf = BufferGuard__new((count * sizeof(i64)));
+        auto x_buf = BufferGuard__new((count * sizeof(int64_t)));
+        auto y_buf = BufferGuard__new((count * sizeof(int64_t)));
         auto x = ((int64_t*)(x_buf.ptr));
         auto y = ((int64_t*)(y_buf.ptr));
         int64_t rng = 13579;

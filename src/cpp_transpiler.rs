@@ -1039,7 +1039,23 @@ impl Transpiler {
                 let joined = args_s.join(", ");
                 match &**callee {
                     Expr::Ident(name, _) if name == "sizeof" && args.len() == 1 => {
-                        format!("sizeof({})", self.transpile_expr(&args[0]))
+                        let arg_s = match &args[0] {
+                            Expr::Ident(tname, _) => match tname.as_str() {
+                                "i8" => "int8_t".to_string(),
+                                "i16" => "int16_t".to_string(),
+                                "i32" => "int32_t".to_string(),
+                                "i64" => "int64_t".to_string(),
+                                "u8" => "uint8_t".to_string(),
+                                "u16" => "uint16_t".to_string(),
+                                "u32" => "uint32_t".to_string(),
+                                "u64" => "uint64_t".to_string(),
+                                "f32" => "float".to_string(),
+                                "f64" => "double".to_string(),
+                                other => escape_ident(other),
+                            },
+                            other => self.transpile_expr(other),
+                        };
+                        format!("sizeof({})", arg_s)
                     }
                     Expr::Field { base, field, .. } => {
                         let op = if self.is_expr_pointer(base) { "->" } else { "." };
