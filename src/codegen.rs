@@ -249,12 +249,7 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 let fn_sym = llvm_global(&f.name);
-                let ret_llvm = if f.name == "clock" && self.target_triple.contains("windows") {
-                    "i32".to_string()
-                } else {
-                    sig.ret.llvm()
-                };
-                header.push_str(&format!("declare {ret_llvm} {fn_sym}({})\n", plist));
+                header.push_str(&format!("declare {} {fn_sym}({})\n", sig.ret.llvm(), plist));
             }
         }
 
@@ -854,7 +849,7 @@ impl<'a> Codegen<'a> {
                 self.emit(format!("br i1 {c}, label %{okl}, label %{faill}"));
                 self.emit_label(&faill);
                 self.emit_drops_for_all_scopes(None);
-                let (_, local_line) = self.diags.locate(expr.span().lo.line);
+                let (_, local_line) = self.diags.locate(span.lo.line);
                 self.emit(format!("ret i64 {local_line}"));
                 self.emit_label(&okl);
             }
@@ -1803,12 +1798,7 @@ impl<'a> Codegen<'a> {
                         plist.push_str(", ...");
                     }
                 }
-                let ret_llvm = if fname == "clock" && self.target_triple.contains("windows") {
-                    "i32".to_string()
-                } else {
-                    sig.ret.llvm()
-                };
-                extern_decls.push(format!("declare {ret_llvm} @{}({})", fname, plist));
+                extern_decls.push(format!("declare {} @{}({})", sig.ret.llvm(), fname, plist));
             }
         }
         extern_decls.sort();
@@ -2242,12 +2232,6 @@ impl<'a> Codegen<'a> {
             if sig.ret == Ty::Void {
                 self.emit(format!("call void {fn_sym}({})", argvals.join(", ")));
                 ("".into(), Ty::Void)
-            } else if name == "clock" && self.target_triple.contains("windows") {
-                let t_i32 = self.fresh_tmp();
-                self.emit(format!("{t_i32} = call i32 {fn_sym}({})", argvals.join(", ")));
-                let t_i64 = self.fresh_tmp();
-                self.emit(format!("{t_i64} = sext i32 {t_i32} to i64"));
-                (t_i64, Ty::I64)
             } else {
                 let t = self.fresh_tmp();
                 self.emit(format!("{t} = call {rty} {fn_sym}({})", argvals.join(", "), rty = sig.ret.llvm()));

@@ -8,7 +8,7 @@ target triple = "x86_64-w64-windows-gnu"
 %struct.BufferGuard = type { ptr }
 
 declare i32 @printf(ptr, ...)
-declare i32 @clock()
+declare i64 @clock()
 declare i32 @strcmp(ptr, ptr)
 declare ptr @malloc(i64)
 declare void @free(ptr)
@@ -3476,28 +3476,26 @@ fpost3:
 fend4:
   %t34 = load i64, ptr %n.1
   %t35 = call i32 (ptr, ...) @printf(ptr @.str.1, i64 %t34)
-  %t36 = call i32 @clock()
-  %t37 = sext i32 %t36 to i64
-  store i64 %t37, ptr %t0.6
-  %t38 = load ptr, ptr %x.2
-  %t39 = load ptr, ptr %y.3
-  %t40 = load i64, ptr %n.1
-  %t41 = call i64 @solve_manhattan_mst(ptr %t38, ptr %t39, i64 %t40)
-  store i64 %t41, ptr %mst.7
-  %t42 = call i32 @clock()
-  %t43 = sext i32 %t42 to i64
-  store i64 %t43, ptr %t1.8
-  %t44 = load i64, ptr %t1.8
-  %t45 = load i64, ptr %t0.6
-  %t46 = sub i64 %t44, %t45
-  store i64 %t46, ptr %elapsed_ms.9
-  %t47 = load i64, ptr %mst.7
-  %t48 = load i64, ptr %elapsed_ms.9
-  %t49 = call i32 (ptr, ...) @printf(ptr @.str.2, i64 %t47, i64 %t48)
-  %t50 = load ptr, ptr %x.2
-  call void @free(ptr %t50)
-  %t51 = load ptr, ptr %y.3
-  call void @free(ptr %t51)
+  %t36 = call i64 @clock()
+  store i64 %t36, ptr %t0.6
+  %t37 = load ptr, ptr %x.2
+  %t38 = load ptr, ptr %y.3
+  %t39 = load i64, ptr %n.1
+  %t40 = call i64 @solve_manhattan_mst(ptr %t37, ptr %t38, i64 %t39)
+  store i64 %t40, ptr %mst.7
+  %t41 = call i64 @clock()
+  store i64 %t41, ptr %t1.8
+  %t42 = load i64, ptr %t1.8
+  %t43 = load i64, ptr %t0.6
+  %t44 = sub i64 %t42, %t43
+  store i64 %t44, ptr %elapsed_ms.9
+  %t45 = load i64, ptr %mst.7
+  %t46 = load i64, ptr %elapsed_ms.9
+  %t47 = call i32 (ptr, ...) @printf(ptr @.str.2, i64 %t45, i64 %t46)
+  %t48 = load ptr, ptr %x.2
+  call void @free(ptr %t48)
+  %t49 = load ptr, ptr %y.3
+  call void @free(ptr %t49)
   ret void
 }
 
