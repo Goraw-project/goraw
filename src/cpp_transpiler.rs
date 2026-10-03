@@ -450,7 +450,7 @@ impl Transpiler {
         }
 
         // 5. Полные определения структур
-        let mut destructors_to_emit: Vec<(String, String, bool)> = Vec::new();
+        let mut destructors_to_emit: Vec<(String, String, bool, Vec<Param>)> = Vec::new();
         if !prog.structs.is_empty() {
             self.write_line("// --- Определения структур ---");
             for s in &prog.structs {
@@ -477,7 +477,7 @@ impl Transpiler {
                     let is_ptr = df.params.first()
                         .map(|p| matches!(&p.ty, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..)))
                         .unwrap_or(false);
-                    destructors_to_emit.push((s.name.clone(), fn_to_call, is_ptr));
+                    destructors_to_emit.push((s.name.clone(), fn_to_call, is_ptr, s.fields.clone()));
                     self.write_line(&format!("~{}() noexcept;", escape_ident(&s.name)));
 
                     // Правило пяти (Rule of 5)
@@ -495,22 +495,7 @@ impl Transpiler {
                     self.indent_level -= 1;
                     self.write_line("}");
 
-                    self.write_line(&format!("{}& operator=({}&& other) noexcept {{", escape_ident(&s.name), escape_ident(&s.name)));
-                    self.indent_level += 1;
-                    self.write_line("if (this != &other) {");
-                    self.indent_level += 1;
-                    self.write_line(&format!("this->~{}();", escape_ident(&s.name)));
-                    for f in &s.fields {
-                        self.write_line(&format!("{} = other.{};", escape_ident(&f.name), escape_ident(&f.name)));
-                        if matches!(&f.ty, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..)) {
-                            self.write_line(&format!("other.{} = nullptr;", escape_ident(&f.name)));
-                        }
-                    }
-                    self.indent_level -= 1;
-                    self.write_line("}");
-                    self.write_line("return *this;");
-                    self.indent_level -= 1;
-                    self.write_line("}");
+                    self.write_line(&format!("{}& operator=({}&& other) noexcept;", escape_ident(&s.name), escape_ident(&s.name)));
                 }
 
                 self.indent_level -= 1;
@@ -576,8 +561,13 @@ impl Transpiler {
                 self.write_line(&format!("{} {}({});", ret_s, fn_name, plist));
             }
         }
-        if !prog.tests.is_empty() {
-            self.write_line("namespace shadow_tests { void run_all_shadow_tests(); }");
+        let has_contracts = prog.tests.iter().any(|t| t.is_shadow);
+        let has_integration_tests = prog.tests.iter().any(|t| !t.is_shadow);
+        if has_contracts {
+            self.write_line("namespace contracts { void run_all_contracts(); }");
+        }
+        if has_integration_tests {
+            self.write_line("namespace integration_tests { void run_all_tests(); }");
         }
         self.out.push('\n');
 
@@ -610,12 +600,23 @@ impl Transpiler {
             self.write_line(&format!("{} {}({}) {{", ret_s, fn_name, plist));
             self.indent_level += 1;
 
-            // Если это main и есть тесты — вызываем прогон shadow-тестов
-            if f.name == "main" && !prog.tests.is_empty() {
-                self.write_line("shadow_tests::run_all_shadow_tests();");
-                if self.test_mode {
-                    self.write_line("return 0;");
+            // Если включен режим тестов (test_mode) — прогоняем контракты и тесты и выходим.
+            // В обычном (релизном/дебажном) запуске программы тесты НЕ крутятся!
+            if f.name == "main" && !prog.tests.is_empty() && self.test_mode {
+                self.write_line("std::printf(\"============================================================\\n\");");
+                self.write_line("std::printf(\"  Running Goraw Contracts & Tests in C++23                 \\n\");");
+                self.write_line("std::printf(\"============================================================\\n\");");
+                if has_contracts {
+                    self.write_line("contracts::run_all_contracts();");
                 }
+                if has_integration_tests {
+                    self.write_line("integration_tests::run_all_tests();");
+                }
+                self.write_line(&format!(
+                    "std::printf(\"\\n[C++23] All {} tests PASSED successfully!\\n\\n\");",
+                    prog.tests.len()
+                ));
+                self.write_line("return 0;");
             }
 
             if let Some(body) = &f.body {
@@ -625,56 +626,100 @@ impl Transpiler {
             self.write_line("}\n");
         }
 
-        // 10. Деструкторы структур (RAII)
+        // 10. Деструкторы и операторы перемещения структур (RAII)
         if !destructors_to_emit.is_empty() {
-            self.write_line("// --- Деструкторы структур (RAII) ---");
-            for (struct_name, fn_name, is_ptr) in &destructors_to_emit {
-                let arg = if *is_ptr { "this" } else { "*this" };
+            self.write_line("// --- Деструкторы и операторы перемещения структур (RAII) ---");
+            for (struct_name, fn_name, is_ptr, fields) in &destructors_to_emit {
+                let s_id = escape_ident(struct_name);
+                let drop_arg = if *is_ptr { "this" } else { "*this" };
                 self.write_line(&format!(
                     "inline {}::~{}() noexcept {{\n    {}({});\n}}",
-                    escape_ident(struct_name),
-                    escape_ident(struct_name),
+                    s_id,
+                    s_id,
                     escape_fn_name(fn_name),
-                    arg
+                    drop_arg
                 ));
+
+                self.write_line(&format!("inline {}& {}::operator=({}&& other) noexcept {{", s_id, s_id, s_id));
+                self.indent_level += 1;
+                self.write_line("if (this != &other) {");
+                self.indent_level += 1;
+                self.write_line(&format!("{}({});", escape_fn_name(fn_name), drop_arg));
+                for f in fields {
+                    self.write_line(&format!("{} = other.{};", escape_ident(&f.name), escape_ident(&f.name)));
+                    if matches!(&f.ty, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..)) {
+                        self.write_line(&format!("other.{} = nullptr;", escape_ident(&f.name)));
+                    }
+                }
+                self.indent_level -= 1;
+                self.write_line("}");
+                self.write_line("return *this;");
+                self.indent_level -= 1;
+                self.write_line("}\n");
             }
             self.out.push('\n');
         }
 
-        // 11. Shadow-тесты и контракты
+        // 11. Shadow-контракты и интеграционные тесты
         if !prog.tests.is_empty() {
-            self.write_line("// --- Shadow-тесты и встроенные контракты ---");
-            self.write_line("namespace shadow_tests {");
-            self.indent_level += 1;
-            for (idx, t) in prog.tests.iter().enumerate() {
-                self.write_line(&format!("inline void test_{}() {{", idx));
+            self.write_line("// --- Shadow-контракты и интеграционные тесты ---");
+            if has_contracts {
+                self.write_line("namespace contracts {");
                 self.indent_level += 1;
-                self.scopes.clear();
-                self.scopes.push(HashMap::new());
-                self.transpile_block(&t.body);
+                for t in prog.tests.iter().filter(|t| t.is_shadow) {
+                    let clean_name = sanitize_test_name(&t.name);
+                    self.write_line(&format!("inline void contract_{}() {{", clean_name));
+                    self.indent_level += 1;
+                    self.scopes.clear();
+                    self.scopes.push(HashMap::new());
+                    self.transpile_block(&t.body);
+                    self.indent_level -= 1;
+                    self.write_line("}\n");
+                }
+
+                self.write_line("inline void run_all_contracts() {");
+                self.indent_level += 1;
+                self.write_line("std::printf(\"\\n--- Shadow Contracts ---\\n\");");
+                for t in prog.tests.iter().filter(|t| t.is_shadow) {
+                    let clean_name = sanitize_test_name(&t.name);
+                    let escaped_name = t.name.replace('\\', "\\\\").replace('"', "\\\"");
+                    self.write_line(&format!("contract_{}();", clean_name));
+                    self.write_line(&format!("std::printf(\"[CONTRACT ok] {}\\n\");", escaped_name));
+                }
                 self.indent_level -= 1;
                 self.write_line("}\n");
+                self.indent_level -= 1;
+                self.write_line("} // namespace contracts\n");
             }
 
-            self.write_line("inline void run_all_shadow_tests() {");
-            self.indent_level += 1;
-            self.write_line("std::printf(\"============================================================\\n\");");
-            self.write_line("std::printf(\"  Running Goraw Shadow Tests & Contracts in C++23          \\n\");");
-            self.write_line("std::printf(\"============================================================\\n\");");
-            for (idx, t) in prog.tests.iter().enumerate() {
-                let escaped_name = t.name.replace('\\', "\\\\").replace('"', "\\\"");
-                self.write_line(&format!("test_{}();", idx));
-                self.write_line(&format!("std::printf(\"[ ok ] {}\\n\");", escaped_name));
-            }
-            self.write_line(&format!(
-                "std::printf(\"\\n[C++23] All {} shadow tests PASSED successfully!\\n\\n\");",
-                prog.tests.len()
-            ));
-            self.indent_level -= 1;
-            self.write_line("}");
+            if has_integration_tests {
+                self.write_line("namespace integration_tests {");
+                self.indent_level += 1;
+                for t in prog.tests.iter().filter(|t| !t.is_shadow) {
+                    let clean_name = sanitize_test_name(&t.name);
+                    self.write_line(&format!("inline void test_{}() {{", clean_name));
+                    self.indent_level += 1;
+                    self.scopes.clear();
+                    self.scopes.push(HashMap::new());
+                    self.transpile_block(&t.body);
+                    self.indent_level -= 1;
+                    self.write_line("}\n");
+                }
 
-            self.indent_level -= 1;
-            self.write_line("} // namespace shadow_tests\n");
+                self.write_line("inline void run_all_tests() {");
+                self.indent_level += 1;
+                self.write_line("std::printf(\"\\n--- Integration Tests ---\\n\");");
+                for t in prog.tests.iter().filter(|t| !t.is_shadow) {
+                    let clean_name = sanitize_test_name(&t.name);
+                    let escaped_name = t.name.replace('\\', "\\\\").replace('"', "\\\"");
+                    self.write_line(&format!("test_{}();", clean_name));
+                    self.write_line(&format!("std::printf(\"[TEST ok] {}\\n\");", escaped_name));
+                }
+                self.indent_level -= 1;
+                self.write_line("}\n");
+                self.indent_level -= 1;
+                self.write_line("} // namespace integration_tests\n");
+            }
         }
 
         Ok(std::mem::take(&mut self.out))
@@ -1086,3 +1131,27 @@ fn unparen(s: &str) -> &str {
     }
     t
 }
+
+/// Санитизация имени теста в валидный идентификатор C++ и LLVM IR
+pub fn sanitize_test_name(name: &str) -> String {
+    let mut res = String::new();
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            res.push(c);
+        } else {
+            res.push('_');
+        }
+    }
+    while res.contains("__") {
+        res = res.replace("__", "_");
+    }
+    let res = res.trim_matches('_');
+    if res.is_empty() {
+        "unnamed".to_string()
+    } else if res.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        format!("t_{res}")
+    } else {
+        res.to_string()
+    }
+}
+

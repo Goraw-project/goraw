@@ -215,10 +215,10 @@ impl<'a> Codegen<'a> {
         }
 
         // extern-объявления.
-        let mut emitted_externs = HashSet::new();
+        let mut emitted_externs: HashSet<String> = HashSet::new();
         for f in &prog.fns {
             if f.is_extern {
-                if !emitted_externs.insert(&f.name) {
+                if !emitted_externs.insert(f.name.clone()) {
                     continue;
                 }
                 let sig = &self.ctx.fns[&f.name];
@@ -236,11 +236,18 @@ impl<'a> Codegen<'a> {
             }
         }
 
-
         // Объявления использованных интринзиков (в стабильном порядке).
         let mut intr: Vec<&String> = self.intrinsics.iter().collect();
         intr.sort();
         for d in intr {
+            if d.starts_with("declare ") {
+                if let Some(fn_part) = d.split('@').nth(1) {
+                    let fn_name = fn_part.split('(').next().unwrap_or("").trim();
+                    if !emitted_externs.insert(fn_name.to_string()) {
+                        continue;
+                    }
+                }
+            }
             header.push_str(d);
             header.push('\n');
         }
@@ -310,16 +317,8 @@ impl<'a> Codegen<'a> {
             params_sig.push(format!("{} {arg_ident}", pty.llvm()));
         }
         let fn_sym = llvm_global(&f.name);
-        let inline_attr = if f.name != "main" && !f.is_test {
-            if let Some(body) = &f.body {
-                if body.stmts.len() <= 6 {
-                    " alwaysinline"
-                } else {
-                    " inlinehint"
-                }
-            } else {
-                ""
-            }
+        let inline_attr = if is_leaf_trivial_fn(f) {
+            " alwaysinline"
         } else {
             ""
         };
@@ -2055,6 +2054,21 @@ impl<'a> Codegen<'a> {
             if let Ty::FnPtr(params, ret) = local.ty {
                 return self.gen_indirect_call(&name, &local.slot, &params, &ret, args, span);
             }
+        }
+        if name == "clock" && args.is_empty() {
+            let res = self.fresh_tmp();
+            self.intrinsics.insert("declare i64 @clock()".to_string());
+            if self.target_triple.contains("windows") {
+                self.intrinsics.insert(
+                    "define i64 @gw_clock_ms() alwaysinline {\nentry:\n  %c = call i64 @clock()\n  ret i64 %c\n}".to_string(),
+                );
+            } else {
+                self.intrinsics.insert(
+                    "define i64 @gw_clock_ms() alwaysinline {\nentry:\n  %c = call i64 @clock()\n  %ms = sdiv i64 %c, 1000\n  ret i64 %ms\n}".to_string(),
+                );
+            }
+            self.emit(format!("{res} = call i64 @gw_clock_ms()"));
+            return (res, Ty::I64);
         }
 
         let sig = match self.ctx.fns.get(&name) {
@@ -3915,6 +3929,86 @@ loop:
 exit:
   ret ptr %buf
 }"#;
+
+fn is_leaf_trivial_fn(f: &FnDef) -> bool {
+    if f.name == "main" || f.is_test || f.is_extern {
+        return false;
+    }
+    let Some(body) = &f.body else { return false; };
+
+    fn inspect_block(b: &Block, fn_name: &str) -> (usize, bool) {
+        let mut count = 0;
+        let mut has_loop_or_call = false;
+        for s in &b.stmts {
+            count += 1;
+            match s {
+                Stmt::While { body, .. } | Stmt::For { body, .. } | Stmt::ForIn { body, .. } => {
+                    has_loop_or_call = true;
+                    let (c, _) = inspect_block(body, fn_name);
+                    count += c;
+                }
+                Stmt::If { cond, then, els, .. } => {
+                    if expr_calls_other(cond, fn_name) { has_loop_or_call = true; }
+                    let (c1, h1) = inspect_block(then, fn_name);
+                    count += c1;
+                    if h1 { has_loop_or_call = true; }
+                    if let Some(e) = els {
+                        let (c2, h2) = inspect_block(e, fn_name);
+                        count += c2;
+                        if h2 { has_loop_or_call = true; }
+                    }
+                }
+                Stmt::Unsafe(ub, _) => {
+                    let (c, h) = inspect_block(ub, fn_name);
+                    count += c;
+                    if h { has_loop_or_call = true; }
+                }
+                Stmt::Match { arms, .. } => {
+                    for (_, mb) in arms {
+                        let (c, h) = inspect_block(mb, fn_name);
+                        count += c;
+                        if h { has_loop_or_call = true; }
+                    }
+                }
+                Stmt::Expr(e) | Stmt::Return(Some(e), _) | Stmt::Let { value: e, .. } | Stmt::Assign { value: e, .. } => {
+                    if expr_calls_other(e, fn_name) {
+                        has_loop_or_call = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        (count, has_loop_or_call)
+    }
+
+    fn expr_calls_other(expr: &Expr, fn_name: &str) -> bool {
+        match expr {
+            Expr::Call { callee, args, .. } => {
+                if let Expr::Ident(name, _) = &**callee {
+                    if name == fn_name || (!matches!(name.as_str(), "alloc" | "free" | "realloc" | "sizeof" | "clock" | "gw_clock_ms")) {
+                        return true;
+                    }
+                } else {
+                    return true;
+                }
+                for a in args {
+                    if expr_calls_other(a, fn_name) {
+                        return true;
+                    }
+                }
+                false
+            }
+            Expr::Binary { lhs, rhs, .. } => {
+                expr_calls_other(lhs, fn_name) || expr_calls_other(rhs, fn_name)
+            }
+            Expr::Unary { expr, .. } => expr_calls_other(expr, fn_name),
+            _ => false,
+        }
+    }
+
+    let (total_stmts, has_loop_or_call) = inspect_block(body, &f.name);
+    !has_loop_or_call && total_stmts <= 6
+}
 
 #[cfg(test)]
 mod tests {

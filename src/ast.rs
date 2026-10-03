@@ -106,6 +106,7 @@ pub struct InlineCBlock {
 #[derive(Clone, Debug)]
 pub struct TestDef {
     pub name: String,
+    pub is_shadow: bool,
     pub body: Block,
     pub span: Span,
 }

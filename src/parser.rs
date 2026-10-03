@@ -256,6 +256,10 @@ impl<'a> Parser<'a> {
 
     fn parse_test(&mut self) -> P<TestDef> {
         let start = self.span();
+        let is_shadow = match self.peek() {
+            Tok::Ident(s) if s == "shadow" => true,
+            _ => false,
+        };
         self.bump(); // `test` или `shadow`
         let name = match self.peek().clone() {
             Tok::Str(s) => {
@@ -272,7 +276,7 @@ impl<'a> Parser<'a> {
             }
         };
         let body = self.parse_block()?;
-        Some(TestDef { name, body, span: start.to(self.prev_span()) })
+        Some(TestDef { name, is_shadow, body, span: start.to(self.prev_span()) })
     }
 
     fn parse_enum(&mut self) -> P<EnumDef> {

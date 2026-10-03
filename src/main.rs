@@ -624,11 +624,6 @@ fn run(opts: Options) -> i32 {
         }
     }
 
-    // Режим тестов: превращаем test-блоки в функции и генерируем harness-main.
-    if opts.test {
-        transform_tests(&mut prog);
-    }
-
     if opts.emit_cpp {
         let cpp_code = match gorawc::cpp_transpiler::transpile(&prog, opts.test) {
             Ok(s) => s,
@@ -710,6 +705,11 @@ fn run(opts: Options) -> i32 {
         if !opts.emit_llvm {
             return 0;
         }
+    }
+
+    // Режим тестов для LLVM IR: превращаем test-блоки в функции и генерируем harness-main.
+    if opts.test {
+        transform_tests(&mut prog);
     }
 
     // Сбор типов (первый проход).
@@ -903,9 +903,8 @@ fn run(opts: Options) -> i32 {
 }
 
 /// Преобразует программу под `--test`: каждый `test`-блок → функция
-/// `__test_N() -> i64` (0 = ок, иначе номер строки упавшего assert), плюс
-/// сгенерированный `main`, который прогоняет тесты и печатает отчёт. Тесты не
-/// попадают в обычную сборку (это «shadow»-тесты) — трансформация только здесь.
+/// `__test_<name>() -> i64` или `__shadow_<name>() -> i64` (0 = ок, иначе номер строки упавшего assert), плюс
+/// сгенерированный `main`, который прогоняет тесты и печатает структурированный отчёт.
 fn transform_tests(prog: &mut ast::Program) {
     use ast::*;
     let dummy = diag::Span::dummy();
@@ -915,9 +914,16 @@ fn transform_tests(prog: &mut ast::Program) {
     let user_has_printf = fns.iter().any(|f| f.name == "printf");
 
     let tests = std::mem::take(&mut prog.tests);
-    for (i, t) in tests.iter().enumerate() {
+    let mut test_meta = Vec::new();
+
+    for t in &tests {
+        let prefix = if t.is_shadow { "__shadow" } else { "__test" };
+        let clean = gorawc::cpp_transpiler::sanitize_test_name(&t.name);
+        let fn_name = format!("{prefix}_{clean}");
+        test_meta.push((fn_name.clone(), t.name.clone(), t.is_shadow));
+
         fns.push(FnDef {
-            name: format!("__test_{i}"),
+            name: fn_name,
             type_params: Vec::new(),
             params: Vec::new(),
             variadic: false,
@@ -937,14 +943,36 @@ fn transform_tests(prog: &mut ast::Program) {
     }
     hs.push_str("fn main() -> i32 {\n");
     hs.push_str("    let mut __p: i64 = 0;\n    let mut __f: i64 = 0;\n");
-    for (i, t) in tests.iter().enumerate() {
-        let name = t.name.replace('\\', "\\\\").replace('"', "\\\"");
-        hs.push_str(&format!("    let r{i} = __test_{i}();\n"));
-        hs.push_str(&format!(
-            "    if r{i} != 0 {{ printf(\"[FAIL] %s (строка %lld)\\n\", \"{name}\", r{i}); __f += 1; }} else {{ printf(\"[ ok ] %s\\n\", \"{name}\"); __p += 1; }}\n"
-        ));
+    hs.push_str("    printf(\"============================================================\\n\");\n");
+    hs.push_str("    printf(\"  Running Goraw Contracts & Tests in LLVM IR                \\n\");\n");
+    hs.push_str("    printf(\"============================================================\\n\");\n");
+
+    let contracts: Vec<_> = test_meta.iter().filter(|(_, _, is_s)| *is_s).collect();
+    let unit_tests: Vec<_> = test_meta.iter().filter(|(_, _, is_s)| !*is_s).collect();
+
+    if !contracts.is_empty() {
+        hs.push_str("    printf(\"\\n--- Shadow Contracts ---\\n\");\n");
+        for (fn_name, name, _) in contracts {
+            let esc_name = name.replace('\\', "\\\\").replace('"', "\\\"");
+            hs.push_str(&format!("    let r_{fn_name} = {fn_name}();\n"));
+            hs.push_str(&format!(
+                "    if r_{fn_name} != 0 {{ printf(\"[CONTRACT FAIL] %s (line %lld)\\n\", \"{esc_name}\", r_{fn_name}); __f += 1; }} else {{ printf(\"[CONTRACT ok] %s\\n\", \"{esc_name}\"); __p += 1; }}\n"
+            ));
+        }
     }
-    hs.push_str("    printf(\"\\n%lld passed, %lld failed\\n\", __p, __f);\n");
+
+    if !unit_tests.is_empty() {
+        hs.push_str("    printf(\"\\n--- Integration Tests ---\\n\");\n");
+        for (fn_name, name, _) in unit_tests {
+            let esc_name = name.replace('\\', "\\\\").replace('"', "\\\"");
+            hs.push_str(&format!("    let r_{fn_name} = {fn_name}();\n"));
+            hs.push_str(&format!(
+                "    if r_{fn_name} != 0 {{ printf(\"[TEST FAIL] %s (line %lld)\\n\", \"{esc_name}\", r_{fn_name}); __f += 1; }} else {{ printf(\"[TEST ok] %s\\n\", \"{esc_name}\"); __p += 1; }}\n"
+            ));
+        }
+    }
+
+    hs.push_str("    printf(\"\\nAll tests finished: %lld passed, %lld failed\\n\", __p, __f);\n");
     hs.push_str("    return __f as i32;\n}\n");
 
     let mut hdiags = diag::Diags::new("<test-harness>", hs.clone());

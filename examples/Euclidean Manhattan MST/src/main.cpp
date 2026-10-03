@@ -70,14 +70,7 @@ struct BufferGuard {
     constexpr BufferGuard(BufferGuard&& other) noexcept : ptr(other.ptr) {
         other.ptr = nullptr;
     }
-    BufferGuard& operator=(BufferGuard&& other) noexcept {
-        if (this != &other) {
-            this->~BufferGuard();
-            ptr = other.ptr;
-            other.ptr = nullptr;
-        }
-        return *this;
-    }
+    BufferGuard& operator=(BufferGuard&& other) noexcept;
 };
 
 // --- Константы ---
@@ -116,7 +109,8 @@ int64_t solve_manhattan_mst_pure_heapsort(int64_t* orig_x, int64_t* orig_y, int6
 int64_t solve_manhattan_mst_bruteforce(int64_t* orig_x, int64_t* orig_y, int64_t n);
 void benchmark_100k();
 int32_t main();
-namespace shadow_tests { void run_all_shadow_tests(); }
+namespace contracts { void run_all_contracts(); }
+namespace integration_tests { void run_all_tests(); }
 
 // --- Определения функций ---
 BufferGuard BufferGuard__new(int64_t sz) {
@@ -823,7 +817,6 @@ void benchmark_100k() {
 }
 
 int32_t main() {
-    shadow_tests::run_all_shadow_tests();
     printf("============================================================\n");
     printf("  Manhattan MST - O(N log N) Algorithm in Goraw   \n");
     printf("============================================================\n\n");
@@ -864,21 +857,30 @@ int32_t main() {
     return 0;
 }
 
-// --- Деструкторы структур (RAII) ---
+// --- Деструкторы и операторы перемещения структур (RAII) ---
 inline BufferGuard::~BufferGuard() noexcept {
     BufferGuard__drop(this);
 }
+inline BufferGuard& BufferGuard::operator=(BufferGuard&& other) noexcept {
+    if (this != &other) {
+        BufferGuard__drop(this);
+        ptr = other.ptr;
+        other.ptr = nullptr;
+    }
+    return *this;
+}
 
-// --- Shadow-тесты и встроенные контракты ---
-namespace shadow_tests {
-    inline void test_0() {
+
+// --- Shadow-контракты и интеграционные тесты ---
+namespace contracts {
+    inline void contract_abs_i64() {
         assert((abs_i64(10) == 10));
         assert((abs_i64((-42)) == 42));
         assert((abs_i64(0) == 0));
         assert((abs_i64(((-9223372036854775807LL) - 1)) == 9223372036854775807LL));
     }
 
-    inline void test_1() {
+    inline void contract_validate_coordinates() {
         int64_t n = 2;
         auto x_buf = BufferGuard__new((n * sizeof(i64)));
         auto y_buf = BufferGuard__new((n * sizeof(i64)));
@@ -897,7 +899,7 @@ namespace shadow_tests {
         assert((validate_coordinates(x, y, n) == false));
     }
 
-    inline void test_2() {
+    inline void contract_point_greater() {
         assert((point_greater(5, 2, 3, 10) == true));
         assert((point_greater(3, 10, 5, 2) == false));
         assert((point_greater(4, 7, 4, 3) == true));
@@ -905,7 +907,20 @@ namespace shadow_tests {
         assert((point_greater(4, 3, 4, 3) == false));
     }
 
-    inline void test_3() {
+    inline void run_all_contracts() {
+        std::printf("\n--- Shadow Contracts ---\n");
+        contract_abs_i64();
+        std::printf("[CONTRACT ok] abs_i64\n");
+        contract_validate_coordinates();
+        std::printf("[CONTRACT ok] validate_coordinates\n");
+        contract_point_greater();
+        std::printf("[CONTRACT ok] point_greater\n");
+    }
+
+} // namespace contracts
+
+namespace integration_tests {
+    inline void test_sample_3_points() {
         int64_t n = 3;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
@@ -925,7 +940,7 @@ namespace shadow_tests {
         assert((bf == 5));
     }
 
-    inline void test_4() {
+    inline void test_sample_square() {
         int64_t n = 4;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
@@ -947,7 +962,7 @@ namespace shadow_tests {
         assert((bf == 30));
     }
 
-    inline void test_5() {
+    inline void test_stress_random_100() {
         int64_t count = 100;
         int64_t* x = ((int64_t*)(alloc((count * sizeof(i64)))));
         int64_t* y = ((int64_t*)(alloc((count * sizeof(i64)))));
@@ -967,7 +982,7 @@ namespace shadow_tests {
         assert((mst == bf));
     }
 
-    inline void test_6() {
+    inline void test_collinear_horizontal() {
         int64_t n = 6;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
@@ -993,7 +1008,7 @@ namespace shadow_tests {
         assert((bf == 15));
     }
 
-    inline void test_7() {
+    inline void test_collinear_vertical() {
         int64_t n = 6;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
@@ -1019,7 +1034,7 @@ namespace shadow_tests {
         assert((bf == 15));
     }
 
-    inline void test_8() {
+    inline void test_collinear_diagonal_pos() {
         int64_t n = 5;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
@@ -1043,7 +1058,7 @@ namespace shadow_tests {
         assert((bf == 8));
     }
 
-    inline void test_9() {
+    inline void test_collinear_diagonal_neg() {
         int64_t n = 5;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
@@ -1067,7 +1082,7 @@ namespace shadow_tests {
         assert((bf == 8));
     }
 
-    inline void test_10() {
+    inline void test_grid_4x4() {
         int64_t n = 16;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
@@ -1089,7 +1104,7 @@ namespace shadow_tests {
         assert((bf == 150));
     }
 
-    inline void test_11() {
+    inline void test_stress_collinear_random() {
         int64_t count = 80;
         int64_t* x = ((int64_t*)(alloc((count * sizeof(i64)))));
         int64_t* y = ((int64_t*)(alloc((count * sizeof(i64)))));
@@ -1119,7 +1134,7 @@ namespace shadow_tests {
         assert((mst == bf));
     }
 
-    inline void test_12() {
+    inline void test_introsort_adversarial_patterns() {
         int64_t n = 10000;
         auto buf = BufferGuard__new((n * sizeof(i64)));
         auto arr = ((int64_t*)(buf.ptr));
@@ -1178,7 +1193,7 @@ namespace shadow_tests {
         }
     }
 
-    inline void test_13() {
+    inline void test_heapsort_points_direct_verification() {
         int64_t n = 200;
         auto buf = BufferGuard__new((n * sizeof(Point)));
         auto pts = ((Point*)(buf.ptr));
@@ -1208,7 +1223,7 @@ namespace shadow_tests {
         }
     }
 
-    inline void test_14() {
+    inline void test_forced_pure_heapsort_mst() {
         int64_t count = 150;
         auto x_buf = BufferGuard__new((count * sizeof(i64)));
         auto y_buf = BufferGuard__new((count * sizeof(i64)));
@@ -1230,41 +1245,33 @@ namespace shadow_tests {
         assert((intro_mst == heap_mst));
     }
 
-    inline void run_all_shadow_tests() {
-        std::printf("============================================================\n");
-        std::printf("  Running Goraw Shadow Tests & Contracts in C++23          \n");
-        std::printf("============================================================\n");
-        test_0();
-        std::printf("[ ok ] abs_i64\n");
-        test_1();
-        std::printf("[ ok ] validate_coordinates\n");
-        test_2();
-        std::printf("[ ok ] point_greater\n");
-        test_3();
-        std::printf("[ ok ] sample_3_points\n");
-        test_4();
-        std::printf("[ ok ] sample_square\n");
-        test_5();
-        std::printf("[ ok ] stress_random_100\n");
-        test_6();
-        std::printf("[ ok ] collinear_horizontal\n");
-        test_7();
-        std::printf("[ ok ] collinear_vertical\n");
-        test_8();
-        std::printf("[ ok ] collinear_diagonal_pos\n");
-        test_9();
-        std::printf("[ ok ] collinear_diagonal_neg\n");
-        test_10();
-        std::printf("[ ok ] grid_4x4\n");
-        test_11();
-        std::printf("[ ok ] stress_collinear_random\n");
-        test_12();
-        std::printf("[ ok ] introsort_adversarial_patterns\n");
-        test_13();
-        std::printf("[ ok ] heapsort_points_direct_verification\n");
-        test_14();
-        std::printf("[ ok ] forced_pure_heapsort_mst\n");
-        std::printf("\n[C++23] All 15 shadow tests PASSED successfully!\n\n");
+    inline void run_all_tests() {
+        std::printf("\n--- Integration Tests ---\n");
+        test_sample_3_points();
+        std::printf("[TEST ok] sample_3_points\n");
+        test_sample_square();
+        std::printf("[TEST ok] sample_square\n");
+        test_stress_random_100();
+        std::printf("[TEST ok] stress_random_100\n");
+        test_collinear_horizontal();
+        std::printf("[TEST ok] collinear_horizontal\n");
+        test_collinear_vertical();
+        std::printf("[TEST ok] collinear_vertical\n");
+        test_collinear_diagonal_pos();
+        std::printf("[TEST ok] collinear_diagonal_pos\n");
+        test_collinear_diagonal_neg();
+        std::printf("[TEST ok] collinear_diagonal_neg\n");
+        test_grid_4x4();
+        std::printf("[TEST ok] grid_4x4\n");
+        test_stress_collinear_random();
+        std::printf("[TEST ok] stress_collinear_random\n");
+        test_introsort_adversarial_patterns();
+        std::printf("[TEST ok] introsort_adversarial_patterns\n");
+        test_heapsort_points_direct_verification();
+        std::printf("[TEST ok] heapsort_points_direct_verification\n");
+        test_forced_pure_heapsort_mst();
+        std::printf("[TEST ok] forced_pure_heapsort_mst\n");
     }
-} // namespace shadow_tests
+
+} // namespace integration_tests
 

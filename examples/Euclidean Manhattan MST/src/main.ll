@@ -11,6 +11,11 @@ declare i32 @printf(ptr, ...)
 declare i64 @clock()
 declare ptr @malloc(i64)
 declare void @free(ptr)
+define i64 @gw_clock_ms() alwaysinline {
+entry:
+  %c = call i64 @clock()
+  ret i64 %c
+}
 
 @.str.0 = private unnamed_addr constant [57 x i8] c"[ERROR] Coordinates out of supported range [%lld, %lld]\0A\00"
 @.str.1 = private unnamed_addr constant [59 x i8] c"Running benchmark on N = %lld points (Hard constraint)...\0A\00"
@@ -84,7 +89,7 @@ endif4:
   ret i64 %t9
 }
 
-define i1 @validate_coordinates(ptr %arg.orig_x, ptr %arg.orig_y, i64 %arg.n) alwaysinline {
+define i1 @validate_coordinates(ptr %arg.orig_x, ptr %arg.orig_y, i64 %arg.n) {
 entry:
   %orig_x.1 = alloca ptr
   %orig_y.2 = alloca ptr
@@ -181,7 +186,7 @@ endif2:
   ret i1 %t9
 }
 
-define i64 @calc_max_depth(i64 %arg.n) alwaysinline {
+define i64 @calc_max_depth(i64 %arg.n) {
 entry:
   %n.1 = alloca i64
   %d.2 = alloca i64
@@ -211,7 +216,7 @@ fend4:
   ret i64 %t9
 }
 
-define void @insertion_sort_points(ptr %arg.pts, i64 %arg.left, i64 %arg.right) alwaysinline {
+define void @insertion_sort_points(ptr %arg.pts, i64 %arg.left, i64 %arg.right) {
 entry:
   %pts.1 = alloca ptr
   %left.2 = alloca i64
@@ -302,7 +307,7 @@ fend4:
   ret void
 }
 
-define void @heap_sift_down_points(ptr %arg.pts, i64 %arg.left, i64 %arg.root, i64 %arg.n) alwaysinline {
+define void @heap_sift_down_points(ptr %arg.pts, i64 %arg.left, i64 %arg.root, i64 %arg.n) {
 entry:
   %pts.1 = alloca ptr
   %left.2 = alloca i64
@@ -467,7 +472,7 @@ fend4:
   ret void
 }
 
-define void @heapsort_points(ptr %arg.pts, i64 %arg.left, i64 %arg.right) alwaysinline {
+define void @heapsort_points(ptr %arg.pts, i64 %arg.left, i64 %arg.right) {
 entry:
   %pts.1 = alloca ptr
   %left.2 = alloca i64
@@ -557,7 +562,7 @@ fend10:
   ret void
 }
 
-define void @introsort_points(ptr %arg.pts, i64 %arg.left, i64 %arg.right, i64 %arg.max_depth) alwaysinline {
+define void @introsort_points(ptr %arg.pts, i64 %arg.left, i64 %arg.right, i64 %arg.max_depth) {
 entry:
   %pts.1 = alloca ptr
   %left.2 = alloca i64
@@ -900,7 +905,7 @@ fend4:
   ret void
 }
 
-define void @sort_points(ptr %arg.pts, i64 %arg.left, i64 %arg.right) alwaysinline {
+define void @sort_points(ptr %arg.pts, i64 %arg.left, i64 %arg.right) {
 entry:
   %pts.1 = alloca ptr
   %left.2 = alloca i64
@@ -930,7 +935,7 @@ endif2:
   ret void
 }
 
-define void @insertion_sort_i64(ptr %arg.arr, i64 %arg.left, i64 %arg.right) alwaysinline {
+define void @insertion_sort_i64(ptr %arg.arr, i64 %arg.left, i64 %arg.right) {
 entry:
   %arr.1 = alloca ptr
   %left.2 = alloca i64
@@ -1012,7 +1017,7 @@ fend4:
   ret void
 }
 
-define void @heap_sift_down_i64(ptr %arg.arr, i64 %arg.left, i64 %arg.root, i64 %arg.n) alwaysinline {
+define void @heap_sift_down_i64(ptr %arg.arr, i64 %arg.left, i64 %arg.root, i64 %arg.n) {
 entry:
   %arr.1 = alloca ptr
   %left.2 = alloca i64
@@ -1145,7 +1150,7 @@ fend4:
   ret void
 }
 
-define void @heapsort_i64(ptr %arg.arr, i64 %arg.left, i64 %arg.right) alwaysinline {
+define void @heapsort_i64(ptr %arg.arr, i64 %arg.left, i64 %arg.right) {
 entry:
   %arr.1 = alloca ptr
   %left.2 = alloca i64
@@ -1235,7 +1240,7 @@ fend10:
   ret void
 }
 
-define void @introsort_i64(ptr %arg.arr, i64 %arg.left, i64 %arg.right, i64 %arg.max_depth) alwaysinline {
+define void @introsort_i64(ptr %arg.arr, i64 %arg.left, i64 %arg.right, i64 %arg.max_depth) {
 entry:
   %arr.1 = alloca ptr
   %left.2 = alloca i64
@@ -1520,7 +1525,7 @@ fend4:
   ret void
 }
 
-define void @sort_i64(ptr %arg.arr, i64 %arg.left, i64 %arg.right) alwaysinline {
+define void @sort_i64(ptr %arg.arr, i64 %arg.left, i64 %arg.right) {
 entry:
   %arr.1 = alloca ptr
   %left.2 = alloca i64
@@ -1550,7 +1555,7 @@ endif2:
   ret void
 }
 
-define void @insertion_sort_edges(ptr %arg.edges, i64 %arg.left, i64 %arg.right) alwaysinline {
+define void @insertion_sort_edges(ptr %arg.edges, i64 %arg.left, i64 %arg.right) {
 entry:
   %edges.1 = alloca ptr
   %left.2 = alloca i64
@@ -1634,7 +1639,7 @@ fend4:
   ret void
 }
 
-define void @heap_sift_down_edges(ptr %arg.edges, i64 %arg.left, i64 %arg.root, i64 %arg.n) alwaysinline {
+define void @heap_sift_down_edges(ptr %arg.edges, i64 %arg.left, i64 %arg.root, i64 %arg.n) {
 entry:
   %edges.1 = alloca ptr
   %left.2 = alloca i64
@@ -1771,7 +1776,7 @@ fend4:
   ret void
 }
 
-define void @heapsort_edges(ptr %arg.edges, i64 %arg.left, i64 %arg.right) alwaysinline {
+define void @heapsort_edges(ptr %arg.edges, i64 %arg.left, i64 %arg.right) {
 entry:
   %edges.1 = alloca ptr
   %left.2 = alloca i64
@@ -1861,7 +1866,7 @@ fend10:
   ret void
 }
 
-define void @introsort_edges(ptr %arg.edges, i64 %arg.left, i64 %arg.right, i64 %arg.max_depth) alwaysinline {
+define void @introsort_edges(ptr %arg.edges, i64 %arg.left, i64 %arg.right, i64 %arg.max_depth) {
 entry:
   %edges.1 = alloca ptr
   %left.2 = alloca i64
@@ -2155,7 +2160,7 @@ fend4:
   ret void
 }
 
-define void @sort_edges(ptr %arg.edges, i64 %arg.left, i64 %arg.right) alwaysinline {
+define void @sort_edges(ptr %arg.edges, i64 %arg.left, i64 %arg.right) {
 entry:
   %edges.1 = alloca ptr
   %left.2 = alloca i64
@@ -2185,7 +2190,7 @@ endif2:
   ret void
 }
 
-define i64 @lower_bound(ptr %arg.arr, i64 %arg.len, i64 %arg.val) alwaysinline {
+define i64 @lower_bound(ptr %arg.arr, i64 %arg.len, i64 %arg.val) {
 entry:
   %arr.1 = alloca ptr
   %len.2 = alloca i64
@@ -2244,7 +2249,7 @@ fend4:
   ret i64 %t23
 }
 
-define i64 @dsu_find(ptr %arg.parent, i64 %arg.x) alwaysinline {
+define i64 @dsu_find(ptr %arg.parent, i64 %arg.x) {
 entry:
   %parent.1 = alloca ptr
   %x.2 = alloca i64
@@ -2303,7 +2308,7 @@ fend8:
   ret i64 %t25
 }
 
-define i1 @dsu_union(ptr %arg.parent, ptr %arg.rank, i64 %arg.x, i64 %arg.y) alwaysinline {
+define i1 @dsu_union(ptr %arg.parent, ptr %arg.rank, i64 %arg.x, i64 %arg.y) {
 entry:
   %parent.1 = alloca ptr
   %rank.2 = alloca ptr
@@ -2387,7 +2392,7 @@ endif4:
   ret i1 true
 }
 
-define i64 @solve_manhattan_mst_core(ptr %arg.orig_x, ptr %arg.orig_y, i64 %arg.n, i1 %arg.use_pure_heap) inlinehint {
+define i64 @solve_manhattan_mst_core(ptr %arg.orig_x, ptr %arg.orig_y, i64 %arg.n, i1 %arg.use_pure_heap) {
 entry:
   %orig_x.1 = alloca ptr
   %orig_y.2 = alloca ptr
@@ -3124,7 +3129,7 @@ fend80:
   ret i64 %t394
 }
 
-define i64 @solve_manhattan_mst(ptr %arg.orig_x, ptr %arg.orig_y, i64 %arg.n) alwaysinline {
+define i64 @solve_manhattan_mst(ptr %arg.orig_x, ptr %arg.orig_y, i64 %arg.n) {
 entry:
   %orig_x.1 = alloca ptr
   %orig_y.2 = alloca ptr
@@ -3139,7 +3144,7 @@ entry:
   ret i64 %t4
 }
 
-define i64 @solve_manhattan_mst_pure_heapsort(ptr %arg.orig_x, ptr %arg.orig_y, i64 %arg.n) alwaysinline {
+define i64 @solve_manhattan_mst_pure_heapsort(ptr %arg.orig_x, ptr %arg.orig_y, i64 %arg.n) {
 entry:
   %orig_x.1 = alloca ptr
   %orig_y.2 = alloca ptr
@@ -3154,7 +3159,7 @@ entry:
   ret i64 %t4
 }
 
-define i64 @solve_manhattan_mst_bruteforce(ptr %arg.orig_x, ptr %arg.orig_y, i64 %arg.n) inlinehint {
+define i64 @solve_manhattan_mst_bruteforce(ptr %arg.orig_x, ptr %arg.orig_y, i64 %arg.n) {
 entry:
   %orig_x.1 = alloca ptr
   %orig_y.2 = alloca ptr
@@ -3373,7 +3378,7 @@ fend10:
   ret i64 %t109
 }
 
-define void @benchmark_100k() inlinehint {
+define void @benchmark_100k() {
 entry:
   %n.1 = alloca i64
   %x.2 = alloca ptr
@@ -3437,14 +3442,14 @@ fpost3:
 fend4:
   %t34 = load i64, ptr %n.1
   %t35 = call i32 (ptr, ...) @printf(ptr @.str.1, i64 %t34)
-  %t36 = call i64 @clock()
+  %t36 = call i64 @gw_clock_ms()
   store i64 %t36, ptr %t0.6
   %t37 = load ptr, ptr %x.2
   %t38 = load ptr, ptr %y.3
   %t39 = load i64, ptr %n.1
   %t40 = call i64 @solve_manhattan_mst(ptr %t37, ptr %t38, i64 %t39)
   store i64 %t40, ptr %mst.7
-  %t41 = call i64 @clock()
+  %t41 = call i64 @gw_clock_ms()
   store i64 %t41, ptr %t1.8
   %t42 = load i64, ptr %t1.8
   %t43 = load i64, ptr %t0.6
