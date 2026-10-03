@@ -1,30 +1,63 @@
 //! Транслятор AST Goraw в современный стандарт C++23.
 //! Поддерживает:
 //! - Полное отображение скалярных типов, структур, перечислений и указателей
-//! - RAII деструкторы (автоматический маппинг `Type::drop` -> C++ деструктор `~Type()`)
-//! - Go-style циклы `for`, `for i in slice`, `while`, `if`/`else`
-//! - Литералы структур C++20/23 designated initializers
-//! - Строки `str` и срезы `[]T`
-//! - Инлайн C/C++ блоки (`c { ... }`, `cpp { ... }`)
-//! - Shadow-тесты и тестовый раннер
+//! - RAII деструкторы (автоматический маппинг `Type::drop` -> C++ деструктор `~Type()`) с соблюдением "Правила пяти"
+//! - Чистый C++ синтаксис доступа к полям `.` и `->` без оверхеда `gw_deref`
+//! - Конструкторы типов вместо designated initializers для валидности по C++20 (P1008R1)
+//! - Переносимый расчет времени `gw_clock_ms()` через std::chrono::steady_clock
+//! - Полное сохранение и прогон shadow-тестов и контрактов
+//! - Минимальные заголовки без замусоривания неиспользуемыми библиотеками
 
 use crate::ast::*;
+use std::collections::{HashMap, HashSet};
 
-pub fn transpile(prog: &Program, _test_mode: bool) -> Result<String, String> {
-    let mut tr = Transpiler::new();
+pub fn transpile(prog: &Program, test_mode: bool) -> Result<String, String> {
+    let mut tr = Transpiler::new(test_mode);
     tr.run(prog)
+}
+
+#[derive(Clone, Debug)]
+struct VarMeta {
+    is_pointer: bool,
+    struct_name: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct StructMeta {
+    field_names: Vec<String>,
+    field_is_ptr: HashMap<String, bool>,
+}
+
+#[derive(Clone, Debug)]
+struct FnMeta {
+    is_ret_pointer: bool,
+    ret_struct_name: Option<String>,
 }
 
 struct Transpiler {
     out: String,
     indent_level: usize,
+    test_mode: bool,
+    scopes: Vec<HashMap<String, VarMeta>>,
+    struct_defs: HashMap<String, StructMeta>,
+    fns: HashMap<String, FnMeta>,
+    used_math: HashSet<String>,
+    needs_str: bool,
+    needs_slice: bool,
 }
 
 impl Transpiler {
-    fn new() -> Self {
+    fn new(test_mode: bool) -> Self {
         Self {
             out: String::with_capacity(32 * 1024),
             indent_level: 0,
+            test_mode,
+            scopes: Vec::new(),
+            struct_defs: HashMap::new(),
+            fns: HashMap::new(),
+            used_math: HashSet::new(),
+            needs_str: false,
+            needs_slice: false,
         }
     }
 
@@ -42,11 +75,257 @@ impl Transpiler {
         }
     }
 
+    fn insert_var(&mut self, name: &str, meta: VarMeta) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.to_string(), meta);
+        }
+    }
+
+    fn lookup_var(&self, name: &str) -> Option<&VarMeta> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(v) = scope.get(name) {
+                return Some(v);
+            }
+        }
+        None
+    }
+
+    fn is_expr_pointer(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Index { .. } => false, // pts[i] возвращает значение/ссылку на структуру, не указатель
+            Expr::Ident(name, _) => {
+                self.lookup_var(name).map(|v| v.is_pointer).unwrap_or(false)
+            }
+            Expr::Unary { op, expr, .. } => match op {
+                UnOp::Ref | UnOp::RefMut => true,
+                UnOp::Deref => false,
+                _ => self.is_expr_pointer(expr),
+            },
+            Expr::Call { callee, .. } => {
+                if let Expr::Ident(name, _) = &**callee {
+                    if name == "alloc" || name == "malloc" || name == "realloc" {
+                        return true;
+                    }
+                    if let Some(fm) = self.fns.get(name) {
+                        return fm.is_ret_pointer;
+                    }
+                }
+                false
+            }
+            Expr::Field { base, field, .. } => {
+                if let Some(sname) = self.infer_struct_name(base) {
+                    if let Some(sm) = self.struct_defs.get(&sname) {
+                        return sm.field_is_ptr.get(field).copied().unwrap_or(false);
+                    }
+                }
+                false
+            }
+            Expr::Cast { ty, .. } => {
+                matches!(ty, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..))
+            }
+            _ => false,
+        }
+    }
+
+    fn infer_struct_name(&self, expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::StructLit { name, .. } => Some(name.clone()),
+            Expr::Call { callee, .. } => {
+                if let Expr::Ident(name, _) = &**callee {
+                    if let Some(fm) = self.fns.get(name) {
+                        return fm.ret_struct_name.clone();
+                    }
+                }
+                None
+            }
+            Expr::Index { base, .. } => {
+                if let Expr::Ident(name, _) = &**base {
+                    if let Some(v) = self.lookup_var(name) {
+                        return v.struct_name.clone();
+                    }
+                }
+                None
+            }
+            Expr::Ident(name, _) => {
+                self.lookup_var(name).and_then(|v| v.struct_name.clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn scan_usage(&mut self, prog: &Program) {
+        for f in &prog.fns {
+            if let Some(body) = &f.body {
+                self.scan_block(body);
+            }
+        }
+        for t in &prog.tests {
+            self.scan_block(&t.body);
+        }
+    }
+
+    fn scan_block(&mut self, block: &Block) {
+        for s in &block.stmts {
+            self.scan_stmt(s);
+        }
+    }
+
+    fn scan_stmt(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Let { ty, value, .. } => {
+                if let Some(t) = ty {
+                    self.scan_type(t);
+                }
+                self.scan_expr(value);
+            }
+            Stmt::Assign { target, value, .. } => {
+                self.scan_expr(target);
+                self.scan_expr(value);
+            }
+            Stmt::Expr(e) | Stmt::Assert(e, _) => self.scan_expr(e),
+            Stmt::Return(opt_e, _) => {
+                if let Some(e) = opt_e {
+                    self.scan_expr(e);
+                }
+            }
+            Stmt::If { cond, then, els, .. } => {
+                self.scan_expr(cond);
+                self.scan_block(then);
+                if let Some(b) = els {
+                    self.scan_block(b);
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                self.scan_expr(cond);
+                self.scan_block(body);
+            }
+            Stmt::For { init, cond, post, body, .. } => {
+                if let Some(i) = init {
+                    self.scan_stmt(i);
+                }
+                if let Some(c) = cond {
+                    self.scan_expr(c);
+                }
+                if let Some(p) = post {
+                    self.scan_stmt(p);
+                }
+                self.scan_block(body);
+            }
+            Stmt::ForIn { iter, body, .. } => {
+                self.needs_slice = true;
+                self.scan_expr(iter);
+                self.scan_block(body);
+            }
+            Stmt::Unsafe(b, _) => self.scan_block(b),
+            Stmt::Match { scrut, arms, .. } => {
+                self.scan_expr(scrut);
+                for (p, b) in arms {
+                    if let Some(e) = p {
+                        self.scan_expr(e);
+                    }
+                    self.scan_block(b);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn scan_type(&mut self, ty: &TypeExpr) {
+        match ty {
+            TypeExpr::Named(name, _) if name == "str" => self.needs_str = true,
+            TypeExpr::Slice(inner, _) => {
+                self.needs_slice = true;
+                self.scan_type(inner);
+            }
+            TypeExpr::Ptr(inner, _) | TypeExpr::PtrMut(inner, _) => self.scan_type(inner),
+            _ => {}
+        }
+    }
+
+    fn scan_expr(&mut self, expr: &Expr) {
+        match expr {
+            Expr::Call { callee, args, .. } => {
+                if let Expr::Ident(name, _) = &**callee {
+                    match name.as_str() {
+                        "abs" | "min" | "max" | "clamp" | "sqrt" | "pow" | "floor" | "ceil" | "sin" | "cos" => {
+                            self.used_math.insert(name.clone());
+                        }
+                        _ => {}
+                    }
+                }
+                self.scan_expr(callee);
+                for a in args {
+                    self.scan_expr(a);
+                }
+            }
+            Expr::Binary { lhs, rhs, .. } => {
+                self.scan_expr(lhs);
+                self.scan_expr(rhs);
+            }
+            Expr::Unary { expr, .. } => self.scan_expr(expr),
+            Expr::Field { base, .. } => self.scan_expr(base),
+            Expr::Index { base, index, .. } => {
+                self.scan_expr(base);
+                self.scan_expr(index);
+            }
+            Expr::Slice { base, start, end, .. } => {
+                self.needs_slice = true;
+                self.scan_expr(base);
+                if let Some(s) = start { self.scan_expr(s); }
+                if let Some(e) = end { self.scan_expr(e); }
+            }
+            Expr::ArrayLit(elems, ..) => {
+                for e in elems {
+                    self.scan_expr(e);
+                }
+            }
+            Expr::IfExpr { cond, then, els, .. } => {
+                self.scan_expr(cond);
+                self.scan_expr(then);
+                self.scan_expr(els);
+            }
+            Expr::StructLit { fields, .. } => {
+                for (_, v, _) in fields {
+                    self.scan_expr(v);
+                }
+            }
+            Expr::Cast { expr, ty, .. } => {
+                self.scan_type(ty);
+                self.scan_expr(expr);
+            }
+            _ => {}
+        }
+    }
+
     fn run(&mut self, prog: &Program) -> Result<String, String> {
-        // 1. Заголовок и прелюдия стандартной библиотеки C++23
+        // Сбор метаданных структур
+        for s in &prog.structs {
+            let mut field_names = Vec::new();
+            let mut field_is_ptr = HashMap::new();
+            for f in &s.fields {
+                field_names.push(f.name.clone());
+                let is_p = matches!(&f.ty, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..));
+                field_is_ptr.insert(f.name.clone(), is_p);
+            }
+            self.struct_defs.insert(s.name.clone(), StructMeta { field_names, field_is_ptr });
+        }
+
+        // Сбор метаданных функций
+        for f in &prog.fns {
+            let is_p = f.ret.as_ref().map_or(false, |r| matches!(r, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..)));
+            let ret_s = f.ret.as_ref().and_then(|r| match r {
+                TypeExpr::Named(name, ..) => Some(name.clone()),
+                _ => None,
+            });
+            self.fns.insert(f.name.clone(), FnMeta { is_ret_pointer: is_p, ret_struct_name: ret_s });
+        }
+
+        self.scan_usage(prog);
+
+        // 1. Преамбула
         self.out.push_str(
             "// ============================================================================\n\
-             // Сгенерировано компилятором Goraw\n\
+             // Сгенерировано компилятором Goraw (C++23 Backend)\n\
              // ============================================================================\n\n\
              #include <cstdint>\n\
              #include <cstddef>\n\
@@ -54,17 +333,21 @@ impl Transpiler {
              #include <cstdio>\n\
              #include <cstring>\n\
              #include <cassert>\n\
-             #include <cmath>\n\
-             #include <string>\n\
-             #include <string_view>\n\
-             #include <vector>\n\
-             #include <array>\n\
-             #include <span>\n\
-             #include <utility>\n\
-             #include <algorithm>\n\
-             #include <iostream>\n\
-             #include <type_traits>\n\n\
-             // Goraw базовые псевдонимы типов\n\
+             #include <chrono>\n"
+        );
+
+        if !self.used_math.is_empty() {
+            self.out.push_str("#include <cmath>\n");
+        }
+        if self.needs_str {
+            self.out.push_str("#include <string_view>\n");
+        }
+        if self.needs_slice {
+            self.out.push_str("#include <span>\n");
+        }
+
+        self.out.push_str(
+            "\n// Базовые скалярные псевдонимы типов Goraw\n\
              using i8  = int8_t;\n\
              using i16 = int16_t;\n\
              using i32 = int32_t;\n\
@@ -75,97 +358,65 @@ impl Transpiler {
              using u64 = uint64_t;\n\
              using f32 = float;\n\
              using f64 = double;\n\n\
-             // --- Goraw Runtime & Helper Types ---\n\
-             \n\
-             struct GorawStr {\n\
-                 const char* ptr{nullptr};\n\
-                 int64_t len{0};\n\
-                 constexpr GorawStr() = default;\n\
-                 constexpr GorawStr(const char* s) : ptr(s), len(s ? (int64_t)std::string_view(s).size() : 0) {}\n\
-                 constexpr GorawStr(const char* p, int64_t l) : ptr(p), len(l) {}\n\
-                 constexpr int64_t size() const noexcept { return len; }\n\
-                 constexpr int64_t length() const noexcept { return len; }\n\
-                 constexpr bool empty() const noexcept { return len == 0; }\n\
-                 constexpr std::string_view view() const noexcept { return {ptr, (size_t)len}; }\n\
-                 operator std::string_view() const noexcept { return view(); }\n\
-                 const char* c_str() const noexcept { return ptr; }\n\
-                 char operator[](int64_t idx) const noexcept { return ptr[idx]; }\n\
-                 bool operator==(const GorawStr& o) const noexcept { return view() == o.view(); }\n\
-                 bool operator==(const char* o) const noexcept { return view() == o; }\n\
-                 bool operator!=(const GorawStr& o) const noexcept { return view() != o.view(); }\n\
-             };\n\
-             \n\
-             template <typename T>\n\
-             struct GorawSlice {\n\
-                 T* ptr{nullptr};\n\
-                 int64_t len{0};\n\
-                 constexpr GorawSlice() = default;\n\
-                 constexpr GorawSlice(T* p, int64_t l) : ptr(p), len(l) {}\n\
-                 T& operator[](int64_t idx) { return ptr[idx]; }\n\
-                 const T& operator[](int64_t idx) const { return ptr[idx]; }\n\
-                 T* begin() noexcept { return ptr; }\n\
-                 T* end() noexcept { return ptr + len; }\n\
-                 const T* begin() const noexcept { return ptr; }\n\
-                 const T* end() const noexcept { return ptr + len; }\n\
-                 int64_t size() const noexcept { return len; }\n\
-                 int64_t length() const noexcept { return len; }\n\
-             };\n\
-             \n\
-             template <typename T>\n\
-             constexpr decltype(auto) gw_deref(T&& obj) noexcept {\n\
-                 if constexpr (std::is_pointer_v<std::remove_reference_t<T>>) {\n\
-                     return *obj;\n\
-                 } else {\n\
-                     return std::forward<T>(obj);\n\
-                 }\n\
-             }\n\
-             \n\
+             // Переносимый замер времени (строго в миллисекундах на всех ОС)\n\
+             inline int64_t gw_clock_ms() noexcept {\n\
+                 return std::chrono::duration_cast<std::chrono::milliseconds>(\n\
+                     std::chrono::steady_clock::now().time_since_epoch()\n\
+                 ).count();\n\
+             }\n\n\
              inline void* alloc(int64_t sz) noexcept { return std::malloc(sz); }\n\
              inline void goraw_panic(const char* msg) noexcept {\n\
                  std::fprintf(stderr, \"[GORAW PANIC] %s\\n\", msg);\n\
                  std::abort();\n\
-             }\n\
-             \n\
-             // Встроенные функции и математика Goraw из std\n\
-             using std::abs;\n\
-             using std::min;\n\
-             using std::max;\n\
-             using std::clamp;\n\
-             using std::sqrt;\n\
-             using std::pow;\n\
-             using std::floor;\n\
-             using std::ceil;\n\
-             using std::sin;\n\
-             using std::cos;\n\
-             \n\
-             template <typename... Args>\n\
-             inline void println(const Args&... args) {\n\
-                 auto print_one = [](const auto& val) {\n\
-                     if constexpr (std::is_same_v<std::decay_t<decltype(val)>, GorawStr>) {\n\
-                         std::cout << val.view();\n\
-                     } else {\n\
-                         std::cout << val;\n\
-                     }\n\
-                 };\n\
-                 (print_one(args), ...);\n\
-                 std::cout << std::endl;\n\
-             }\n\
-             \n\
-             template <typename... Args>\n\
-             inline void print(const Args&... args) {\n\
-                 auto print_one = [](const auto& val) {\n\
-                     if constexpr (std::is_same_v<std::decay_t<decltype(val)>, GorawStr>) {\n\
-                         std::cout << val.view();\n\
-                     } else {\n\
-                         std::cout << val;\n\
-                     }\n\
-                 };\n\
-                 (print_one(args), ...);\n\
-             }\n\
-             \n"
+             }\n"
         );
 
-        // 2. Верхнеуровневые блоки `c { ... }` и `cpp { ... }`
+        if self.needs_str {
+            self.out.push_str(
+                "\nstruct GorawStr {\n\
+                     const char* ptr{nullptr};\n\
+                     int64_t len{0};\n\
+                     constexpr GorawStr() = default;\n\
+                     constexpr GorawStr(const char* s) : ptr(s), len(s ? (int64_t)std::string_view(s).size() : 0) {}\n\
+                     constexpr GorawStr(const char* p, int64_t l) : ptr(p), len(l) {}\n\
+                     constexpr int64_t size() const noexcept { return len; }\n\
+                     constexpr int64_t length() const noexcept { return len; }\n\
+                     constexpr bool empty() const noexcept { return len == 0; }\n\
+                     constexpr std::string_view view() const noexcept { return {ptr, (size_t)len}; }\n\
+                     operator std::string_view() const noexcept { return view(); }\n\
+                     const char* c_str() const noexcept { return ptr; }\n\
+                 };\n"
+            );
+        }
+
+        if self.needs_slice {
+            self.out.push_str(
+                "\ntemplate <typename T>\n\
+                 struct GorawSlice {\n\
+                     T* ptr{nullptr};\n\
+                     int64_t len{0};\n\
+                     constexpr GorawSlice() = default;\n\
+                     constexpr GorawSlice(T* p, int64_t l) : ptr(p), len(l) {}\n\
+                     T& operator[](int64_t idx) { return ptr[idx]; }\n\
+                     const T& operator[](int64_t idx) const { return ptr[idx]; }\n\
+                     T* begin() noexcept { return ptr; }\n\
+                     T* end() noexcept { return ptr + len; }\n\
+                     int64_t size() const noexcept { return len; }\n\
+                 };\n"
+            );
+        }
+
+        if !self.used_math.is_empty() {
+            self.out.push('\n');
+            let mut sorted_math: Vec<_> = self.used_math.iter().collect();
+            sorted_math.sort();
+            for m in sorted_math {
+                self.out.push_str(&format!("using std::{m};\n"));
+            }
+        }
+        self.out.push('\n');
+
+        // 2. Встроенные блоки c { } / cpp { }
         if !prog.c_blocks.is_empty() {
             self.write_line("// --- Встроенные C/C++ блоки ---");
             for b in &prog.c_blocks {
@@ -209,6 +460,13 @@ impl Transpiler {
                     let ty_s = self.transpile_type(&f.ty);
                     self.write_line(&format!("{} {}{{}};", ty_s, escape_ident(&f.name)));
                 }
+                self.write_line("");
+                self.write_line(&format!("constexpr {}() = default;", escape_ident(&s.name)));
+                if !s.fields.is_empty() {
+                    let params: Vec<String> = s.fields.iter().map(|f| format!("{} {}", self.transpile_type(&f.ty), escape_ident(&f.name))).collect();
+                    let inits: Vec<String> = s.fields.iter().map(|f| format!("{}({})", escape_ident(&f.name), escape_ident(&f.name))).collect();
+                    self.write_line(&format!("constexpr {}({}) : {} {{}}", escape_ident(&s.name), params.join(", "), inits.join(", ")));
+                }
 
                 // Проверка: есть ли деструктор `drop` для данной структуры
                 let drop_fn_name = format!("{}_drop", s.name);
@@ -221,6 +479,38 @@ impl Transpiler {
                         .unwrap_or(false);
                     destructors_to_emit.push((s.name.clone(), fn_to_call, is_ptr));
                     self.write_line(&format!("~{}() noexcept;", escape_ident(&s.name)));
+
+                    // Правило пяти (Rule of 5)
+                    self.write_line(&format!("{}(const {}&) = delete;", escape_ident(&s.name), escape_ident(&s.name)));
+                    self.write_line(&format!("{}& operator=(const {}&) = delete;", escape_ident(&s.name), escape_ident(&s.name)));
+
+                    let move_inits: Vec<String> = s.fields.iter().map(|f| format!("{}(other.{})", escape_ident(&f.name), escape_ident(&f.name))).collect();
+                    self.write_line(&format!("constexpr {}({}&& other) noexcept : {} {{", escape_ident(&s.name), escape_ident(&s.name), move_inits.join(", ")));
+                    self.indent_level += 1;
+                    for f in &s.fields {
+                        if matches!(&f.ty, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..)) {
+                            self.write_line(&format!("other.{} = nullptr;", escape_ident(&f.name)));
+                        }
+                    }
+                    self.indent_level -= 1;
+                    self.write_line("}");
+
+                    self.write_line(&format!("{}& operator=({}&& other) noexcept {{", escape_ident(&s.name), escape_ident(&s.name)));
+                    self.indent_level += 1;
+                    self.write_line("if (this != &other) {");
+                    self.indent_level += 1;
+                    self.write_line(&format!("this->~{}();", escape_ident(&s.name)));
+                    for f in &s.fields {
+                        self.write_line(&format!("{} = other.{};", escape_ident(&f.name), escape_ident(&f.name)));
+                        if matches!(&f.ty, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..)) {
+                            self.write_line(&format!("other.{} = nullptr;", escape_ident(&f.name)));
+                        }
+                    }
+                    self.indent_level -= 1;
+                    self.write_line("}");
+                    self.write_line("return *this;");
+                    self.indent_level -= 1;
+                    self.write_line("}");
                 }
 
                 self.indent_level -= 1;
@@ -228,7 +518,7 @@ impl Transpiler {
             }
         }
 
-        // 6. Глобальные константы
+        // 6. Константы
         if !prog.consts.is_empty() {
             self.write_line("// --- Константы ---");
             for c in &prog.consts {
@@ -242,7 +532,7 @@ impl Transpiler {
             self.out.push('\n');
         }
 
-        // 7. Глобальные статические переменные
+        // 7. Статические переменные
         if !prog.statics.is_empty() {
             self.write_line("// --- Статические переменные ---");
             for st in &prog.statics {
@@ -257,7 +547,6 @@ impl Transpiler {
         self.write_line("// --- Предварительные объявления функций ---");
         for f in &prog.fns {
             if f.is_extern {
-                // Внешние C функции
                 let ret_s = match &f.ret {
                     Some(t) => self.transpile_type(t),
                     None => "void".to_string(),
@@ -270,7 +559,6 @@ impl Transpiler {
                     params_s.push("...".to_string());
                 }
                 let plist = params_s.join(", ");
-                // Пропускаем extern printf/malloc/free/clock/exit, так как они уже объявлены в <c...>
                 if !matches!(f.name.as_str(), "printf" | "malloc" | "free" | "realloc" | "clock" | "exit" | "abort") {
                     self.write_line(&format!("extern \"C\" {} {}({});", ret_s, f.name, plist));
                 }
@@ -288,6 +576,9 @@ impl Transpiler {
                 self.write_line(&format!("{} {}({});", ret_s, fn_name, plist));
             }
         }
+        if !prog.tests.is_empty() {
+            self.write_line("namespace shadow_tests { void run_all_shadow_tests(); }");
+        }
         self.out.push('\n');
 
         // 9. Определения функций
@@ -301,7 +592,16 @@ impl Transpiler {
                 None => "void".to_string(),
             };
             let mut params_s = Vec::new();
+            self.scopes.clear();
+            self.scopes.push(HashMap::new());
+
             for p in &f.params {
+                let is_p = matches!(&p.ty, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..));
+                let sname = match &p.ty {
+                    TypeExpr::Named(n, ..) => Some(n.clone()),
+                    _ => None,
+                };
+                self.insert_var(&p.name, VarMeta { is_pointer: is_p, struct_name: sname });
                 params_s.push(format!("{} {}", self.transpile_type(&p.ty), escape_ident(&p.name)));
             }
             let plist = params_s.join(", ");
@@ -309,6 +609,15 @@ impl Transpiler {
 
             self.write_line(&format!("{} {}({}) {{", ret_s, fn_name, plist));
             self.indent_level += 1;
+
+            // Если это main и есть тесты — вызываем прогон shadow-тестов
+            if f.name == "main" && !prog.tests.is_empty() {
+                self.write_line("shadow_tests::run_all_shadow_tests();");
+                if self.test_mode {
+                    self.write_line("return 0;");
+                }
+            }
+
             if let Some(body) = &f.body {
                 self.transpile_block(body);
             }
@@ -322,14 +631,50 @@ impl Transpiler {
             for (struct_name, fn_name, is_ptr) in &destructors_to_emit {
                 let arg = if *is_ptr { "this" } else { "*this" };
                 self.write_line(&format!(
-                    "inline {}::~{}() noexcept {{ {}({}); }}",
+                    "inline {}::~{}() noexcept {{\n    {}({});\n}}",
                     escape_ident(struct_name),
                     escape_ident(struct_name),
-                    fn_name,
+                    escape_fn_name(fn_name),
                     arg
                 ));
             }
             self.out.push('\n');
+        }
+
+        // 11. Shadow-тесты и контракты
+        if !prog.tests.is_empty() {
+            self.write_line("// --- Shadow-тесты и встроенные контракты ---");
+            self.write_line("namespace shadow_tests {");
+            self.indent_level += 1;
+            for (idx, t) in prog.tests.iter().enumerate() {
+                self.write_line(&format!("inline void test_{}() {{", idx));
+                self.indent_level += 1;
+                self.scopes.clear();
+                self.scopes.push(HashMap::new());
+                self.transpile_block(&t.body);
+                self.indent_level -= 1;
+                self.write_line("}\n");
+            }
+
+            self.write_line("inline void run_all_shadow_tests() {");
+            self.indent_level += 1;
+            self.write_line("std::printf(\"============================================================\\n\");");
+            self.write_line("std::printf(\"  Running Goraw Shadow Tests & Contracts in C++23          \\n\");");
+            self.write_line("std::printf(\"============================================================\\n\");");
+            for (idx, t) in prog.tests.iter().enumerate() {
+                let escaped_name = t.name.replace('\\', "\\\\").replace('"', "\\\"");
+                self.write_line(&format!("test_{}();", idx));
+                self.write_line(&format!("std::printf(\"[ ok ] {}\\n\");", escaped_name));
+            }
+            self.write_line(&format!(
+                "std::printf(\"\\n[C++23] All {} shadow tests PASSED successfully!\\n\\n\");",
+                prog.tests.len()
+            ));
+            self.indent_level -= 1;
+            self.write_line("}");
+
+            self.indent_level -= 1;
+            self.write_line("} // namespace shadow_tests\n");
         }
 
         Ok(std::mem::take(&mut self.out))
@@ -373,14 +718,26 @@ impl Transpiler {
     }
 
     fn transpile_block(&mut self, block: &Block) {
+        self.scopes.push(HashMap::new());
         for stmt in &block.stmts {
             self.transpile_stmt(stmt);
         }
+        self.scopes.pop();
     }
 
     fn transpile_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let { name, ty, value, .. } => {
+                let is_ptr = match ty {
+                    Some(t) => matches!(t, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..)),
+                    None => self.is_expr_pointer(value),
+                };
+                let sname = match ty {
+                    Some(TypeExpr::Named(n, ..)) => Some(n.clone()),
+                    _ => self.infer_struct_name(value),
+                };
+                self.insert_var(name, VarMeta { is_pointer: is_ptr, struct_name: sname });
+
                 let ty_s = match ty {
                     Some(t) => self.transpile_type(t),
                     None => "auto".to_string(),
@@ -431,9 +788,19 @@ impl Transpiler {
                 self.write_line("}");
             }
             Stmt::For { init, cond, post, body, .. } => {
+                self.scopes.push(HashMap::new());
                 let init_s = match init {
                     Some(s) => match &**s {
                         Stmt::Let { name, ty, value, .. } => {
+                            let is_ptr = match ty {
+                                Some(t) => matches!(t, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..)),
+                                None => self.is_expr_pointer(value),
+                            };
+                            let sname = match ty {
+                                Some(TypeExpr::Named(n, ..)) => Some(n.clone()),
+                                _ => self.infer_struct_name(value),
+                            };
+                            self.insert_var(name, VarMeta { is_pointer: is_ptr, struct_name: sname });
                             let ty_s = match ty {
                                 Some(t) => self.transpile_type(t),
                                 None => "auto".to_string(),
@@ -464,17 +831,25 @@ impl Transpiler {
                 };
                 self.write_line(&format!("for ({}; {}; {}) {{", init_s, cond_s, post_s));
                 self.indent_level += 1;
-                self.transpile_block(body);
+                for b_stmt in &body.stmts {
+                    self.transpile_stmt(b_stmt);
+                }
                 self.indent_level -= 1;
                 self.write_line("}");
+                self.scopes.pop();
             }
             Stmt::ForIn { var, iter, body, .. } => {
+                self.scopes.push(HashMap::new());
+                self.insert_var(var, VarMeta { is_pointer: false, struct_name: None });
                 let it_s = self.transpile_expr(iter);
                 self.write_line(&format!("for (auto&& {} : {}) {{", escape_ident(var), it_s));
                 self.indent_level += 1;
-                self.transpile_block(body);
+                for b_stmt in &body.stmts {
+                    self.transpile_stmt(b_stmt);
+                }
                 self.indent_level -= 1;
                 self.write_line("}");
+                self.scopes.pop();
             }
             Stmt::Break(_) => self.write_line("break;"),
             Stmt::Continue(_) => self.write_line("continue;"),
@@ -603,9 +978,12 @@ impl Transpiler {
                     Expr::Ident(name, _) if name == "sizeof" && args.len() == 1 => {
                         format!("sizeof({})", self.transpile_expr(&args[0]))
                     }
+                    Expr::Ident(name, _) if name == "clock" && args.is_empty() => {
+                        "gw_clock_ms()".to_string()
+                    }
                     Expr::Field { base, field, .. } => {
-                        // Метод вызов `base.field(args)` -> `gw_deref(base).field(args)`
-                        format!("gw_deref({}).{}({})", self.transpile_expr(base), escape_ident(field), joined)
+                        let op = if self.is_expr_pointer(base) { "->" } else { "." };
+                        format!("{}{}{}({})", self.transpile_expr(base), op, escape_ident(field), joined)
                     }
                     _ => {
                         let c_s = self.transpile_expr(callee);
@@ -614,8 +992,8 @@ impl Transpiler {
                 }
             }
             Expr::Field { base, field, .. } => {
-                // Доступ к полю: gw_deref(base).field работает как со структурами, так и с указателями
-                format!("gw_deref({}).{}", self.transpile_expr(base), escape_ident(field))
+                let op = if self.is_expr_pointer(base) { "->" } else { "." };
+                format!("{}{}{}", self.transpile_expr(base), op, escape_ident(field))
             }
             Expr::Index { base, index, .. } => {
                 format!("{}[{}]", self.transpile_expr(base), self.transpile_expr(index))
@@ -634,11 +1012,24 @@ impl Transpiler {
                 format!("(({}) ? ({}) : ({}))", self.transpile_expr(cond), self.transpile_expr(then), self.transpile_expr(els))
             }
             Expr::StructLit { name, fields, .. } => {
-                let mut fs = Vec::new();
-                for (fname, val, _) in fields {
-                    fs.push(format!(".{} = {}", escape_ident(fname), self.transpile_expr(val)));
+                // Вызов параметризованного конструктора StructName(val1, val2, ...) вместо designated initializers
+                if let Some(sm) = self.struct_defs.get(name) {
+                    let mut ordered_vals = Vec::new();
+                    for fname in &sm.field_names {
+                        if let Some((_, val, _)) = fields.iter().find(|(fn_name, ..)| fn_name == fname) {
+                            ordered_vals.push(self.transpile_expr(val));
+                        } else {
+                            ordered_vals.push("{}".to_string());
+                        }
+                    }
+                    format!("{}({})", escape_ident(name), ordered_vals.join(", "))
+                } else {
+                    let mut vals = Vec::new();
+                    for (_, val, _) in fields {
+                        vals.push(self.transpile_expr(val));
+                    }
+                    format!("{}({})", escape_ident(name), vals.join(", "))
                 }
-                format!("{}{{\n        {}\n    }}", escape_ident(name), fs.join(",\n        "))
             }
             Expr::Cast { expr, ty, .. } => {
                 let ty_s = self.transpile_type(ty);

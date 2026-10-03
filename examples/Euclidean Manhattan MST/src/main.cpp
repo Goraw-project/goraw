@@ -1,5 +1,5 @@
 // ============================================================================
-// Сгенерировано компилятором Goraw
+// Сгенерировано компилятором Goraw (C++23 Backend)
 // ============================================================================
 
 #include <cstdint>
@@ -8,18 +8,9 @@
 #include <cstdio>
 #include <cstring>
 #include <cassert>
-#include <cmath>
-#include <string>
-#include <string_view>
-#include <vector>
-#include <array>
-#include <span>
-#include <utility>
-#include <algorithm>
-#include <iostream>
-#include <type_traits>
+#include <chrono>
 
-// Goraw базовые псевдонимы типов
+// Базовые скалярные псевдонимы типов Goraw
 using i8  = int8_t;
 using i16 = int16_t;
 using i32 = int32_t;
@@ -31,92 +22,17 @@ using u64 = uint64_t;
 using f32 = float;
 using f64 = double;
 
-// --- Goraw Runtime & Helper Types ---
-
-struct GorawStr {
-const char* ptr{nullptr};
-int64_t len{0};
-constexpr GorawStr() = default;
-constexpr GorawStr(const char* s) : ptr(s), len(s ? (int64_t)std::string_view(s).size() : 0) {}
-constexpr GorawStr(const char* p, int64_t l) : ptr(p), len(l) {}
-constexpr int64_t size() const noexcept { return len; }
-constexpr int64_t length() const noexcept { return len; }
-constexpr bool empty() const noexcept { return len == 0; }
-constexpr std::string_view view() const noexcept { return {ptr, (size_t)len}; }
-operator std::string_view() const noexcept { return view(); }
-const char* c_str() const noexcept { return ptr; }
-char operator[](int64_t idx) const noexcept { return ptr[idx]; }
-bool operator==(const GorawStr& o) const noexcept { return view() == o.view(); }
-bool operator==(const char* o) const noexcept { return view() == o; }
-bool operator!=(const GorawStr& o) const noexcept { return view() != o.view(); }
-};
-
-template <typename T>
-struct GorawSlice {
-T* ptr{nullptr};
-int64_t len{0};
-constexpr GorawSlice() = default;
-constexpr GorawSlice(T* p, int64_t l) : ptr(p), len(l) {}
-T& operator[](int64_t idx) { return ptr[idx]; }
-const T& operator[](int64_t idx) const { return ptr[idx]; }
-T* begin() noexcept { return ptr; }
-T* end() noexcept { return ptr + len; }
-const T* begin() const noexcept { return ptr; }
-const T* end() const noexcept { return ptr + len; }
-int64_t size() const noexcept { return len; }
-int64_t length() const noexcept { return len; }
-};
-
-template <typename T>
-constexpr decltype(auto) gw_deref(T&& obj) noexcept {
-if constexpr (std::is_pointer_v<std::remove_reference_t<T>>) {
-return *obj;
-} else {
-return std::forward<T>(obj);
-}
+// Переносимый замер времени (строго в миллисекундах на всех ОС)
+inline int64_t gw_clock_ms() noexcept {
+return std::chrono::duration_cast<std::chrono::milliseconds>(
+std::chrono::steady_clock::now().time_since_epoch()
+).count();
 }
 
 inline void* alloc(int64_t sz) noexcept { return std::malloc(sz); }
 inline void goraw_panic(const char* msg) noexcept {
 std::fprintf(stderr, "[GORAW PANIC] %s\n", msg);
 std::abort();
-}
-
-// Встроенные функции и математика Goraw из std
-using std::abs;
-using std::min;
-using std::max;
-using std::clamp;
-using std::sqrt;
-using std::pow;
-using std::floor;
-using std::ceil;
-using std::sin;
-using std::cos;
-
-template <typename... Args>
-inline void println(const Args&... args) {
-auto print_one = [](const auto& val) {
-if constexpr (std::is_same_v<std::decay_t<decltype(val)>, GorawStr>) {
-std::cout << val.view();
-} else {
-std::cout << val;
-}
-};
-(print_one(args), ...);
-std::cout << std::endl;
-}
-
-template <typename... Args>
-inline void print(const Args&... args) {
-auto print_one = [](const auto& val) {
-if constexpr (std::is_same_v<std::decay_t<decltype(val)>, GorawStr>) {
-std::cout << val.view();
-} else {
-std::cout << val;
-}
-};
-(print_one(args), ...);
 }
 
 // --- Предварительные объявления структур ---
@@ -129,17 +45,39 @@ struct Point {
     int64_t x{};
     int64_t y{};
     int64_t id{};
+
+    constexpr Point() = default;
+    constexpr Point(int64_t x, int64_t y, int64_t id) : x(x), y(y), id(id) {}
 };
 
 struct Edge {
     int64_t u{};
     int64_t v{};
     int64_t w{};
+
+    constexpr Edge() = default;
+    constexpr Edge(int64_t u, int64_t v, int64_t w) : u(u), v(v), w(w) {}
 };
 
 struct BufferGuard {
     uint8_t* ptr{};
+
+    constexpr BufferGuard() = default;
+    constexpr BufferGuard(uint8_t* ptr) : ptr(ptr) {}
     ~BufferGuard() noexcept;
+    BufferGuard(const BufferGuard&) = delete;
+    BufferGuard& operator=(const BufferGuard&) = delete;
+    constexpr BufferGuard(BufferGuard&& other) noexcept : ptr(other.ptr) {
+        other.ptr = nullptr;
+    }
+    BufferGuard& operator=(BufferGuard&& other) noexcept {
+        if (this != &other) {
+            this->~BufferGuard();
+            ptr = other.ptr;
+            other.ptr = nullptr;
+        }
+        return *this;
+    }
 };
 
 // --- Константы ---
@@ -178,19 +116,18 @@ int64_t solve_manhattan_mst_pure_heapsort(int64_t* orig_x, int64_t* orig_y, int6
 int64_t solve_manhattan_mst_bruteforce(int64_t* orig_x, int64_t* orig_y, int64_t n);
 void benchmark_100k();
 int32_t main();
+namespace shadow_tests { void run_all_shadow_tests(); }
 
 // --- Определения функций ---
 BufferGuard BufferGuard__new(int64_t sz) {
     auto p = ((uint8_t*)(alloc(sz)));
-    return BufferGuard{
-        .ptr = p
-    };
+    return BufferGuard(p);
 }
 
 void BufferGuard__drop(BufferGuard* self) {
-    if (gw_deref(self).ptr != nullptr) {
-        free(gw_deref(self).ptr);
-        gw_deref(self).ptr = nullptr;
+    if (self->ptr != nullptr) {
+        free(self->ptr);
+        self->ptr = nullptr;
     }
 }
 
@@ -240,7 +177,7 @@ void insertion_sort_points(Point* pts, int64_t left, int64_t right) {
         for (auto i = (left + 1); (i <= right); i = (i + 1)) {
             auto key = pts[i];
             auto j = (i - 1);
-            for (; ((j >= left) && point_greater(gw_deref(key).x, gw_deref(key).y, gw_deref(pts[j]).x, gw_deref(pts[j]).y)); ) {
+            for (; ((j >= left) && point_greater(key.x, key.y, pts[j].x, pts[j].y)); ) {
                 pts[(j + 1)] = pts[j];
                 j = (j - 1);
             }
@@ -256,10 +193,10 @@ void heap_sift_down_points(Point* pts, int64_t left, int64_t root, int64_t n) {
             auto smallest = curr;
             auto left_child = ((2 * curr) + 1);
             auto right_child = ((2 * curr) + 2);
-            if ((left_child < n) && point_greater(gw_deref(pts[(left + smallest)]).x, gw_deref(pts[(left + smallest)]).y, gw_deref(pts[(left + left_child)]).x, gw_deref(pts[(left + left_child)]).y)) {
+            if ((left_child < n) && point_greater(pts[(left + smallest)].x, pts[(left + smallest)].y, pts[(left + left_child)].x, pts[(left + left_child)].y)) {
                 smallest = left_child;
             }
-            if ((right_child < n) && point_greater(gw_deref(pts[(left + smallest)]).x, gw_deref(pts[(left + smallest)]).y, gw_deref(pts[(left + right_child)]).x, gw_deref(pts[(left + right_child)]).y)) {
+            if ((right_child < n) && point_greater(pts[(left + smallest)].x, pts[(left + smallest)].y, pts[(left + right_child)].x, pts[(left + right_child)].y)) {
                 smallest = right_child;
             }
             if (smallest == curr) {
@@ -307,30 +244,30 @@ void introsort_points(Point* pts, int64_t left, int64_t right, int64_t max_depth
         depth = (depth - 1);
         auto mid = (l + ((r - l) / 2));
         { // unsafe
-            if (point_greater(gw_deref(pts[mid]).x, gw_deref(pts[mid]).y, gw_deref(pts[l]).x, gw_deref(pts[l]).y)) {
+            if (point_greater(pts[mid].x, pts[mid].y, pts[l].x, pts[l].y)) {
                 auto tmp = pts[l];
                 pts[l] = pts[mid];
                 pts[mid] = tmp;
             }
-            if (point_greater(gw_deref(pts[r]).x, gw_deref(pts[r]).y, gw_deref(pts[l]).x, gw_deref(pts[l]).y)) {
+            if (point_greater(pts[r].x, pts[r].y, pts[l].x, pts[l].y)) {
                 auto tmp = pts[l];
                 pts[l] = pts[r];
                 pts[r] = tmp;
             }
-            if (point_greater(gw_deref(pts[r]).x, gw_deref(pts[r]).y, gw_deref(pts[mid]).x, gw_deref(pts[mid]).y)) {
+            if (point_greater(pts[r].x, pts[r].y, pts[mid].x, pts[mid].y)) {
                 auto tmp = pts[mid];
                 pts[mid] = pts[r];
                 pts[r] = tmp;
             }
-            auto piv_x = gw_deref(pts[mid]).x;
-            auto piv_y = gw_deref(pts[mid]).y;
+            auto piv_x = pts[mid].x;
+            auto piv_y = pts[mid].y;
             auto i = l;
             auto j = r;
             for (; (i <= j); ) {
-                for (; point_greater(gw_deref(pts[i]).x, gw_deref(pts[i]).y, piv_x, piv_y); ) {
+                for (; point_greater(pts[i].x, pts[i].y, piv_x, piv_y); ) {
                     i = (i + 1);
                 }
-                for (; point_greater(piv_x, piv_y, gw_deref(pts[j]).x, gw_deref(pts[j]).y); ) {
+                for (; point_greater(piv_x, piv_y, pts[j].x, pts[j].y); ) {
                     j = (j - 1);
                 }
                 if (i <= j) {
@@ -499,7 +436,7 @@ void insertion_sort_edges(Edge* edges, int64_t left, int64_t right) {
         for (auto i = (left + 1); (i <= right); i = (i + 1)) {
             auto key = edges[i];
             auto j = (i - 1);
-            for (; ((j >= left) && (gw_deref(edges[j]).w > gw_deref(key).w)); ) {
+            for (; ((j >= left) && (edges[j].w > key.w)); ) {
                 edges[(j + 1)] = edges[j];
                 j = (j - 1);
             }
@@ -515,10 +452,10 @@ void heap_sift_down_edges(Edge* edges, int64_t left, int64_t root, int64_t n) {
             auto largest = curr;
             auto left_child = ((2 * curr) + 1);
             auto right_child = ((2 * curr) + 2);
-            if ((left_child < n) && (gw_deref(edges[(left + left_child)]).w > gw_deref(edges[(left + largest)]).w)) {
+            if ((left_child < n) && (edges[(left + left_child)].w > edges[(left + largest)].w)) {
                 largest = left_child;
             }
-            if ((right_child < n) && (gw_deref(edges[(left + right_child)]).w > gw_deref(edges[(left + largest)]).w)) {
+            if ((right_child < n) && (edges[(left + right_child)].w > edges[(left + largest)].w)) {
                 largest = right_child;
             }
             if (largest == curr) {
@@ -566,29 +503,29 @@ void introsort_edges(Edge* edges, int64_t left, int64_t right, int64_t max_depth
         depth = (depth - 1);
         auto mid = (l + ((r - l) / 2));
         { // unsafe
-            if (gw_deref(edges[l]).w > gw_deref(edges[mid]).w) {
+            if (edges[l].w > edges[mid].w) {
                 auto tmp = edges[l];
                 edges[l] = edges[mid];
                 edges[mid] = tmp;
             }
-            if (gw_deref(edges[l]).w > gw_deref(edges[r]).w) {
+            if (edges[l].w > edges[r].w) {
                 auto tmp = edges[l];
                 edges[l] = edges[r];
                 edges[r] = tmp;
             }
-            if (gw_deref(edges[mid]).w > gw_deref(edges[r]).w) {
+            if (edges[mid].w > edges[r].w) {
                 auto tmp = edges[mid];
                 edges[mid] = edges[r];
                 edges[r] = tmp;
             }
-            auto piv_w = gw_deref(edges[mid]).w;
+            auto piv_w = edges[mid].w;
             auto i = l;
             auto j = r;
             for (; (i <= j); ) {
-                for (; (gw_deref(edges[i]).w < piv_w); ) {
+                for (; (edges[i].w < piv_w); ) {
                     i = (i + 1);
                 }
-                for (; (gw_deref(edges[j]).w > piv_w); ) {
+                for (; (edges[j].w > piv_w); ) {
                     j = (j - 1);
                 }
                 if (i <= j) {
@@ -687,37 +624,33 @@ int64_t solve_manhattan_mst_core(int64_t* orig_x, int64_t* orig_y, int64_t n, bo
         return (-1);
     }
     auto pts_buf = BufferGuard__new((n * sizeof(Point)));
-    Point* pts = ((Point*)(gw_deref(pts_buf).ptr));
+    Point* pts = ((Point*)(pts_buf.ptr));
     auto z_buf = BufferGuard__new((n * sizeof(i64)));
-    int64_t* z_vals = ((int64_t*)(gw_deref(z_buf).ptr));
+    int64_t* z_vals = ((int64_t*)(z_buf.ptr));
     auto bit_val_buf = BufferGuard__new(((n + 4) * sizeof(i64)));
-    int64_t* bit_val = ((int64_t*)(gw_deref(bit_val_buf).ptr));
+    int64_t* bit_val = ((int64_t*)(bit_val_buf.ptr));
     auto bit_id_buf = BufferGuard__new(((n + 4) * sizeof(i64)));
-    int64_t* bit_id = ((int64_t*)(gw_deref(bit_id_buf).ptr));
+    int64_t* bit_id = ((int64_t*)(bit_id_buf.ptr));
     int64_t max_edges = ((4 * n) + 10);
     auto edges_buf = BufferGuard__new((max_edges * sizeof(Edge)));
-    Edge* edges = ((Edge*)(gw_deref(edges_buf).ptr));
+    Edge* edges = ((Edge*)(edges_buf.ptr));
     int64_t edge_count = 0;
     { // unsafe
         for (auto i = 0; (i < n); i = (i + 1)) {
-            pts[i] = Point{
-        .x = orig_x[i],
-        .y = orig_y[i],
-        .id = i
-    };
+            pts[i] = Point(orig_x[i], orig_y[i], i);
         }
         int64_t inf = INF_DIST;
         for (auto dir = 0; (dir < 4); dir = (dir + 1)) {
             if ((dir == 1) || (dir == 3)) {
                 for (auto i = 0; (i < n); i = (i + 1)) {
-                    auto tmp = gw_deref(pts[i]).x;
-                    gw_deref(pts[i]).x = gw_deref(pts[i]).y;
-                    gw_deref(pts[i]).y = tmp;
+                    auto tmp = pts[i].x;
+                    pts[i].x = pts[i].y;
+                    pts[i].y = tmp;
                 }
             } else {
                 if (dir == 2) {
                     for (auto i = 0; (i < n); i = (i + 1)) {
-                        gw_deref(pts[i]).x = (-gw_deref(pts[i]).x);
+                        pts[i].x = (-pts[i].x);
                     }
                 }
             }
@@ -727,7 +660,7 @@ int64_t solve_manhattan_mst_core(int64_t* orig_x, int64_t* orig_y, int64_t n, bo
                 sort_points(pts, 0, (n - 1));
             }
             for (auto i = 0; (i < n); i = (i + 1)) {
-                z_vals[i] = (gw_deref(pts[i]).y - gw_deref(pts[i]).x);
+                z_vals[i] = (pts[i].y - pts[i].x);
             }
             if (use_pure_heap) {
                 heapsort_i64(z_vals, 0, (n - 1));
@@ -749,7 +682,7 @@ int64_t solve_manhattan_mst_core(int64_t* orig_x, int64_t* orig_y, int64_t n, bo
                 bit_id[p] = (-1);
             }
             for (auto i = 0; (i < n); i = (i + 1)) {
-                auto z = (gw_deref(pts[i]).y - gw_deref(pts[i]).x);
+                auto z = (pts[i].y - pts[i].x);
                 auto rank = lower_bound(z_vals, m, z);
                 auto pos = (m - rank);
                 int64_t best_id = (-1);
@@ -764,18 +697,14 @@ int64_t solve_manhattan_mst_core(int64_t* orig_x, int64_t* orig_y, int64_t n, bo
                     p = (p - lowbit);
                 }
                 if (best_id != (-1)) {
-                    auto u = gw_deref(pts[i]).id;
+                    auto u = pts[i].id;
                     auto v = best_id;
                     auto dist = (abs_i64((orig_x[u] - orig_x[v])) + abs_i64((orig_y[u] - orig_y[v])));
-                    edges[edge_count] = Edge{
-        .u = u,
-        .v = v,
-        .w = dist
-    };
+                    edges[edge_count] = Edge(u, v, dist);
                     edge_count = (edge_count + 1);
                 }
-                auto val = (gw_deref(pts[i]).x + gw_deref(pts[i]).y);
-                auto id = gw_deref(pts[i]).id;
+                auto val = (pts[i].x + pts[i].y);
+                auto id = pts[i].id;
                 auto up = pos;
                 for (; (up <= m); ) {
                     if (val < bit_val[up]) {
@@ -796,9 +725,9 @@ int64_t solve_manhattan_mst_core(int64_t* orig_x, int64_t* orig_y, int64_t n, bo
         }
     }
     auto parent_buf = BufferGuard__new((n * sizeof(i64)));
-    int64_t* parent = ((int64_t*)(gw_deref(parent_buf).ptr));
+    int64_t* parent = ((int64_t*)(parent_buf.ptr));
     auto rank_buf = BufferGuard__new((n * sizeof(i64)));
-    int64_t* rank = ((int64_t*)(gw_deref(rank_buf).ptr));
+    int64_t* rank = ((int64_t*)(rank_buf.ptr));
     { // unsafe
         for (auto i = 0; (i < n); i = (i + 1)) {
             parent[i] = i;
@@ -810,8 +739,8 @@ int64_t solve_manhattan_mst_core(int64_t* orig_x, int64_t* orig_y, int64_t n, bo
     { // unsafe
         for (auto i = 0; (i < edge_count); i = (i + 1)) {
             auto e = edges[i];
-            if (dsu_union(parent, rank, gw_deref(e).u, gw_deref(e).v)) {
-                total_mst_weight = (total_mst_weight + gw_deref(e).w);
+            if (dsu_union(parent, rank, e.u, e.v)) {
+                total_mst_weight = (total_mst_weight + e.w);
                 edges_added = (edges_added + 1);
                 if (edges_added == (n - 1)) {
                     break;
@@ -835,9 +764,9 @@ int64_t solve_manhattan_mst_bruteforce(int64_t* orig_x, int64_t* orig_y, int64_t
         return 0;
     }
     auto min_dist_buf = BufferGuard__new((n * sizeof(i64)));
-    int64_t* min_dist = ((int64_t*)(gw_deref(min_dist_buf).ptr));
+    int64_t* min_dist = ((int64_t*)(min_dist_buf.ptr));
     auto visited_buf = BufferGuard__new((n * sizeof(bool)));
-    bool* visited = ((bool*)(gw_deref(visited_buf).ptr));
+    bool* visited = ((bool*)(visited_buf.ptr));
     int64_t inf = INF_DIST;
     { // unsafe
         for (auto i = 0; (i < n); i = (i + 1)) {
@@ -884,9 +813,9 @@ void benchmark_100k() {
         }
     }
     printf("Running benchmark on N = %lld points (Hard constraint)...\n", n);
-    auto t0 = clock();
+    auto t0 = gw_clock_ms();
     auto mst = solve_manhattan_mst(x, y, n);
-    auto t1 = clock();
+    auto t1 = gw_clock_ms();
     auto elapsed_ms = (t1 - t0);
     printf("100,000 points MST computed successfully: Total weight = %lld in %lld ms\n", mst, elapsed_ms);
     free(((uint8_t*)(x)));
@@ -894,6 +823,7 @@ void benchmark_100k() {
 }
 
 int32_t main() {
+    shadow_tests::run_all_shadow_tests();
     printf("============================================================\n");
     printf("  Manhattan MST - O(N log N) Algorithm in Goraw   \n");
     printf("============================================================\n\n");
@@ -935,5 +865,406 @@ int32_t main() {
 }
 
 // --- Деструкторы структур (RAII) ---
-inline BufferGuard::~BufferGuard() noexcept { BufferGuard__drop(this); }
+inline BufferGuard::~BufferGuard() noexcept {
+    BufferGuard__drop(this);
+}
+
+// --- Shadow-тесты и встроенные контракты ---
+namespace shadow_tests {
+    inline void test_0() {
+        assert((abs_i64(10) == 10));
+        assert((abs_i64((-42)) == 42));
+        assert((abs_i64(0) == 0));
+        assert((abs_i64(((-9223372036854775807LL) - 1)) == 9223372036854775807LL));
+    }
+
+    inline void test_1() {
+        int64_t n = 2;
+        auto x_buf = BufferGuard__new((n * sizeof(i64)));
+        auto y_buf = BufferGuard__new((n * sizeof(i64)));
+        auto x = ((int64_t*)(x_buf.ptr));
+        auto y = ((int64_t*)(y_buf.ptr));
+        { // unsafe
+            x[0] = 500;
+            y[0] = (-500);
+            x[1] = COORD_MAX;
+            y[1] = COORD_MIN;
+        }
+        assert((validate_coordinates(x, y, n) == true));
+        { // unsafe
+            x[1] = (COORD_MAX + 1);
+        }
+        assert((validate_coordinates(x, y, n) == false));
+    }
+
+    inline void test_2() {
+        assert((point_greater(5, 2, 3, 10) == true));
+        assert((point_greater(3, 10, 5, 2) == false));
+        assert((point_greater(4, 7, 4, 3) == true));
+        assert((point_greater(4, 3, 4, 7) == false));
+        assert((point_greater(4, 3, 4, 3) == false));
+    }
+
+    inline void test_3() {
+        int64_t n = 3;
+        int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
+        int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
+        { // unsafe
+            x[0] = 0;
+            y[0] = 0;
+            x[1] = 1;
+            y[1] = 2;
+            x[2] = 2;
+            y[2] = 1;
+        }
+        auto mst = solve_manhattan_mst(x, y, n);
+        auto bf = solve_manhattan_mst_bruteforce(x, y, n);
+        free(((uint8_t*)(x)));
+        free(((uint8_t*)(y)));
+        assert((mst == 5));
+        assert((bf == 5));
+    }
+
+    inline void test_4() {
+        int64_t n = 4;
+        int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
+        int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
+        { // unsafe
+            x[0] = 0;
+            y[0] = 0;
+            x[1] = 0;
+            y[1] = 10;
+            x[2] = 10;
+            y[2] = 0;
+            x[3] = 10;
+            y[3] = 10;
+        }
+        auto mst = solve_manhattan_mst(x, y, n);
+        auto bf = solve_manhattan_mst_bruteforce(x, y, n);
+        free(((uint8_t*)(x)));
+        free(((uint8_t*)(y)));
+        assert((mst == 30));
+        assert((bf == 30));
+    }
+
+    inline void test_5() {
+        int64_t count = 100;
+        int64_t* x = ((int64_t*)(alloc((count * sizeof(i64)))));
+        int64_t* y = ((int64_t*)(alloc((count * sizeof(i64)))));
+        int64_t rng = 123456789;
+        { // unsafe
+            for (auto i = 0; (i < count); i = (i + 1)) {
+                rng = (((rng * 1103515245) + 12345) & 2147483647);
+                x[i] = (rng % 10000);
+                rng = (((rng * 1103515245) + 12345) & 2147483647);
+                y[i] = (rng % 10000);
+            }
+        }
+        auto mst = solve_manhattan_mst(x, y, count);
+        auto bf = solve_manhattan_mst_bruteforce(x, y, count);
+        free(((uint8_t*)(x)));
+        free(((uint8_t*)(y)));
+        assert((mst == bf));
+    }
+
+    inline void test_6() {
+        int64_t n = 6;
+        int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
+        int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
+        { // unsafe
+            x[0] = 10;
+            y[0] = 5;
+            x[1] = 2;
+            y[1] = 5;
+            x[2] = 7;
+            y[2] = 5;
+            x[3] = 15;
+            y[3] = 5;
+            x[4] = 0;
+            y[4] = 5;
+            x[5] = 4;
+            y[5] = 5;
+        }
+        auto mst = solve_manhattan_mst(x, y, n);
+        auto bf = solve_manhattan_mst_bruteforce(x, y, n);
+        free(((uint8_t*)(x)));
+        free(((uint8_t*)(y)));
+        assert((mst == 15));
+        assert((bf == 15));
+    }
+
+    inline void test_7() {
+        int64_t n = 6;
+        int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
+        int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
+        { // unsafe
+            x[0] = (-3);
+            y[0] = 10;
+            x[1] = (-3);
+            y[1] = 2;
+            x[2] = (-3);
+            y[2] = 7;
+            x[3] = (-3);
+            y[3] = 15;
+            x[4] = (-3);
+            y[4] = 0;
+            x[5] = (-3);
+            y[5] = 4;
+        }
+        auto mst = solve_manhattan_mst(x, y, n);
+        auto bf = solve_manhattan_mst_bruteforce(x, y, n);
+        free(((uint8_t*)(x)));
+        free(((uint8_t*)(y)));
+        assert((mst == 15));
+        assert((bf == 15));
+    }
+
+    inline void test_8() {
+        int64_t n = 5;
+        int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
+        int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
+        { // unsafe
+            x[0] = 1;
+            y[0] = 1;
+            x[1] = 5;
+            y[1] = 5;
+            x[2] = 2;
+            y[2] = 2;
+            x[3] = 4;
+            y[3] = 4;
+            x[4] = 3;
+            y[4] = 3;
+        }
+        auto mst = solve_manhattan_mst(x, y, n);
+        auto bf = solve_manhattan_mst_bruteforce(x, y, n);
+        free(((uint8_t*)(x)));
+        free(((uint8_t*)(y)));
+        assert((mst == 8));
+        assert((bf == 8));
+    }
+
+    inline void test_9() {
+        int64_t n = 5;
+        int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
+        int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
+        { // unsafe
+            x[0] = 1;
+            y[0] = (-1);
+            x[1] = 5;
+            y[1] = (-5);
+            x[2] = 2;
+            y[2] = (-2);
+            x[3] = 4;
+            y[3] = (-4);
+            x[4] = 3;
+            y[4] = (-3);
+        }
+        auto mst = solve_manhattan_mst(x, y, n);
+        auto bf = solve_manhattan_mst_bruteforce(x, y, n);
+        free(((uint8_t*)(x)));
+        free(((uint8_t*)(y)));
+        assert((mst == 8));
+        assert((bf == 8));
+    }
+
+    inline void test_10() {
+        int64_t n = 16;
+        int64_t* x = ((int64_t*)(alloc((n * sizeof(i64)))));
+        int64_t* y = ((int64_t*)(alloc((n * sizeof(i64)))));
+        { // unsafe
+            int64_t idx = 0;
+            for (auto r = 0; (r < 4); r = (r + 1)) {
+                for (auto c = 0; (c < 4); c = (c + 1)) {
+                    x[idx] = (c * 10);
+                    y[idx] = (r * 10);
+                    idx = (idx + 1);
+                }
+            }
+        }
+        auto mst = solve_manhattan_mst(x, y, n);
+        auto bf = solve_manhattan_mst_bruteforce(x, y, n);
+        free(((uint8_t*)(x)));
+        free(((uint8_t*)(y)));
+        assert((mst == 150));
+        assert((bf == 150));
+    }
+
+    inline void test_11() {
+        int64_t count = 80;
+        int64_t* x = ((int64_t*)(alloc((count * sizeof(i64)))));
+        int64_t* y = ((int64_t*)(alloc((count * sizeof(i64)))));
+        int64_t rng = 99991;
+        { // unsafe
+            for (auto i = 0; (i < count); i = (i + 1)) {
+                rng = (((rng * 1103515245) + 12345) & 2147483647);
+                auto coord = (rng % 500);
+                if ((i % 3) == 0) {
+                    x[i] = coord;
+                    y[i] = 100;
+                } else {
+                    if ((i % 3) == 1) {
+                        x[i] = 200;
+                        y[i] = coord;
+                    } else {
+                        x[i] = coord;
+                        y[i] = (-coord);
+                    }
+                }
+            }
+        }
+        auto mst = solve_manhattan_mst(x, y, count);
+        auto bf = solve_manhattan_mst_bruteforce(x, y, count);
+        free(((uint8_t*)(x)));
+        free(((uint8_t*)(y)));
+        assert((mst == bf));
+    }
+
+    inline void test_12() {
+        int64_t n = 10000;
+        auto buf = BufferGuard__new((n * sizeof(i64)));
+        auto arr = ((int64_t*)(buf.ptr));
+        { // unsafe
+            for (auto i = 0; (i < n); i = (i + 1)) {
+                arr[i] = i;
+            }
+        }
+        sort_i64(arr, 0, (n - 1));
+        { // unsafe
+            for (auto i = 0; (i < (n - 1)); i = (i + 1)) {
+                assert((arr[i] <= arr[(i + 1)]));
+            }
+            assert((arr[0] == 0));
+            assert((arr[(n - 1)] == (n - 1)));
+        }
+        { // unsafe
+            for (auto i = 0; (i < n); i = (i + 1)) {
+                arr[i] = (n - i);
+            }
+        }
+        sort_i64(arr, 0, (n - 1));
+        { // unsafe
+            for (auto i = 0; (i < (n - 1)); i = (i + 1)) {
+                assert((arr[i] <= arr[(i + 1)]));
+            }
+            assert((arr[0] == 1));
+            assert((arr[(n - 1)] == n));
+        }
+        auto half = (n / 2);
+        { // unsafe
+            for (auto i = 0; (i < half); i = (i + 1)) {
+                arr[i] = i;
+                arr[((n - 1) - i)] = i;
+            }
+        }
+        sort_i64(arr, 0, (n - 1));
+        { // unsafe
+            for (auto i = 0; (i < (n - 1)); i = (i + 1)) {
+                assert((arr[i] <= arr[(i + 1)]));
+            }
+            assert((arr[0] == 0));
+            assert((arr[1] == 0));
+            assert((arr[(n - 1)] == (half - 1)));
+        }
+        { // unsafe
+            for (auto i = 0; (i < n); i = (i + 1)) {
+                arr[i] = 42;
+            }
+        }
+        sort_i64(arr, 0, (n - 1));
+        { // unsafe
+            for (auto i = 0; (i < n); i = (i + 1)) {
+                assert((arr[i] == 42));
+            }
+        }
+    }
+
+    inline void test_13() {
+        int64_t n = 200;
+        auto buf = BufferGuard__new((n * sizeof(Point)));
+        auto pts = ((Point*)(buf.ptr));
+        int64_t rng = 54321;
+        { // unsafe
+            for (auto i = 0; (i < n); i = (i + 1)) {
+                rng = (((rng * 1103515245) + 12345) & 2147483647);
+                auto rx = (rng % 1000);
+                rng = (((rng * 1103515245) + 12345) & 2147483647);
+                auto ry = (rng % 1000);
+                pts[i] = Point(rx, ry, i);
+            }
+        }
+        heapsort_points(pts, 0, (n - 1));
+        { // unsafe
+            for (auto i = 0; (i < (n - 1)); i = (i + 1)) {
+                auto next_is_greater = point_greater(pts[(i + 1)].x, pts[(i + 1)].y, pts[i].x, pts[i].y);
+                assert((!next_is_greater));
+            }
+        }
+        heapsort_points(pts, 20, 150);
+        { // unsafe
+            for (auto i = 20; (i < 150); i = (i + 1)) {
+                auto next_is_greater = point_greater(pts[(i + 1)].x, pts[(i + 1)].y, pts[i].x, pts[i].y);
+                assert((!next_is_greater));
+            }
+        }
+    }
+
+    inline void test_14() {
+        int64_t count = 150;
+        auto x_buf = BufferGuard__new((count * sizeof(i64)));
+        auto y_buf = BufferGuard__new((count * sizeof(i64)));
+        auto x = ((int64_t*)(x_buf.ptr));
+        auto y = ((int64_t*)(y_buf.ptr));
+        int64_t rng = 13579;
+        { // unsafe
+            for (auto i = 0; (i < count); i = (i + 1)) {
+                rng = (((rng * 1103515245) + 12345) & 2147483647);
+                x[i] = (rng % 5000);
+                rng = (((rng * 1103515245) + 12345) & 2147483647);
+                y[i] = (rng % 5000);
+            }
+        }
+        auto intro_mst = solve_manhattan_mst(x, y, count);
+        auto heap_mst = solve_manhattan_mst_pure_heapsort(x, y, count);
+        auto bf_mst = solve_manhattan_mst_bruteforce(x, y, count);
+        assert((heap_mst == bf_mst));
+        assert((intro_mst == heap_mst));
+    }
+
+    inline void run_all_shadow_tests() {
+        std::printf("============================================================\n");
+        std::printf("  Running Goraw Shadow Tests & Contracts in C++23          \n");
+        std::printf("============================================================\n");
+        test_0();
+        std::printf("[ ok ] abs_i64\n");
+        test_1();
+        std::printf("[ ok ] validate_coordinates\n");
+        test_2();
+        std::printf("[ ok ] point_greater\n");
+        test_3();
+        std::printf("[ ok ] sample_3_points\n");
+        test_4();
+        std::printf("[ ok ] sample_square\n");
+        test_5();
+        std::printf("[ ok ] stress_random_100\n");
+        test_6();
+        std::printf("[ ok ] collinear_horizontal\n");
+        test_7();
+        std::printf("[ ok ] collinear_vertical\n");
+        test_8();
+        std::printf("[ ok ] collinear_diagonal_pos\n");
+        test_9();
+        std::printf("[ ok ] collinear_diagonal_neg\n");
+        test_10();
+        std::printf("[ ok ] grid_4x4\n");
+        test_11();
+        std::printf("[ ok ] stress_collinear_random\n");
+        test_12();
+        std::printf("[ ok ] introsort_adversarial_patterns\n");
+        test_13();
+        std::printf("[ ok ] heapsort_points_direct_verification\n");
+        test_14();
+        std::printf("[ ok ] forced_pure_heapsort_mst\n");
+        std::printf("\n[C++23] All 15 shadow tests PASSED successfully!\n\n");
+    }
+} // namespace shadow_tests
 

@@ -17,6 +17,7 @@ struct Local {
     /// Безопасная ссылка (приёмник метода `self`): доступ к полям через неё
     /// не требует `unsafe`, хотя тип — сырой указатель.
     safe: bool,
+    order: usize, // Порядок объявления для детерминированного LIFO-уничтожения (RAII)
 }
 
 pub struct Codegen<'a> {
@@ -40,6 +41,7 @@ pub struct Codegen<'a> {
     scopes: Vec<HashMap<String, Local>>,
     loops: Vec<(String, String)>, // (continue-label, break-label)
     terminated: bool,             // текущий блок уже завершён терминатором
+    order_counter: usize,         // счётчик для LIFO порядка деструкторов
     intrinsics: HashSet<String>,  // declare-строки использованных LLVM-интринзиков
     // Пока генерируется IR-ШАБЛОН jit-блока: захваченные имена -> (индекс, тип).
     // Их чтение выдаёт плейсхолдер `$CAPi$`, который рантайм заменит на константу.
@@ -107,6 +109,7 @@ impl<'a> Codegen<'a> {
             scopes: Vec::new(),
             loops: Vec::new(),
             terminated: false,
+            order_counter: 0,
             intrinsics: HashSet::new(),
             captures: None,
             in_jit_template: false,
@@ -134,6 +137,12 @@ impl<'a> Codegen<'a> {
 
     pub fn set_obfuscate_strings(&mut self, obf: bool) {
         self.obfuscate_strings = obf;
+    }
+
+    #[inline]
+    fn next_order(&mut self) -> usize {
+        self.order_counter += 1;
+        self.order_counter
     }
 
     // ---------- сборка модуля ----------
@@ -291,6 +300,7 @@ impl<'a> Codegen<'a> {
         self.scopes.clear();
         self.loops.clear();
         self.terminated = false;
+        self.order_counter = 0;
         self.scopes.push(HashMap::new());
 
         // Сигнатура.
@@ -300,8 +310,21 @@ impl<'a> Codegen<'a> {
             params_sig.push(format!("{} {arg_ident}", pty.llvm()));
         }
         let fn_sym = llvm_global(&f.name);
+        let inline_attr = if f.name != "main" && !f.is_test {
+            if let Some(body) = &f.body {
+                if body.stmts.len() <= 6 {
+                    " alwaysinline"
+                } else {
+                    " inlinehint"
+                }
+            } else {
+                ""
+            }
+        } else {
+            ""
+        };
         self.body.push_str(&format!(
-            "define {} {fn_sym}({}) {{\n",
+            "define {} {fn_sym}({}){inline_attr} {{\n",
             ret_ty.llvm(),
             params_sig.join(", ")
         ));
@@ -313,11 +336,11 @@ impl<'a> Codegen<'a> {
             let arg_ident = llvm_local(&format!("arg.{}", p.name));
             self.emit(format!("store {ty} {arg_ident}, ptr {slot}", ty = pty.llvm()));
             let is_self = p.name == "self" && matches!(pty, Ty::Ptr(..));
+            let order = self.next_order();
             self.scopes
                 .last_mut()
-
                 .unwrap()
-                .insert(p.name.clone(), Local { slot, ty: pty.clone(), mutable: false, safe: is_self });
+                .insert(p.name.clone(), Local { slot, ty: pty.clone(), mutable: false, safe: is_self, order });
         }
 
         if let Some(body) = &f.body {
@@ -410,9 +433,10 @@ impl<'a> Codegen<'a> {
                 let slot = self.fresh_slot(name);
                 self.alloca(&slot, &var_ty);
                 self.store_value(&var_ty, &val, &vty, &slot);
+                let order = self.next_order();
                 self.scopes.last_mut().unwrap().insert(
                     name.clone(),
-                    Local { slot, ty: var_ty, mutable: *mutable, safe: false },
+                    Local { slot, ty: var_ty, mutable: *mutable, safe: false, order },
                 );
             }
 
@@ -601,9 +625,10 @@ impl<'a> Codegen<'a> {
                 self.emit(format!("store i64 0, ptr {islot}"));
                 let vslot = self.fresh_slot(var);
                 self.alloca(&vslot, &elem);
+                let order = self.next_order();
                 self.scopes.last_mut().unwrap().insert(
                     var.clone(),
-                    Local { slot: vslot.clone(), ty: elem.clone(), mutable: false, safe: false },
+                    Local { slot: vslot.clone(), ty: elem.clone(), mutable: false, safe: false, order },
                 );
 
                 let cond_l = self.fresh_label("ficond");
@@ -761,14 +786,18 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_drops_for_current_scope(&mut self) {
-        let locals: Vec<Local> = self.scopes.last().map(|s| s.values().cloned().collect()).unwrap_or_default();
+        let mut locals: Vec<Local> = self.scopes.last().map(|s| s.values().cloned().collect()).unwrap_or_default();
+        // LIFO порядок вызова деструкторов (обратный объявлению)
+        locals.sort_by_key(|l| std::cmp::Reverse(l.order));
         for local in &locals {
             self.emit_drop_for_local(local);
         }
     }
 
     fn emit_drops_for_all_scopes(&mut self, skip_slot: Option<&str>) {
-        let locals: Vec<Local> = self.scopes.iter().rev().flat_map(|s| s.values().cloned()).collect();
+        let mut locals: Vec<Local> = self.scopes.iter().rev().flat_map(|s| s.values().cloned()).collect();
+        // LIFO порядок вызова деструкторов (обратный объявлению)
+        locals.sort_by_key(|l| std::cmp::Reverse(l.order));
         for local in &locals {
             if let Some(skip) = skip_slot {
                 if local.slot == skip {
