@@ -119,6 +119,16 @@ pub fn main() {
                 }
                 check_manifest_entry(&mut args);
             }
+            "to-all" | "emit-all" => {
+                args.remove(1);
+                if !args.iter().any(|a| a == "--emit-cpp") {
+                    args.push("--emit-cpp".to_string());
+                }
+                if !args.iter().any(|a| a == "--emit-llvm") {
+                    args.push("--emit-llvm".to_string());
+                }
+                check_manifest_entry(&mut args);
+            }
             _ => {}
         }
     } else {
@@ -697,7 +707,9 @@ fn run(opts: Options) -> i32 {
             return run_status.code().unwrap_or(0);
         }
 
-        return 0;
+        if !opts.emit_llvm {
+            return 0;
+        }
     }
 
     // Сбор типов (первый проход).
@@ -1072,7 +1084,7 @@ fn output_paths(opts: &Options) -> (PathBuf, PathBuf) {
     let dir = inp.parent().unwrap_or(Path::new("."));
     match &opts.output {
         Some(o) => {
-            if opts.emit_llvm {
+            if opts.emit_llvm && !opts.emit_cpp {
                 (o.clone(), o.clone())
             } else {
                 let ll = o.with_extension("ll");
