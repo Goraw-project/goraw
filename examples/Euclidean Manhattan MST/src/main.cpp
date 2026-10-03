@@ -8,7 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cassert>
-#include <chrono>
+#include <ctime>
 
 // Базовые скалярные псевдонимы типов Goraw
 using i8  = int8_t;
@@ -21,13 +21,6 @@ using u32 = uint32_t;
 using u64 = uint64_t;
 using f32 = float;
 using f64 = double;
-
-// Переносимый замер времени (строго в миллисекундах на всех ОС)
-inline int64_t gw_clock_ms() noexcept {
-return std::chrono::duration_cast<std::chrono::milliseconds>(
-std::chrono::steady_clock::now().time_since_epoch()
-).count();
-}
 
 inline void* alloc(int64_t sz) noexcept { return std::malloc(sz); }
 inline void goraw_panic(const char* msg) noexcept {
@@ -108,9 +101,9 @@ int64_t solve_manhattan_mst(int64_t* orig_x, int64_t* orig_y, int64_t n);
 int64_t solve_manhattan_mst_pure_heapsort(int64_t* orig_x, int64_t* orig_y, int64_t n);
 int64_t solve_manhattan_mst_bruteforce(int64_t* orig_x, int64_t* orig_y, int64_t n);
 void benchmark_100k();
-int32_t main();
 namespace contracts { void run_all_contracts(); }
 namespace integration_tests { void run_all_tests(); }
+int32_t run_all_goraw_tests();
 
 // --- Определения функций ---
 BufferGuard BufferGuard__new(int64_t sz) {
@@ -807,16 +800,23 @@ void benchmark_100k() {
         }
     }
     printf("Running benchmark on N = %lld points (Hard constraint)...\n", n);
-    auto t0 = gw_clock_ms();
+    auto t0 = clock();
     auto mst = solve_manhattan_mst(x, y, n);
-    auto t1 = gw_clock_ms();
+    auto t1 = clock();
     auto elapsed_ms = (t1 - t0);
     printf("100,000 points MST computed successfully: Total weight = %lld in %lld ms\n", mst, elapsed_ms);
     free(((uint8_t*)(x)));
     free(((uint8_t*)(y)));
 }
 
-int32_t main() {
+int32_t main(int argc, char** argv) {
+    #ifdef GORAW_TEST
+    return run_all_goraw_tests();
+    #else
+    if (argc > 1 && (std::strcmp(argv[1], "--test") == 0 || std::strcmp(argv[1], "-t") == 0)) {
+        return run_all_goraw_tests();
+    }
+    #endif
     printf("============================================================\n");
     printf("  Manhattan MST - O(N log N) Algorithm in Goraw   \n");
     printf("============================================================\n\n");
@@ -1274,4 +1274,14 @@ namespace integration_tests {
     }
 
 } // namespace integration_tests
+
+inline int32_t run_all_goraw_tests() {
+    std::printf("============================================================\n");
+    std::printf("  Running Goraw Contracts & Tests in C++23                 \n");
+    std::printf("============================================================\n");
+    contracts::run_all_contracts();
+    integration_tests::run_all_tests();
+    std::printf("\n[C++23] All 15 tests PASSED successfully!\n\n");
+    return 0;
+}
 

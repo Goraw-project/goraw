@@ -63,6 +63,12 @@ pub struct Codegen<'a> {
     has_obf_decrypt_runtime: bool,
     /// Целевой triple для заголовка LLVM IR.
     target_triple: String,
+    /// Флаг принудительного запуска тестов при старте main
+    pub test_mode: bool,
+    /// Присутствует ли сгенерированный тестовый раннер run_all_goraw_tests
+    pub has_test_runner: bool,
+    /// Является ли текущая функция `main`
+    cur_fn_is_main: bool,
 }
 
 /// Значение константы, свёрнутое в компайл-тайме.
@@ -122,7 +128,15 @@ impl<'a> Codegen<'a> {
             obf_count: 0,
             has_obf_decrypt_runtime: false,
             target_triple: "x86_64-w64-windows-gnu".to_string(),
+            test_mode: false,
+            has_test_runner: false,
+            cur_fn_is_main: false,
         }
+    }
+
+    pub fn with_test_mode(mut self, test: bool) -> Self {
+        self.test_mode = test;
+        self
     }
 
     pub fn with_target_triple(mut self, target: String) -> Self {
@@ -187,6 +201,9 @@ impl<'a> Codegen<'a> {
             self.globals.push_str(&format!("{sym} = global {} {init}\n", ty.llvm()));
             self.statics.insert(s.name.clone(), (sym, ty));
         }
+
+        // Проверяем наличие тестового раннера в программе
+        self.has_test_runner = prog.fns.iter().any(|f| f.name == "run_all_goraw_tests");
 
         // Сначала генерируем тела функций — попутно собираются использованные
         // строковые константы и LLVM-интринзики, нужные для заголовка.
@@ -309,6 +326,8 @@ impl<'a> Codegen<'a> {
         self.terminated = false;
         self.order_counter = 0;
         self.scopes.push(HashMap::new());
+        self.cur_fn_is_main = f.name == "main";
+        let is_main_no_params = self.cur_fn_is_main && f.params.is_empty();
 
         // Сигнатура.
         let mut params_sig = Vec::new();
@@ -322,11 +341,18 @@ impl<'a> Codegen<'a> {
         } else {
             ""
         };
-        self.body.push_str(&format!(
-            "define {} {fn_sym}({}){inline_attr} {{\n",
-            ret_ty.llvm(),
-            params_sig.join(", ")
-        ));
+        if is_main_no_params {
+            let ret_str = if ret_ty == Ty::Void { "i32" } else { &ret_ty.llvm() };
+            self.body.push_str(&format!(
+                "define {ret_str} {fn_sym}(i32 %arg.argc, ptr %arg.argv){inline_attr} {{\n"
+            ));
+        } else {
+            self.body.push_str(&format!(
+                "define {} {fn_sym}({}){inline_attr} {{\n",
+                ret_ty.llvm(),
+                params_sig.join(", ")
+            ));
+        }
 
         // Пролог: слоты под параметры.
         for (p, pty) in f.params.iter().zip(param_tys.iter()) {
@@ -340,6 +366,54 @@ impl<'a> Codegen<'a> {
                 .last_mut()
                 .unwrap()
                 .insert(p.name.clone(), Local { slot, ty: pty.clone(), mutable: false, safe: is_self, order });
+        }
+
+        // Если это main без параметров и есть тестовый раннер, вставляем проверку флагов --test / -t
+        if is_main_no_params && self.has_test_runner {
+            if self.test_mode {
+                let tr = self.fresh_tmp();
+                self.emit(format!("{tr} = call i32 @run_all_goraw_tests()"));
+                self.emit(format!("ret i32 {tr}"));
+                self.terminated = true;
+            } else {
+                let test_flag = self.intern_string("--test");
+                let t_flag = self.intern_string("-t");
+                self.intrinsics.insert("declare i32 @strcmp(ptr, ptr)".into());
+
+                let has_args = self.fresh_tmp();
+                self.emit(format!("{has_args} = icmp sgt i32 %arg.argc, 1"));
+                let chk_lbl = self.fresh_label("test_chk");
+                let user_lbl = self.fresh_label("user_main");
+                self.emit(format!("br i1 {has_args}, label %{chk_lbl}, label %{user_lbl}"));
+
+                self.emit_label(&chk_lbl);
+                let argv1_ptr = self.fresh_tmp();
+                self.emit(format!("{argv1_ptr} = getelementptr ptr, ptr %arg.argv, i64 1"));
+                let argv1 = self.fresh_tmp();
+                self.emit(format!("{argv1} = load ptr, ptr {argv1_ptr}"));
+
+                let cmp_test = self.fresh_tmp();
+                self.emit(format!("{cmp_test} = call i32 @strcmp(ptr {argv1}, ptr {test_flag})"));
+                let is_test = self.fresh_tmp();
+                self.emit(format!("{is_test} = icmp eq i32 {cmp_test}, 0"));
+                let chk_t_lbl = self.fresh_label("test_chk_t");
+                let run_lbl = self.fresh_label("run_tests");
+                self.emit(format!("br i1 {is_test}, label %{run_lbl}, label %{chk_t_lbl}"));
+
+                self.emit_label(&chk_t_lbl);
+                let cmp_t = self.fresh_tmp();
+                self.emit(format!("{cmp_t} = call i32 @strcmp(ptr {argv1}, ptr {t_flag})"));
+                let is_t = self.fresh_tmp();
+                self.emit(format!("{is_t} = icmp eq i32 {cmp_t}, 0"));
+                self.emit(format!("br i1 {is_t}, label %{run_lbl}, label %{user_lbl}"));
+
+                self.emit_label(&run_lbl);
+                let test_res = self.fresh_tmp();
+                self.emit(format!("{test_res} = call i32 @run_all_goraw_tests()"));
+                self.emit(format!("ret i32 {test_res}"));
+
+                self.emit_label(&user_lbl);
+            }
         }
 
         if let Some(body) = &f.body {
@@ -356,7 +430,11 @@ impl<'a> Codegen<'a> {
             match &cur_ret {
                 Ty::Void => {
                     self.emit_drops_for_all_scopes(None);
-                    self.emit("ret void".into());
+                    if self.cur_fn_is_main {
+                        self.emit("ret i32 0".into());
+                    } else {
+                        self.emit("ret void".into());
+                    }
                 }
                 other => {
                     if f.body.is_some() {
@@ -470,11 +548,19 @@ impl<'a> Codegen<'a> {
                     (Some(e), Ty::Void) => {
                         self.err("E0041", e.span(), "функция ничего не возвращает, а `return` со значением".into(), None);
                         self.emit_drops_for_all_scopes(None);
-                        self.emit("ret void".into());
+                        if self.cur_fn_is_main {
+                            self.emit("ret i32 0".into());
+                        } else {
+                            self.emit("ret void".into());
+                        }
                     }
                     (None, Ty::Void) => {
                         self.emit_drops_for_all_scopes(None);
-                        self.emit("ret void".into());
+                        if self.cur_fn_is_main {
+                            self.emit("ret i32 0".into());
+                        } else {
+                            self.emit("ret void".into());
+                        }
                     }
                     (None, ret) => {
                         self.err(
@@ -2054,21 +2140,6 @@ impl<'a> Codegen<'a> {
             if let Ty::FnPtr(params, ret) = local.ty {
                 return self.gen_indirect_call(&name, &local.slot, &params, &ret, args, span);
             }
-        }
-        if name == "clock" && args.is_empty() {
-            let res = self.fresh_tmp();
-            self.intrinsics.insert("declare i64 @clock()".to_string());
-            if self.target_triple.contains("windows") {
-                self.intrinsics.insert(
-                    "define i64 @gw_clock_ms() alwaysinline {\nentry:\n  %c = call i64 @clock()\n  ret i64 %c\n}".to_string(),
-                );
-            } else {
-                self.intrinsics.insert(
-                    "define i64 @gw_clock_ms() alwaysinline {\nentry:\n  %c = call i64 @clock()\n  %ms = sdiv i64 %c, 1000\n  ret i64 %ms\n}".to_string(),
-                );
-            }
-            self.emit(format!("{res} = call i64 @gw_clock_ms()"));
-            return (res, Ty::I64);
         }
 
         let sig = match self.ctx.fns.get(&name) {
@@ -3931,7 +4002,7 @@ exit:
 }"#;
 
 fn is_leaf_trivial_fn(f: &FnDef) -> bool {
-    if f.name == "main" || f.is_test || f.is_extern {
+    if f.name == "main" || f.is_test || f.is_extern || f.name == "run_all_goraw_tests" {
         return false;
     }
     let Some(body) = &f.body else { return false; };
@@ -3985,7 +4056,7 @@ fn is_leaf_trivial_fn(f: &FnDef) -> bool {
         match expr {
             Expr::Call { callee, args, .. } => {
                 if let Expr::Ident(name, _) = &**callee {
-                    if name == fn_name || (!matches!(name.as_str(), "alloc" | "free" | "realloc" | "sizeof" | "clock" | "gw_clock_ms")) {
+                    if name == fn_name || (!matches!(name.as_str(), "alloc" | "free" | "realloc" | "sizeof" | "clock")) {
                         return true;
                     }
                 } else {

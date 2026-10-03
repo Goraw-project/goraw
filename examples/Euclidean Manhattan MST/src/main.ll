@@ -9,23 +9,57 @@ target triple = "x86_64-w64-windows-gnu"
 
 declare i32 @printf(ptr, ...)
 declare i64 @clock()
+declare i32 @strcmp(ptr, ptr)
 declare ptr @malloc(i64)
 declare void @free(ptr)
-define i64 @gw_clock_ms() alwaysinline {
-entry:
-  %c = call i64 @clock()
-  ret i64 %c
-}
 
 @.str.0 = private unnamed_addr constant [57 x i8] c"[ERROR] Coordinates out of supported range [%lld, %lld]\0A\00"
 @.str.1 = private unnamed_addr constant [59 x i8] c"Running benchmark on N = %lld points (Hard constraint)...\0A\00"
 @.str.2 = private unnamed_addr constant [74 x i8] c"100,000 points MST computed successfully: Total weight = %lld in %lld ms\0A\00"
-@.str.3 = private unnamed_addr constant [62 x i8] c"============================================================\0A\00"
-@.str.4 = private unnamed_addr constant [52 x i8] c"  Manhattan MST - O(N log N) Algorithm in Goraw   \0A\00"
-@.str.5 = private unnamed_addr constant [63 x i8] c"============================================================\0A\0A\00"
-@.str.6 = private unnamed_addr constant [42 x i8] c"Sample 3 points: MST = %lld (Expected 5)\0A\00"
-@.str.7 = private unnamed_addr constant [50 x i8] c"Sample square 4 points: MST = %lld (Expected 30)\0A\00"
-@.str.8 = private unnamed_addr constant [46 x i8] c"\0ADone! Manhattan MST completed successfully.\0A\00"
+@.str.3 = private unnamed_addr constant [7 x i8] c"--test\00"
+@.str.4 = private unnamed_addr constant [3 x i8] c"-t\00"
+@.str.5 = private unnamed_addr constant [62 x i8] c"============================================================\0A\00"
+@.str.6 = private unnamed_addr constant [52 x i8] c"  Manhattan MST - O(N log N) Algorithm in Goraw   \0A\00"
+@.str.7 = private unnamed_addr constant [63 x i8] c"============================================================\0A\0A\00"
+@.str.8 = private unnamed_addr constant [42 x i8] c"Sample 3 points: MST = %lld (Expected 5)\0A\00"
+@.str.9 = private unnamed_addr constant [50 x i8] c"Sample square 4 points: MST = %lld (Expected 30)\0A\00"
+@.str.10 = private unnamed_addr constant [46 x i8] c"\0ADone! Manhattan MST completed successfully.\0A\00"
+@.str.11 = private unnamed_addr constant [62 x i8] c"============================================================\0A\00"
+@.str.12 = private unnamed_addr constant [62 x i8] c"  Running Goraw Contracts & Tests in LLVM IR                \0A\00"
+@.str.13 = private unnamed_addr constant [62 x i8] c"============================================================\0A\00"
+@.str.14 = private unnamed_addr constant [27 x i8] c"\0A--- Shadow Contracts ---\0A\00"
+@.str.15 = private unnamed_addr constant [37 x i8] c"[CONTRACT FAIL] abs_i64 (line %lld)\0A\00"
+@.str.16 = private unnamed_addr constant [23 x i8] c"[CONTRACT ok] abs_i64\0A\00"
+@.str.17 = private unnamed_addr constant [50 x i8] c"[CONTRACT FAIL] validate_coordinates (line %lld)\0A\00"
+@.str.18 = private unnamed_addr constant [36 x i8] c"[CONTRACT ok] validate_coordinates\0A\00"
+@.str.19 = private unnamed_addr constant [43 x i8] c"[CONTRACT FAIL] point_greater (line %lld)\0A\00"
+@.str.20 = private unnamed_addr constant [29 x i8] c"[CONTRACT ok] point_greater\0A\00"
+@.str.21 = private unnamed_addr constant [28 x i8] c"\0A--- Integration Tests ---\0A\00"
+@.str.22 = private unnamed_addr constant [41 x i8] c"[TEST FAIL] sample_3_points (line %lld)\0A\00"
+@.str.23 = private unnamed_addr constant [27 x i8] c"[TEST ok] sample_3_points\0A\00"
+@.str.24 = private unnamed_addr constant [39 x i8] c"[TEST FAIL] sample_square (line %lld)\0A\00"
+@.str.25 = private unnamed_addr constant [25 x i8] c"[TEST ok] sample_square\0A\00"
+@.str.26 = private unnamed_addr constant [43 x i8] c"[TEST FAIL] stress_random_100 (line %lld)\0A\00"
+@.str.27 = private unnamed_addr constant [29 x i8] c"[TEST ok] stress_random_100\0A\00"
+@.str.28 = private unnamed_addr constant [46 x i8] c"[TEST FAIL] collinear_horizontal (line %lld)\0A\00"
+@.str.29 = private unnamed_addr constant [32 x i8] c"[TEST ok] collinear_horizontal\0A\00"
+@.str.30 = private unnamed_addr constant [44 x i8] c"[TEST FAIL] collinear_vertical (line %lld)\0A\00"
+@.str.31 = private unnamed_addr constant [30 x i8] c"[TEST ok] collinear_vertical\0A\00"
+@.str.32 = private unnamed_addr constant [48 x i8] c"[TEST FAIL] collinear_diagonal_pos (line %lld)\0A\00"
+@.str.33 = private unnamed_addr constant [34 x i8] c"[TEST ok] collinear_diagonal_pos\0A\00"
+@.str.34 = private unnamed_addr constant [48 x i8] c"[TEST FAIL] collinear_diagonal_neg (line %lld)\0A\00"
+@.str.35 = private unnamed_addr constant [34 x i8] c"[TEST ok] collinear_diagonal_neg\0A\00"
+@.str.36 = private unnamed_addr constant [34 x i8] c"[TEST FAIL] grid_4x4 (line %lld)\0A\00"
+@.str.37 = private unnamed_addr constant [20 x i8] c"[TEST ok] grid_4x4\0A\00"
+@.str.38 = private unnamed_addr constant [49 x i8] c"[TEST FAIL] stress_collinear_random (line %lld)\0A\00"
+@.str.39 = private unnamed_addr constant [35 x i8] c"[TEST ok] stress_collinear_random\0A\00"
+@.str.40 = private unnamed_addr constant [56 x i8] c"[TEST FAIL] introsort_adversarial_patterns (line %lld)\0A\00"
+@.str.41 = private unnamed_addr constant [42 x i8] c"[TEST ok] introsort_adversarial_patterns\0A\00"
+@.str.42 = private unnamed_addr constant [61 x i8] c"[TEST FAIL] heapsort_points_direct_verification (line %lld)\0A\00"
+@.str.43 = private unnamed_addr constant [47 x i8] c"[TEST ok] heapsort_points_direct_verification\0A\00"
+@.str.44 = private unnamed_addr constant [50 x i8] c"[TEST FAIL] forced_pure_heapsort_mst (line %lld)\0A\00"
+@.str.45 = private unnamed_addr constant [36 x i8] c"[TEST ok] forced_pure_heapsort_mst\0A\00"
+@.str.46 = private unnamed_addr constant [61 x i8] c"\0A[LLVM IR] All 15 tests finished: %lld passed, %lld failed\0A\0A\00"
 
 define %struct.BufferGuard @BufferGuard__new(i64 %arg.sz) alwaysinline {
 entry:
@@ -3442,14 +3476,14 @@ fpost3:
 fend4:
   %t34 = load i64, ptr %n.1
   %t35 = call i32 (ptr, ...) @printf(ptr @.str.1, i64 %t34)
-  %t36 = call i64 @gw_clock_ms()
+  %t36 = call i64 @clock()
   store i64 %t36, ptr %t0.6
   %t37 = load ptr, ptr %x.2
   %t38 = load ptr, ptr %y.3
   %t39 = load i64, ptr %n.1
   %t40 = call i64 @solve_manhattan_mst(ptr %t37, ptr %t38, i64 %t39)
   store i64 %t40, ptr %mst.7
-  %t41 = call i64 @gw_clock_ms()
+  %t41 = call i64 @clock()
   store i64 %t41, ptr %t1.8
   %t42 = load i64, ptr %t1.8
   %t43 = load i64, ptr %t0.6
@@ -3465,7 +3499,7 @@ fend4:
   ret void
 }
 
-define i32 @main() {
+define i32 @main(i32 %arg.argc, ptr %arg.argv) {
 entry:
   %n3.1 = alloca i64
   %x3.2 = alloca ptr
@@ -3475,101 +3509,1954 @@ entry:
   %x4.6 = alloca ptr
   %y4.7 = alloca ptr
   %mst4.8 = alloca i64
-  %t1 = call i32 (ptr, ...) @printf(ptr @.str.3)
-  %t2 = call i32 (ptr, ...) @printf(ptr @.str.4)
-  %t3 = call i32 (ptr, ...) @printf(ptr @.str.5)
+  %t1 = icmp sgt i32 %arg.argc, 1
+  br i1 %t1, label %test_chk1, label %user_main2
+test_chk1:
+  %t2 = getelementptr ptr, ptr %arg.argv, i64 1
+  %t3 = load ptr, ptr %t2
+  %t4 = call i32 @strcmp(ptr %t3, ptr @.str.3)
+  %t5 = icmp eq i32 %t4, 0
+  br i1 %t5, label %run_tests4, label %test_chk_t3
+test_chk_t3:
+  %t6 = call i32 @strcmp(ptr %t3, ptr @.str.4)
+  %t7 = icmp eq i32 %t6, 0
+  br i1 %t7, label %run_tests4, label %user_main2
+run_tests4:
+  %t8 = call i32 @run_all_goraw_tests()
+  ret i32 %t8
+user_main2:
+  %t9 = call i32 (ptr, ...) @printf(ptr @.str.5)
+  %t10 = call i32 (ptr, ...) @printf(ptr @.str.6)
+  %t11 = call i32 (ptr, ...) @printf(ptr @.str.7)
   store i64 3, ptr %n3.1
-  %t4 = load i64, ptr %n3.1
-  %t5 = getelementptr i64, ptr null, i64 1
-  %t6 = ptrtoint ptr %t5 to i64
-  %t7 = mul i64 %t4, %t6
-  %t8 = call ptr @malloc(i64 %t7)
-  store ptr %t8, ptr %x3.2
-  %t9 = load i64, ptr %n3.1
-  %t10 = getelementptr i64, ptr null, i64 1
-  %t11 = ptrtoint ptr %t10 to i64
-  %t12 = mul i64 %t9, %t11
-  %t13 = call ptr @malloc(i64 %t12)
-  store ptr %t13, ptr %y3.3
-  %t14 = load ptr, ptr %x3.2
-  %t15 = getelementptr i64, ptr %t14, i64 0
-  store i64 0, ptr %t15
-  %t16 = load ptr, ptr %y3.3
-  %t17 = getelementptr i64, ptr %t16, i64 0
-  store i64 0, ptr %t17
-  %t18 = load ptr, ptr %x3.2
-  %t19 = getelementptr i64, ptr %t18, i64 1
-  store i64 1, ptr %t19
-  %t20 = load ptr, ptr %y3.3
-  %t21 = getelementptr i64, ptr %t20, i64 1
-  store i64 2, ptr %t21
+  %t12 = load i64, ptr %n3.1
+  %t13 = getelementptr i64, ptr null, i64 1
+  %t14 = ptrtoint ptr %t13 to i64
+  %t15 = mul i64 %t12, %t14
+  %t16 = call ptr @malloc(i64 %t15)
+  store ptr %t16, ptr %x3.2
+  %t17 = load i64, ptr %n3.1
+  %t18 = getelementptr i64, ptr null, i64 1
+  %t19 = ptrtoint ptr %t18 to i64
+  %t20 = mul i64 %t17, %t19
+  %t21 = call ptr @malloc(i64 %t20)
+  store ptr %t21, ptr %y3.3
   %t22 = load ptr, ptr %x3.2
-  %t23 = getelementptr i64, ptr %t22, i64 2
-  store i64 2, ptr %t23
+  %t23 = getelementptr i64, ptr %t22, i64 0
+  store i64 0, ptr %t23
   %t24 = load ptr, ptr %y3.3
-  %t25 = getelementptr i64, ptr %t24, i64 2
-  store i64 1, ptr %t25
+  %t25 = getelementptr i64, ptr %t24, i64 0
+  store i64 0, ptr %t25
   %t26 = load ptr, ptr %x3.2
-  %t27 = load ptr, ptr %y3.3
-  %t28 = load i64, ptr %n3.1
-  %t29 = call i64 @solve_manhattan_mst(ptr %t26, ptr %t27, i64 %t28)
-  store i64 %t29, ptr %mst3.4
-  %t30 = load i64, ptr %mst3.4
-  %t31 = call i32 (ptr, ...) @printf(ptr @.str.6, i64 %t30)
-  %t32 = load ptr, ptr %x3.2
-  call void @free(ptr %t32)
-  %t33 = load ptr, ptr %y3.3
-  call void @free(ptr %t33)
+  %t27 = getelementptr i64, ptr %t26, i64 1
+  store i64 1, ptr %t27
+  %t28 = load ptr, ptr %y3.3
+  %t29 = getelementptr i64, ptr %t28, i64 1
+  store i64 2, ptr %t29
+  %t30 = load ptr, ptr %x3.2
+  %t31 = getelementptr i64, ptr %t30, i64 2
+  store i64 2, ptr %t31
+  %t32 = load ptr, ptr %y3.3
+  %t33 = getelementptr i64, ptr %t32, i64 2
+  store i64 1, ptr %t33
+  %t34 = load ptr, ptr %x3.2
+  %t35 = load ptr, ptr %y3.3
+  %t36 = load i64, ptr %n3.1
+  %t37 = call i64 @solve_manhattan_mst(ptr %t34, ptr %t35, i64 %t36)
+  store i64 %t37, ptr %mst3.4
+  %t38 = load i64, ptr %mst3.4
+  %t39 = call i32 (ptr, ...) @printf(ptr @.str.8, i64 %t38)
+  %t40 = load ptr, ptr %x3.2
+  call void @free(ptr %t40)
+  %t41 = load ptr, ptr %y3.3
+  call void @free(ptr %t41)
   store i64 4, ptr %n4.5
-  %t34 = load i64, ptr %n4.5
-  %t35 = getelementptr i64, ptr null, i64 1
-  %t36 = ptrtoint ptr %t35 to i64
-  %t37 = mul i64 %t34, %t36
-  %t38 = call ptr @malloc(i64 %t37)
-  store ptr %t38, ptr %x4.6
-  %t39 = load i64, ptr %n4.5
-  %t40 = getelementptr i64, ptr null, i64 1
-  %t41 = ptrtoint ptr %t40 to i64
-  %t42 = mul i64 %t39, %t41
-  %t43 = call ptr @malloc(i64 %t42)
-  store ptr %t43, ptr %y4.7
-  %t44 = load ptr, ptr %x4.6
-  %t45 = getelementptr i64, ptr %t44, i64 0
-  store i64 0, ptr %t45
-  %t46 = load ptr, ptr %y4.7
-  %t47 = getelementptr i64, ptr %t46, i64 0
-  store i64 0, ptr %t47
-  %t48 = load ptr, ptr %x4.6
-  %t49 = getelementptr i64, ptr %t48, i64 1
-  store i64 0, ptr %t49
-  %t50 = load ptr, ptr %y4.7
-  %t51 = getelementptr i64, ptr %t50, i64 1
-  store i64 10, ptr %t51
+  %t42 = load i64, ptr %n4.5
+  %t43 = getelementptr i64, ptr null, i64 1
+  %t44 = ptrtoint ptr %t43 to i64
+  %t45 = mul i64 %t42, %t44
+  %t46 = call ptr @malloc(i64 %t45)
+  store ptr %t46, ptr %x4.6
+  %t47 = load i64, ptr %n4.5
+  %t48 = getelementptr i64, ptr null, i64 1
+  %t49 = ptrtoint ptr %t48 to i64
+  %t50 = mul i64 %t47, %t49
+  %t51 = call ptr @malloc(i64 %t50)
+  store ptr %t51, ptr %y4.7
   %t52 = load ptr, ptr %x4.6
-  %t53 = getelementptr i64, ptr %t52, i64 2
-  store i64 10, ptr %t53
+  %t53 = getelementptr i64, ptr %t52, i64 0
+  store i64 0, ptr %t53
   %t54 = load ptr, ptr %y4.7
-  %t55 = getelementptr i64, ptr %t54, i64 2
+  %t55 = getelementptr i64, ptr %t54, i64 0
   store i64 0, ptr %t55
   %t56 = load ptr, ptr %x4.6
-  %t57 = getelementptr i64, ptr %t56, i64 3
-  store i64 10, ptr %t57
+  %t57 = getelementptr i64, ptr %t56, i64 1
+  store i64 0, ptr %t57
   %t58 = load ptr, ptr %y4.7
-  %t59 = getelementptr i64, ptr %t58, i64 3
+  %t59 = getelementptr i64, ptr %t58, i64 1
   store i64 10, ptr %t59
   %t60 = load ptr, ptr %x4.6
-  %t61 = load ptr, ptr %y4.7
-  %t62 = load i64, ptr %n4.5
-  %t63 = call i64 @solve_manhattan_mst(ptr %t60, ptr %t61, i64 %t62)
-  store i64 %t63, ptr %mst4.8
-  %t64 = load i64, ptr %mst4.8
-  %t65 = call i32 (ptr, ...) @printf(ptr @.str.7, i64 %t64)
-  %t66 = load ptr, ptr %x4.6
-  call void @free(ptr %t66)
-  %t67 = load ptr, ptr %y4.7
-  call void @free(ptr %t67)
+  %t61 = getelementptr i64, ptr %t60, i64 2
+  store i64 10, ptr %t61
+  %t62 = load ptr, ptr %y4.7
+  %t63 = getelementptr i64, ptr %t62, i64 2
+  store i64 0, ptr %t63
+  %t64 = load ptr, ptr %x4.6
+  %t65 = getelementptr i64, ptr %t64, i64 3
+  store i64 10, ptr %t65
+  %t66 = load ptr, ptr %y4.7
+  %t67 = getelementptr i64, ptr %t66, i64 3
+  store i64 10, ptr %t67
+  %t68 = load ptr, ptr %x4.6
+  %t69 = load ptr, ptr %y4.7
+  %t70 = load i64, ptr %n4.5
+  %t71 = call i64 @solve_manhattan_mst(ptr %t68, ptr %t69, i64 %t70)
+  store i64 %t71, ptr %mst4.8
+  %t72 = load i64, ptr %mst4.8
+  %t73 = call i32 (ptr, ...) @printf(ptr @.str.9, i64 %t72)
+  %t74 = load ptr, ptr %x4.6
+  call void @free(ptr %t74)
+  %t75 = load ptr, ptr %y4.7
+  call void @free(ptr %t75)
   call void @benchmark_100k()
-  %t68 = call i32 (ptr, ...) @printf(ptr @.str.8)
+  %t76 = call i32 (ptr, ...) @printf(ptr @.str.10)
   ret i32 0
+}
+
+define i64 @contract_abs_i64() {
+entry:
+  %t1 = call i64 @abs_i64(i64 10)
+  %t2 = icmp eq i64 %t1, 10
+  br i1 %t2, label %asok1, label %asfail2
+asfail2:
+  ret i64 52
+asok1:
+  %t3 = sub i64 0, 42
+  %t4 = call i64 @abs_i64(i64 %t3)
+  %t5 = icmp eq i64 %t4, 42
+  br i1 %t5, label %asok3, label %asfail4
+asfail4:
+  ret i64 53
+asok3:
+  %t6 = call i64 @abs_i64(i64 0)
+  %t7 = icmp eq i64 %t6, 0
+  br i1 %t7, label %asok5, label %asfail6
+asfail6:
+  ret i64 54
+asok5:
+  %t8 = sub i64 0, 9223372036854775807
+  %t9 = sub i64 %t8, 1
+  %t10 = call i64 @abs_i64(i64 %t9)
+  %t11 = icmp eq i64 %t10, 9223372036854775807
+  br i1 %t11, label %asok7, label %asfail8
+asfail8:
+  ret i64 55
+asok7:
+  ret i64 0
+}
+
+define i64 @contract_validate_coordinates() {
+entry:
+  %n.1 = alloca i64
+  %ret.2 = alloca %struct.BufferGuard
+  %x_buf.3 = alloca %struct.BufferGuard
+  %ret.4 = alloca %struct.BufferGuard
+  %y_buf.5 = alloca %struct.BufferGuard
+  %x.6 = alloca ptr
+  %y.7 = alloca ptr
+  store i64 2, ptr %n.1
+  %t1 = load i64, ptr %n.1
+  %t2 = getelementptr i64, ptr null, i64 1
+  %t3 = ptrtoint ptr %t2 to i64
+  %t4 = mul i64 %t1, %t3
+  %t5 = call %struct.BufferGuard @BufferGuard__new(i64 %t4)
+  store %struct.BufferGuard %t5, ptr %ret.2
+  %t6 = load %struct.BufferGuard, ptr %ret.2
+  store %struct.BufferGuard %t6, ptr %x_buf.3
+  %t7 = load i64, ptr %n.1
+  %t8 = getelementptr i64, ptr null, i64 1
+  %t9 = ptrtoint ptr %t8 to i64
+  %t10 = mul i64 %t7, %t9
+  %t11 = call %struct.BufferGuard @BufferGuard__new(i64 %t10)
+  store %struct.BufferGuard %t11, ptr %ret.4
+  %t12 = load %struct.BufferGuard, ptr %ret.4
+  store %struct.BufferGuard %t12, ptr %y_buf.5
+  %t13 = getelementptr %struct.BufferGuard, ptr %x_buf.3, i32 0, i32 0
+  %t14 = load ptr, ptr %t13
+  store ptr %t14, ptr %x.6
+  %t15 = getelementptr %struct.BufferGuard, ptr %y_buf.5, i32 0, i32 0
+  %t16 = load ptr, ptr %t15
+  store ptr %t16, ptr %y.7
+  %t17 = load ptr, ptr %x.6
+  %t18 = getelementptr i64, ptr %t17, i64 0
+  store i64 500, ptr %t18
+  %t19 = load ptr, ptr %y.7
+  %t20 = getelementptr i64, ptr %t19, i64 0
+  %t21 = sub i64 0, 500
+  store i64 %t21, ptr %t20
+  %t22 = load ptr, ptr %x.6
+  %t23 = getelementptr i64, ptr %t22, i64 1
+  store i64 1000000000, ptr %t23
+  %t24 = load ptr, ptr %y.7
+  %t25 = getelementptr i64, ptr %t24, i64 1
+  store i64 -1000000000, ptr %t25
+  %t26 = load ptr, ptr %x.6
+  %t27 = load ptr, ptr %y.7
+  %t28 = load i64, ptr %n.1
+  %t29 = call i1 @validate_coordinates(ptr %t26, ptr %t27, i64 %t28)
+  %t30 = icmp eq i1 %t29, true
+  br i1 %t30, label %asok1, label %asfail2
+asfail2:
+  ret i64 82
+asok1:
+  %t31 = load ptr, ptr %x.6
+  %t32 = getelementptr i64, ptr %t31, i64 1
+  %t33 = add i64 1000000000, 1
+  store i64 %t33, ptr %t32
+  %t34 = load ptr, ptr %x.6
+  %t35 = load ptr, ptr %y.7
+  %t36 = load i64, ptr %n.1
+  %t37 = call i1 @validate_coordinates(ptr %t34, ptr %t35, i64 %t36)
+  %t38 = icmp eq i1 %t37, false
+  br i1 %t38, label %asok3, label %asfail4
+asfail4:
+  ret i64 86
+asok3:
+  call void @BufferGuard__drop(ptr %y_buf.5)
+  call void @BufferGuard__drop(ptr %x_buf.3)
+  ret i64 0
+}
+
+define i64 @contract_point_greater() {
+entry:
+  %t1 = call i1 @point_greater(i64 5, i64 2, i64 3, i64 10)
+  %t2 = icmp eq i1 %t1, true
+  br i1 %t2, label %asok1, label %asfail2
+asfail2:
+  ret i64 97
+asok1:
+  %t3 = call i1 @point_greater(i64 3, i64 10, i64 5, i64 2)
+  %t4 = icmp eq i1 %t3, false
+  br i1 %t4, label %asok3, label %asfail4
+asfail4:
+  ret i64 98
+asok3:
+  %t5 = call i1 @point_greater(i64 4, i64 7, i64 4, i64 3)
+  %t6 = icmp eq i1 %t5, true
+  br i1 %t6, label %asok5, label %asfail6
+asfail6:
+  ret i64 99
+asok5:
+  %t7 = call i1 @point_greater(i64 4, i64 3, i64 4, i64 7)
+  %t8 = icmp eq i1 %t7, false
+  br i1 %t8, label %asok7, label %asfail8
+asfail8:
+  ret i64 100
+asok7:
+  %t9 = call i1 @point_greater(i64 4, i64 3, i64 4, i64 3)
+  %t10 = icmp eq i1 %t9, false
+  br i1 %t10, label %asok9, label %asfail10
+asfail10:
+  ret i64 101
+asok9:
+  ret i64 0
+}
+
+define i64 @test_sample_3_points() {
+entry:
+  %n.1 = alloca i64
+  %x.2 = alloca ptr
+  %y.3 = alloca ptr
+  %mst.4 = alloca i64
+  %bf.5 = alloca i64
+  store i64 3, ptr %n.1
+  %t1 = load i64, ptr %n.1
+  %t2 = getelementptr i64, ptr null, i64 1
+  %t3 = ptrtoint ptr %t2 to i64
+  %t4 = mul i64 %t1, %t3
+  %t5 = call ptr @malloc(i64 %t4)
+  store ptr %t5, ptr %x.2
+  %t6 = load i64, ptr %n.1
+  %t7 = getelementptr i64, ptr null, i64 1
+  %t8 = ptrtoint ptr %t7 to i64
+  %t9 = mul i64 %t6, %t8
+  %t10 = call ptr @malloc(i64 %t9)
+  store ptr %t10, ptr %y.3
+  %t11 = load ptr, ptr %x.2
+  %t12 = getelementptr i64, ptr %t11, i64 0
+  store i64 0, ptr %t12
+  %t13 = load ptr, ptr %y.3
+  %t14 = getelementptr i64, ptr %t13, i64 0
+  store i64 0, ptr %t14
+  %t15 = load ptr, ptr %x.2
+  %t16 = getelementptr i64, ptr %t15, i64 1
+  store i64 1, ptr %t16
+  %t17 = load ptr, ptr %y.3
+  %t18 = getelementptr i64, ptr %t17, i64 1
+  store i64 2, ptr %t18
+  %t19 = load ptr, ptr %x.2
+  %t20 = getelementptr i64, ptr %t19, i64 2
+  store i64 2, ptr %t20
+  %t21 = load ptr, ptr %y.3
+  %t22 = getelementptr i64, ptr %t21, i64 2
+  store i64 1, ptr %t22
+  %t23 = load ptr, ptr %x.2
+  %t24 = load ptr, ptr %y.3
+  %t25 = load i64, ptr %n.1
+  %t26 = call i64 @solve_manhattan_mst(ptr %t23, ptr %t24, i64 %t25)
+  store i64 %t26, ptr %mst.4
+  %t27 = load ptr, ptr %x.2
+  %t28 = load ptr, ptr %y.3
+  %t29 = load i64, ptr %n.1
+  %t30 = call i64 @solve_manhattan_mst_bruteforce(ptr %t27, ptr %t28, i64 %t29)
+  store i64 %t30, ptr %bf.5
+  %t31 = load ptr, ptr %x.2
+  call void @free(ptr %t31)
+  %t32 = load ptr, ptr %y.3
+  call void @free(ptr %t32)
+  %t33 = load i64, ptr %mst.4
+  %t34 = icmp eq i64 %t33, 5
+  br i1 %t34, label %asok1, label %asfail2
+asfail2:
+  ret i64 805
+asok1:
+  %t35 = load i64, ptr %bf.5
+  %t36 = icmp eq i64 %t35, 5
+  br i1 %t36, label %asok3, label %asfail4
+asfail4:
+  ret i64 806
+asok3:
+  ret i64 0
+}
+
+define i64 @test_sample_square() {
+entry:
+  %n.1 = alloca i64
+  %x.2 = alloca ptr
+  %y.3 = alloca ptr
+  %mst.4 = alloca i64
+  %bf.5 = alloca i64
+  store i64 4, ptr %n.1
+  %t1 = load i64, ptr %n.1
+  %t2 = getelementptr i64, ptr null, i64 1
+  %t3 = ptrtoint ptr %t2 to i64
+  %t4 = mul i64 %t1, %t3
+  %t5 = call ptr @malloc(i64 %t4)
+  store ptr %t5, ptr %x.2
+  %t6 = load i64, ptr %n.1
+  %t7 = getelementptr i64, ptr null, i64 1
+  %t8 = ptrtoint ptr %t7 to i64
+  %t9 = mul i64 %t6, %t8
+  %t10 = call ptr @malloc(i64 %t9)
+  store ptr %t10, ptr %y.3
+  %t11 = load ptr, ptr %x.2
+  %t12 = getelementptr i64, ptr %t11, i64 0
+  store i64 0, ptr %t12
+  %t13 = load ptr, ptr %y.3
+  %t14 = getelementptr i64, ptr %t13, i64 0
+  store i64 0, ptr %t14
+  %t15 = load ptr, ptr %x.2
+  %t16 = getelementptr i64, ptr %t15, i64 1
+  store i64 0, ptr %t16
+  %t17 = load ptr, ptr %y.3
+  %t18 = getelementptr i64, ptr %t17, i64 1
+  store i64 10, ptr %t18
+  %t19 = load ptr, ptr %x.2
+  %t20 = getelementptr i64, ptr %t19, i64 2
+  store i64 10, ptr %t20
+  %t21 = load ptr, ptr %y.3
+  %t22 = getelementptr i64, ptr %t21, i64 2
+  store i64 0, ptr %t22
+  %t23 = load ptr, ptr %x.2
+  %t24 = getelementptr i64, ptr %t23, i64 3
+  store i64 10, ptr %t24
+  %t25 = load ptr, ptr %y.3
+  %t26 = getelementptr i64, ptr %t25, i64 3
+  store i64 10, ptr %t26
+  %t27 = load ptr, ptr %x.2
+  %t28 = load ptr, ptr %y.3
+  %t29 = load i64, ptr %n.1
+  %t30 = call i64 @solve_manhattan_mst(ptr %t27, ptr %t28, i64 %t29)
+  store i64 %t30, ptr %mst.4
+  %t31 = load ptr, ptr %x.2
+  %t32 = load ptr, ptr %y.3
+  %t33 = load i64, ptr %n.1
+  %t34 = call i64 @solve_manhattan_mst_bruteforce(ptr %t31, ptr %t32, i64 %t33)
+  store i64 %t34, ptr %bf.5
+  %t35 = load ptr, ptr %x.2
+  call void @free(ptr %t35)
+  %t36 = load ptr, ptr %y.3
+  call void @free(ptr %t36)
+  %t37 = load i64, ptr %mst.4
+  %t38 = icmp eq i64 %t37, 30
+  br i1 %t38, label %asok1, label %asfail2
+asfail2:
+  ret i64 823
+asok1:
+  %t39 = load i64, ptr %bf.5
+  %t40 = icmp eq i64 %t39, 30
+  br i1 %t40, label %asok3, label %asfail4
+asfail4:
+  ret i64 824
+asok3:
+  ret i64 0
+}
+
+define i64 @test_stress_random_100() {
+entry:
+  %count.1 = alloca i64
+  %x.2 = alloca ptr
+  %y.3 = alloca ptr
+  %rng.4 = alloca i64
+  %i.5 = alloca i64
+  %mst.6 = alloca i64
+  %bf.7 = alloca i64
+  store i64 100, ptr %count.1
+  %t1 = load i64, ptr %count.1
+  %t2 = getelementptr i64, ptr null, i64 1
+  %t3 = ptrtoint ptr %t2 to i64
+  %t4 = mul i64 %t1, %t3
+  %t5 = call ptr @malloc(i64 %t4)
+  store ptr %t5, ptr %x.2
+  %t6 = load i64, ptr %count.1
+  %t7 = getelementptr i64, ptr null, i64 1
+  %t8 = ptrtoint ptr %t7 to i64
+  %t9 = mul i64 %t6, %t8
+  %t10 = call ptr @malloc(i64 %t9)
+  store ptr %t10, ptr %y.3
+  store i64 123456789, ptr %rng.4
+  store i64 0, ptr %i.5
+  br label %fcond1
+fcond1:
+  %t11 = load i64, ptr %i.5
+  %t12 = load i64, ptr %count.1
+  %t13 = icmp slt i64 %t11, %t12
+  br i1 %t13, label %fbody2, label %fend4
+fbody2:
+  %t14 = load i64, ptr %rng.4
+  %t15 = mul i64 %t14, 1103515245
+  %t16 = add i64 %t15, 12345
+  %t17 = and i64 %t16, 2147483647
+  store i64 %t17, ptr %rng.4
+  %t18 = load ptr, ptr %x.2
+  %t19 = load i64, ptr %i.5
+  %t20 = getelementptr i64, ptr %t18, i64 %t19
+  %t21 = load i64, ptr %rng.4
+  %t22 = srem i64 %t21, 10000
+  store i64 %t22, ptr %t20
+  %t23 = load i64, ptr %rng.4
+  %t24 = mul i64 %t23, 1103515245
+  %t25 = add i64 %t24, 12345
+  %t26 = and i64 %t25, 2147483647
+  store i64 %t26, ptr %rng.4
+  %t27 = load ptr, ptr %y.3
+  %t28 = load i64, ptr %i.5
+  %t29 = getelementptr i64, ptr %t27, i64 %t28
+  %t30 = load i64, ptr %rng.4
+  %t31 = srem i64 %t30, 10000
+  store i64 %t31, ptr %t29
+  br label %fpost3
+fpost3:
+  %t32 = load i64, ptr %i.5
+  %t33 = add i64 %t32, 1
+  store i64 %t33, ptr %i.5
+  br label %fcond1
+fend4:
+  %t34 = load ptr, ptr %x.2
+  %t35 = load ptr, ptr %y.3
+  %t36 = load i64, ptr %count.1
+  %t37 = call i64 @solve_manhattan_mst(ptr %t34, ptr %t35, i64 %t36)
+  store i64 %t37, ptr %mst.6
+  %t38 = load ptr, ptr %x.2
+  %t39 = load ptr, ptr %y.3
+  %t40 = load i64, ptr %count.1
+  %t41 = call i64 @solve_manhattan_mst_bruteforce(ptr %t38, ptr %t39, i64 %t40)
+  store i64 %t41, ptr %bf.7
+  %t42 = load ptr, ptr %x.2
+  call void @free(ptr %t42)
+  %t43 = load ptr, ptr %y.3
+  call void @free(ptr %t43)
+  %t44 = load i64, ptr %mst.6
+  %t45 = load i64, ptr %bf.7
+  %t46 = icmp eq i64 %t44, %t45
+  br i1 %t46, label %asok5, label %asfail6
+asfail6:
+  ret i64 848
+asok5:
+  ret i64 0
+}
+
+define i64 @test_collinear_horizontal() {
+entry:
+  %n.1 = alloca i64
+  %x.2 = alloca ptr
+  %y.3 = alloca ptr
+  %mst.4 = alloca i64
+  %bf.5 = alloca i64
+  store i64 6, ptr %n.1
+  %t1 = load i64, ptr %n.1
+  %t2 = getelementptr i64, ptr null, i64 1
+  %t3 = ptrtoint ptr %t2 to i64
+  %t4 = mul i64 %t1, %t3
+  %t5 = call ptr @malloc(i64 %t4)
+  store ptr %t5, ptr %x.2
+  %t6 = load i64, ptr %n.1
+  %t7 = getelementptr i64, ptr null, i64 1
+  %t8 = ptrtoint ptr %t7 to i64
+  %t9 = mul i64 %t6, %t8
+  %t10 = call ptr @malloc(i64 %t9)
+  store ptr %t10, ptr %y.3
+  %t11 = load ptr, ptr %x.2
+  %t12 = getelementptr i64, ptr %t11, i64 0
+  store i64 10, ptr %t12
+  %t13 = load ptr, ptr %y.3
+  %t14 = getelementptr i64, ptr %t13, i64 0
+  store i64 5, ptr %t14
+  %t15 = load ptr, ptr %x.2
+  %t16 = getelementptr i64, ptr %t15, i64 1
+  store i64 2, ptr %t16
+  %t17 = load ptr, ptr %y.3
+  %t18 = getelementptr i64, ptr %t17, i64 1
+  store i64 5, ptr %t18
+  %t19 = load ptr, ptr %x.2
+  %t20 = getelementptr i64, ptr %t19, i64 2
+  store i64 7, ptr %t20
+  %t21 = load ptr, ptr %y.3
+  %t22 = getelementptr i64, ptr %t21, i64 2
+  store i64 5, ptr %t22
+  %t23 = load ptr, ptr %x.2
+  %t24 = getelementptr i64, ptr %t23, i64 3
+  store i64 15, ptr %t24
+  %t25 = load ptr, ptr %y.3
+  %t26 = getelementptr i64, ptr %t25, i64 3
+  store i64 5, ptr %t26
+  %t27 = load ptr, ptr %x.2
+  %t28 = getelementptr i64, ptr %t27, i64 4
+  store i64 0, ptr %t28
+  %t29 = load ptr, ptr %y.3
+  %t30 = getelementptr i64, ptr %t29, i64 4
+  store i64 5, ptr %t30
+  %t31 = load ptr, ptr %x.2
+  %t32 = getelementptr i64, ptr %t31, i64 5
+  store i64 4, ptr %t32
+  %t33 = load ptr, ptr %y.3
+  %t34 = getelementptr i64, ptr %t33, i64 5
+  store i64 5, ptr %t34
+  %t35 = load ptr, ptr %x.2
+  %t36 = load ptr, ptr %y.3
+  %t37 = load i64, ptr %n.1
+  %t38 = call i64 @solve_manhattan_mst(ptr %t35, ptr %t36, i64 %t37)
+  store i64 %t38, ptr %mst.4
+  %t39 = load ptr, ptr %x.2
+  %t40 = load ptr, ptr %y.3
+  %t41 = load i64, ptr %n.1
+  %t42 = call i64 @solve_manhattan_mst_bruteforce(ptr %t39, ptr %t40, i64 %t41)
+  store i64 %t42, ptr %bf.5
+  %t43 = load ptr, ptr %x.2
+  call void @free(ptr %t43)
+  %t44 = load ptr, ptr %y.3
+  call void @free(ptr %t44)
+  %t45 = load i64, ptr %mst.4
+  %t46 = icmp eq i64 %t45, 15
+  br i1 %t46, label %asok1, label %asfail2
+asfail2:
+  ret i64 867
+asok1:
+  %t47 = load i64, ptr %bf.5
+  %t48 = icmp eq i64 %t47, 15
+  br i1 %t48, label %asok3, label %asfail4
+asfail4:
+  ret i64 868
+asok3:
+  ret i64 0
+}
+
+define i64 @test_collinear_vertical() {
+entry:
+  %n.1 = alloca i64
+  %x.2 = alloca ptr
+  %y.3 = alloca ptr
+  %mst.4 = alloca i64
+  %bf.5 = alloca i64
+  store i64 6, ptr %n.1
+  %t1 = load i64, ptr %n.1
+  %t2 = getelementptr i64, ptr null, i64 1
+  %t3 = ptrtoint ptr %t2 to i64
+  %t4 = mul i64 %t1, %t3
+  %t5 = call ptr @malloc(i64 %t4)
+  store ptr %t5, ptr %x.2
+  %t6 = load i64, ptr %n.1
+  %t7 = getelementptr i64, ptr null, i64 1
+  %t8 = ptrtoint ptr %t7 to i64
+  %t9 = mul i64 %t6, %t8
+  %t10 = call ptr @malloc(i64 %t9)
+  store ptr %t10, ptr %y.3
+  %t11 = load ptr, ptr %x.2
+  %t12 = getelementptr i64, ptr %t11, i64 0
+  %t13 = sub i64 0, 3
+  store i64 %t13, ptr %t12
+  %t14 = load ptr, ptr %y.3
+  %t15 = getelementptr i64, ptr %t14, i64 0
+  store i64 10, ptr %t15
+  %t16 = load ptr, ptr %x.2
+  %t17 = getelementptr i64, ptr %t16, i64 1
+  %t18 = sub i64 0, 3
+  store i64 %t18, ptr %t17
+  %t19 = load ptr, ptr %y.3
+  %t20 = getelementptr i64, ptr %t19, i64 1
+  store i64 2, ptr %t20
+  %t21 = load ptr, ptr %x.2
+  %t22 = getelementptr i64, ptr %t21, i64 2
+  %t23 = sub i64 0, 3
+  store i64 %t23, ptr %t22
+  %t24 = load ptr, ptr %y.3
+  %t25 = getelementptr i64, ptr %t24, i64 2
+  store i64 7, ptr %t25
+  %t26 = load ptr, ptr %x.2
+  %t27 = getelementptr i64, ptr %t26, i64 3
+  %t28 = sub i64 0, 3
+  store i64 %t28, ptr %t27
+  %t29 = load ptr, ptr %y.3
+  %t30 = getelementptr i64, ptr %t29, i64 3
+  store i64 15, ptr %t30
+  %t31 = load ptr, ptr %x.2
+  %t32 = getelementptr i64, ptr %t31, i64 4
+  %t33 = sub i64 0, 3
+  store i64 %t33, ptr %t32
+  %t34 = load ptr, ptr %y.3
+  %t35 = getelementptr i64, ptr %t34, i64 4
+  store i64 0, ptr %t35
+  %t36 = load ptr, ptr %x.2
+  %t37 = getelementptr i64, ptr %t36, i64 5
+  %t38 = sub i64 0, 3
+  store i64 %t38, ptr %t37
+  %t39 = load ptr, ptr %y.3
+  %t40 = getelementptr i64, ptr %t39, i64 5
+  store i64 4, ptr %t40
+  %t41 = load ptr, ptr %x.2
+  %t42 = load ptr, ptr %y.3
+  %t43 = load i64, ptr %n.1
+  %t44 = call i64 @solve_manhattan_mst(ptr %t41, ptr %t42, i64 %t43)
+  store i64 %t44, ptr %mst.4
+  %t45 = load ptr, ptr %x.2
+  %t46 = load ptr, ptr %y.3
+  %t47 = load i64, ptr %n.1
+  %t48 = call i64 @solve_manhattan_mst_bruteforce(ptr %t45, ptr %t46, i64 %t47)
+  store i64 %t48, ptr %bf.5
+  %t49 = load ptr, ptr %x.2
+  call void @free(ptr %t49)
+  %t50 = load ptr, ptr %y.3
+  call void @free(ptr %t50)
+  %t51 = load i64, ptr %mst.4
+  %t52 = icmp eq i64 %t51, 15
+  br i1 %t52, label %asok1, label %asfail2
+asfail2:
+  ret i64 887
+asok1:
+  %t53 = load i64, ptr %bf.5
+  %t54 = icmp eq i64 %t53, 15
+  br i1 %t54, label %asok3, label %asfail4
+asfail4:
+  ret i64 888
+asok3:
+  ret i64 0
+}
+
+define i64 @test_collinear_diagonal_pos() {
+entry:
+  %n.1 = alloca i64
+  %x.2 = alloca ptr
+  %y.3 = alloca ptr
+  %mst.4 = alloca i64
+  %bf.5 = alloca i64
+  store i64 5, ptr %n.1
+  %t1 = load i64, ptr %n.1
+  %t2 = getelementptr i64, ptr null, i64 1
+  %t3 = ptrtoint ptr %t2 to i64
+  %t4 = mul i64 %t1, %t3
+  %t5 = call ptr @malloc(i64 %t4)
+  store ptr %t5, ptr %x.2
+  %t6 = load i64, ptr %n.1
+  %t7 = getelementptr i64, ptr null, i64 1
+  %t8 = ptrtoint ptr %t7 to i64
+  %t9 = mul i64 %t6, %t8
+  %t10 = call ptr @malloc(i64 %t9)
+  store ptr %t10, ptr %y.3
+  %t11 = load ptr, ptr %x.2
+  %t12 = getelementptr i64, ptr %t11, i64 0
+  store i64 1, ptr %t12
+  %t13 = load ptr, ptr %y.3
+  %t14 = getelementptr i64, ptr %t13, i64 0
+  store i64 1, ptr %t14
+  %t15 = load ptr, ptr %x.2
+  %t16 = getelementptr i64, ptr %t15, i64 1
+  store i64 5, ptr %t16
+  %t17 = load ptr, ptr %y.3
+  %t18 = getelementptr i64, ptr %t17, i64 1
+  store i64 5, ptr %t18
+  %t19 = load ptr, ptr %x.2
+  %t20 = getelementptr i64, ptr %t19, i64 2
+  store i64 2, ptr %t20
+  %t21 = load ptr, ptr %y.3
+  %t22 = getelementptr i64, ptr %t21, i64 2
+  store i64 2, ptr %t22
+  %t23 = load ptr, ptr %x.2
+  %t24 = getelementptr i64, ptr %t23, i64 3
+  store i64 4, ptr %t24
+  %t25 = load ptr, ptr %y.3
+  %t26 = getelementptr i64, ptr %t25, i64 3
+  store i64 4, ptr %t26
+  %t27 = load ptr, ptr %x.2
+  %t28 = getelementptr i64, ptr %t27, i64 4
+  store i64 3, ptr %t28
+  %t29 = load ptr, ptr %y.3
+  %t30 = getelementptr i64, ptr %t29, i64 4
+  store i64 3, ptr %t30
+  %t31 = load ptr, ptr %x.2
+  %t32 = load ptr, ptr %y.3
+  %t33 = load i64, ptr %n.1
+  %t34 = call i64 @solve_manhattan_mst(ptr %t31, ptr %t32, i64 %t33)
+  store i64 %t34, ptr %mst.4
+  %t35 = load ptr, ptr %x.2
+  %t36 = load ptr, ptr %y.3
+  %t37 = load i64, ptr %n.1
+  %t38 = call i64 @solve_manhattan_mst_bruteforce(ptr %t35, ptr %t36, i64 %t37)
+  store i64 %t38, ptr %bf.5
+  %t39 = load ptr, ptr %x.2
+  call void @free(ptr %t39)
+  %t40 = load ptr, ptr %y.3
+  call void @free(ptr %t40)
+  %t41 = load i64, ptr %mst.4
+  %t42 = icmp eq i64 %t41, 8
+  br i1 %t42, label %asok1, label %asfail2
+asfail2:
+  ret i64 906
+asok1:
+  %t43 = load i64, ptr %bf.5
+  %t44 = icmp eq i64 %t43, 8
+  br i1 %t44, label %asok3, label %asfail4
+asfail4:
+  ret i64 907
+asok3:
+  ret i64 0
+}
+
+define i64 @test_collinear_diagonal_neg() {
+entry:
+  %n.1 = alloca i64
+  %x.2 = alloca ptr
+  %y.3 = alloca ptr
+  %mst.4 = alloca i64
+  %bf.5 = alloca i64
+  store i64 5, ptr %n.1
+  %t1 = load i64, ptr %n.1
+  %t2 = getelementptr i64, ptr null, i64 1
+  %t3 = ptrtoint ptr %t2 to i64
+  %t4 = mul i64 %t1, %t3
+  %t5 = call ptr @malloc(i64 %t4)
+  store ptr %t5, ptr %x.2
+  %t6 = load i64, ptr %n.1
+  %t7 = getelementptr i64, ptr null, i64 1
+  %t8 = ptrtoint ptr %t7 to i64
+  %t9 = mul i64 %t6, %t8
+  %t10 = call ptr @malloc(i64 %t9)
+  store ptr %t10, ptr %y.3
+  %t11 = load ptr, ptr %x.2
+  %t12 = getelementptr i64, ptr %t11, i64 0
+  store i64 1, ptr %t12
+  %t13 = load ptr, ptr %y.3
+  %t14 = getelementptr i64, ptr %t13, i64 0
+  %t15 = sub i64 0, 1
+  store i64 %t15, ptr %t14
+  %t16 = load ptr, ptr %x.2
+  %t17 = getelementptr i64, ptr %t16, i64 1
+  store i64 5, ptr %t17
+  %t18 = load ptr, ptr %y.3
+  %t19 = getelementptr i64, ptr %t18, i64 1
+  %t20 = sub i64 0, 5
+  store i64 %t20, ptr %t19
+  %t21 = load ptr, ptr %x.2
+  %t22 = getelementptr i64, ptr %t21, i64 2
+  store i64 2, ptr %t22
+  %t23 = load ptr, ptr %y.3
+  %t24 = getelementptr i64, ptr %t23, i64 2
+  %t25 = sub i64 0, 2
+  store i64 %t25, ptr %t24
+  %t26 = load ptr, ptr %x.2
+  %t27 = getelementptr i64, ptr %t26, i64 3
+  store i64 4, ptr %t27
+  %t28 = load ptr, ptr %y.3
+  %t29 = getelementptr i64, ptr %t28, i64 3
+  %t30 = sub i64 0, 4
+  store i64 %t30, ptr %t29
+  %t31 = load ptr, ptr %x.2
+  %t32 = getelementptr i64, ptr %t31, i64 4
+  store i64 3, ptr %t32
+  %t33 = load ptr, ptr %y.3
+  %t34 = getelementptr i64, ptr %t33, i64 4
+  %t35 = sub i64 0, 3
+  store i64 %t35, ptr %t34
+  %t36 = load ptr, ptr %x.2
+  %t37 = load ptr, ptr %y.3
+  %t38 = load i64, ptr %n.1
+  %t39 = call i64 @solve_manhattan_mst(ptr %t36, ptr %t37, i64 %t38)
+  store i64 %t39, ptr %mst.4
+  %t40 = load ptr, ptr %x.2
+  %t41 = load ptr, ptr %y.3
+  %t42 = load i64, ptr %n.1
+  %t43 = call i64 @solve_manhattan_mst_bruteforce(ptr %t40, ptr %t41, i64 %t42)
+  store i64 %t43, ptr %bf.5
+  %t44 = load ptr, ptr %x.2
+  call void @free(ptr %t44)
+  %t45 = load ptr, ptr %y.3
+  call void @free(ptr %t45)
+  %t46 = load i64, ptr %mst.4
+  %t47 = icmp eq i64 %t46, 8
+  br i1 %t47, label %asok1, label %asfail2
+asfail2:
+  ret i64 925
+asok1:
+  %t48 = load i64, ptr %bf.5
+  %t49 = icmp eq i64 %t48, 8
+  br i1 %t49, label %asok3, label %asfail4
+asfail4:
+  ret i64 926
+asok3:
+  ret i64 0
+}
+
+define i64 @test_grid_4x4() {
+entry:
+  %n.1 = alloca i64
+  %x.2 = alloca ptr
+  %y.3 = alloca ptr
+  %idx.4 = alloca i64
+  %r.5 = alloca i64
+  %c.6 = alloca i64
+  %mst.7 = alloca i64
+  %bf.8 = alloca i64
+  store i64 16, ptr %n.1
+  %t1 = load i64, ptr %n.1
+  %t2 = getelementptr i64, ptr null, i64 1
+  %t3 = ptrtoint ptr %t2 to i64
+  %t4 = mul i64 %t1, %t3
+  %t5 = call ptr @malloc(i64 %t4)
+  store ptr %t5, ptr %x.2
+  %t6 = load i64, ptr %n.1
+  %t7 = getelementptr i64, ptr null, i64 1
+  %t8 = ptrtoint ptr %t7 to i64
+  %t9 = mul i64 %t6, %t8
+  %t10 = call ptr @malloc(i64 %t9)
+  store ptr %t10, ptr %y.3
+  store i64 0, ptr %idx.4
+  store i64 0, ptr %r.5
+  br label %fcond1
+fcond1:
+  %t11 = load i64, ptr %r.5
+  %t12 = icmp slt i64 %t11, 4
+  br i1 %t12, label %fbody2, label %fend4
+fbody2:
+  store i64 0, ptr %c.6
+  br label %fcond5
+fcond5:
+  %t13 = load i64, ptr %c.6
+  %t14 = icmp slt i64 %t13, 4
+  br i1 %t14, label %fbody6, label %fend8
+fbody6:
+  %t15 = load ptr, ptr %x.2
+  %t16 = load i64, ptr %idx.4
+  %t17 = getelementptr i64, ptr %t15, i64 %t16
+  %t18 = load i64, ptr %c.6
+  %t19 = mul i64 %t18, 10
+  store i64 %t19, ptr %t17
+  %t20 = load ptr, ptr %y.3
+  %t21 = load i64, ptr %idx.4
+  %t22 = getelementptr i64, ptr %t20, i64 %t21
+  %t23 = load i64, ptr %r.5
+  %t24 = mul i64 %t23, 10
+  store i64 %t24, ptr %t22
+  %t25 = load i64, ptr %idx.4
+  %t26 = add i64 %t25, 1
+  store i64 %t26, ptr %idx.4
+  br label %fpost7
+fpost7:
+  %t27 = load i64, ptr %c.6
+  %t28 = add i64 %t27, 1
+  store i64 %t28, ptr %c.6
+  br label %fcond5
+fend8:
+  br label %fpost3
+fpost3:
+  %t29 = load i64, ptr %r.5
+  %t30 = add i64 %t29, 1
+  store i64 %t30, ptr %r.5
+  br label %fcond1
+fend4:
+  %t31 = load ptr, ptr %x.2
+  %t32 = load ptr, ptr %y.3
+  %t33 = load i64, ptr %n.1
+  %t34 = call i64 @solve_manhattan_mst(ptr %t31, ptr %t32, i64 %t33)
+  store i64 %t34, ptr %mst.7
+  %t35 = load ptr, ptr %x.2
+  %t36 = load ptr, ptr %y.3
+  %t37 = load i64, ptr %n.1
+  %t38 = call i64 @solve_manhattan_mst_bruteforce(ptr %t35, ptr %t36, i64 %t37)
+  store i64 %t38, ptr %bf.8
+  %t39 = load ptr, ptr %x.2
+  call void @free(ptr %t39)
+  %t40 = load ptr, ptr %y.3
+  call void @free(ptr %t40)
+  %t41 = load i64, ptr %mst.7
+  %t42 = icmp eq i64 %t41, 150
+  br i1 %t42, label %asok9, label %asfail10
+asfail10:
+  ret i64 947
+asok9:
+  %t43 = load i64, ptr %bf.8
+  %t44 = icmp eq i64 %t43, 150
+  br i1 %t44, label %asok11, label %asfail12
+asfail12:
+  ret i64 948
+asok11:
+  ret i64 0
+}
+
+define i64 @test_stress_collinear_random() {
+entry:
+  %count.1 = alloca i64
+  %x.2 = alloca ptr
+  %y.3 = alloca ptr
+  %rng.4 = alloca i64
+  %i.5 = alloca i64
+  %coord.6 = alloca i64
+  %mst.7 = alloca i64
+  %bf.8 = alloca i64
+  store i64 80, ptr %count.1
+  %t1 = load i64, ptr %count.1
+  %t2 = getelementptr i64, ptr null, i64 1
+  %t3 = ptrtoint ptr %t2 to i64
+  %t4 = mul i64 %t1, %t3
+  %t5 = call ptr @malloc(i64 %t4)
+  store ptr %t5, ptr %x.2
+  %t6 = load i64, ptr %count.1
+  %t7 = getelementptr i64, ptr null, i64 1
+  %t8 = ptrtoint ptr %t7 to i64
+  %t9 = mul i64 %t6, %t8
+  %t10 = call ptr @malloc(i64 %t9)
+  store ptr %t10, ptr %y.3
+  store i64 99991, ptr %rng.4
+  store i64 0, ptr %i.5
+  br label %fcond1
+fcond1:
+  %t11 = load i64, ptr %i.5
+  %t12 = load i64, ptr %count.1
+  %t13 = icmp slt i64 %t11, %t12
+  br i1 %t13, label %fbody2, label %fend4
+fbody2:
+  %t14 = load i64, ptr %rng.4
+  %t15 = mul i64 %t14, 1103515245
+  %t16 = add i64 %t15, 12345
+  %t17 = and i64 %t16, 2147483647
+  store i64 %t17, ptr %rng.4
+  %t18 = load i64, ptr %rng.4
+  %t19 = srem i64 %t18, 500
+  store i64 %t19, ptr %coord.6
+  %t20 = load i64, ptr %i.5
+  %t21 = srem i64 %t20, 3
+  %t22 = icmp eq i64 %t21, 0
+  br i1 %t22, label %then5, label %else7
+then5:
+  %t23 = load ptr, ptr %x.2
+  %t24 = load i64, ptr %i.5
+  %t25 = getelementptr i64, ptr %t23, i64 %t24
+  %t26 = load i64, ptr %coord.6
+  store i64 %t26, ptr %t25
+  %t27 = load ptr, ptr %y.3
+  %t28 = load i64, ptr %i.5
+  %t29 = getelementptr i64, ptr %t27, i64 %t28
+  store i64 100, ptr %t29
+  br label %endif6
+else7:
+  %t30 = load i64, ptr %i.5
+  %t31 = srem i64 %t30, 3
+  %t32 = icmp eq i64 %t31, 1
+  br i1 %t32, label %then8, label %else10
+then8:
+  %t33 = load ptr, ptr %x.2
+  %t34 = load i64, ptr %i.5
+  %t35 = getelementptr i64, ptr %t33, i64 %t34
+  store i64 200, ptr %t35
+  %t36 = load ptr, ptr %y.3
+  %t37 = load i64, ptr %i.5
+  %t38 = getelementptr i64, ptr %t36, i64 %t37
+  %t39 = load i64, ptr %coord.6
+  store i64 %t39, ptr %t38
+  br label %endif9
+else10:
+  %t40 = load ptr, ptr %x.2
+  %t41 = load i64, ptr %i.5
+  %t42 = getelementptr i64, ptr %t40, i64 %t41
+  %t43 = load i64, ptr %coord.6
+  store i64 %t43, ptr %t42
+  %t44 = load ptr, ptr %y.3
+  %t45 = load i64, ptr %i.5
+  %t46 = getelementptr i64, ptr %t44, i64 %t45
+  %t47 = load i64, ptr %coord.6
+  %t48 = sub i64 0, %t47
+  store i64 %t48, ptr %t46
+  br label %endif9
+endif9:
+  br label %endif6
+endif6:
+  br label %fpost3
+fpost3:
+  %t49 = load i64, ptr %i.5
+  %t50 = add i64 %t49, 1
+  store i64 %t50, ptr %i.5
+  br label %fcond1
+fend4:
+  %t51 = load ptr, ptr %x.2
+  %t52 = load ptr, ptr %y.3
+  %t53 = load i64, ptr %count.1
+  %t54 = call i64 @solve_manhattan_mst(ptr %t51, ptr %t52, i64 %t53)
+  store i64 %t54, ptr %mst.7
+  %t55 = load ptr, ptr %x.2
+  %t56 = load ptr, ptr %y.3
+  %t57 = load i64, ptr %count.1
+  %t58 = call i64 @solve_manhattan_mst_bruteforce(ptr %t55, ptr %t56, i64 %t57)
+  store i64 %t58, ptr %bf.8
+  %t59 = load ptr, ptr %x.2
+  call void @free(ptr %t59)
+  %t60 = load ptr, ptr %y.3
+  call void @free(ptr %t60)
+  %t61 = load i64, ptr %mst.7
+  %t62 = load i64, ptr %bf.8
+  %t63 = icmp eq i64 %t61, %t62
+  br i1 %t63, label %asok11, label %asfail12
+asfail12:
+  ret i64 981
+asok11:
+  ret i64 0
+}
+
+define i64 @test_introsort_adversarial_patterns() {
+entry:
+  %n.1 = alloca i64
+  %ret.2 = alloca %struct.BufferGuard
+  %buf.3 = alloca %struct.BufferGuard
+  %arr.4 = alloca ptr
+  %i.5 = alloca i64
+  %i.6 = alloca i64
+  %i.7 = alloca i64
+  %i.8 = alloca i64
+  %half.9 = alloca i64
+  %i.10 = alloca i64
+  %i.11 = alloca i64
+  %i.12 = alloca i64
+  %i.13 = alloca i64
+  store i64 10000, ptr %n.1
+  %t1 = load i64, ptr %n.1
+  %t2 = getelementptr i64, ptr null, i64 1
+  %t3 = ptrtoint ptr %t2 to i64
+  %t4 = mul i64 %t1, %t3
+  %t5 = call %struct.BufferGuard @BufferGuard__new(i64 %t4)
+  store %struct.BufferGuard %t5, ptr %ret.2
+  %t6 = load %struct.BufferGuard, ptr %ret.2
+  store %struct.BufferGuard %t6, ptr %buf.3
+  %t7 = getelementptr %struct.BufferGuard, ptr %buf.3, i32 0, i32 0
+  %t8 = load ptr, ptr %t7
+  store ptr %t8, ptr %arr.4
+  store i64 0, ptr %i.5
+  br label %fcond1
+fcond1:
+  %t9 = load i64, ptr %i.5
+  %t10 = load i64, ptr %n.1
+  %t11 = icmp slt i64 %t9, %t10
+  br i1 %t11, label %fbody2, label %fend4
+fbody2:
+  %t12 = load ptr, ptr %arr.4
+  %t13 = load i64, ptr %i.5
+  %t14 = getelementptr i64, ptr %t12, i64 %t13
+  %t15 = load i64, ptr %i.5
+  store i64 %t15, ptr %t14
+  br label %fpost3
+fpost3:
+  %t16 = load i64, ptr %i.5
+  %t17 = add i64 %t16, 1
+  store i64 %t17, ptr %i.5
+  br label %fcond1
+fend4:
+  %t18 = load ptr, ptr %arr.4
+  %t19 = load i64, ptr %n.1
+  %t20 = sub i64 %t19, 1
+  call void @sort_i64(ptr %t18, i64 0, i64 %t20)
+  store i64 0, ptr %i.6
+  br label %fcond5
+fcond5:
+  %t21 = load i64, ptr %i.6
+  %t22 = load i64, ptr %n.1
+  %t23 = sub i64 %t22, 1
+  %t24 = icmp slt i64 %t21, %t23
+  br i1 %t24, label %fbody6, label %fend8
+fbody6:
+  %t25 = load ptr, ptr %arr.4
+  %t26 = load i64, ptr %i.6
+  %t27 = getelementptr i64, ptr %t25, i64 %t26
+  %t28 = load i64, ptr %t27
+  %t29 = load ptr, ptr %arr.4
+  %t30 = load i64, ptr %i.6
+  %t31 = add i64 %t30, 1
+  %t32 = getelementptr i64, ptr %t29, i64 %t31
+  %t33 = load i64, ptr %t32
+  %t34 = icmp sle i64 %t28, %t33
+  br i1 %t34, label %asok9, label %asfail10
+asfail10:
+  ret i64 998
+asok9:
+  br label %fpost7
+fpost7:
+  %t35 = load i64, ptr %i.6
+  %t36 = add i64 %t35, 1
+  store i64 %t36, ptr %i.6
+  br label %fcond5
+fend8:
+  %t37 = load ptr, ptr %arr.4
+  %t38 = getelementptr i64, ptr %t37, i64 0
+  %t39 = load i64, ptr %t38
+  %t40 = icmp eq i64 %t39, 0
+  br i1 %t40, label %asok11, label %asfail12
+asfail12:
+  ret i64 1000
+asok11:
+  %t41 = load ptr, ptr %arr.4
+  %t42 = load i64, ptr %n.1
+  %t43 = sub i64 %t42, 1
+  %t44 = getelementptr i64, ptr %t41, i64 %t43
+  %t45 = load i64, ptr %t44
+  %t46 = load i64, ptr %n.1
+  %t47 = sub i64 %t46, 1
+  %t48 = icmp eq i64 %t45, %t47
+  br i1 %t48, label %asok13, label %asfail14
+asfail14:
+  ret i64 1001
+asok13:
+  store i64 0, ptr %i.7
+  br label %fcond15
+fcond15:
+  %t49 = load i64, ptr %i.7
+  %t50 = load i64, ptr %n.1
+  %t51 = icmp slt i64 %t49, %t50
+  br i1 %t51, label %fbody16, label %fend18
+fbody16:
+  %t52 = load ptr, ptr %arr.4
+  %t53 = load i64, ptr %i.7
+  %t54 = getelementptr i64, ptr %t52, i64 %t53
+  %t55 = load i64, ptr %n.1
+  %t56 = load i64, ptr %i.7
+  %t57 = sub i64 %t55, %t56
+  store i64 %t57, ptr %t54
+  br label %fpost17
+fpost17:
+  %t58 = load i64, ptr %i.7
+  %t59 = add i64 %t58, 1
+  store i64 %t59, ptr %i.7
+  br label %fcond15
+fend18:
+  %t60 = load ptr, ptr %arr.4
+  %t61 = load i64, ptr %n.1
+  %t62 = sub i64 %t61, 1
+  call void @sort_i64(ptr %t60, i64 0, i64 %t62)
+  store i64 0, ptr %i.8
+  br label %fcond19
+fcond19:
+  %t63 = load i64, ptr %i.8
+  %t64 = load i64, ptr %n.1
+  %t65 = sub i64 %t64, 1
+  %t66 = icmp slt i64 %t63, %t65
+  br i1 %t66, label %fbody20, label %fend22
+fbody20:
+  %t67 = load ptr, ptr %arr.4
+  %t68 = load i64, ptr %i.8
+  %t69 = getelementptr i64, ptr %t67, i64 %t68
+  %t70 = load i64, ptr %t69
+  %t71 = load ptr, ptr %arr.4
+  %t72 = load i64, ptr %i.8
+  %t73 = add i64 %t72, 1
+  %t74 = getelementptr i64, ptr %t71, i64 %t73
+  %t75 = load i64, ptr %t74
+  %t76 = icmp sle i64 %t70, %t75
+  br i1 %t76, label %asok23, label %asfail24
+asfail24:
+  ret i64 1013
+asok23:
+  br label %fpost21
+fpost21:
+  %t77 = load i64, ptr %i.8
+  %t78 = add i64 %t77, 1
+  store i64 %t78, ptr %i.8
+  br label %fcond19
+fend22:
+  %t79 = load ptr, ptr %arr.4
+  %t80 = getelementptr i64, ptr %t79, i64 0
+  %t81 = load i64, ptr %t80
+  %t82 = icmp eq i64 %t81, 1
+  br i1 %t82, label %asok25, label %asfail26
+asfail26:
+  ret i64 1015
+asok25:
+  %t83 = load ptr, ptr %arr.4
+  %t84 = load i64, ptr %n.1
+  %t85 = sub i64 %t84, 1
+  %t86 = getelementptr i64, ptr %t83, i64 %t85
+  %t87 = load i64, ptr %t86
+  %t88 = load i64, ptr %n.1
+  %t89 = icmp eq i64 %t87, %t88
+  br i1 %t89, label %asok27, label %asfail28
+asfail28:
+  ret i64 1016
+asok27:
+  %t90 = load i64, ptr %n.1
+  %t91 = sdiv i64 %t90, 2
+  store i64 %t91, ptr %half.9
+  store i64 0, ptr %i.10
+  br label %fcond29
+fcond29:
+  %t92 = load i64, ptr %i.10
+  %t93 = load i64, ptr %half.9
+  %t94 = icmp slt i64 %t92, %t93
+  br i1 %t94, label %fbody30, label %fend32
+fbody30:
+  %t95 = load ptr, ptr %arr.4
+  %t96 = load i64, ptr %i.10
+  %t97 = getelementptr i64, ptr %t95, i64 %t96
+  %t98 = load i64, ptr %i.10
+  store i64 %t98, ptr %t97
+  %t99 = load ptr, ptr %arr.4
+  %t100 = load i64, ptr %n.1
+  %t101 = sub i64 %t100, 1
+  %t102 = load i64, ptr %i.10
+  %t103 = sub i64 %t101, %t102
+  %t104 = getelementptr i64, ptr %t99, i64 %t103
+  %t105 = load i64, ptr %i.10
+  store i64 %t105, ptr %t104
+  br label %fpost31
+fpost31:
+  %t106 = load i64, ptr %i.10
+  %t107 = add i64 %t106, 1
+  store i64 %t107, ptr %i.10
+  br label %fcond29
+fend32:
+  %t108 = load ptr, ptr %arr.4
+  %t109 = load i64, ptr %n.1
+  %t110 = sub i64 %t109, 1
+  call void @sort_i64(ptr %t108, i64 0, i64 %t110)
+  store i64 0, ptr %i.11
+  br label %fcond33
+fcond33:
+  %t111 = load i64, ptr %i.11
+  %t112 = load i64, ptr %n.1
+  %t113 = sub i64 %t112, 1
+  %t114 = icmp slt i64 %t111, %t113
+  br i1 %t114, label %fbody34, label %fend36
+fbody34:
+  %t115 = load ptr, ptr %arr.4
+  %t116 = load i64, ptr %i.11
+  %t117 = getelementptr i64, ptr %t115, i64 %t116
+  %t118 = load i64, ptr %t117
+  %t119 = load ptr, ptr %arr.4
+  %t120 = load i64, ptr %i.11
+  %t121 = add i64 %t120, 1
+  %t122 = getelementptr i64, ptr %t119, i64 %t121
+  %t123 = load i64, ptr %t122
+  %t124 = icmp sle i64 %t118, %t123
+  br i1 %t124, label %asok37, label %asfail38
+asfail38:
+  ret i64 1030
+asok37:
+  br label %fpost35
+fpost35:
+  %t125 = load i64, ptr %i.11
+  %t126 = add i64 %t125, 1
+  store i64 %t126, ptr %i.11
+  br label %fcond33
+fend36:
+  %t127 = load ptr, ptr %arr.4
+  %t128 = getelementptr i64, ptr %t127, i64 0
+  %t129 = load i64, ptr %t128
+  %t130 = icmp eq i64 %t129, 0
+  br i1 %t130, label %asok39, label %asfail40
+asfail40:
+  ret i64 1032
+asok39:
+  %t131 = load ptr, ptr %arr.4
+  %t132 = getelementptr i64, ptr %t131, i64 1
+  %t133 = load i64, ptr %t132
+  %t134 = icmp eq i64 %t133, 0
+  br i1 %t134, label %asok41, label %asfail42
+asfail42:
+  ret i64 1033
+asok41:
+  %t135 = load ptr, ptr %arr.4
+  %t136 = load i64, ptr %n.1
+  %t137 = sub i64 %t136, 1
+  %t138 = getelementptr i64, ptr %t135, i64 %t137
+  %t139 = load i64, ptr %t138
+  %t140 = load i64, ptr %half.9
+  %t141 = sub i64 %t140, 1
+  %t142 = icmp eq i64 %t139, %t141
+  br i1 %t142, label %asok43, label %asfail44
+asfail44:
+  ret i64 1034
+asok43:
+  store i64 0, ptr %i.12
+  br label %fcond45
+fcond45:
+  %t143 = load i64, ptr %i.12
+  %t144 = load i64, ptr %n.1
+  %t145 = icmp slt i64 %t143, %t144
+  br i1 %t145, label %fbody46, label %fend48
+fbody46:
+  %t146 = load ptr, ptr %arr.4
+  %t147 = load i64, ptr %i.12
+  %t148 = getelementptr i64, ptr %t146, i64 %t147
+  store i64 42, ptr %t148
+  br label %fpost47
+fpost47:
+  %t149 = load i64, ptr %i.12
+  %t150 = add i64 %t149, 1
+  store i64 %t150, ptr %i.12
+  br label %fcond45
+fend48:
+  %t151 = load ptr, ptr %arr.4
+  %t152 = load i64, ptr %n.1
+  %t153 = sub i64 %t152, 1
+  call void @sort_i64(ptr %t151, i64 0, i64 %t153)
+  store i64 0, ptr %i.13
+  br label %fcond49
+fcond49:
+  %t154 = load i64, ptr %i.13
+  %t155 = load i64, ptr %n.1
+  %t156 = icmp slt i64 %t154, %t155
+  br i1 %t156, label %fbody50, label %fend52
+fbody50:
+  %t157 = load ptr, ptr %arr.4
+  %t158 = load i64, ptr %i.13
+  %t159 = getelementptr i64, ptr %t157, i64 %t158
+  %t160 = load i64, ptr %t159
+  %t161 = icmp eq i64 %t160, 42
+  br i1 %t161, label %asok53, label %asfail54
+asfail54:
+  ret i64 1046
+asok53:
+  br label %fpost51
+fpost51:
+  %t162 = load i64, ptr %i.13
+  %t163 = add i64 %t162, 1
+  store i64 %t163, ptr %i.13
+  br label %fcond49
+fend52:
+  call void @BufferGuard__drop(ptr %buf.3)
+  ret i64 0
+}
+
+define i64 @test_heapsort_points_direct_verification() {
+entry:
+  %n.1 = alloca i64
+  %ret.2 = alloca %struct.BufferGuard
+  %buf.3 = alloca %struct.BufferGuard
+  %pts.4 = alloca ptr
+  %rng.5 = alloca i64
+  %i.6 = alloca i64
+  %rx.7 = alloca i64
+  %ry.8 = alloca i64
+  %lit_Point.9 = alloca %struct.Point
+  %i.10 = alloca i64
+  %next_is_greater.11 = alloca i1
+  %i.12 = alloca i64
+  %next_is_greater.13 = alloca i1
+  store i64 200, ptr %n.1
+  %t1 = load i64, ptr %n.1
+  %t2 = getelementptr %struct.Point, ptr null, i64 1
+  %t3 = ptrtoint ptr %t2 to i64
+  %t4 = mul i64 %t1, %t3
+  %t5 = call %struct.BufferGuard @BufferGuard__new(i64 %t4)
+  store %struct.BufferGuard %t5, ptr %ret.2
+  %t6 = load %struct.BufferGuard, ptr %ret.2
+  store %struct.BufferGuard %t6, ptr %buf.3
+  %t7 = getelementptr %struct.BufferGuard, ptr %buf.3, i32 0, i32 0
+  %t8 = load ptr, ptr %t7
+  store ptr %t8, ptr %pts.4
+  store i64 54321, ptr %rng.5
+  store i64 0, ptr %i.6
+  br label %fcond1
+fcond1:
+  %t9 = load i64, ptr %i.6
+  %t10 = load i64, ptr %n.1
+  %t11 = icmp slt i64 %t9, %t10
+  br i1 %t11, label %fbody2, label %fend4
+fbody2:
+  %t12 = load i64, ptr %rng.5
+  %t13 = mul i64 %t12, 1103515245
+  %t14 = add i64 %t13, 12345
+  %t15 = and i64 %t14, 2147483647
+  store i64 %t15, ptr %rng.5
+  %t16 = load i64, ptr %rng.5
+  %t17 = srem i64 %t16, 1000
+  store i64 %t17, ptr %rx.7
+  %t18 = load i64, ptr %rng.5
+  %t19 = mul i64 %t18, 1103515245
+  %t20 = add i64 %t19, 12345
+  %t21 = and i64 %t20, 2147483647
+  store i64 %t21, ptr %rng.5
+  %t22 = load i64, ptr %rng.5
+  %t23 = srem i64 %t22, 1000
+  store i64 %t23, ptr %ry.8
+  %t24 = load ptr, ptr %pts.4
+  %t25 = load i64, ptr %i.6
+  %t26 = getelementptr %struct.Point, ptr %t24, i64 %t25
+  %t27 = load i64, ptr %rx.7
+  %t28 = getelementptr %struct.Point, ptr %lit_Point.9, i32 0, i32 0
+  store i64 %t27, ptr %t28
+  %t29 = load i64, ptr %ry.8
+  %t30 = getelementptr %struct.Point, ptr %lit_Point.9, i32 0, i32 1
+  store i64 %t29, ptr %t30
+  %t31 = load i64, ptr %i.6
+  %t32 = getelementptr %struct.Point, ptr %lit_Point.9, i32 0, i32 2
+  store i64 %t31, ptr %t32
+  %t33 = load %struct.Point, ptr %lit_Point.9
+  store %struct.Point %t33, ptr %t26
+  br label %fpost3
+fpost3:
+  %t34 = load i64, ptr %i.6
+  %t35 = add i64 %t34, 1
+  store i64 %t35, ptr %i.6
+  br label %fcond1
+fend4:
+  %t36 = load ptr, ptr %pts.4
+  %t37 = load i64, ptr %n.1
+  %t38 = sub i64 %t37, 1
+  call void @heapsort_points(ptr %t36, i64 0, i64 %t38)
+  store i64 0, ptr %i.10
+  br label %fcond5
+fcond5:
+  %t39 = load i64, ptr %i.10
+  %t40 = load i64, ptr %n.1
+  %t41 = sub i64 %t40, 1
+  %t42 = icmp slt i64 %t39, %t41
+  br i1 %t42, label %fbody6, label %fend8
+fbody6:
+  %t43 = load ptr, ptr %pts.4
+  %t44 = load i64, ptr %i.10
+  %t45 = add i64 %t44, 1
+  %t46 = getelementptr %struct.Point, ptr %t43, i64 %t45
+  %t47 = getelementptr %struct.Point, ptr %t46, i32 0, i32 0
+  %t48 = load i64, ptr %t47
+  %t49 = load ptr, ptr %pts.4
+  %t50 = load i64, ptr %i.10
+  %t51 = add i64 %t50, 1
+  %t52 = getelementptr %struct.Point, ptr %t49, i64 %t51
+  %t53 = getelementptr %struct.Point, ptr %t52, i32 0, i32 1
+  %t54 = load i64, ptr %t53
+  %t55 = load ptr, ptr %pts.4
+  %t56 = load i64, ptr %i.10
+  %t57 = getelementptr %struct.Point, ptr %t55, i64 %t56
+  %t58 = getelementptr %struct.Point, ptr %t57, i32 0, i32 0
+  %t59 = load i64, ptr %t58
+  %t60 = load ptr, ptr %pts.4
+  %t61 = load i64, ptr %i.10
+  %t62 = getelementptr %struct.Point, ptr %t60, i64 %t61
+  %t63 = getelementptr %struct.Point, ptr %t62, i32 0, i32 1
+  %t64 = load i64, ptr %t63
+  %t65 = call i1 @point_greater(i64 %t48, i64 %t54, i64 %t59, i64 %t64)
+  store i1 %t65, ptr %next_is_greater.11
+  %t66 = load i1, ptr %next_is_greater.11
+  %t67 = xor i1 %t66, true
+  br i1 %t67, label %asok9, label %asfail10
+asfail10:
+  ret i64 1076
+asok9:
+  br label %fpost7
+fpost7:
+  %t68 = load i64, ptr %i.10
+  %t69 = add i64 %t68, 1
+  store i64 %t69, ptr %i.10
+  br label %fcond5
+fend8:
+  %t70 = load ptr, ptr %pts.4
+  call void @heapsort_points(ptr %t70, i64 20, i64 150)
+  store i64 20, ptr %i.12
+  br label %fcond11
+fcond11:
+  %t71 = load i64, ptr %i.12
+  %t72 = icmp slt i64 %t71, 150
+  br i1 %t72, label %fbody12, label %fend14
+fbody12:
+  %t73 = load ptr, ptr %pts.4
+  %t74 = load i64, ptr %i.12
+  %t75 = add i64 %t74, 1
+  %t76 = getelementptr %struct.Point, ptr %t73, i64 %t75
+  %t77 = getelementptr %struct.Point, ptr %t76, i32 0, i32 0
+  %t78 = load i64, ptr %t77
+  %t79 = load ptr, ptr %pts.4
+  %t80 = load i64, ptr %i.12
+  %t81 = add i64 %t80, 1
+  %t82 = getelementptr %struct.Point, ptr %t79, i64 %t81
+  %t83 = getelementptr %struct.Point, ptr %t82, i32 0, i32 1
+  %t84 = load i64, ptr %t83
+  %t85 = load ptr, ptr %pts.4
+  %t86 = load i64, ptr %i.12
+  %t87 = getelementptr %struct.Point, ptr %t85, i64 %t86
+  %t88 = getelementptr %struct.Point, ptr %t87, i32 0, i32 0
+  %t89 = load i64, ptr %t88
+  %t90 = load ptr, ptr %pts.4
+  %t91 = load i64, ptr %i.12
+  %t92 = getelementptr %struct.Point, ptr %t90, i64 %t91
+  %t93 = getelementptr %struct.Point, ptr %t92, i32 0, i32 1
+  %t94 = load i64, ptr %t93
+  %t95 = call i1 @point_greater(i64 %t78, i64 %t84, i64 %t89, i64 %t94)
+  store i1 %t95, ptr %next_is_greater.13
+  %t96 = load i1, ptr %next_is_greater.13
+  %t97 = xor i1 %t96, true
+  br i1 %t97, label %asok15, label %asfail16
+asfail16:
+  ret i64 1085
+asok15:
+  br label %fpost13
+fpost13:
+  %t98 = load i64, ptr %i.12
+  %t99 = add i64 %t98, 1
+  store i64 %t99, ptr %i.12
+  br label %fcond11
+fend14:
+  call void @BufferGuard__drop(ptr %buf.3)
+  ret i64 0
+}
+
+define i64 @test_forced_pure_heapsort_mst() {
+entry:
+  %count.1 = alloca i64
+  %ret.2 = alloca %struct.BufferGuard
+  %x_buf.3 = alloca %struct.BufferGuard
+  %ret.4 = alloca %struct.BufferGuard
+  %y_buf.5 = alloca %struct.BufferGuard
+  %x.6 = alloca ptr
+  %y.7 = alloca ptr
+  %rng.8 = alloca i64
+  %i.9 = alloca i64
+  %intro_mst.10 = alloca i64
+  %heap_mst.11 = alloca i64
+  %bf_mst.12 = alloca i64
+  store i64 150, ptr %count.1
+  %t1 = load i64, ptr %count.1
+  %t2 = getelementptr i64, ptr null, i64 1
+  %t3 = ptrtoint ptr %t2 to i64
+  %t4 = mul i64 %t1, %t3
+  %t5 = call %struct.BufferGuard @BufferGuard__new(i64 %t4)
+  store %struct.BufferGuard %t5, ptr %ret.2
+  %t6 = load %struct.BufferGuard, ptr %ret.2
+  store %struct.BufferGuard %t6, ptr %x_buf.3
+  %t7 = load i64, ptr %count.1
+  %t8 = getelementptr i64, ptr null, i64 1
+  %t9 = ptrtoint ptr %t8 to i64
+  %t10 = mul i64 %t7, %t9
+  %t11 = call %struct.BufferGuard @BufferGuard__new(i64 %t10)
+  store %struct.BufferGuard %t11, ptr %ret.4
+  %t12 = load %struct.BufferGuard, ptr %ret.4
+  store %struct.BufferGuard %t12, ptr %y_buf.5
+  %t13 = getelementptr %struct.BufferGuard, ptr %x_buf.3, i32 0, i32 0
+  %t14 = load ptr, ptr %t13
+  store ptr %t14, ptr %x.6
+  %t15 = getelementptr %struct.BufferGuard, ptr %y_buf.5, i32 0, i32 0
+  %t16 = load ptr, ptr %t15
+  store ptr %t16, ptr %y.7
+  store i64 13579, ptr %rng.8
+  store i64 0, ptr %i.9
+  br label %fcond1
+fcond1:
+  %t17 = load i64, ptr %i.9
+  %t18 = load i64, ptr %count.1
+  %t19 = icmp slt i64 %t17, %t18
+  br i1 %t19, label %fbody2, label %fend4
+fbody2:
+  %t20 = load i64, ptr %rng.8
+  %t21 = mul i64 %t20, 1103515245
+  %t22 = add i64 %t21, 12345
+  %t23 = and i64 %t22, 2147483647
+  store i64 %t23, ptr %rng.8
+  %t24 = load ptr, ptr %x.6
+  %t25 = load i64, ptr %i.9
+  %t26 = getelementptr i64, ptr %t24, i64 %t25
+  %t27 = load i64, ptr %rng.8
+  %t28 = srem i64 %t27, 5000
+  store i64 %t28, ptr %t26
+  %t29 = load i64, ptr %rng.8
+  %t30 = mul i64 %t29, 1103515245
+  %t31 = add i64 %t30, 12345
+  %t32 = and i64 %t31, 2147483647
+  store i64 %t32, ptr %rng.8
+  %t33 = load ptr, ptr %y.7
+  %t34 = load i64, ptr %i.9
+  %t35 = getelementptr i64, ptr %t33, i64 %t34
+  %t36 = load i64, ptr %rng.8
+  %t37 = srem i64 %t36, 5000
+  store i64 %t37, ptr %t35
+  br label %fpost3
+fpost3:
+  %t38 = load i64, ptr %i.9
+  %t39 = add i64 %t38, 1
+  store i64 %t39, ptr %i.9
+  br label %fcond1
+fend4:
+  %t40 = load ptr, ptr %x.6
+  %t41 = load ptr, ptr %y.7
+  %t42 = load i64, ptr %count.1
+  %t43 = call i64 @solve_manhattan_mst(ptr %t40, ptr %t41, i64 %t42)
+  store i64 %t43, ptr %intro_mst.10
+  %t44 = load ptr, ptr %x.6
+  %t45 = load ptr, ptr %y.7
+  %t46 = load i64, ptr %count.1
+  %t47 = call i64 @solve_manhattan_mst_pure_heapsort(ptr %t44, ptr %t45, i64 %t46)
+  store i64 %t47, ptr %heap_mst.11
+  %t48 = load ptr, ptr %x.6
+  %t49 = load ptr, ptr %y.7
+  %t50 = load i64, ptr %count.1
+  %t51 = call i64 @solve_manhattan_mst_bruteforce(ptr %t48, ptr %t49, i64 %t50)
+  store i64 %t51, ptr %bf_mst.12
+  %t52 = load i64, ptr %heap_mst.11
+  %t53 = load i64, ptr %bf_mst.12
+  %t54 = icmp eq i64 %t52, %t53
+  br i1 %t54, label %asok5, label %asfail6
+asfail6:
+  ret i64 1111
+asok5:
+  %t55 = load i64, ptr %intro_mst.10
+  %t56 = load i64, ptr %heap_mst.11
+  %t57 = icmp eq i64 %t55, %t56
+  br i1 %t57, label %asok7, label %asfail8
+asfail8:
+  ret i64 1112
+asok7:
+  call void @BufferGuard__drop(ptr %y_buf.5)
+  call void @BufferGuard__drop(ptr %x_buf.3)
+  ret i64 0
+}
+
+define i32 @run_all_goraw_tests() {
+entry:
+  %__p.1 = alloca i64
+  %__f.2 = alloca i64
+  %r_contract_abs_i64.3 = alloca i64
+  %r_contract_validate_coordinates.4 = alloca i64
+  %r_contract_point_greater.5 = alloca i64
+  %r_test_sample_3_points.6 = alloca i64
+  %r_test_sample_square.7 = alloca i64
+  %r_test_stress_random_100.8 = alloca i64
+  %r_test_collinear_horizontal.9 = alloca i64
+  %r_test_collinear_vertical.10 = alloca i64
+  %r_test_collinear_diagonal_pos.11 = alloca i64
+  %r_test_collinear_diagonal_neg.12 = alloca i64
+  %r_test_grid_4x4.13 = alloca i64
+  %r_test_stress_collinear_random.14 = alloca i64
+  %r_test_introsort_adversarial_patterns.15 = alloca i64
+  %r_test_heapsort_points_direct_verification.16 = alloca i64
+  %r_test_forced_pure_heapsort_mst.17 = alloca i64
+  store i64 0, ptr %__p.1
+  store i64 0, ptr %__f.2
+  %t1 = call i32 (ptr, ...) @printf(ptr @.str.11)
+  %t2 = call i32 (ptr, ...) @printf(ptr @.str.12)
+  %t3 = call i32 (ptr, ...) @printf(ptr @.str.13)
+  %t4 = call i32 (ptr, ...) @printf(ptr @.str.14)
+  %t5 = call i64 @contract_abs_i64()
+  store i64 %t5, ptr %r_contract_abs_i64.3
+  %t6 = load i64, ptr %r_contract_abs_i64.3
+  %t7 = icmp ne i64 %t6, 0
+  br i1 %t7, label %then1, label %else3
+then1:
+  %t8 = load i64, ptr %r_contract_abs_i64.3
+  %t9 = call i32 (ptr, ...) @printf(ptr @.str.15, i64 %t8)
+  %t10 = load i64, ptr %__f.2
+  %t11 = add i64 %t10, 1
+  store i64 %t11, ptr %__f.2
+  br label %endif2
+else3:
+  %t12 = call i32 (ptr, ...) @printf(ptr @.str.16)
+  %t13 = load i64, ptr %__p.1
+  %t14 = add i64 %t13, 1
+  store i64 %t14, ptr %__p.1
+  br label %endif2
+endif2:
+  %t15 = call i64 @contract_validate_coordinates()
+  store i64 %t15, ptr %r_contract_validate_coordinates.4
+  %t16 = load i64, ptr %r_contract_validate_coordinates.4
+  %t17 = icmp ne i64 %t16, 0
+  br i1 %t17, label %then4, label %else6
+then4:
+  %t18 = load i64, ptr %r_contract_validate_coordinates.4
+  %t19 = call i32 (ptr, ...) @printf(ptr @.str.17, i64 %t18)
+  %t20 = load i64, ptr %__f.2
+  %t21 = add i64 %t20, 1
+  store i64 %t21, ptr %__f.2
+  br label %endif5
+else6:
+  %t22 = call i32 (ptr, ...) @printf(ptr @.str.18)
+  %t23 = load i64, ptr %__p.1
+  %t24 = add i64 %t23, 1
+  store i64 %t24, ptr %__p.1
+  br label %endif5
+endif5:
+  %t25 = call i64 @contract_point_greater()
+  store i64 %t25, ptr %r_contract_point_greater.5
+  %t26 = load i64, ptr %r_contract_point_greater.5
+  %t27 = icmp ne i64 %t26, 0
+  br i1 %t27, label %then7, label %else9
+then7:
+  %t28 = load i64, ptr %r_contract_point_greater.5
+  %t29 = call i32 (ptr, ...) @printf(ptr @.str.19, i64 %t28)
+  %t30 = load i64, ptr %__f.2
+  %t31 = add i64 %t30, 1
+  store i64 %t31, ptr %__f.2
+  br label %endif8
+else9:
+  %t32 = call i32 (ptr, ...) @printf(ptr @.str.20)
+  %t33 = load i64, ptr %__p.1
+  %t34 = add i64 %t33, 1
+  store i64 %t34, ptr %__p.1
+  br label %endif8
+endif8:
+  %t35 = call i32 (ptr, ...) @printf(ptr @.str.21)
+  %t36 = call i64 @test_sample_3_points()
+  store i64 %t36, ptr %r_test_sample_3_points.6
+  %t37 = load i64, ptr %r_test_sample_3_points.6
+  %t38 = icmp ne i64 %t37, 0
+  br i1 %t38, label %then10, label %else12
+then10:
+  %t39 = load i64, ptr %r_test_sample_3_points.6
+  %t40 = call i32 (ptr, ...) @printf(ptr @.str.22, i64 %t39)
+  %t41 = load i64, ptr %__f.2
+  %t42 = add i64 %t41, 1
+  store i64 %t42, ptr %__f.2
+  br label %endif11
+else12:
+  %t43 = call i32 (ptr, ...) @printf(ptr @.str.23)
+  %t44 = load i64, ptr %__p.1
+  %t45 = add i64 %t44, 1
+  store i64 %t45, ptr %__p.1
+  br label %endif11
+endif11:
+  %t46 = call i64 @test_sample_square()
+  store i64 %t46, ptr %r_test_sample_square.7
+  %t47 = load i64, ptr %r_test_sample_square.7
+  %t48 = icmp ne i64 %t47, 0
+  br i1 %t48, label %then13, label %else15
+then13:
+  %t49 = load i64, ptr %r_test_sample_square.7
+  %t50 = call i32 (ptr, ...) @printf(ptr @.str.24, i64 %t49)
+  %t51 = load i64, ptr %__f.2
+  %t52 = add i64 %t51, 1
+  store i64 %t52, ptr %__f.2
+  br label %endif14
+else15:
+  %t53 = call i32 (ptr, ...) @printf(ptr @.str.25)
+  %t54 = load i64, ptr %__p.1
+  %t55 = add i64 %t54, 1
+  store i64 %t55, ptr %__p.1
+  br label %endif14
+endif14:
+  %t56 = call i64 @test_stress_random_100()
+  store i64 %t56, ptr %r_test_stress_random_100.8
+  %t57 = load i64, ptr %r_test_stress_random_100.8
+  %t58 = icmp ne i64 %t57, 0
+  br i1 %t58, label %then16, label %else18
+then16:
+  %t59 = load i64, ptr %r_test_stress_random_100.8
+  %t60 = call i32 (ptr, ...) @printf(ptr @.str.26, i64 %t59)
+  %t61 = load i64, ptr %__f.2
+  %t62 = add i64 %t61, 1
+  store i64 %t62, ptr %__f.2
+  br label %endif17
+else18:
+  %t63 = call i32 (ptr, ...) @printf(ptr @.str.27)
+  %t64 = load i64, ptr %__p.1
+  %t65 = add i64 %t64, 1
+  store i64 %t65, ptr %__p.1
+  br label %endif17
+endif17:
+  %t66 = call i64 @test_collinear_horizontal()
+  store i64 %t66, ptr %r_test_collinear_horizontal.9
+  %t67 = load i64, ptr %r_test_collinear_horizontal.9
+  %t68 = icmp ne i64 %t67, 0
+  br i1 %t68, label %then19, label %else21
+then19:
+  %t69 = load i64, ptr %r_test_collinear_horizontal.9
+  %t70 = call i32 (ptr, ...) @printf(ptr @.str.28, i64 %t69)
+  %t71 = load i64, ptr %__f.2
+  %t72 = add i64 %t71, 1
+  store i64 %t72, ptr %__f.2
+  br label %endif20
+else21:
+  %t73 = call i32 (ptr, ...) @printf(ptr @.str.29)
+  %t74 = load i64, ptr %__p.1
+  %t75 = add i64 %t74, 1
+  store i64 %t75, ptr %__p.1
+  br label %endif20
+endif20:
+  %t76 = call i64 @test_collinear_vertical()
+  store i64 %t76, ptr %r_test_collinear_vertical.10
+  %t77 = load i64, ptr %r_test_collinear_vertical.10
+  %t78 = icmp ne i64 %t77, 0
+  br i1 %t78, label %then22, label %else24
+then22:
+  %t79 = load i64, ptr %r_test_collinear_vertical.10
+  %t80 = call i32 (ptr, ...) @printf(ptr @.str.30, i64 %t79)
+  %t81 = load i64, ptr %__f.2
+  %t82 = add i64 %t81, 1
+  store i64 %t82, ptr %__f.2
+  br label %endif23
+else24:
+  %t83 = call i32 (ptr, ...) @printf(ptr @.str.31)
+  %t84 = load i64, ptr %__p.1
+  %t85 = add i64 %t84, 1
+  store i64 %t85, ptr %__p.1
+  br label %endif23
+endif23:
+  %t86 = call i64 @test_collinear_diagonal_pos()
+  store i64 %t86, ptr %r_test_collinear_diagonal_pos.11
+  %t87 = load i64, ptr %r_test_collinear_diagonal_pos.11
+  %t88 = icmp ne i64 %t87, 0
+  br i1 %t88, label %then25, label %else27
+then25:
+  %t89 = load i64, ptr %r_test_collinear_diagonal_pos.11
+  %t90 = call i32 (ptr, ...) @printf(ptr @.str.32, i64 %t89)
+  %t91 = load i64, ptr %__f.2
+  %t92 = add i64 %t91, 1
+  store i64 %t92, ptr %__f.2
+  br label %endif26
+else27:
+  %t93 = call i32 (ptr, ...) @printf(ptr @.str.33)
+  %t94 = load i64, ptr %__p.1
+  %t95 = add i64 %t94, 1
+  store i64 %t95, ptr %__p.1
+  br label %endif26
+endif26:
+  %t96 = call i64 @test_collinear_diagonal_neg()
+  store i64 %t96, ptr %r_test_collinear_diagonal_neg.12
+  %t97 = load i64, ptr %r_test_collinear_diagonal_neg.12
+  %t98 = icmp ne i64 %t97, 0
+  br i1 %t98, label %then28, label %else30
+then28:
+  %t99 = load i64, ptr %r_test_collinear_diagonal_neg.12
+  %t100 = call i32 (ptr, ...) @printf(ptr @.str.34, i64 %t99)
+  %t101 = load i64, ptr %__f.2
+  %t102 = add i64 %t101, 1
+  store i64 %t102, ptr %__f.2
+  br label %endif29
+else30:
+  %t103 = call i32 (ptr, ...) @printf(ptr @.str.35)
+  %t104 = load i64, ptr %__p.1
+  %t105 = add i64 %t104, 1
+  store i64 %t105, ptr %__p.1
+  br label %endif29
+endif29:
+  %t106 = call i64 @test_grid_4x4()
+  store i64 %t106, ptr %r_test_grid_4x4.13
+  %t107 = load i64, ptr %r_test_grid_4x4.13
+  %t108 = icmp ne i64 %t107, 0
+  br i1 %t108, label %then31, label %else33
+then31:
+  %t109 = load i64, ptr %r_test_grid_4x4.13
+  %t110 = call i32 (ptr, ...) @printf(ptr @.str.36, i64 %t109)
+  %t111 = load i64, ptr %__f.2
+  %t112 = add i64 %t111, 1
+  store i64 %t112, ptr %__f.2
+  br label %endif32
+else33:
+  %t113 = call i32 (ptr, ...) @printf(ptr @.str.37)
+  %t114 = load i64, ptr %__p.1
+  %t115 = add i64 %t114, 1
+  store i64 %t115, ptr %__p.1
+  br label %endif32
+endif32:
+  %t116 = call i64 @test_stress_collinear_random()
+  store i64 %t116, ptr %r_test_stress_collinear_random.14
+  %t117 = load i64, ptr %r_test_stress_collinear_random.14
+  %t118 = icmp ne i64 %t117, 0
+  br i1 %t118, label %then34, label %else36
+then34:
+  %t119 = load i64, ptr %r_test_stress_collinear_random.14
+  %t120 = call i32 (ptr, ...) @printf(ptr @.str.38, i64 %t119)
+  %t121 = load i64, ptr %__f.2
+  %t122 = add i64 %t121, 1
+  store i64 %t122, ptr %__f.2
+  br label %endif35
+else36:
+  %t123 = call i32 (ptr, ...) @printf(ptr @.str.39)
+  %t124 = load i64, ptr %__p.1
+  %t125 = add i64 %t124, 1
+  store i64 %t125, ptr %__p.1
+  br label %endif35
+endif35:
+  %t126 = call i64 @test_introsort_adversarial_patterns()
+  store i64 %t126, ptr %r_test_introsort_adversarial_patterns.15
+  %t127 = load i64, ptr %r_test_introsort_adversarial_patterns.15
+  %t128 = icmp ne i64 %t127, 0
+  br i1 %t128, label %then37, label %else39
+then37:
+  %t129 = load i64, ptr %r_test_introsort_adversarial_patterns.15
+  %t130 = call i32 (ptr, ...) @printf(ptr @.str.40, i64 %t129)
+  %t131 = load i64, ptr %__f.2
+  %t132 = add i64 %t131, 1
+  store i64 %t132, ptr %__f.2
+  br label %endif38
+else39:
+  %t133 = call i32 (ptr, ...) @printf(ptr @.str.41)
+  %t134 = load i64, ptr %__p.1
+  %t135 = add i64 %t134, 1
+  store i64 %t135, ptr %__p.1
+  br label %endif38
+endif38:
+  %t136 = call i64 @test_heapsort_points_direct_verification()
+  store i64 %t136, ptr %r_test_heapsort_points_direct_verification.16
+  %t137 = load i64, ptr %r_test_heapsort_points_direct_verification.16
+  %t138 = icmp ne i64 %t137, 0
+  br i1 %t138, label %then40, label %else42
+then40:
+  %t139 = load i64, ptr %r_test_heapsort_points_direct_verification.16
+  %t140 = call i32 (ptr, ...) @printf(ptr @.str.42, i64 %t139)
+  %t141 = load i64, ptr %__f.2
+  %t142 = add i64 %t141, 1
+  store i64 %t142, ptr %__f.2
+  br label %endif41
+else42:
+  %t143 = call i32 (ptr, ...) @printf(ptr @.str.43)
+  %t144 = load i64, ptr %__p.1
+  %t145 = add i64 %t144, 1
+  store i64 %t145, ptr %__p.1
+  br label %endif41
+endif41:
+  %t146 = call i64 @test_forced_pure_heapsort_mst()
+  store i64 %t146, ptr %r_test_forced_pure_heapsort_mst.17
+  %t147 = load i64, ptr %r_test_forced_pure_heapsort_mst.17
+  %t148 = icmp ne i64 %t147, 0
+  br i1 %t148, label %then43, label %else45
+then43:
+  %t149 = load i64, ptr %r_test_forced_pure_heapsort_mst.17
+  %t150 = call i32 (ptr, ...) @printf(ptr @.str.44, i64 %t149)
+  %t151 = load i64, ptr %__f.2
+  %t152 = add i64 %t151, 1
+  store i64 %t152, ptr %__f.2
+  br label %endif44
+else45:
+  %t153 = call i32 (ptr, ...) @printf(ptr @.str.45)
+  %t154 = load i64, ptr %__p.1
+  %t155 = add i64 %t154, 1
+  store i64 %t155, ptr %__p.1
+  br label %endif44
+endif44:
+  %t156 = load i64, ptr %__p.1
+  %t157 = load i64, ptr %__f.2
+  %t158 = call i32 (ptr, ...) @printf(ptr @.str.46, i64 %t156, i64 %t157)
+  %t159 = load i64, ptr %__f.2
+  %t160 = trunc i64 %t159 to i32
+  ret i32 %t160
 }
 

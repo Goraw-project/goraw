@@ -4,8 +4,8 @@
 //! - RAII деструкторы (автоматический маппинг `Type::drop` -> C++ деструктор `~Type()`) с соблюдением "Правила пяти"
 //! - Чистый C++ синтаксис доступа к полям `.` и `->` без оверхеда `gw_deref`
 //! - Конструкторы типов вместо designated initializers для валидности по C++20 (P1008R1)
-//! - Переносимый расчет времени `gw_clock_ms()` через std::chrono::steady_clock
-//! - Полное сохранение и прогон shadow-тестов и контрактов
+//! - Прямой вызов libc `clock()` без подмены FFI сигнатур
+//! - Полное сохранение и прогон shadow-тестов и контрактов через флаг `--test` / `#ifdef GORAW_TEST`
 //! - Минимальные заголовки без замусоривания неиспользуемыми библиотеками
 
 use crate::ast::*;
@@ -333,7 +333,7 @@ impl Transpiler {
              #include <cstdio>\n\
              #include <cstring>\n\
              #include <cassert>\n\
-             #include <chrono>\n"
+             #include <ctime>\n"
         );
 
         if !self.used_math.is_empty() {
@@ -358,12 +358,6 @@ impl Transpiler {
              using u64 = uint64_t;\n\
              using f32 = float;\n\
              using f64 = double;\n\n\
-             // Переносимый замер времени (строго в миллисекундах на всех ОС)\n\
-             inline int64_t gw_clock_ms() noexcept {\n\
-                 return std::chrono::duration_cast<std::chrono::milliseconds>(\n\
-                     std::chrono::steady_clock::now().time_since_epoch()\n\
-                 ).count();\n\
-             }\n\n\
              inline void* alloc(int64_t sz) noexcept { return std::malloc(sz); }\n\
              inline void goraw_panic(const char* msg) noexcept {\n\
                  std::fprintf(stderr, \"[GORAW PANIC] %s\\n\", msg);\n\
@@ -548,6 +542,9 @@ impl Transpiler {
                     self.write_line(&format!("extern \"C\" {} {}({});", ret_s, f.name, plist));
                 }
             } else {
+                if f.name == "main" {
+                    continue;
+                }
                 let ret_s = match &f.ret {
                     Some(t) => self.transpile_type(t),
                     None => "void".to_string(),
@@ -557,7 +554,7 @@ impl Transpiler {
                     params_s.push(format!("{} {}", self.transpile_type(&p.ty), escape_ident(&p.name)));
                 }
                 let plist = params_s.join(", ");
-                let fn_name = if f.name == "main" { "main".to_string() } else { escape_fn_name(&f.name) };
+                let fn_name = escape_fn_name(&f.name);
                 self.write_line(&format!("{} {}({});", ret_s, fn_name, plist));
             }
         }
@@ -568,6 +565,9 @@ impl Transpiler {
         }
         if has_integration_tests {
             self.write_line("namespace integration_tests { void run_all_tests(); }");
+        }
+        if !prog.tests.is_empty() {
+            self.write_line("int32_t run_all_goraw_tests();");
         }
         self.out.push('\n');
 
@@ -594,29 +594,28 @@ impl Transpiler {
                 self.insert_var(&p.name, VarMeta { is_pointer: is_p, struct_name: sname });
                 params_s.push(format!("{} {}", self.transpile_type(&p.ty), escape_ident(&p.name)));
             }
-            let plist = params_s.join(", ");
+            let plist = if f.name == "main" && f.params.is_empty() {
+                "int argc, char** argv".to_string()
+            } else {
+                params_s.join(", ")
+            };
             let fn_name = if f.name == "main" { "main".to_string() } else { escape_fn_name(&f.name) };
 
             self.write_line(&format!("{} {}({}) {{", ret_s, fn_name, plist));
             self.indent_level += 1;
 
-            // Если включен режим тестов (test_mode) — прогоняем контракты и тесты и выходим.
-            // В обычном (релизном/дебажном) запуске программы тесты НЕ крутятся!
-            if f.name == "main" && !prog.tests.is_empty() && self.test_mode {
-                self.write_line("std::printf(\"============================================================\\n\");");
-                self.write_line("std::printf(\"  Running Goraw Contracts & Tests in C++23                 \\n\");");
-                self.write_line("std::printf(\"============================================================\\n\");");
-                if has_contracts {
-                    self.write_line("contracts::run_all_contracts();");
+            if f.name == "main" && !prog.tests.is_empty() {
+                if self.test_mode {
+                    self.write_line("return run_all_goraw_tests();");
+                } else {
+                    self.write_line("#ifdef GORAW_TEST");
+                    self.write_line("return run_all_goraw_tests();");
+                    self.write_line("#else");
+                    self.write_line("if (argc > 1 && (std::strcmp(argv[1], \"--test\") == 0 || std::strcmp(argv[1], \"-t\") == 0)) {");
+                    self.write_line("    return run_all_goraw_tests();");
+                    self.write_line("}");
+                    self.write_line("#endif");
                 }
-                if has_integration_tests {
-                    self.write_line("integration_tests::run_all_tests();");
-                }
-                self.write_line(&format!(
-                    "std::printf(\"\\n[C++23] All {} tests PASSED successfully!\\n\\n\");",
-                    prog.tests.len()
-                ));
-                self.write_line("return 0;");
             }
 
             if let Some(body) = &f.body {
@@ -720,6 +719,25 @@ impl Transpiler {
                 self.indent_level -= 1;
                 self.write_line("} // namespace integration_tests\n");
             }
+
+            self.write_line("inline int32_t run_all_goraw_tests() {");
+            self.indent_level += 1;
+            self.write_line("std::printf(\"============================================================\\n\");");
+            self.write_line("std::printf(\"  Running Goraw Contracts & Tests in C++23                 \\n\");");
+            self.write_line("std::printf(\"============================================================\\n\");");
+            if has_contracts {
+                self.write_line("contracts::run_all_contracts();");
+            }
+            if has_integration_tests {
+                self.write_line("integration_tests::run_all_tests();");
+            }
+            self.write_line(&format!(
+                "std::printf(\"\\n[C++23] All {} tests PASSED successfully!\\n\\n\");",
+                prog.tests.len()
+            ));
+            self.write_line("return 0;");
+            self.indent_level -= 1;
+            self.write_line("}\n");
         }
 
         Ok(std::mem::take(&mut self.out))
@@ -1022,9 +1040,6 @@ impl Transpiler {
                 match &**callee {
                     Expr::Ident(name, _) if name == "sizeof" && args.len() == 1 => {
                         format!("sizeof({})", self.transpile_expr(&args[0]))
-                    }
-                    Expr::Ident(name, _) if name == "clock" && args.is_empty() => {
-                        "gw_clock_ms()".to_string()
                     }
                     Expr::Field { base, field, .. } => {
                         let op = if self.is_expr_pointer(base) { "->" } else { "." };

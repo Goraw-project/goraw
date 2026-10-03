@@ -374,7 +374,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--emit-cpp" => emit_cpp = true,
             "--json" => json = true,
             "--run" => run = true,
-            "--test" | "test" => test = true,
+            "--test" | "-t" | "test" => test = true,
             "lsp" | "--lsp" => {
                 if let Err(e) = gorawc::lsp::run_lsp_server() {
                     eprintln!("ошибка LSP сервера: {e}");
@@ -661,7 +661,7 @@ fn run(opts: Options) -> i32 {
 
         eprintln!("C++23 код записан в `{}`", cpp_path.display());
 
-        if opts.run {
+        if !opts.emit_llvm && (opts.run || opts.test) {
             let exe_path = cpp_path.with_extension("exe");
             let mut cmd = Command::new(&opts.clang);
             cmd.arg(&format!("--target={}", opts.target))
@@ -707,10 +707,9 @@ fn run(opts: Options) -> i32 {
         }
     }
 
-    // Режим тестов для LLVM IR: превращаем test-блоки в функции и генерируем harness-main.
-    if opts.test {
-        transform_tests(&mut prog);
-    }
+    // Интегрируем test/shadow-блоки в функции (@contract_*, @test_*)
+    // и генерируем @run_all_goraw_tests() -> i32
+    integrate_tests_into_program(&mut prog);
 
     // Сбор типов (первый проход).
     let mut collected = Vec::new();
@@ -723,7 +722,8 @@ fn run(opts: Options) -> i32 {
     let ir = {
         let cg = codegen::Codegen::new(&ctx, &mut diags)
             .with_target_triple(opts.target.clone())
-            .with_obfuscate_strings(opts.obfuscate_strings);
+            .with_obfuscate_strings(opts.obfuscate_strings)
+            .with_test_mode(opts.test);
         cg.emit_module(&prog)
     };
 
@@ -751,9 +751,12 @@ fn run(opts: Options) -> i32 {
         return 2;
     }
 
-    if opts.emit_llvm {
+    if opts.emit_llvm && !opts.run && !opts.test {
         eprintln!("LLVM IR записан в `{}`", ll_path.display());
         return 0;
+    }
+    if opts.emit_llvm {
+        eprintln!("LLVM IR записан в `{}`", ll_path.display());
     }
 
     // Сборка внешних .asm файлов через нативный gorawas
@@ -872,7 +875,7 @@ fn run(opts: Options) -> i32 {
         return 1;
     }
 
-    if !opts.keep_ll {
+    if !opts.keep_ll && !opts.emit_llvm {
         let _ = std::fs::remove_file(&ll_path);
         if let Some(rt) = &jit_rt_path {
             let _ = std::fs::remove_file(rt);
@@ -902,27 +905,36 @@ fn run(opts: Options) -> i32 {
     0
 }
 
-/// Преобразует программу под `--test`: каждый `test`-блок → функция
-/// `__test_<name>() -> i64` или `__shadow_<name>() -> i64` (0 = ок, иначе номер строки упавшего assert), плюс
-/// сгенерированный `main`, который прогоняет тесты и печатает структурированный отчёт.
-fn transform_tests(prog: &mut ast::Program) {
+/// Интегрирует test/shadow-блоки в программу: каждый блок преобразуется в функцию
+/// `contract_<name>() -> i64` или `test_<name>() -> i64` (0 = ок, иначе номер строки упавшего assert),
+/// плюс генерируется функция `run_all_goraw_tests() -> i32`, которая прогоняет тесты и печатает отчёт.
+/// Пользовательский `main` сохраняется нетронутым!
+fn integrate_tests_into_program(prog: &mut ast::Program) {
+    if prog.tests.is_empty() {
+        return;
+    }
+
     use ast::*;
     let dummy = diag::Span::dummy();
 
-    // Убираем пользовательский main — его заменит harness.
-    let mut fns: Vec<FnDef> = std::mem::take(&mut prog.fns).into_iter().filter(|f| f.name != "main").collect();
-    let user_has_printf = fns.iter().any(|f| f.name == "printf");
-
-    let tests = std::mem::take(&mut prog.tests);
+    let user_has_printf = prog.fns.iter().any(|f| f.name == "printf");
+    let tests = &prog.tests;
     let mut test_meta = Vec::new();
+    let mut used_names = std::collections::HashSet::new();
 
-    for t in &tests {
-        let prefix = if t.is_shadow { "__shadow" } else { "__test" };
+    for t in tests {
+        let prefix = if t.is_shadow { "contract" } else { "test" };
         let clean = gorawc::cpp_transpiler::sanitize_test_name(&t.name);
-        let fn_name = format!("{prefix}_{clean}");
+        let base_name = format!("{prefix}_{clean}");
+        let mut fn_name = base_name.clone();
+        let mut idx = 1;
+        while !used_names.insert(fn_name.clone()) {
+            idx += 1;
+            fn_name = format!("{base_name}_{idx}");
+        }
         test_meta.push((fn_name.clone(), t.name.clone(), t.is_shadow));
 
-        fns.push(FnDef {
+        prog.fns.push(FnDef {
             name: fn_name,
             type_params: Vec::new(),
             params: Vec::new(),
@@ -936,12 +948,12 @@ fn transform_tests(prog: &mut ast::Program) {
         });
     }
 
-    // Harness-main генерируем как исходник Goraw и парсим — без ручной сборки AST.
+    // Runner function: fn run_all_goraw_tests() -> i32
     let mut hs = String::new();
     if !user_has_printf {
         hs.push_str("extern fn printf(fmt: *u8, ...) -> i32;\n");
     }
-    hs.push_str("fn main() -> i32 {\n");
+    hs.push_str("fn run_all_goraw_tests() -> i32 {\n");
     hs.push_str("    let mut __p: i64 = 0;\n    let mut __f: i64 = 0;\n");
     hs.push_str("    printf(\"============================================================\\n\");\n");
     hs.push_str("    printf(\"  Running Goraw Contracts & Tests in LLVM IR                \\n\");\n");
@@ -952,35 +964,40 @@ fn transform_tests(prog: &mut ast::Program) {
 
     if !contracts.is_empty() {
         hs.push_str("    printf(\"\\n--- Shadow Contracts ---\\n\");\n");
-        for (fn_name, name, _) in contracts {
-            let esc_name = name.replace('\\', "\\\\").replace('"', "\\\"");
+        for (fn_name, name, _) in &contracts {
+            let esc_name = name.replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%");
             hs.push_str(&format!("    let r_{fn_name} = {fn_name}();\n"));
             hs.push_str(&format!(
-                "    if r_{fn_name} != 0 {{ printf(\"[CONTRACT FAIL] %s (line %lld)\\n\", \"{esc_name}\", r_{fn_name}); __f += 1; }} else {{ printf(\"[CONTRACT ok] %s\\n\", \"{esc_name}\"); __p += 1; }}\n"
+                "    if r_{fn_name} != 0 {{\n        printf(\"[CONTRACT FAIL] {esc_name} (line %lld)\\n\", r_{fn_name});\n        __f += 1;\n    }} else {{\n        printf(\"[CONTRACT ok] {esc_name}\\n\");\n        __p += 1;\n    }}\n"
             ));
         }
     }
 
     if !unit_tests.is_empty() {
         hs.push_str("    printf(\"\\n--- Integration Tests ---\\n\");\n");
-        for (fn_name, name, _) in unit_tests {
-            let esc_name = name.replace('\\', "\\\\").replace('"', "\\\"");
+        for (fn_name, name, _) in &unit_tests {
+            let esc_name = name.replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%");
             hs.push_str(&format!("    let r_{fn_name} = {fn_name}();\n"));
             hs.push_str(&format!(
-                "    if r_{fn_name} != 0 {{ printf(\"[TEST FAIL] %s (line %lld)\\n\", \"{esc_name}\", r_{fn_name}); __f += 1; }} else {{ printf(\"[TEST ok] %s\\n\", \"{esc_name}\"); __p += 1; }}\n"
+                "    if r_{fn_name} != 0 {{\n        printf(\"[TEST FAIL] {esc_name} (line %lld)\\n\", r_{fn_name});\n        __f += 1;\n    }} else {{\n        printf(\"[TEST ok] {esc_name}\\n\");\n        __p += 1;\n    }}\n"
             ));
         }
     }
 
-    hs.push_str("    printf(\"\\nAll tests finished: %lld passed, %lld failed\\n\", __p, __f);\n");
+    let total = contracts.len() + unit_tests.len();
+    hs.push_str(&format!(
+        "    printf(\"\\n[LLVM IR] All {total} tests finished: %lld passed, %lld failed\\n\\n\", __p, __f);\n"
+    ));
     hs.push_str("    return __f as i32;\n}\n");
 
     let mut hdiags = diag::Diags::new("<test-harness>", hs.clone());
     let htoks = lexer::Lexer::new(&hs).tokenize(&mut hdiags);
     let hprog = parser::Parser::new(htoks, &hs, &mut hdiags).parse_program();
-    fns.extend(hprog.fns);
-
-    prog.fns = fns;
+    for f in hprog.fns {
+        if !prog.fns.iter().any(|existing| existing.name == f.name) {
+            prog.fns.push(f);
+        }
+    }
 }
 
 /// Рекурсивно собирает главный файл и все импортируемые (`import "path";`) в
@@ -1112,7 +1129,7 @@ fn output_paths(opts: &Options) -> (PathBuf, PathBuf) {
     let dir = inp.parent().unwrap_or(Path::new("."));
     match &opts.output {
         Some(o) => {
-            if opts.emit_llvm && !opts.emit_cpp {
+            if opts.emit_llvm && !opts.emit_cpp && !opts.run && !opts.test {
                 (o.clone(), o.clone())
             } else {
                 let ll = o.with_extension("ll");
@@ -1120,7 +1137,7 @@ fn output_paths(opts: &Options) -> (PathBuf, PathBuf) {
             }
         }
         None => {
-            if opts.emit_llvm {
+            if opts.emit_llvm && !opts.run && !opts.test {
                 (dir.join(format!("{stem}.ll")), dir.join(format!("{stem}.ll")))
             } else {
                 (dir.join(format!("{stem}.ll")), dir.join(format!("{stem}.exe")))
