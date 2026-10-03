@@ -13,3 +13,4 @@ pub mod parser;
 pub mod pkg;
 pub mod proto;
 pub mod types;
+pub mod cpp_transpiler;

@@ -28,6 +28,7 @@ struct Options {
     extra_protos: Vec<PathBuf>,
     output: Option<PathBuf>,
     emit_llvm: bool,   // остановиться на .ll
+    emit_cpp: bool,    // транслировать в C++23 (.cpp)
     json: bool,        // диагностика в JSON
     run: bool,         // запустить после сборки
     opt: Option<String>, // уровень оптимизации, напр. "2"
@@ -108,6 +109,13 @@ pub fn main() {
                 args.remove(1);
                 if !args.iter().any(|a| a == "--test" || a == "test") {
                     args.push("--test".to_string());
+                }
+                check_manifest_entry(&mut args);
+            }
+            "to-cpp" | "cpp" => {
+                args.remove(1);
+                if !args.iter().any(|a| a == "--emit-cpp") {
+                    args.push("--emit-cpp".to_string());
                 }
                 check_manifest_entry(&mut args);
             }
@@ -278,14 +286,16 @@ fn print_help() {
     build            собрать проект из goraw.toml\n\
     run              собрать и запустить проект из goraw.toml\n\
     test             собрать и запустить shadow-тесты проекта\n\
+    to-cpp, cpp      транслировать Goraw проект/файл в C++23 код (.cpp)\n\
     proto, pb        скомпилировать .proto схему в Goraw-код\n\
     lsp              запустить Goraw Language Server Protocol (LSP) сервер для IDE\n\
 \n\
 ОПЦИИ:\n\
-    -o <путь>        имя выходного файла (.exe или .ll)\n\
+    -o <путь>        имя выходного файла (.exe, .ll или .cpp)\n\
     --release, -r    собрать в релизном профиле (-O3, удаление мёртвого кода, стриппинг)\n\
     --debug          собрать в отладочном профиле (-O0, -g отладочные символы, по умолчанию)\n\
     --emit-llvm      остановиться на LLVM IR (.ll), не звать clang\n\
+    --emit-cpp       транслировать исходный код Goraw в C++23 (.cpp)\n\
     --json           печатать диагностику в LLM-формате (JSON + XML-нотки)\n\
     --run            запустить программу после успешной сборки\n\
     --test           собрать и прогнать shadow-тесты (test-блоки)\n\
@@ -311,6 +321,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut extra_protos: Vec<PathBuf> = Vec::new();
     let mut output = None;
     let mut emit_llvm = false;
+    let mut emit_cpp = false;
     let mut json = false;
     let mut run = false;
     let mut opt = None;
@@ -350,6 +361,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                 target = args.get(i).ok_or("--target требует аргумент")?.clone();
             }
             "--emit-llvm" => emit_llvm = true,
+            "--emit-cpp" => emit_cpp = true,
             "--json" => json = true,
             "--run" => run = true,
             "--test" | "test" => test = true,
@@ -422,6 +434,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         extra_protos,
         output,
         emit_llvm,
+        emit_cpp,
         json,
         run,
         opt,
@@ -604,6 +617,87 @@ fn run(opts: Options) -> i32 {
     // Режим тестов: превращаем test-блоки в функции и генерируем harness-main.
     if opts.test {
         transform_tests(&mut prog);
+    }
+
+    if opts.emit_cpp {
+        let cpp_code = match gorawc::cpp_transpiler::transpile(&prog, opts.test) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("ошибка C++ трансляции: {e}");
+                return 1;
+            }
+        };
+
+        let cpp_path = match &opts.output {
+            Some(o) => {
+                if o.extension().map_or(false, |ext| ext == "cpp") {
+                    o.clone()
+                } else {
+                    o.with_extension("cpp")
+                }
+            }
+            None => {
+                let stem = input_path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "out".into());
+                let dir = input_path.parent().unwrap_or(Path::new("."));
+                dir.join(format!("{stem}.cpp"))
+            }
+        };
+
+        if let Some(parent) = cpp_path.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+        }
+
+        if let Err(e) = std::fs::write(&cpp_path, &cpp_code) {
+            eprintln!("не удалось записать `{}`: {e}", cpp_path.display());
+            return 2;
+        }
+
+        eprintln!("C++23 код записан в `{}`", cpp_path.display());
+
+        if opts.run {
+            let exe_path = cpp_path.with_extension("exe");
+            let mut cmd = Command::new(&opts.clang);
+            cmd.arg(&format!("--target={}", opts.target))
+                .arg(&format!("-std={}", opts.cpp_std))
+                .arg(match opts.profile {
+                    Profile::Release => "-O3",
+                    Profile::Debug => "-O0",
+                })
+                .arg(&cpp_path)
+                .arg("-o")
+                .arg(&exe_path);
+            cmd.arg("-lstdc++");
+            if opts.target.contains("windows") {
+                cmd.arg("-lws2_32");
+            }
+
+            let status = match cmd.status() {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("ошибка вызова `{}`: {e}", opts.clang);
+                    return 1;
+                }
+            };
+
+            if !status.success() {
+                eprintln!("ошибка сборки сгенерированного C++23 кода");
+                return status.code().unwrap_or(1);
+            }
+
+            let mut run_cmd = Command::new(&exe_path);
+            let run_status = match run_cmd.status() {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("ошибка запуска `{}`: {e}", exe_path.display());
+                    return 1;
+                }
+            };
+            return run_status.code().unwrap_or(0);
+        }
+
+        return 0;
     }
 
     // Сбор типов (первый проход).
