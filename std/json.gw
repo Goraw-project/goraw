@@ -1,0 +1,579 @@
+// Goraw Standard Library: std/json.gw
+// High-performance zero-copy native JSON parser & serializer.
+
+import "std/vec.gw";
+import "std/result.gw";
+
+const JSON_NULL: i32 = 0;
+const JSON_BOOL: i32 = 1;
+const JSON_NUMBER: i32 = 2;
+const JSON_STRING: i32 = 3;
+const JSON_ARRAY: i32 = 4;
+const JSON_OBJECT: i32 = 5;
+
+unsafe fn str_sub(s: str, start: i64, end: i64) -> str {
+    let len = end - start;
+    if len <= 0 {
+        return "";
+    }
+    return make_slice(&s[start], len);
+}
+
+struct ParsedNum {
+    raw: str,
+    val: i64,
+}
+
+struct JsonNode {
+    kind: i32,
+    key: str,
+    val_str: str,
+    val_num: i64,
+    val_bool: bool,
+    first_child: i32,
+    next_sibling: i32,
+    child_count: i32,
+}
+
+struct JsonDoc {
+    nodes: Vec<JsonNode>,
+    root: i32,
+}
+
+struct JsonParser {
+    src: str,
+    pos: i64,
+    nodes: Vec<JsonNode>,
+}
+
+fn JsonParser::skip_ws(self) {
+    while self.pos < self.src.len {
+        let b = self.src[self.pos];
+        if b == 32 || b == 9 || b == 10 || b == 13 {
+            self.pos = self.pos + 1;
+        } else {
+            break;
+        }
+    }
+}
+
+fn JsonParser::peek(self) -> u8 {
+    if self.pos >= self.src.len {
+        return 0;
+    }
+    return self.src[self.pos];
+}
+
+fn JsonParser::bump(self) -> u8 {
+    if self.pos >= self.src.len {
+        return 0;
+    }
+    let b = self.src[self.pos];
+    self.pos = self.pos + 1;
+    return b;
+}
+
+fn JsonParser::parse_string(self) -> str {
+    // Eats opening quote
+    let _ = self.bump();
+    let start = self.pos;
+    while self.pos < self.src.len {
+        let b = self.bump();
+        if b == 92 { // backslash
+            let _ = self.bump();
+        } else if b == 34 { // closing quote
+            let end = self.pos - 1;
+            unsafe {
+                return str_sub(self.src, start, end);
+            }
+        }
+    }
+    unsafe {
+        return str_sub(self.src, start, self.src.len);
+    }
+}
+
+fn JsonParser::parse_number(self) -> ParsedNum {
+    let start = self.pos;
+    let mut is_neg = false;
+    if self.peek() == 45 { // '-'
+        is_neg = true;
+        let _ = self.bump();
+    }
+    let mut num: i64 = 0;
+    while self.pos < self.src.len {
+        let b = self.peek();
+        if b >= 48 && b <= 57 { // '0'..'9'
+            num = num * 10 + (b - 48) as i64;
+            let _ = self.bump();
+        } else if b == 46 || b == 101 || b == 69 || b == 43 || b == 45 {
+            // float part / exp
+            let _ = self.bump();
+        } else {
+            break;
+        }
+    }
+    if is_neg {
+        num = -num;
+    }
+    let mut raw_str = "";
+    unsafe {
+        raw_str = str_sub(self.src, start, self.pos);
+    }
+    return ParsedNum {
+        raw: raw_str,
+        val: num,
+    };
+}
+
+fn JsonParser::parse_value(self) -> i32 {
+    self.skip_ws();
+    if self.pos >= self.src.len {
+        return -1;
+    }
+
+    let b = self.peek();
+
+    // 1. String
+    if b == 34 { // '"'
+        let s = self.parse_string();
+        let idx = self.nodes.len as i32;
+        self.nodes.push(JsonNode {
+            kind: JSON_STRING,
+            key: "",
+            val_str: s,
+            val_num: 0,
+            val_bool: false,
+            first_child: -1,
+            next_sibling: -1,
+            child_count: 0,
+        });
+        return idx;
+    }
+
+    // 2. Number
+    if (b >= 48 && b <= 57) || b == 45 {
+        let pnum = self.parse_number();
+        let idx = self.nodes.len as i32;
+        self.nodes.push(JsonNode {
+            kind: JSON_NUMBER,
+            key: "",
+            val_str: pnum.raw,
+            val_num: pnum.val,
+            val_bool: false,
+            first_child: -1,
+            next_sibling: -1,
+            child_count: 0,
+        });
+        return idx;
+    }
+
+    // 3. Object
+    if b == 123 { // '{'
+        let _ = self.bump();
+        let obj_idx = self.nodes.len as i32;
+        self.nodes.push(JsonNode {
+            kind: JSON_OBJECT,
+            key: "",
+            val_str: "{}",
+            val_num: 0,
+            val_bool: false,
+            first_child: -1,
+            next_sibling: -1,
+            child_count: 0,
+        });
+
+        let mut prev_child: i32 = -1;
+        let mut count: i32 = 0;
+
+        self.skip_ws();
+        if self.peek() == 125 { // '}'
+            let _ = self.bump();
+            return obj_idx;
+        }
+
+        while self.pos < self.src.len {
+            self.skip_ws();
+            if self.peek() != 34 { // key must be string
+                break;
+            }
+            let key_str = self.parse_string();
+            self.skip_ws();
+            if self.peek() == 58 { // ':'
+                let _ = self.bump();
+            }
+
+            let val_child = self.parse_value();
+            if val_child >= 0 {
+                // Update key of child node
+                let mut child_node = self.nodes.get(val_child as i64);
+                child_node.key = key_str;
+                self.nodes.set(val_child as i64, child_node);
+
+                if prev_child == -1 {
+                    let mut obj_node = self.nodes.get(obj_idx as i64);
+                    obj_node.first_child = val_child;
+                    self.nodes.set(obj_idx as i64, obj_node);
+                } else {
+                    let mut prev_node = self.nodes.get(prev_child as i64);
+                    prev_node.next_sibling = val_child;
+                    self.nodes.set(prev_child as i64, prev_node);
+                }
+                prev_child = val_child;
+                count = count + 1;
+            }
+
+            self.skip_ws();
+            if self.peek() == 44 { // ','
+                let _ = self.bump();
+            } else if self.peek() == 125 { // '}'
+                let _ = self.bump();
+                break;
+            } else {
+                break;
+            }
+        }
+
+        let mut obj_node = self.nodes.get(obj_idx as i64);
+        obj_node.child_count = count;
+        self.nodes.set(obj_idx as i64, obj_node);
+        return obj_idx;
+    }
+
+    // 4. Array
+    if b == 91 { // '['
+        let _ = self.bump();
+        let arr_idx = self.nodes.len as i32;
+        self.nodes.push(JsonNode {
+            kind: JSON_ARRAY,
+            key: "",
+            val_str: "[]",
+            val_num: 0,
+            val_bool: false,
+            first_child: -1,
+            next_sibling: -1,
+            child_count: 0,
+        });
+
+        let mut prev_child: i32 = -1;
+        let mut count: i32 = 0;
+
+        self.skip_ws();
+        if self.peek() == 93 { // ']'
+            let _ = self.bump();
+            return arr_idx;
+        }
+
+        while self.pos < self.src.len {
+            let val_child = self.parse_value();
+            if val_child >= 0 {
+                if prev_child == -1 {
+                    let mut arr_node = self.nodes.get(arr_idx as i64);
+                    arr_node.first_child = val_child;
+                    self.nodes.set(arr_idx as i64, arr_node);
+                } else {
+                    let mut prev_node = self.nodes.get(prev_child as i64);
+                    prev_node.next_sibling = val_child;
+                    self.nodes.set(prev_child as i64, prev_node);
+                }
+                prev_child = val_child;
+                count = count + 1;
+            }
+
+            self.skip_ws();
+            if self.peek() == 44 { // ','
+                let _ = self.bump();
+            } else if self.peek() == 93 { // ']'
+                let _ = self.bump();
+                break;
+            } else {
+                break;
+            }
+        }
+
+        let mut arr_node = self.nodes.get(arr_idx as i64);
+        arr_node.child_count = count;
+        self.nodes.set(arr_idx as i64, arr_node);
+        return arr_idx;
+    }
+
+    // 5. Bool true
+    if b == 116 { // 't'
+        self.pos = self.pos + 4;
+        let idx = self.nodes.len as i32;
+        self.nodes.push(JsonNode {
+            kind: JSON_BOOL,
+            key: "",
+            val_str: "true",
+            val_num: 1,
+            val_bool: true,
+            first_child: -1,
+            next_sibling: -1,
+            child_count: 0,
+        });
+        return idx;
+    }
+
+    // 6. Bool false
+    if b == 102 { // 'f'
+        self.pos = self.pos + 5;
+        let idx = self.nodes.len as i32;
+        self.nodes.push(JsonNode {
+            kind: JSON_BOOL,
+            key: "",
+            val_str: "false",
+            val_num: 0,
+            val_bool: false,
+            first_child: -1,
+            next_sibling: -1,
+            child_count: 0,
+        });
+        return idx;
+    }
+
+    // 7. Null
+    if b == 110 { // 'n'
+        self.pos = self.pos + 4;
+        let idx = self.nodes.len as i32;
+        self.nodes.push(JsonNode {
+            kind: JSON_NULL,
+            key: "",
+            val_str: "null",
+            val_num: 0,
+            val_bool: false,
+            first_child: -1,
+            next_sibling: -1,
+            child_count: 0,
+        });
+        return idx;
+    }
+
+    let _ = self.bump();
+    return -1;
+}
+
+fn JsonDoc::parse(src: str) -> Result<JsonDoc, str> {
+    let mut p = JsonParser {
+        src: src,
+        pos: 0,
+        nodes: Vec<JsonNode>::new(),
+    };
+    let root = p.parse_value();
+    if root < 0 {
+        return Result<JsonDoc, str>::err("failed to parse JSON input");
+    }
+    let doc = JsonDoc {
+        nodes: p.nodes,
+        root: root,
+    };
+    return Result<JsonDoc, str>::ok(doc);
+}
+
+fn JsonDoc::root_node(self) -> i32 {
+    return self.root;
+}
+
+fn JsonDoc::kind(self, idx: i32) -> i32 {
+    if idx < 0 || idx >= self.nodes.len as i32 {
+        return -1;
+    }
+    return self.nodes.get(idx as i64).kind;
+}
+
+fn JsonDoc::count(self, idx: i32) -> i32 {
+    if idx < 0 || idx >= self.nodes.len as i32 {
+        return 0;
+    }
+    return self.nodes.get(idx as i64).child_count;
+}
+
+fn JsonDoc::raw(self, idx: i32) -> str {
+    if idx < 0 || idx >= self.nodes.len as i32 {
+        return "";
+    }
+    return self.nodes.get(idx as i64).val_str;
+}
+
+fn JsonDoc::get(self, idx: i32, key: str) -> i32 {
+    if idx < 0 || idx >= self.nodes.len as i32 {
+        return -1;
+    }
+    let parent = self.nodes.get(idx as i64);
+    let mut curr = parent.first_child;
+    while curr >= 0 && curr < self.nodes.len as i32 {
+        let node = self.nodes.get(curr as i64);
+        if node.key == key {
+            return curr;
+        }
+        curr = node.next_sibling;
+    }
+    return -1;
+}
+
+fn JsonDoc::at(self, idx: i32, array_idx: i32) -> i32 {
+    if idx < 0 || idx >= self.nodes.len as i32 || array_idx < 0 {
+        return -1;
+    }
+    let parent = self.nodes.get(idx as i64);
+    let mut curr = parent.first_child;
+    let mut i: i32 = 0;
+    while curr >= 0 && curr < self.nodes.len as i32 {
+        if i == array_idx {
+            return curr;
+        }
+        let node = self.nodes.get(curr as i64);
+        curr = node.next_sibling;
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn JsonDoc::get_str(self, idx: i32, key: str) -> str {
+    let target = self.get(idx, key);
+    if target < 0 {
+        return "";
+    }
+    return self.nodes.get(target as i64).val_str;
+}
+
+fn JsonDoc::get_i64(self, idx: i32, key: str) -> i64 {
+    let target = self.get(idx, key);
+    if target < 0 {
+        return 0;
+    }
+    return self.nodes.get(target as i64).val_num;
+}
+
+fn JsonDoc::get_bool(self, idx: i32, key: str) -> bool {
+    let target = self.get(idx, key);
+    if target < 0 {
+        return false;
+    }
+    return self.nodes.get(target as i64).val_bool;
+}
+
+// --- Serializer ---
+
+struct JsonWriter {
+    buf: Vec<u8>,
+    need_comma: bool,
+}
+
+fn JsonWriter::new() -> JsonWriter {
+    return JsonWriter {
+        buf: Vec<u8>::new(),
+        need_comma: false,
+    };
+}
+
+fn JsonWriter::put_raw(self, s: str) {
+    let mut i: i64 = 0;
+    while i < s.len {
+        self.buf.push(s[i]);
+        i = i + 1;
+    }
+}
+
+fn JsonWriter::begin_object(self) {
+    if self.need_comma {
+        self.buf.push(44); // ','
+    }
+    self.buf.push(123); // '{'
+    self.need_comma = false;
+}
+
+fn JsonWriter::end_object(self) {
+    self.buf.push(125); // '}'
+    self.need_comma = true;
+}
+
+fn JsonWriter::begin_array(self) {
+    if self.need_comma {
+        self.buf.push(44); // ','
+    }
+    self.buf.push(91); // '['
+    self.need_comma = false;
+}
+
+fn JsonWriter::end_array(self) {
+    self.buf.push(93); // ']'
+    self.need_comma = true;
+}
+
+fn JsonWriter::key(self, k: str) {
+    if self.need_comma {
+        self.buf.push(44); // ','
+    }
+    self.buf.push(34); // '"'
+    self.put_raw(k);
+    self.buf.push(34); // '"'
+    self.buf.push(58); // ':'
+    self.need_comma = false;
+}
+
+fn JsonWriter::str(self, val: str) {
+    if self.need_comma {
+        self.buf.push(44); // ','
+    }
+    self.buf.push(34); // '"'
+    self.put_raw(val);
+    self.buf.push(34); // '"'
+    self.need_comma = true;
+}
+
+fn JsonWriter::i64(self, val: i64) {
+    if self.need_comma {
+        self.buf.push(44); // ','
+    }
+    if val == 0 {
+        self.buf.push(48); // '0'
+    } else {
+        let mut v = val;
+        if v < 0 {
+            self.buf.push(45); // '-'
+            v = -v;
+        }
+        let mut digits: [20]u8 = zeroed();
+        let mut count = 0;
+        while v > 0 {
+            digits[count] = (48 + (v % 10)) as u8;
+            v = v / 10;
+            count = count + 1;
+        }
+        let mut i = count - 1;
+        while i >= 0 {
+            self.buf.push(digits[i]);
+            i = i - 1;
+        }
+    }
+    self.need_comma = true;
+}
+
+fn JsonWriter::bool(self, val: bool) {
+    if self.need_comma {
+        self.buf.push(44); // ','
+    }
+    if val {
+        self.put_raw("true");
+    } else {
+        self.put_raw("false");
+    }
+    self.need_comma = true;
+}
+
+fn JsonWriter::null_val(self) {
+    if self.need_comma {
+        self.buf.push(44); // ','
+    }
+    self.put_raw("null");
+    self.need_comma = true;
+}
+
+fn JsonWriter::finish(self) -> str {
+    if self.buf.len == 0 {
+        return "";
+    }
+    unsafe {
+        return make_slice(&self.buf.data[0], self.buf.len);
+    }
+}

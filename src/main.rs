@@ -742,6 +742,10 @@ fn run(opts: Options) -> i32 {
     if !inline_cpp_code.trim().is_empty() {
         cmd.arg("-lstdc++");
     }
+    // На Windows линкуем базовые сокеты WinSock2 ws2_32
+    if opts.target.contains("windows") {
+        cmd.arg("-lws2_32");
+    }
 
     cmd.arg("-o").arg(&exe_path);
     // Подавляем предупреждение о переопределении triple (у нас он корректный).

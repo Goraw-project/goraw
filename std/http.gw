@@ -1,0 +1,175 @@
+// Goraw Standard Library: std/http.gw
+// Minimalist, high-performance HTTP/1.1 client and microservice server.
+
+import "std/net.gw";
+import "std/result.gw";
+
+struct HttpRequest {
+    method: str,
+    path: str,
+    body: str,
+}
+
+struct HttpResponse {
+    status: i32,
+    content_type: str,
+    body: str,
+}
+
+fn HttpResponse::ok_text(text: str) -> HttpResponse {
+    return HttpResponse {
+        status: 200,
+        content_type: "text/plain",
+        body: text,
+    };
+}
+
+fn HttpResponse::ok_json(json: str) -> HttpResponse {
+    return HttpResponse {
+        status: 200,
+        content_type: "application/json",
+        body: json,
+    };
+}
+
+fn HttpResponse::not_found() -> HttpResponse {
+    return HttpResponse {
+        status: 404,
+        content_type: "text/plain",
+        body: "404 Not Found",
+    };
+}
+
+fn parse_http_request(raw: str) -> HttpRequest {
+    let mut method = "GET";
+    let mut path = "/";
+    let mut body = "";
+
+    // Parse method and path from first line: "GET /path HTTP/1.1"
+    let mut i: i64 = 0;
+    while i < raw.len && raw[i] != 32 {
+        i = i + 1;
+    }
+    unsafe {
+        method = make_slice(&raw[0], i);
+    }
+
+    if i < raw.len {
+        i = i + 1; // skip space
+        let path_start = i;
+        while i < raw.len && raw[i] != 32 && raw[i] != 13 && raw[i] != 10 {
+            i = i + 1;
+        }
+        unsafe {
+            path = make_slice(&raw[path_start], i - path_start);
+        }
+    }
+
+    // Find double newline "\r\n\r\n" to extract body
+    let mut b_idx: i64 = 0;
+    while b_idx + 3 < raw.len {
+        if raw[b_idx] == 13 && raw[b_idx+1] == 10 && raw[b_idx+2] == 13 && raw[b_idx+3] == 10 {
+            let body_start = b_idx + 4;
+            unsafe {
+                body = make_slice(&raw[body_start], raw.len - body_start);
+            }
+            break;
+        }
+        b_idx = b_idx + 1;
+    }
+
+    return HttpRequest {
+        method: method,
+        path: path,
+        body: body,
+    };
+}
+
+struct HttpServer {
+    listener: TcpListener,
+}
+
+fn HttpServer::bind(port: i32) -> Result<HttpServer, i32> {
+    let l_res = TcpListener::bind(port);
+    if l_res.is_err() {
+        return Result<HttpServer, i32>::err(l_res.unwrap_err());
+    }
+    return Result<HttpServer, i32>::ok(HttpServer {
+        listener: l_res.unwrap(),
+    });
+}
+
+fn HttpServer::serve_one(self, handler: fn(*HttpRequest) -> HttpResponse) -> bool {
+    let stream_res = self.listener.accept();
+    if stream_res.is_err() {
+        return false;
+    }
+    let mut stream = stream_res.unwrap();
+
+    let mut buf: [4096]u8 = zeroed();
+    let n = stream.read(&mut buf[0], 4095);
+    if n <= 0 {
+        stream.close();
+        return false;
+    }
+
+    let mut raw_req = "";
+    unsafe {
+        raw_req = make_slice(&buf[0], n);
+    }
+    let req = parse_http_request(raw_req);
+    let resp = handler(&req);
+
+    // Format response
+    let status_line = if resp.status == 200 {
+        "HTTP/1.1 200 OK\r\n"
+    } else if resp.status == 404 {
+        "HTTP/1.1 404 Not Found\r\n"
+    } else {
+        "HTTP/1.1 500 Internal Server Error\r\n"
+    };
+
+    stream.write_str(status_line);
+    stream.write_str("Content-Type: ");
+    stream.write_str(resp.content_type);
+    stream.write_str("\r\nConnection: close\r\n\r\n");
+    stream.write_str(resp.body);
+
+    stream.close();
+    return true;
+}
+
+fn HttpServer::close(self) {
+    self.listener.close();
+}
+
+// --- HTTP Client ---
+
+fn http_get(ip: str, port: i32, path: str) -> Result<str, i32> {
+    let conn_res = TcpStream::connect(ip, port);
+    if conn_res.is_err() {
+        return Result<str, i32>::err(conn_res.unwrap_err());
+    }
+    let mut stream = conn_res.unwrap();
+
+    stream.write_str("GET ");
+    stream.write_str(path);
+    stream.write_str(" HTTP/1.1\r\nHost: ");
+    stream.write_str(ip);
+    stream.write_str("\r\nConnection: close\r\n\r\n");
+
+    let mut buf = alloc(8192) as *mut u8;
+    let n = stream.read(buf, 8191);
+    stream.close();
+
+    if n <= 0 {
+        free(buf);
+        return Result<str, i32>::err(-1);
+    }
+
+    unsafe {
+        buf[n] = 0;
+        let s = make_slice(buf, n);
+        return Result<str, i32>::ok(s);
+    }
+}

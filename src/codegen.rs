@@ -1939,14 +1939,15 @@ impl<'a> Codegen<'a> {
                 }
             }
         }
-        // Указатели: требуют unsafe.
-        if src.is_ptr() && dst.is_ptr() {
+        let src_is_ptr = src.is_ptr() || matches!(src, Ty::FnPtr(..));
+        let dst_is_ptr = dst.is_ptr() || matches!(dst, Ty::FnPtr(..));
+        if src_is_ptr && dst_is_ptr {
             return (v, dst); // непрозрачные ptr — без инструкции
         }
-        if (src.is_ptr() && dst.is_int()) || (src.is_int() && dst.is_ptr()) {
+        if (src_is_ptr && dst.is_int()) || (src.is_int() && dst_is_ptr) {
             self.require_unsafe(span, "приведение между указателем и числом");
             let t = self.fresh_tmp();
-            let instr = if src.is_ptr() { "ptrtoint" } else { "inttoptr" };
+            let instr = if src_is_ptr { "ptrtoint" } else { "inttoptr" };
             self.emit(format!("{t} = {instr} {s} {v} to {d}", s = src.llvm(), d = dst.llvm()));
             return (t, dst);
         }

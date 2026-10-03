@@ -1,0 +1,226 @@
+// Goraw Standard Library: std/net.gw
+// Native networking stack: TCP Listener, TCP Stream, UDP Sockets.
+
+import "std/result.gw";
+
+extern fn WSAStartup(wVersionRequired: u16, lpWSAData: *mut u8) -> i32;
+extern fn WSACleanup() -> i32;
+extern fn socket(af: i32, type_: i32, protocol: i32) -> i64;
+extern fn bind(s: i64, name: *u8, namelen: i32) -> i32;
+extern fn listen(s: i64, backlog: i32) -> i32;
+extern fn accept(s: i64, addr: *mut u8, addrlen: *mut i32) -> i64;
+extern fn connect(s: i64, name: *u8, namelen: i32) -> i32;
+extern fn send(s: i64, buf: *u8, len: i32, flags: i32) -> i32;
+extern fn recv(s: i64, buf: *mut u8, len: i32, flags: i32) -> i32;
+extern fn sendto(s: i64, buf: *u8, len: i32, flags: i32, to: *u8, tolen: i32) -> i32;
+extern fn recvfrom(s: i64, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen: *mut i32) -> i32;
+extern fn closesocket(s: i64) -> i32;
+extern fn htons(hostshort: u16) -> u16;
+extern fn inet_addr(cp: *u8) -> u32;
+
+const AF_INET: i32 = 2;
+const SOCK_STREAM: i32 = 1;
+const SOCK_DGRAM: i32 = 2;
+const IPPROTO_TCP: i32 = 6;
+const IPPROTO_UDP: i32 = 17;
+
+struct SockAddrIn {
+    sin_family: i16,
+    sin_port: u16,
+    sin_addr: u32,
+    sin_zero: [8]u8,
+}
+
+fn net_init() {
+    unsafe {
+        let mut wsa_data: [512]u8 = zeroed();
+        let _ = WSAStartup(514 as u16, &mut wsa_data[0]);
+    }
+}
+
+struct TcpStream {
+    fd: i64,
+}
+
+fn TcpStream::connect(ip: str, port: i32) -> Result<TcpStream, i32> {
+    net_init();
+    unsafe {
+        let s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if s < 0 {
+            return Result<TcpStream, i32>::err(-1);
+        }
+
+        let mut addr: SockAddrIn = zeroed();
+        addr.sin_family = AF_INET as i16;
+        addr.sin_port = htons(port as u16);
+
+        let mut c_ip: [64]u8 = zeroed();
+        let mut i: i64 = 0;
+        while i < ip.len && i < 63 {
+            c_ip[i] = ip[i];
+            i = i + 1;
+        }
+        addr.sin_addr = inet_addr(&mut c_ip[0]);
+
+        let rc = connect(s, &addr as *mut SockAddrIn as *u8, sizeof(SockAddrIn) as i32);
+        if rc != 0 {
+            closesocket(s);
+            return Result<TcpStream, i32>::err(rc);
+        }
+
+        return Result<TcpStream, i32>::ok(TcpStream { fd: s });
+    }
+}
+
+fn TcpStream::read(self, buf: *mut u8, max_len: i64) -> i64 {
+    unsafe {
+        let n = recv(self.fd, buf, max_len as i32, 0);
+        return n as i64;
+    }
+}
+
+fn TcpStream::write(self, buf: *u8, len: i64) -> i64 {
+    unsafe {
+        let n = send(self.fd, buf, len as i32, 0);
+        return n as i64;
+    }
+}
+
+fn TcpStream::write_str(self, s: str) -> i64 {
+    if s.len == 0 {
+        return 0;
+    }
+    unsafe {
+        return self.write(&s[0], s.len);
+    }
+}
+
+fn TcpStream::close(self) {
+    unsafe {
+        if self.fd >= 0 {
+            closesocket(self.fd);
+            self.fd = -1;
+        }
+    }
+}
+
+struct TcpListener {
+    fd: i64,
+    port: i32,
+}
+
+fn TcpListener::bind(port: i32) -> Result<TcpListener, i32> {
+    net_init();
+    unsafe {
+        let s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if s < 0 {
+            return Result<TcpListener, i32>::err(-1);
+        }
+
+        let mut addr: SockAddrIn = zeroed();
+        addr.sin_family = AF_INET as i16;
+        addr.sin_port = htons(port as u16);
+        addr.sin_addr = 0 as u32; // INADDR_ANY
+
+        let rc = bind(s, &addr as *mut SockAddrIn as *u8, sizeof(SockAddrIn) as i32);
+        if rc != 0 {
+            closesocket(s);
+            return Result<TcpListener, i32>::err(rc);
+        }
+
+        let lrc = listen(s, 128);
+        if lrc != 0 {
+            closesocket(s);
+            return Result<TcpListener, i32>::err(lrc);
+        }
+
+        return Result<TcpListener, i32>::ok(TcpListener { fd: s, port: port });
+    }
+}
+
+fn TcpListener::accept(self) -> Result<TcpStream, i32> {
+    unsafe {
+        let mut client_addr: SockAddrIn = zeroed();
+        let mut addr_len: i32 = sizeof(SockAddrIn) as i32;
+        let client_s = accept(self.fd, &mut client_addr as *mut SockAddrIn as *mut u8, &mut addr_len);
+        if client_s < 0 {
+            return Result<TcpStream, i32>::err(-1);
+        }
+        return Result<TcpStream, i32>::ok(TcpStream { fd: client_s });
+    }
+}
+
+fn TcpListener::close(self) {
+    unsafe {
+        if self.fd >= 0 {
+            closesocket(self.fd);
+            self.fd = -1;
+        }
+    }
+}
+
+// --- UDP Sockets ---
+
+struct UdpSocket {
+    fd: i64,
+}
+
+fn UdpSocket::bind(port: i32) -> Result<UdpSocket, i32> {
+    net_init();
+    unsafe {
+        let s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if s < 0 {
+            return Result<UdpSocket, i32>::err(-1);
+        }
+
+        let mut addr: SockAddrIn = zeroed();
+        addr.sin_family = AF_INET as i16;
+        addr.sin_port = htons(port as u16);
+        addr.sin_addr = 0 as u32; // INADDR_ANY
+
+        let rc = bind(s, &addr as *mut SockAddrIn as *u8, sizeof(SockAddrIn) as i32);
+        if rc != 0 {
+            closesocket(s);
+            return Result<UdpSocket, i32>::err(rc);
+        }
+
+        return Result<UdpSocket, i32>::ok(UdpSocket { fd: s });
+    }
+}
+
+fn UdpSocket::send_to(self, ip: str, port: i32, data: str) -> i64 {
+    unsafe {
+        let mut addr: SockAddrIn = zeroed();
+        addr.sin_family = AF_INET as i16;
+        addr.sin_port = htons(port as u16);
+
+        let mut c_ip: [64]u8 = zeroed();
+        let mut i: i64 = 0;
+        while i < ip.len && i < 63 {
+            c_ip[i] = ip[i];
+            i = i + 1;
+        }
+        addr.sin_addr = inet_addr(&mut c_ip[0]);
+
+        let sent = sendto(self.fd, &data[0], data.len as i32, 0, &addr as *mut SockAddrIn as *u8, sizeof(SockAddrIn) as i32);
+        return sent as i64;
+    }
+}
+
+fn UdpSocket::recv_from(self, buf: *mut u8, max_len: i64) -> i64 {
+    unsafe {
+        let mut from_addr: SockAddrIn = zeroed();
+        let mut from_len: i32 = sizeof(SockAddrIn) as i32;
+        let n = recvfrom(self.fd, buf, max_len as i32, 0, &mut from_addr as *mut SockAddrIn as *mut u8, &mut from_len);
+        return n as i64;
+    }
+}
+
+fn UdpSocket::close(self) {
+    unsafe {
+        if self.fd >= 0 {
+            closesocket(self.fd);
+            self.fd = -1;
+        }
+    }
+}

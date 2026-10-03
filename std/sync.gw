@@ -1,0 +1,214 @@
+// Goraw Standard Library: std/sync.gw
+// Concurrency primitives: Atomics, Mutex, CondVar, OS Threads, and Go-style generic Channels.
+
+import "std/result.gw";
+
+c {
+    long long __gw_atomic_add(long long* p, long long v) {
+        return __atomic_fetch_add(p, v, __ATOMIC_SEQ_CST);
+    }
+    long long __gw_atomic_load(long long* p) {
+        return __atomic_load_n(p, __ATOMIC_SEQ_CST);
+    }
+    void __gw_atomic_store(long long* p, long long v) {
+        __atomic_store_n(p, v, __ATOMIC_SEQ_CST);
+    }
+}
+
+extern fn __gw_atomic_add(p: *mut i64, v: i64) -> i64;
+extern fn __gw_atomic_load(p: *i64) -> i64;
+extern fn __gw_atomic_store(p: *mut i64, v: i64);
+
+extern fn Sleep(dwMilliseconds: u32);
+extern fn CreateThread(lpThreadAttributes: *u8, dwStackSize: i64, lpStartAddress: *u8, lpParameter: *u8, dwCreationFlags: u32, lpThreadId: *mut u32) -> *mut u8;
+extern fn WaitForSingleObject(hHandle: *mut u8, dwMilliseconds: u32) -> u32;
+extern fn CloseHandle(hObject: *mut u8) -> i32;
+extern fn GetExitCodeThread(hThread: *mut u8, lpExitCode: *mut u32) -> i32;
+
+extern fn AcquireSRWLockExclusive(SRWLock: *mut u8);
+extern fn ReleaseSRWLockExclusive(SRWLock: *mut u8);
+extern fn SleepConditionVariableSRW(ConditionVariable: *mut u8, SRWLock: *mut u8, dwMilliseconds: u32, Flags: u32) -> i32;
+extern fn WakeConditionVariable(ConditionVariable: *mut u8);
+extern fn WakeAllConditionVariable(ConditionVariable: *mut u8);
+
+struct AtomicI64 {
+    val: i64,
+}
+
+fn AtomicI64::new(initial: i64) -> AtomicI64 {
+    return AtomicI64 { val: initial };
+}
+
+fn AtomicI64::load(self) -> i64 {
+    return __gw_atomic_load(&self.val as *i64);
+}
+
+fn AtomicI64::store(self, val: i64) {
+    __gw_atomic_store(&mut self.val as *mut i64, val);
+}
+
+fn AtomicI64::fetch_add(self, delta: i64) -> i64 {
+    return __gw_atomic_add(&mut self.val as *mut i64, delta);
+}
+
+fn AtomicI64::fetch_sub(self, delta: i64) -> i64 {
+    return self.fetch_add(-delta);
+}
+
+struct Mutex {
+    handle: *mut u8,
+}
+
+fn Mutex::new() -> Mutex {
+    return Mutex { handle: null };
+}
+
+fn Mutex::lock(self) {
+    unsafe {
+        AcquireSRWLockExclusive(&mut self.handle as *mut *mut u8 as *mut u8);
+    }
+}
+
+fn Mutex::unlock(self) {
+    unsafe {
+        ReleaseSRWLockExclusive(&mut self.handle as *mut *mut u8 as *mut u8);
+    }
+}
+
+struct CondVar {
+    handle: *mut u8,
+}
+
+fn CondVar::new() -> CondVar {
+    return CondVar { handle: null };
+}
+
+fn CondVar::wait(self, mtx: *mut Mutex) {
+    unsafe {
+        let cv_ptr = &mut self.handle as *mut *mut u8 as *mut u8;
+        let mtx_ptr = &mut mtx.handle as *mut *mut u8 as *mut u8;
+        SleepConditionVariableSRW(cv_ptr, mtx_ptr, 4294967295 as u32, 0 as u32);
+    }
+}
+
+fn CondVar::notify_one(self) {
+    unsafe {
+        WakeConditionVariable(&mut self.handle as *mut *mut u8 as *mut u8);
+    }
+}
+
+fn CondVar::notify_all(self) {
+    unsafe {
+        WakeAllConditionVariable(&mut self.handle as *mut *mut u8 as *mut u8);
+    }
+}
+
+struct Thread {
+    handle: *mut u8,
+}
+
+fn Thread::spawn(f: fn(*mut u8) -> i64, arg: *mut u8) -> Thread {
+    unsafe {
+        let fn_ptr = f as *mut u8;
+        let h = CreateThread(null, 0, fn_ptr, arg, 0 as u32, null as *mut u32);
+        return Thread { handle: h };
+    }
+}
+
+fn Thread::join(self) -> i64 {
+    unsafe {
+        let h = self.handle;
+        WaitForSingleObject(h, 4294967295 as u32);
+        let mut ec: u32 = 0;
+        GetExitCodeThread(h, &mut ec);
+        CloseHandle(h);
+        return ec as i64;
+    }
+}
+
+fn thread_sleep_ms(ms: i32) {
+    unsafe {
+        Sleep(ms as u32);
+    }
+}
+
+// --- Generic Channel<T> (FIFO message passing queue) ---
+
+struct Channel<T> {
+    data: *mut T,
+    cap: i64,
+    head: i64,
+    tail: i64,
+    count: i64,
+    mutex: Mutex,
+    cond_not_empty: CondVar,
+    cond_not_full: CondVar,
+    closed: bool,
+}
+
+fn Channel<T>::new(capacity: i64) -> Channel<T> {
+    let mut c = capacity;
+    if c <= 0 {
+        c = 1;
+    }
+    let sz = sizeof(T);
+    let p = alloc(c * sz) as *mut T;
+    return Channel {
+        data: p,
+        cap: c,
+        head: 0,
+        tail: 0,
+        count: 0,
+        mutex: Mutex::new(),
+        cond_not_empty: CondVar::new(),
+        cond_not_full: CondVar::new(),
+        closed: false,
+    };
+}
+
+fn Channel<T>::send(self, val: T) -> bool {
+    self.mutex.lock();
+    while self.count == self.cap && !self.closed {
+        self.cond_not_full.wait(&mut self.mutex);
+    }
+    if self.closed {
+        self.mutex.unlock();
+        return false;
+    }
+    unsafe {
+        self.data[self.tail] = val;
+    }
+    self.tail = (self.tail + 1) % self.cap;
+    self.count = self.count + 1;
+    self.cond_not_empty.notify_one();
+    self.mutex.unlock();
+    return true;
+}
+
+fn Channel<T>::recv(self) -> Result<T, bool> {
+    self.mutex.lock();
+    while self.count == 0 && !self.closed {
+        self.cond_not_empty.wait(&mut self.mutex);
+    }
+    if self.count > 0 {
+        let mut val: T = zeroed();
+        unsafe {
+            val = self.data[self.head];
+        }
+        self.head = (self.head + 1) % self.cap;
+        self.count = self.count - 1;
+        self.cond_not_full.notify_one();
+        self.mutex.unlock();
+        return Result<T, bool>::ok(val);
+    }
+    self.mutex.unlock();
+    return Result<T, bool>::err(false);
+}
+
+fn Channel<T>::close(self) {
+    self.mutex.lock();
+    self.closed = true;
+    self.cond_not_empty.notify_all();
+    self.cond_not_full.notify_all();
+    self.mutex.unlock();
+}

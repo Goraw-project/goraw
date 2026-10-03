@@ -1,0 +1,66 @@
+import "std/http.gw";
+import "std/sync.gw";
+
+extern fn puts(s: *u8) -> i32;
+
+fn server_handler(req: *HttpRequest) -> HttpResponse {
+    unsafe {
+        if req.path == "/api/status" {
+            return HttpResponse::ok_json("{\"status\":\"goraw_online\"}");
+        }
+        return HttpResponse::not_found();
+    }
+}
+
+struct SrvThreadArg {
+    server_ptr: *mut HttpServer,
+}
+
+fn srv_thread_fn(arg: *mut u8) -> i64 {
+    let t_arg = arg as *mut SrvThreadArg;
+    unsafe {
+        let srv = t_arg.server_ptr;
+        let _ = srv.serve_one(server_handler);
+    }
+    return 0;
+}
+
+fn main() -> i32 {
+    let srv_res = HttpServer::bind(18080);
+    if srv_res.is_err() {
+        puts("FAIL: bind port 18080 failed");
+        return 1;
+    }
+    let mut server = srv_res.unwrap();
+    let mut arg = SrvThreadArg {
+        server_ptr: &mut server,
+    };
+
+    let t = Thread::spawn(srv_thread_fn, &mut arg as *mut u8);
+
+    thread_sleep_ms(50); // let server start listening
+
+    // Client makes request
+    let client_res = http_get("127.0.0.1", 18080, "/api/status");
+    if client_res.is_err() {
+        puts("FAIL: http_get failed");
+        return 2;
+    }
+
+    let resp_str = client_res.unwrap();
+    t.join();
+    server.close();
+
+    if !resp_str.contains("200 OK") {
+        puts("FAIL: response did not contain 200 OK");
+        return 3;
+    }
+
+    if !resp_str.contains("{\"status\":\"goraw_online\"}") {
+        puts("FAIL: response did not contain expected JSON body");
+        return 4;
+    }
+
+    puts("SUCCESS: Goraw native HTTP client and server microservice test passed!");
+    return 0;
+}
