@@ -7,30 +7,19 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
-#include <chrono>
-#include <array>
-#include <span>
+#include <ctime>
 #include <string_view>
 #include <string>
-#include <iostream>
 #include <type_traits>
-#include <cmath>
-
-// Переносимый замер времени (строго в миллисекундах на всех ОС)
-inline int64_t gw_clock_ms() noexcept {
-return std::chrono::duration_cast<std::chrono::milliseconds>(
-std::chrono::steady_clock::now().time_since_epoch()
-).count();
-}
 
 inline void* alloc(int64_t sz) noexcept { return std::malloc(sz); }
 inline void* realloc(void* p, int64_t sz) noexcept { return std::realloc(p, sz); }
 
-struct GwZeroInit {
-template <typename U>
-constexpr operator U() const noexcept { return U{}; }
+struct GwTestResult {
+const char* file{nullptr};
+int64_t line{0};
+constexpr operator bool() const noexcept { return line != 0; }
 };
-constexpr GwZeroInit zeroed() noexcept { return {}; }
 
 struct GorawStr {
 const char* ptr{""};
@@ -58,8 +47,7 @@ return GorawStr(buf, len);
 friend bool operator==(const GorawStr& a, const GorawStr& b) noexcept { return a.view() == b.view(); }
 friend bool operator!=(const GorawStr& a, const GorawStr& b) noexcept { return a.view() != b.view(); }
 friend bool operator<(const GorawStr& a, const GorawStr& b) noexcept { return a.view() < b.view(); }
-friend std::ostream& operator<<(std::ostream& os, const GorawStr& s) { return os.write(s.ptr, s.len); }
-friend GorawStr operator+(const GorawStr& a, const GorawStr& b) {
+    friend GorawStr operator+(const GorawStr& a, const GorawStr& b) {
 int64_t total = a.len + b.len;
 char* buf = static_cast<char*>(std::malloc(total + 1));
 if (a.len > 0) std::memcpy(buf, a.ptr, a.len);
@@ -71,62 +59,6 @@ return GorawStr(buf, total);
 
 inline GorawStr str_from_cstr(const char* s) noexcept { return GorawStr(s); }
 inline GorawStr str_from_cstr(const uint8_t* s) noexcept { return GorawStr(reinterpret_cast<const char*>(s)); }
-
-template <typename T>
-struct GorawSlice {
-T* ptr{nullptr};
-int64_t len{0};
-constexpr GorawSlice() = default;
-constexpr GorawSlice(T* p, int64_t l) : ptr(p), len(l) {}
-T& operator[](int64_t idx) { return ptr[idx]; }
-const T& operator[](int64_t idx) const { return ptr[idx]; }
-T* begin() noexcept { return ptr; }
-T* end() noexcept { return ptr + len; }
-const T* begin() const noexcept { return ptr; }
-const T* end() const noexcept { return ptr + len; }
-int64_t size() const noexcept { return len; }
-int64_t length() const noexcept { return len; }
-bool empty() const noexcept { return len == 0; }
-};
-
-template <typename T>
-inline GorawSlice<T> make_slice(T* ptr, int64_t len) noexcept { return GorawSlice<T>(ptr, len); }
-
-template <typename T>
-inline GorawSlice<T> gw_slice(GorawSlice<T> s, int64_t start, int64_t end) noexcept {
-if (start < 0) start = 0;
-if (end < 0 || end > s.len) end = s.len;
-if (start > end) start = end;
-return GorawSlice<T>(s.ptr + start, end - start);
-}
-template <typename T, size_t N>
-inline GorawSlice<T> gw_slice(std::array<T, N>& arr, int64_t start, int64_t end) noexcept {
-int64_t len = (int64_t)N;
-if (start < 0) start = 0;
-if (end < 0 || end > len) end = len;
-if (start > end) start = end;
-return GorawSlice<T>(arr.data() + start, end - start);
-}
-template <typename T, size_t N>
-inline GorawSlice<const T> gw_slice(const std::array<T, N>& arr, int64_t start, int64_t end) noexcept {
-int64_t len = (int64_t)N;
-if (start < 0) start = 0;
-if (end < 0 || end > len) end = len;
-if (start > end) start = end;
-return GorawSlice<const T>(arr.data() + start, end - start);
-}
-template <typename T>
-inline GorawSlice<T> gw_slice(T* ptr, int64_t start, int64_t end) noexcept {
-if (start < 0) start = 0;
-int64_t len = (end >= start) ? (end - start) : 0;
-return GorawSlice<T>(ptr + start, len);
-}
-inline GorawStr gw_slice(const GorawStr& s, int64_t start, int64_t end) noexcept {
-if (start < 0) start = 0;
-if (end < 0 || end > s.len) end = s.len;
-if (start > end) start = end;
-return GorawStr(s.ptr + start, end - start);
-}
 
 template <typename T>
 constexpr auto gw_len(const T& x) noexcept {
@@ -149,26 +81,6 @@ return x.data();
 return x.ptr;
 }
 }
-
-template <typename T, size_t N>
-struct GwArray : std::array<T, N> {
-template <typename U>
-constexpr operator std::array<U, N>() const {
-return [&]<size_t... Is>(std::index_sequence<Is...>) {
-return std::array<U, N>{ static_cast<U>((*this)[Is])... };
-}(std::make_index_sequence<N>{});
-}
-};
-
-template <typename... Ts>
-constexpr auto gw_make_array(Ts&&... args) {
-if constexpr (sizeof...(Ts) == 0) {
-return GwArray<int64_t, 0>{};
-} else {
-using CommonType = std::common_type_t<std::decay_t<Ts>...>;
-return GwArray<CommonType, sizeof...(Ts)>{ { static_cast<CommonType>(std::forward<Ts>(args))... } };
-}
-};
 
 template <typename A, typename B>
 constexpr auto gw_add(A&& a, B&& b) {
@@ -197,37 +109,15 @@ return a != b;
 }
 }
 
-template <typename T>
-inline void gw_print_val(std::ostream& os, const T& val) {
-if constexpr (std::is_same_v<std::decay_t<T>, bool>) {
-os << (val ? "true" : "false");
-} else {
-os << val;
-}
-}
-template <typename... Args>
-inline void print(Args&&... args) {
-((gw_print_val(std::cout, std::forward<Args>(args))), ...);
-}
-template <typename... Args>
-inline void println(Args&&... args) {
-((gw_print_val(std::cout, std::forward<Args>(args))), ...);
-std::cout << '\n';
-}
 inline void panic(const char* msg = "panic") {
-std::cout << std::flush;
 std::fprintf(stderr, "[GORAW PANIC] %s\n", msg);
 std::abort();
 }
 inline void panic(GorawStr msg) {
-std::cout << std::flush;
 std::fprintf(stderr, "[GORAW PANIC] %.*s\n", (int)msg.len, msg.ptr);
 std::abort();
 }
 inline void goraw_panic(const char* msg) noexcept { panic(msg); }
-
-template <typename T>
-inline auto gw_try(T&& val) { return std::forward<T>(val); }
 
 // --- Предварительные объявления структур ---
 struct Point;
@@ -323,7 +213,7 @@ int64_t abs_i64(int64_t x) {
     if (x >= 0) {
         return x;
     }
-    if (gw_eq(x, ((-9223372036854775807LL) - 1))) {
+    if (x == ((-9223372036854775807LL) - 1)) {
         return 9223372036854775807LL;
     }
     return (-x);
@@ -331,7 +221,7 @@ int64_t abs_i64(int64_t x) {
 
 bool validate_coordinates(int64_t* orig_x, int64_t* orig_y, int64_t n) {
     { // unsafe
-        for (auto i = 0; (i < n); i = gw_add(i, 1)) {
+        for (auto i = 0; (i < n); i = (i + 1)) {
             if ((orig_x[i] < COORD_MIN) || (orig_x[i] > COORD_MAX)) {
                 return false;
             }
@@ -344,7 +234,7 @@ bool validate_coordinates(int64_t* orig_x, int64_t* orig_y, int64_t n) {
 }
 
 bool point_greater(int64_t p1_x, int64_t p1_y, int64_t p2_x, int64_t p2_y) {
-    if (gw_ne(p1_x, p2_x)) {
+    if (p1_x != p2_x) {
         return (p1_x > p2_x);
     }
     return (p1_y > p2_y);
@@ -354,7 +244,7 @@ int64_t calc_max_depth(int64_t n) {
     int64_t d = 0;
     auto v = n;
     for (; (v > 0); ) {
-        d = gw_add(d, 1);
+        d = (d + 1);
         v = (v / 2);
     }
     return (d * 2);
@@ -362,14 +252,14 @@ int64_t calc_max_depth(int64_t n) {
 
 void insertion_sort_points(Point* pts, int64_t left, int64_t right) {
     { // unsafe
-        for (auto i = gw_add(left, 1); (i <= right); i = gw_add(i, 1)) {
+        for (auto i = (left + 1); (i <= right); i = (i + 1)) {
             auto key = pts[i];
             auto j = (i - 1);
             for (; ((j >= left) && point_greater(key.x, key.y, pts[j].x, pts[j].y)); ) {
-                pts[gw_add(j, 1)] = pts[j];
+                pts[(j + 1)] = pts[j];
                 j = (j - 1);
             }
-            pts[gw_add(j, 1)] = key;
+            pts[(j + 1)] = key;
         }
     }
 }
@@ -379,27 +269,27 @@ void heap_sift_down_points(Point* pts, int64_t left, int64_t root, int64_t n) {
     { // unsafe
         for (; ; ) {
             auto smallest = curr;
-            auto left_child = gw_add((2 * curr), 1);
-            auto right_child = gw_add((2 * curr), 2);
-            if ((left_child < n) && point_greater(pts[gw_add(left, smallest)].x, pts[gw_add(left, smallest)].y, pts[gw_add(left, left_child)].x, pts[gw_add(left, left_child)].y)) {
+            auto left_child = ((2 * curr) + 1);
+            auto right_child = ((2 * curr) + 2);
+            if ((left_child < n) && point_greater(pts[(left + smallest)].x, pts[(left + smallest)].y, pts[(left + left_child)].x, pts[(left + left_child)].y)) {
                 smallest = left_child;
             }
-            if ((right_child < n) && point_greater(pts[gw_add(left, smallest)].x, pts[gw_add(left, smallest)].y, pts[gw_add(left, right_child)].x, pts[gw_add(left, right_child)].y)) {
+            if ((right_child < n) && point_greater(pts[(left + smallest)].x, pts[(left + smallest)].y, pts[(left + right_child)].x, pts[(left + right_child)].y)) {
                 smallest = right_child;
             }
-            if (gw_eq(smallest, curr)) {
+            if (smallest == curr) {
                 break;
             }
-            auto tmp = pts[gw_add(left, curr)];
-            pts[gw_add(left, curr)] = pts[gw_add(left, smallest)];
-            pts[gw_add(left, smallest)] = tmp;
+            auto tmp = pts[(left + curr)];
+            pts[(left + curr)] = pts[(left + smallest)];
+            pts[(left + smallest)] = tmp;
             curr = smallest;
         }
     }
 }
 
 void heapsort_points(Point* pts, int64_t left, int64_t right) {
-    auto n = gw_add((right - left), 1);
+    auto n = ((right - left) + 1);
     if (n <= 1) {
         return;
     }
@@ -412,8 +302,8 @@ void heapsort_points(Point* pts, int64_t left, int64_t right) {
     { // unsafe
         for (; (j > 0); ) {
             auto tmp = pts[left];
-            pts[left] = pts[gw_add(left, j)];
-            pts[gw_add(left, j)] = tmp;
+            pts[left] = pts[(left + j)];
+            pts[(left + j)] = tmp;
             heap_sift_down_points(pts, left, 0, j);
             j = (j - 1);
         }
@@ -425,12 +315,12 @@ void introsort_points(Point* pts, int64_t left, int64_t right, int64_t max_depth
     auto r = right;
     auto depth = max_depth;
     for (; ((r - l) > 16); ) {
-        if (gw_eq(depth, 0)) {
+        if (depth == 0) {
             heapsort_points(pts, l, r);
             return;
         }
         depth = (depth - 1);
-        auto mid = gw_add(l, ((r - l) / 2));
+        auto mid = (l + ((r - l) / 2));
         { // unsafe
             if (point_greater(pts[mid].x, pts[mid].y, pts[l].x, pts[l].y)) {
                 auto tmp = pts[l];
@@ -453,7 +343,7 @@ void introsort_points(Point* pts, int64_t left, int64_t right, int64_t max_depth
             auto j = r;
             for (; (i <= j); ) {
                 for (; point_greater(pts[i].x, pts[i].y, piv_x, piv_y); ) {
-                    i = gw_add(i, 1);
+                    i = (i + 1);
                 }
                 for (; point_greater(piv_x, piv_y, pts[j].x, pts[j].y); ) {
                     j = (j - 1);
@@ -462,7 +352,7 @@ void introsort_points(Point* pts, int64_t left, int64_t right, int64_t max_depth
                     auto tmp = pts[i];
                     pts[i] = pts[j];
                     pts[j] = tmp;
-                    i = gw_add(i, 1);
+                    i = (i + 1);
                     j = (j - 1);
                 }
             }
@@ -486,20 +376,20 @@ void sort_points(Point* pts, int64_t left, int64_t right) {
     if (left >= right) {
         return;
     }
-    auto depth = calc_max_depth(gw_add((right - left), 1));
+    auto depth = calc_max_depth(((right - left) + 1));
     introsort_points(pts, left, right, depth);
 }
 
 void insertion_sort_i64(int64_t* arr, int64_t left, int64_t right) {
     { // unsafe
-        for (auto i = gw_add(left, 1); (i <= right); i = gw_add(i, 1)) {
+        for (auto i = (left + 1); (i <= right); i = (i + 1)) {
             auto key = arr[i];
             auto j = (i - 1);
             for (; ((j >= left) && (arr[j] > key)); ) {
-                arr[gw_add(j, 1)] = arr[j];
+                arr[(j + 1)] = arr[j];
                 j = (j - 1);
             }
-            arr[gw_add(j, 1)] = key;
+            arr[(j + 1)] = key;
         }
     }
 }
@@ -509,27 +399,27 @@ void heap_sift_down_i64(int64_t* arr, int64_t left, int64_t root, int64_t n) {
     { // unsafe
         for (; ; ) {
             auto largest = curr;
-            auto left_child = gw_add((2 * curr), 1);
-            auto right_child = gw_add((2 * curr), 2);
-            if ((left_child < n) && (arr[gw_add(left, left_child)] > arr[gw_add(left, largest)])) {
+            auto left_child = ((2 * curr) + 1);
+            auto right_child = ((2 * curr) + 2);
+            if ((left_child < n) && (arr[(left + left_child)] > arr[(left + largest)])) {
                 largest = left_child;
             }
-            if ((right_child < n) && (arr[gw_add(left, right_child)] > arr[gw_add(left, largest)])) {
+            if ((right_child < n) && (arr[(left + right_child)] > arr[(left + largest)])) {
                 largest = right_child;
             }
-            if (gw_eq(largest, curr)) {
+            if (largest == curr) {
                 break;
             }
-            auto tmp = arr[gw_add(left, curr)];
-            arr[gw_add(left, curr)] = arr[gw_add(left, largest)];
-            arr[gw_add(left, largest)] = tmp;
+            auto tmp = arr[(left + curr)];
+            arr[(left + curr)] = arr[(left + largest)];
+            arr[(left + largest)] = tmp;
             curr = largest;
         }
     }
 }
 
 void heapsort_i64(int64_t* arr, int64_t left, int64_t right) {
-    auto n = gw_add((right - left), 1);
+    auto n = ((right - left) + 1);
     if (n <= 1) {
         return;
     }
@@ -542,8 +432,8 @@ void heapsort_i64(int64_t* arr, int64_t left, int64_t right) {
     { // unsafe
         for (; (j > 0); ) {
             auto tmp = arr[left];
-            arr[left] = arr[gw_add(left, j)];
-            arr[gw_add(left, j)] = tmp;
+            arr[left] = arr[(left + j)];
+            arr[(left + j)] = tmp;
             heap_sift_down_i64(arr, left, 0, j);
             j = (j - 1);
         }
@@ -555,12 +445,12 @@ void introsort_i64(int64_t* arr, int64_t left, int64_t right, int64_t max_depth)
     auto r = right;
     auto depth = max_depth;
     for (; ((r - l) > 16); ) {
-        if (gw_eq(depth, 0)) {
+        if (depth == 0) {
             heapsort_i64(arr, l, r);
             return;
         }
         depth = (depth - 1);
-        auto mid = gw_add(l, ((r - l) / 2));
+        auto mid = (l + ((r - l) / 2));
         { // unsafe
             if (arr[l] > arr[mid]) {
                 auto tmp = arr[l];
@@ -582,7 +472,7 @@ void introsort_i64(int64_t* arr, int64_t left, int64_t right, int64_t max_depth)
             auto j = r;
             for (; (i <= j); ) {
                 for (; (arr[i] < pivot); ) {
-                    i = gw_add(i, 1);
+                    i = (i + 1);
                 }
                 for (; (arr[j] > pivot); ) {
                     j = (j - 1);
@@ -591,7 +481,7 @@ void introsort_i64(int64_t* arr, int64_t left, int64_t right, int64_t max_depth)
                     auto tmp = arr[i];
                     arr[i] = arr[j];
                     arr[j] = tmp;
-                    i = gw_add(i, 1);
+                    i = (i + 1);
                     j = (j - 1);
                 }
             }
@@ -615,20 +505,20 @@ void sort_i64(int64_t* arr, int64_t left, int64_t right) {
     if (left >= right) {
         return;
     }
-    auto depth = calc_max_depth(gw_add((right - left), 1));
+    auto depth = calc_max_depth(((right - left) + 1));
     introsort_i64(arr, left, right, depth);
 }
 
 void insertion_sort_edges(Edge* edges, int64_t left, int64_t right) {
     { // unsafe
-        for (auto i = gw_add(left, 1); (i <= right); i = gw_add(i, 1)) {
+        for (auto i = (left + 1); (i <= right); i = (i + 1)) {
             auto key = edges[i];
             auto j = (i - 1);
             for (; ((j >= left) && (edges[j].w > key.w)); ) {
-                edges[gw_add(j, 1)] = edges[j];
+                edges[(j + 1)] = edges[j];
                 j = (j - 1);
             }
-            edges[gw_add(j, 1)] = key;
+            edges[(j + 1)] = key;
         }
     }
 }
@@ -638,27 +528,27 @@ void heap_sift_down_edges(Edge* edges, int64_t left, int64_t root, int64_t n) {
     { // unsafe
         for (; ; ) {
             auto largest = curr;
-            auto left_child = gw_add((2 * curr), 1);
-            auto right_child = gw_add((2 * curr), 2);
-            if ((left_child < n) && (edges[gw_add(left, left_child)].w > edges[gw_add(left, largest)].w)) {
+            auto left_child = ((2 * curr) + 1);
+            auto right_child = ((2 * curr) + 2);
+            if ((left_child < n) && (edges[(left + left_child)].w > edges[(left + largest)].w)) {
                 largest = left_child;
             }
-            if ((right_child < n) && (edges[gw_add(left, right_child)].w > edges[gw_add(left, largest)].w)) {
+            if ((right_child < n) && (edges[(left + right_child)].w > edges[(left + largest)].w)) {
                 largest = right_child;
             }
-            if (gw_eq(largest, curr)) {
+            if (largest == curr) {
                 break;
             }
-            auto tmp = edges[gw_add(left, curr)];
-            edges[gw_add(left, curr)] = edges[gw_add(left, largest)];
-            edges[gw_add(left, largest)] = tmp;
+            auto tmp = edges[(left + curr)];
+            edges[(left + curr)] = edges[(left + largest)];
+            edges[(left + largest)] = tmp;
             curr = largest;
         }
     }
 }
 
 void heapsort_edges(Edge* edges, int64_t left, int64_t right) {
-    auto n = gw_add((right - left), 1);
+    auto n = ((right - left) + 1);
     if (n <= 1) {
         return;
     }
@@ -671,8 +561,8 @@ void heapsort_edges(Edge* edges, int64_t left, int64_t right) {
     { // unsafe
         for (; (j > 0); ) {
             auto tmp = edges[left];
-            edges[left] = edges[gw_add(left, j)];
-            edges[gw_add(left, j)] = tmp;
+            edges[left] = edges[(left + j)];
+            edges[(left + j)] = tmp;
             heap_sift_down_edges(edges, left, 0, j);
             j = (j - 1);
         }
@@ -684,12 +574,12 @@ void introsort_edges(Edge* edges, int64_t left, int64_t right, int64_t max_depth
     auto r = right;
     auto depth = max_depth;
     for (; ((r - l) > 16); ) {
-        if (gw_eq(depth, 0)) {
+        if (depth == 0) {
             heapsort_edges(edges, l, r);
             return;
         }
         depth = (depth - 1);
-        auto mid = gw_add(l, ((r - l) / 2));
+        auto mid = (l + ((r - l) / 2));
         { // unsafe
             if (edges[l].w > edges[mid].w) {
                 auto tmp = edges[l];
@@ -711,7 +601,7 @@ void introsort_edges(Edge* edges, int64_t left, int64_t right, int64_t max_depth
             auto j = r;
             for (; (i <= j); ) {
                 for (; (edges[i].w < piv_w); ) {
-                    i = gw_add(i, 1);
+                    i = (i + 1);
                 }
                 for (; (edges[j].w > piv_w); ) {
                     j = (j - 1);
@@ -720,7 +610,7 @@ void introsort_edges(Edge* edges, int64_t left, int64_t right, int64_t max_depth
                     auto tmp = edges[i];
                     edges[i] = edges[j];
                     edges[j] = tmp;
-                    i = gw_add(i, 1);
+                    i = (i + 1);
                     j = (j - 1);
                 }
             }
@@ -744,7 +634,7 @@ void sort_edges(Edge* edges, int64_t left, int64_t right) {
     if (left >= right) {
         return;
     }
-    auto depth = calc_max_depth(gw_add((right - left), 1));
+    auto depth = calc_max_depth(((right - left) + 1));
     introsort_edges(edges, left, right, depth);
 }
 
@@ -754,12 +644,12 @@ int64_t lower_bound(int64_t* arr, int64_t len, int64_t val) {
     int64_t ans = 0;
     { // unsafe
         for (; (low <= high); ) {
-            auto mid = gw_add(low, ((high - low) / 2));
+            auto mid = (low + ((high - low) / 2));
             if (arr[mid] >= val) {
                 ans = mid;
                 high = (mid - 1);
             } else {
-                low = gw_add(mid, 1);
+                low = (mid + 1);
             }
         }
     }
@@ -769,11 +659,11 @@ int64_t lower_bound(int64_t* arr, int64_t len, int64_t val) {
 int64_t dsu_find(int64_t* parent, int64_t x) {
     { // unsafe
         auto root = x;
-        for (; gw_ne(parent[root], root); ) {
+        for (; (parent[root] != root); ) {
             root = parent[root];
         }
         auto curr = x;
-        for (; gw_ne(curr, root); ) {
+        for (; (curr != root); ) {
             auto nxt = parent[curr];
             parent[curr] = root;
             curr = nxt;
@@ -785,7 +675,7 @@ int64_t dsu_find(int64_t* parent, int64_t x) {
 bool dsu_union(int64_t* parent, int64_t* rank, int64_t x, int64_t y) {
     auto rx = dsu_find(parent, x);
     auto ry = dsu_find(parent, y);
-    if (gw_eq(rx, ry)) {
+    if (rx == ry) {
         return false;
     }
     { // unsafe
@@ -796,7 +686,7 @@ bool dsu_union(int64_t* parent, int64_t* rank, int64_t x, int64_t y) {
                 parent[ry] = rx;
             } else {
                 parent[ry] = rx;
-                rank[rx] = gw_add(rank[rx], 1);
+                rank[rx] = (rank[rx] + 1);
             }
         }
     }
@@ -815,29 +705,29 @@ int64_t solve_manhattan_mst_core(int64_t* orig_x, int64_t* orig_y, int64_t n, bo
     Point* pts = ((Point*)(gw_ptr(pts_buf)));
     auto z_buf = BufferGuard__new((n * sizeof(int64_t)));
     int64_t* z_vals = ((int64_t*)(gw_ptr(z_buf)));
-    auto bit_val_buf = BufferGuard__new((gw_add(n, 4) * sizeof(int64_t)));
+    auto bit_val_buf = BufferGuard__new(((n + 4) * sizeof(int64_t)));
     int64_t* bit_val = ((int64_t*)(gw_ptr(bit_val_buf)));
-    auto bit_id_buf = BufferGuard__new((gw_add(n, 4) * sizeof(int64_t)));
+    auto bit_id_buf = BufferGuard__new(((n + 4) * sizeof(int64_t)));
     int64_t* bit_id = ((int64_t*)(gw_ptr(bit_id_buf)));
-    int64_t max_edges = gw_add((4 * n), 10);
+    int64_t max_edges = ((4 * n) + 10);
     auto edges_buf = BufferGuard__new((max_edges * sizeof(Edge)));
     Edge* edges = ((Edge*)(gw_ptr(edges_buf)));
     int64_t edge_count = 0;
     { // unsafe
-        for (auto i = 0; (i < n); i = gw_add(i, 1)) {
+        for (auto i = 0; (i < n); i = (i + 1)) {
             pts[i] = Point(orig_x[i], orig_y[i], i);
         }
         int64_t inf = INF_DIST;
-        for (auto dir = 0; (dir < 4); dir = gw_add(dir, 1)) {
-            if (gw_eq(dir, 1) || gw_eq(dir, 3)) {
-                for (auto i = 0; (i < n); i = gw_add(i, 1)) {
+        for (auto dir = 0; (dir < 4); dir = (dir + 1)) {
+            if ((dir == 1) || (dir == 3)) {
+                for (auto i = 0; (i < n); i = (i + 1)) {
                     auto tmp = pts[i].x;
                     pts[i].x = pts[i].y;
                     pts[i].y = tmp;
                 }
             } else {
-                if (gw_eq(dir, 2)) {
-                    for (auto i = 0; (i < n); i = gw_add(i, 1)) {
+                if (dir == 2) {
+                    for (auto i = 0; (i < n); i = (i + 1)) {
                         pts[i].x = (-pts[i].x);
                     }
                 }
@@ -847,7 +737,7 @@ int64_t solve_manhattan_mst_core(int64_t* orig_x, int64_t* orig_y, int64_t n, bo
             } else {
                 sort_points(pts, 0, (n - 1));
             }
-            for (auto i = 0; (i < n); i = gw_add(i, 1)) {
+            for (auto i = 0; (i < n); i = (i + 1)) {
                 z_vals[i] = (pts[i].y - pts[i].x);
             }
             if (use_pure_heap) {
@@ -858,18 +748,18 @@ int64_t solve_manhattan_mst_core(int64_t* orig_x, int64_t* orig_y, int64_t n, bo
             int64_t m = 0;
             if (n > 0) {
                 m = 1;
-                for (auto i = 1; (i < n); i = gw_add(i, 1)) {
-                    if (gw_ne(z_vals[i], z_vals[(m - 1)])) {
+                for (auto i = 1; (i < n); i = (i + 1)) {
+                    if (z_vals[i] != z_vals[(m - 1)]) {
                         z_vals[m] = z_vals[i];
-                        m = gw_add(m, 1);
+                        m = (m + 1);
                     }
                 }
             }
-            for (auto p = 0; (p <= gw_add(m, 2)); p = gw_add(p, 1)) {
+            for (auto p = 0; (p <= (m + 2)); p = (p + 1)) {
                 bit_val[p] = inf;
                 bit_id[p] = (-1);
             }
-            for (auto i = 0; (i < n); i = gw_add(i, 1)) {
+            for (auto i = 0; (i < n); i = (i + 1)) {
                 auto z = (pts[i].y - pts[i].x);
                 auto rank = lower_bound(z_vals, m, z);
                 auto pos = (m - rank);
@@ -884,14 +774,14 @@ int64_t solve_manhattan_mst_core(int64_t* orig_x, int64_t* orig_y, int64_t n, bo
                     auto lowbit = (p & (-p));
                     p = (p - lowbit);
                 }
-                if (gw_ne(best_id, (-1))) {
+                if (best_id != (-1)) {
                     auto u = pts[i].id;
                     auto v = best_id;
-                    auto dist = gw_add(abs_i64((orig_x[u] - orig_x[v])), abs_i64((orig_y[u] - orig_y[v])));
+                    auto dist = (abs_i64((orig_x[u] - orig_x[v])) + abs_i64((orig_y[u] - orig_y[v])));
                     edges[edge_count] = Edge(u, v, dist);
-                    edge_count = gw_add(edge_count, 1);
+                    edge_count = (edge_count + 1);
                 }
-                auto val = gw_add(pts[i].x, pts[i].y);
+                auto val = (pts[i].x + pts[i].y);
                 auto id = pts[i].id;
                 auto up = pos;
                 for (; (up <= m); ) {
@@ -900,7 +790,7 @@ int64_t solve_manhattan_mst_core(int64_t* orig_x, int64_t* orig_y, int64_t n, bo
                         bit_id[up] = id;
                     }
                     auto lowbit = (up & (-up));
-                    up = gw_add(up, lowbit);
+                    up = (up + lowbit);
                 }
             }
         }
@@ -917,7 +807,7 @@ int64_t solve_manhattan_mst_core(int64_t* orig_x, int64_t* orig_y, int64_t n, bo
     auto rank_buf = BufferGuard__new((n * sizeof(int64_t)));
     int64_t* rank = ((int64_t*)(gw_ptr(rank_buf)));
     { // unsafe
-        for (auto i = 0; (i < n); i = gw_add(i, 1)) {
+        for (auto i = 0; (i < n); i = (i + 1)) {
             parent[i] = i;
             rank[i] = 0;
         }
@@ -925,12 +815,12 @@ int64_t solve_manhattan_mst_core(int64_t* orig_x, int64_t* orig_y, int64_t n, bo
     int64_t total_mst_weight = 0;
     int64_t edges_added = 0;
     { // unsafe
-        for (auto i = 0; (i < edge_count); i = gw_add(i, 1)) {
+        for (auto i = 0; (i < edge_count); i = (i + 1)) {
             auto e = edges[i];
             if (dsu_union(parent, rank, e.u, e.v)) {
-                total_mst_weight = gw_add(total_mst_weight, e.w);
-                edges_added = gw_add(edges_added, 1);
-                if (gw_eq(edges_added, (n - 1))) {
+                total_mst_weight = (total_mst_weight + e.w);
+                edges_added = (edges_added + 1);
+                if (edges_added == (n - 1)) {
                     break;
                 }
             }
@@ -957,26 +847,26 @@ int64_t solve_manhattan_mst_bruteforce(int64_t* orig_x, int64_t* orig_y, int64_t
     bool* visited = ((bool*)(gw_ptr(visited_buf)));
     int64_t inf = INF_DIST;
     { // unsafe
-        for (auto i = 0; (i < n); i = gw_add(i, 1)) {
+        for (auto i = 0; (i < n); i = (i + 1)) {
             min_dist[i] = inf;
             visited[i] = false;
         }
         min_dist[0] = 0;
         int64_t total_weight = 0;
-        for (auto step = 0; (step < n); step = gw_add(step, 1)) {
+        for (auto step = 0; (step < n); step = (step + 1)) {
             int64_t u = (-1);
             int64_t best_d = inf;
-            for (auto i = 0; (i < n); i = gw_add(i, 1)) {
+            for (auto i = 0; (i < n); i = (i + 1)) {
                 if ((!visited[i]) && (min_dist[i] < best_d)) {
                     best_d = min_dist[i];
                     u = i;
                 }
             }
             visited[u] = true;
-            total_weight = gw_add(total_weight, best_d);
-            for (auto v = 0; (v < n); v = gw_add(v, 1)) {
+            total_weight = (total_weight + best_d);
+            for (auto v = 0; (v < n); v = (v + 1)) {
                 if (!visited[v]) {
-                    auto d = gw_add(abs_i64((orig_x[u] - orig_x[v])), abs_i64((orig_y[u] - orig_y[v])));
+                    auto d = (abs_i64((orig_x[u] - orig_x[v])) + abs_i64((orig_y[u] - orig_y[v])));
                     if (d < min_dist[v]) {
                         min_dist[v] = d;
                     }
@@ -993,17 +883,17 @@ void benchmark_100k() {
     int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
     int64_t rng = 987654321;
     { // unsafe
-        for (auto i = 0; (i < n); i = gw_add(i, 1)) {
-            rng = (gw_add((rng * 1103515245), 12345) & 2147483647);
+        for (auto i = 0; (i < n); i = (i + 1)) {
+            rng = (((rng * 1103515245) + 12345) & 2147483647);
             x[i] = (rng % 100000000);
-            rng = (gw_add((rng * 1103515245), 12345) & 2147483647);
+            rng = (((rng * 1103515245) + 12345) & 2147483647);
             y[i] = (rng % 100000000);
         }
     }
     printf("Running benchmark on N = %lld points (Hard constraint)...\n", n);
-    auto t0 = gw_clock_ms();
+    auto t0 = clock();
     auto mst = solve_manhattan_mst(x, y, n);
-    auto t1 = gw_clock_ms();
+    auto t1 = clock();
     auto elapsed_ms = (t1 - t0);
     printf("100,000 points MST computed successfully: Total weight = %lld in %lld ms\n", mst, elapsed_ms);
     free(((char*)(x)));
@@ -1074,15 +964,15 @@ inline BufferGuard& BufferGuard::operator=(BufferGuard&& other) noexcept {
 
 // --- Shadow-контракты и интеграционные тесты ---
 namespace contracts {
-    inline int64_t contract_abs_i64() {
-        if (!(gw_eq(abs_i64(10), 10))) return 52;
-        if (!(gw_eq(abs_i64((-42)), 42))) return 53;
-        if (!(gw_eq(abs_i64(0), 0))) return 54;
-        if (!(gw_eq(abs_i64(((-9223372036854775807LL) - 1)), 9223372036854775807LL))) return 55;
-        return 0;
+    inline GwTestResult contract_abs_i64() {
+        if (!((abs_i64(10) == 10))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 52};
+        if (!((abs_i64((-42)) == 42))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 53};
+        if (!((abs_i64(0) == 0))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 54};
+        if (!((abs_i64(((-9223372036854775807LL) - 1)) == 9223372036854775807LL))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 55};
+        return GwTestResult{};
     }
 
-    inline int64_t contract_validate_coordinates() {
+    inline GwTestResult contract_validate_coordinates() {
         int64_t n = 2;
         auto x_buf = BufferGuard__new((n * sizeof(int64_t)));
         auto y_buf = BufferGuard__new((n * sizeof(int64_t)));
@@ -1094,44 +984,56 @@ namespace contracts {
             x[1] = COORD_MAX;
             y[1] = COORD_MIN;
         }
-        if (!(gw_eq(validate_coordinates(x, y, n), true))) return 82;
+        if (!((validate_coordinates(x, y, n) == true))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 82};
         { // unsafe
-            x[1] = gw_add(COORD_MAX, 1);
+            x[1] = (COORD_MAX + 1);
         }
-        if (!(gw_eq(validate_coordinates(x, y, n), false))) return 86;
-        return 0;
+        if (!((validate_coordinates(x, y, n) == false))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 86};
+        return GwTestResult{};
     }
 
-    inline int64_t contract_point_greater() {
-        if (!(gw_eq(point_greater(5, 2, 3, 10), true))) return 97;
-        if (!(gw_eq(point_greater(3, 10, 5, 2), false))) return 98;
-        if (!(gw_eq(point_greater(4, 7, 4, 3), true))) return 99;
-        if (!(gw_eq(point_greater(4, 3, 4, 7), false))) return 100;
-        if (!(gw_eq(point_greater(4, 3, 4, 3), false))) return 101;
-        return 0;
+    inline GwTestResult contract_point_greater() {
+        if (!((point_greater(5, 2, 3, 10) == true))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 97};
+        if (!((point_greater(3, 10, 5, 2) == false))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 98};
+        if (!((point_greater(4, 7, 4, 3) == true))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 99};
+        if (!((point_greater(4, 3, 4, 7) == false))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 100};
+        if (!((point_greater(4, 3, 4, 3) == false))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 101};
+        return GwTestResult{};
     }
 
     inline void run_all_contracts(int64_t& __p, int64_t& __f) {
         std::printf("\n--- Shadow Contracts ---\n");
-        int64_t r_contract_abs_i64 = contract_abs_i64();
-        if (r_contract_abs_i64 != 0) {
-            std::printf("[CONTRACT FAIL] abs_i64 (line %lld)\n", (long long)r_contract_abs_i64);
+        GwTestResult r_contract_abs_i64 = contract_abs_i64();
+        if (r_contract_abs_i64.line != 0) {
+            if (r_contract_abs_i64.file && r_contract_abs_i64.file[0] != '\0') {
+    std::printf("[CONTRACT FAIL] abs_i64 (%s:%lld)\n", r_contract_abs_i64.file, (long long)r_contract_abs_i64.line);
+} else {
+    std::printf("[CONTRACT FAIL] abs_i64 (line %lld)\n", (long long)r_contract_abs_i64.line);
+}
             __f += 1;
         } else {
             std::printf("[CONTRACT ok] abs_i64\n");
             __p += 1;
         }
-        int64_t r_contract_validate_coordinates = contract_validate_coordinates();
-        if (r_contract_validate_coordinates != 0) {
-            std::printf("[CONTRACT FAIL] validate_coordinates (line %lld)\n", (long long)r_contract_validate_coordinates);
+        GwTestResult r_contract_validate_coordinates = contract_validate_coordinates();
+        if (r_contract_validate_coordinates.line != 0) {
+            if (r_contract_validate_coordinates.file && r_contract_validate_coordinates.file[0] != '\0') {
+    std::printf("[CONTRACT FAIL] validate_coordinates (%s:%lld)\n", r_contract_validate_coordinates.file, (long long)r_contract_validate_coordinates.line);
+} else {
+    std::printf("[CONTRACT FAIL] validate_coordinates (line %lld)\n", (long long)r_contract_validate_coordinates.line);
+}
             __f += 1;
         } else {
             std::printf("[CONTRACT ok] validate_coordinates\n");
             __p += 1;
         }
-        int64_t r_contract_point_greater = contract_point_greater();
-        if (r_contract_point_greater != 0) {
-            std::printf("[CONTRACT FAIL] point_greater (line %lld)\n", (long long)r_contract_point_greater);
+        GwTestResult r_contract_point_greater = contract_point_greater();
+        if (r_contract_point_greater.line != 0) {
+            if (r_contract_point_greater.file && r_contract_point_greater.file[0] != '\0') {
+    std::printf("[CONTRACT FAIL] point_greater (%s:%lld)\n", r_contract_point_greater.file, (long long)r_contract_point_greater.line);
+} else {
+    std::printf("[CONTRACT FAIL] point_greater (line %lld)\n", (long long)r_contract_point_greater.line);
+}
             __f += 1;
         } else {
             std::printf("[CONTRACT ok] point_greater\n");
@@ -1142,7 +1044,7 @@ namespace contracts {
 } // namespace contracts
 
 namespace integration_tests {
-    inline int64_t test_sample_3_points() {
+    inline GwTestResult test_sample_3_points() {
         int64_t n = 3;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
@@ -1158,12 +1060,12 @@ namespace integration_tests {
         auto bf = solve_manhattan_mst_bruteforce(x, y, n);
         free(((char*)(x)));
         free(((char*)(y)));
-        if (!(gw_eq(mst, 5))) return 805;
-        if (!(gw_eq(bf, 5))) return 806;
-        return 0;
+        if (!((mst == 5))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 805};
+        if (!((bf == 5))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 806};
+        return GwTestResult{};
     }
 
-    inline int64_t test_sample_square() {
+    inline GwTestResult test_sample_square() {
         int64_t n = 4;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
@@ -1181,21 +1083,21 @@ namespace integration_tests {
         auto bf = solve_manhattan_mst_bruteforce(x, y, n);
         free(((char*)(x)));
         free(((char*)(y)));
-        if (!(gw_eq(mst, 30))) return 823;
-        if (!(gw_eq(bf, 30))) return 824;
-        return 0;
+        if (!((mst == 30))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 823};
+        if (!((bf == 30))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 824};
+        return GwTestResult{};
     }
 
-    inline int64_t test_stress_random_100() {
+    inline GwTestResult test_stress_random_100() {
         int64_t count = 100;
         int64_t* x = ((int64_t*)(alloc((count * sizeof(int64_t)))));
         int64_t* y = ((int64_t*)(alloc((count * sizeof(int64_t)))));
         int64_t rng = 123456789;
         { // unsafe
-            for (auto i = 0; (i < count); i = gw_add(i, 1)) {
-                rng = (gw_add((rng * 1103515245), 12345) & 2147483647);
+            for (auto i = 0; (i < count); i = (i + 1)) {
+                rng = (((rng * 1103515245) + 12345) & 2147483647);
                 x[i] = (rng % 10000);
-                rng = (gw_add((rng * 1103515245), 12345) & 2147483647);
+                rng = (((rng * 1103515245) + 12345) & 2147483647);
                 y[i] = (rng % 10000);
             }
         }
@@ -1203,11 +1105,11 @@ namespace integration_tests {
         auto bf = solve_manhattan_mst_bruteforce(x, y, count);
         free(((char*)(x)));
         free(((char*)(y)));
-        if (!(gw_eq(mst, bf))) return 848;
-        return 0;
+        if (!((mst == bf))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 848};
+        return GwTestResult{};
     }
 
-    inline int64_t test_collinear_horizontal() {
+    inline GwTestResult test_collinear_horizontal() {
         int64_t n = 6;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
@@ -1229,12 +1131,12 @@ namespace integration_tests {
         auto bf = solve_manhattan_mst_bruteforce(x, y, n);
         free(((char*)(x)));
         free(((char*)(y)));
-        if (!(gw_eq(mst, 15))) return 867;
-        if (!(gw_eq(bf, 15))) return 868;
-        return 0;
+        if (!((mst == 15))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 867};
+        if (!((bf == 15))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 868};
+        return GwTestResult{};
     }
 
-    inline int64_t test_collinear_vertical() {
+    inline GwTestResult test_collinear_vertical() {
         int64_t n = 6;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
@@ -1256,12 +1158,12 @@ namespace integration_tests {
         auto bf = solve_manhattan_mst_bruteforce(x, y, n);
         free(((char*)(x)));
         free(((char*)(y)));
-        if (!(gw_eq(mst, 15))) return 887;
-        if (!(gw_eq(bf, 15))) return 888;
-        return 0;
+        if (!((mst == 15))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 887};
+        if (!((bf == 15))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 888};
+        return GwTestResult{};
     }
 
-    inline int64_t test_collinear_diagonal_pos() {
+    inline GwTestResult test_collinear_diagonal_pos() {
         int64_t n = 5;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
@@ -1281,12 +1183,12 @@ namespace integration_tests {
         auto bf = solve_manhattan_mst_bruteforce(x, y, n);
         free(((char*)(x)));
         free(((char*)(y)));
-        if (!(gw_eq(mst, 8))) return 906;
-        if (!(gw_eq(bf, 8))) return 907;
-        return 0;
+        if (!((mst == 8))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 906};
+        if (!((bf == 8))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 907};
+        return GwTestResult{};
     }
 
-    inline int64_t test_collinear_diagonal_neg() {
+    inline GwTestResult test_collinear_diagonal_neg() {
         int64_t n = 5;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
@@ -1306,22 +1208,22 @@ namespace integration_tests {
         auto bf = solve_manhattan_mst_bruteforce(x, y, n);
         free(((char*)(x)));
         free(((char*)(y)));
-        if (!(gw_eq(mst, 8))) return 925;
-        if (!(gw_eq(bf, 8))) return 926;
-        return 0;
+        if (!((mst == 8))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 925};
+        if (!((bf == 8))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 926};
+        return GwTestResult{};
     }
 
-    inline int64_t test_grid_4x4() {
+    inline GwTestResult test_grid_4x4() {
         int64_t n = 16;
         int64_t* x = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         int64_t* y = ((int64_t*)(alloc((n * sizeof(int64_t)))));
         { // unsafe
             int64_t idx = 0;
-            for (auto r = 0; (r < 4); r = gw_add(r, 1)) {
-                for (auto c = 0; (c < 4); c = gw_add(c, 1)) {
+            for (auto r = 0; (r < 4); r = (r + 1)) {
+                for (auto c = 0; (c < 4); c = (c + 1)) {
                     x[idx] = (c * 10);
                     y[idx] = (r * 10);
-                    idx = gw_add(idx, 1);
+                    idx = (idx + 1);
                 }
             }
         }
@@ -1329,25 +1231,25 @@ namespace integration_tests {
         auto bf = solve_manhattan_mst_bruteforce(x, y, n);
         free(((char*)(x)));
         free(((char*)(y)));
-        if (!(gw_eq(mst, 150))) return 947;
-        if (!(gw_eq(bf, 150))) return 948;
-        return 0;
+        if (!((mst == 150))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 947};
+        if (!((bf == 150))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 948};
+        return GwTestResult{};
     }
 
-    inline int64_t test_stress_collinear_random() {
+    inline GwTestResult test_stress_collinear_random() {
         int64_t count = 80;
         int64_t* x = ((int64_t*)(alloc((count * sizeof(int64_t)))));
         int64_t* y = ((int64_t*)(alloc((count * sizeof(int64_t)))));
         int64_t rng = 99991;
         { // unsafe
-            for (auto i = 0; (i < count); i = gw_add(i, 1)) {
-                rng = (gw_add((rng * 1103515245), 12345) & 2147483647);
+            for (auto i = 0; (i < count); i = (i + 1)) {
+                rng = (((rng * 1103515245) + 12345) & 2147483647);
                 auto coord = (rng % 500);
-                if (gw_eq((i % 3), 0)) {
+                if ((i % 3) == 0) {
                     x[i] = coord;
                     y[i] = 100;
                 } else {
-                    if (gw_eq((i % 3), 1)) {
+                    if ((i % 3) == 1) {
                         x[i] = 200;
                         y[i] = coord;
                     } else {
@@ -1361,102 +1263,102 @@ namespace integration_tests {
         auto bf = solve_manhattan_mst_bruteforce(x, y, count);
         free(((char*)(x)));
         free(((char*)(y)));
-        if (!(gw_eq(mst, bf))) return 981;
-        return 0;
+        if (!((mst == bf))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 981};
+        return GwTestResult{};
     }
 
-    inline int64_t test_introsort_adversarial_patterns() {
+    inline GwTestResult test_introsort_adversarial_patterns() {
         int64_t n = 10000;
         auto buf = BufferGuard__new((n * sizeof(int64_t)));
         auto arr = ((int64_t*)(gw_ptr(buf)));
         { // unsafe
-            for (auto i = 0; (i < n); i = gw_add(i, 1)) {
+            for (auto i = 0; (i < n); i = (i + 1)) {
                 arr[i] = i;
             }
         }
         sort_i64(arr, 0, (n - 1));
         { // unsafe
-            for (auto i = 0; (i < (n - 1)); i = gw_add(i, 1)) {
-                if (!((arr[i] <= arr[gw_add(i, 1)]))) return 998;
+            for (auto i = 0; (i < (n - 1)); i = (i + 1)) {
+                if (!((arr[i] <= arr[(i + 1)]))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 998};
             }
-            if (!(gw_eq(arr[0], 0))) return 1000;
-            if (!(gw_eq(arr[(n - 1)], (n - 1)))) return 1001;
+            if (!((arr[0] == 0))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 1000};
+            if (!((arr[(n - 1)] == (n - 1)))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 1001};
         }
         { // unsafe
-            for (auto i = 0; (i < n); i = gw_add(i, 1)) {
+            for (auto i = 0; (i < n); i = (i + 1)) {
                 arr[i] = (n - i);
             }
         }
         sort_i64(arr, 0, (n - 1));
         { // unsafe
-            for (auto i = 0; (i < (n - 1)); i = gw_add(i, 1)) {
-                if (!((arr[i] <= arr[gw_add(i, 1)]))) return 1013;
+            for (auto i = 0; (i < (n - 1)); i = (i + 1)) {
+                if (!((arr[i] <= arr[(i + 1)]))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 1013};
             }
-            if (!(gw_eq(arr[0], 1))) return 1015;
-            if (!(gw_eq(arr[(n - 1)], n))) return 1016;
+            if (!((arr[0] == 1))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 1015};
+            if (!((arr[(n - 1)] == n))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 1016};
         }
         auto half = (n / 2);
         { // unsafe
-            for (auto i = 0; (i < half); i = gw_add(i, 1)) {
+            for (auto i = 0; (i < half); i = (i + 1)) {
                 arr[i] = i;
                 arr[((n - 1) - i)] = i;
             }
         }
         sort_i64(arr, 0, (n - 1));
         { // unsafe
-            for (auto i = 0; (i < (n - 1)); i = gw_add(i, 1)) {
-                if (!((arr[i] <= arr[gw_add(i, 1)]))) return 1030;
+            for (auto i = 0; (i < (n - 1)); i = (i + 1)) {
+                if (!((arr[i] <= arr[(i + 1)]))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 1030};
             }
-            if (!(gw_eq(arr[0], 0))) return 1032;
-            if (!(gw_eq(arr[1], 0))) return 1033;
-            if (!(gw_eq(arr[(n - 1)], (half - 1)))) return 1034;
+            if (!((arr[0] == 0))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 1032};
+            if (!((arr[1] == 0))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 1033};
+            if (!((arr[(n - 1)] == (half - 1)))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 1034};
         }
         { // unsafe
-            for (auto i = 0; (i < n); i = gw_add(i, 1)) {
+            for (auto i = 0; (i < n); i = (i + 1)) {
                 arr[i] = 42;
             }
         }
         sort_i64(arr, 0, (n - 1));
         { // unsafe
-            for (auto i = 0; (i < n); i = gw_add(i, 1)) {
-                if (!(gw_eq(arr[i], 42))) return 1046;
+            for (auto i = 0; (i < n); i = (i + 1)) {
+                if (!((arr[i] == 42))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 1046};
             }
         }
-        return 0;
+        return GwTestResult{};
     }
 
-    inline int64_t test_heapsort_points_direct_verification() {
+    inline GwTestResult test_heapsort_points_direct_verification() {
         int64_t n = 200;
         auto buf = BufferGuard__new((n * sizeof(Point)));
         auto pts = ((Point*)(gw_ptr(buf)));
         int64_t rng = 54321;
         { // unsafe
-            for (auto i = 0; (i < n); i = gw_add(i, 1)) {
-                rng = (gw_add((rng * 1103515245), 12345) & 2147483647);
+            for (auto i = 0; (i < n); i = (i + 1)) {
+                rng = (((rng * 1103515245) + 12345) & 2147483647);
                 auto rx = (rng % 1000);
-                rng = (gw_add((rng * 1103515245), 12345) & 2147483647);
+                rng = (((rng * 1103515245) + 12345) & 2147483647);
                 auto ry = (rng % 1000);
                 pts[i] = Point(rx, ry, i);
             }
         }
         heapsort_points(pts, 0, (n - 1));
         { // unsafe
-            for (auto i = 0; (i < (n - 1)); i = gw_add(i, 1)) {
-                auto next_is_greater = point_greater(pts[gw_add(i, 1)].x, pts[gw_add(i, 1)].y, pts[i].x, pts[i].y);
-                if (!((!next_is_greater))) return 1076;
+            for (auto i = 0; (i < (n - 1)); i = (i + 1)) {
+                auto next_is_greater = point_greater(pts[(i + 1)].x, pts[(i + 1)].y, pts[i].x, pts[i].y);
+                if (!((!next_is_greater))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 1076};
             }
         }
         heapsort_points(pts, 20, 150);
         { // unsafe
-            for (auto i = 20; (i < 150); i = gw_add(i, 1)) {
-                auto next_is_greater = point_greater(pts[gw_add(i, 1)].x, pts[gw_add(i, 1)].y, pts[i].x, pts[i].y);
-                if (!((!next_is_greater))) return 1085;
+            for (auto i = 20; (i < 150); i = (i + 1)) {
+                auto next_is_greater = point_greater(pts[(i + 1)].x, pts[(i + 1)].y, pts[i].x, pts[i].y);
+                if (!((!next_is_greater))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 1085};
             }
         }
-        return 0;
+        return GwTestResult{};
     }
 
-    inline int64_t test_forced_pure_heapsort_mst() {
+    inline GwTestResult test_forced_pure_heapsort_mst() {
         int64_t count = 150;
         auto x_buf = BufferGuard__new((count * sizeof(int64_t)));
         auto y_buf = BufferGuard__new((count * sizeof(int64_t)));
@@ -1464,114 +1366,162 @@ namespace integration_tests {
         auto y = ((int64_t*)(gw_ptr(y_buf)));
         int64_t rng = 13579;
         { // unsafe
-            for (auto i = 0; (i < count); i = gw_add(i, 1)) {
-                rng = (gw_add((rng * 1103515245), 12345) & 2147483647);
+            for (auto i = 0; (i < count); i = (i + 1)) {
+                rng = (((rng * 1103515245) + 12345) & 2147483647);
                 x[i] = (rng % 5000);
-                rng = (gw_add((rng * 1103515245), 12345) & 2147483647);
+                rng = (((rng * 1103515245) + 12345) & 2147483647);
                 y[i] = (rng % 5000);
             }
         }
         auto intro_mst = solve_manhattan_mst(x, y, count);
         auto heap_mst = solve_manhattan_mst_pure_heapsort(x, y, count);
         auto bf_mst = solve_manhattan_mst_bruteforce(x, y, count);
-        if (!(gw_eq(heap_mst, bf_mst))) return 1111;
-        if (!(gw_eq(intro_mst, heap_mst))) return 1112;
-        return 0;
+        if (!((heap_mst == bf_mst))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 1111};
+        if (!((intro_mst == heap_mst))) return GwTestResult{"examples/Euclidean Manhattan MST/src/main.gw", 1112};
+        return GwTestResult{};
     }
 
     inline void run_all_tests(int64_t& __p, int64_t& __f) {
         std::printf("\n--- Integration Tests ---\n");
-        int64_t r_test_sample_3_points = test_sample_3_points();
-        if (r_test_sample_3_points != 0) {
-            std::printf("[TEST FAIL] sample_3_points (line %lld)\n", (long long)r_test_sample_3_points);
+        GwTestResult r_test_sample_3_points = test_sample_3_points();
+        if (r_test_sample_3_points.line != 0) {
+            if (r_test_sample_3_points.file && r_test_sample_3_points.file[0] != '\0') {
+    std::printf("[TEST FAIL] sample_3_points (%s:%lld)\n", r_test_sample_3_points.file, (long long)r_test_sample_3_points.line);
+} else {
+    std::printf("[TEST FAIL] sample_3_points (line %lld)\n", (long long)r_test_sample_3_points.line);
+}
             __f += 1;
         } else {
             std::printf("[TEST ok] sample_3_points\n");
             __p += 1;
         }
-        int64_t r_test_sample_square = test_sample_square();
-        if (r_test_sample_square != 0) {
-            std::printf("[TEST FAIL] sample_square (line %lld)\n", (long long)r_test_sample_square);
+        GwTestResult r_test_sample_square = test_sample_square();
+        if (r_test_sample_square.line != 0) {
+            if (r_test_sample_square.file && r_test_sample_square.file[0] != '\0') {
+    std::printf("[TEST FAIL] sample_square (%s:%lld)\n", r_test_sample_square.file, (long long)r_test_sample_square.line);
+} else {
+    std::printf("[TEST FAIL] sample_square (line %lld)\n", (long long)r_test_sample_square.line);
+}
             __f += 1;
         } else {
             std::printf("[TEST ok] sample_square\n");
             __p += 1;
         }
-        int64_t r_test_stress_random_100 = test_stress_random_100();
-        if (r_test_stress_random_100 != 0) {
-            std::printf("[TEST FAIL] stress_random_100 (line %lld)\n", (long long)r_test_stress_random_100);
+        GwTestResult r_test_stress_random_100 = test_stress_random_100();
+        if (r_test_stress_random_100.line != 0) {
+            if (r_test_stress_random_100.file && r_test_stress_random_100.file[0] != '\0') {
+    std::printf("[TEST FAIL] stress_random_100 (%s:%lld)\n", r_test_stress_random_100.file, (long long)r_test_stress_random_100.line);
+} else {
+    std::printf("[TEST FAIL] stress_random_100 (line %lld)\n", (long long)r_test_stress_random_100.line);
+}
             __f += 1;
         } else {
             std::printf("[TEST ok] stress_random_100\n");
             __p += 1;
         }
-        int64_t r_test_collinear_horizontal = test_collinear_horizontal();
-        if (r_test_collinear_horizontal != 0) {
-            std::printf("[TEST FAIL] collinear_horizontal (line %lld)\n", (long long)r_test_collinear_horizontal);
+        GwTestResult r_test_collinear_horizontal = test_collinear_horizontal();
+        if (r_test_collinear_horizontal.line != 0) {
+            if (r_test_collinear_horizontal.file && r_test_collinear_horizontal.file[0] != '\0') {
+    std::printf("[TEST FAIL] collinear_horizontal (%s:%lld)\n", r_test_collinear_horizontal.file, (long long)r_test_collinear_horizontal.line);
+} else {
+    std::printf("[TEST FAIL] collinear_horizontal (line %lld)\n", (long long)r_test_collinear_horizontal.line);
+}
             __f += 1;
         } else {
             std::printf("[TEST ok] collinear_horizontal\n");
             __p += 1;
         }
-        int64_t r_test_collinear_vertical = test_collinear_vertical();
-        if (r_test_collinear_vertical != 0) {
-            std::printf("[TEST FAIL] collinear_vertical (line %lld)\n", (long long)r_test_collinear_vertical);
+        GwTestResult r_test_collinear_vertical = test_collinear_vertical();
+        if (r_test_collinear_vertical.line != 0) {
+            if (r_test_collinear_vertical.file && r_test_collinear_vertical.file[0] != '\0') {
+    std::printf("[TEST FAIL] collinear_vertical (%s:%lld)\n", r_test_collinear_vertical.file, (long long)r_test_collinear_vertical.line);
+} else {
+    std::printf("[TEST FAIL] collinear_vertical (line %lld)\n", (long long)r_test_collinear_vertical.line);
+}
             __f += 1;
         } else {
             std::printf("[TEST ok] collinear_vertical\n");
             __p += 1;
         }
-        int64_t r_test_collinear_diagonal_pos = test_collinear_diagonal_pos();
-        if (r_test_collinear_diagonal_pos != 0) {
-            std::printf("[TEST FAIL] collinear_diagonal_pos (line %lld)\n", (long long)r_test_collinear_diagonal_pos);
+        GwTestResult r_test_collinear_diagonal_pos = test_collinear_diagonal_pos();
+        if (r_test_collinear_diagonal_pos.line != 0) {
+            if (r_test_collinear_diagonal_pos.file && r_test_collinear_diagonal_pos.file[0] != '\0') {
+    std::printf("[TEST FAIL] collinear_diagonal_pos (%s:%lld)\n", r_test_collinear_diagonal_pos.file, (long long)r_test_collinear_diagonal_pos.line);
+} else {
+    std::printf("[TEST FAIL] collinear_diagonal_pos (line %lld)\n", (long long)r_test_collinear_diagonal_pos.line);
+}
             __f += 1;
         } else {
             std::printf("[TEST ok] collinear_diagonal_pos\n");
             __p += 1;
         }
-        int64_t r_test_collinear_diagonal_neg = test_collinear_diagonal_neg();
-        if (r_test_collinear_diagonal_neg != 0) {
-            std::printf("[TEST FAIL] collinear_diagonal_neg (line %lld)\n", (long long)r_test_collinear_diagonal_neg);
+        GwTestResult r_test_collinear_diagonal_neg = test_collinear_diagonal_neg();
+        if (r_test_collinear_diagonal_neg.line != 0) {
+            if (r_test_collinear_diagonal_neg.file && r_test_collinear_diagonal_neg.file[0] != '\0') {
+    std::printf("[TEST FAIL] collinear_diagonal_neg (%s:%lld)\n", r_test_collinear_diagonal_neg.file, (long long)r_test_collinear_diagonal_neg.line);
+} else {
+    std::printf("[TEST FAIL] collinear_diagonal_neg (line %lld)\n", (long long)r_test_collinear_diagonal_neg.line);
+}
             __f += 1;
         } else {
             std::printf("[TEST ok] collinear_diagonal_neg\n");
             __p += 1;
         }
-        int64_t r_test_grid_4x4 = test_grid_4x4();
-        if (r_test_grid_4x4 != 0) {
-            std::printf("[TEST FAIL] grid_4x4 (line %lld)\n", (long long)r_test_grid_4x4);
+        GwTestResult r_test_grid_4x4 = test_grid_4x4();
+        if (r_test_grid_4x4.line != 0) {
+            if (r_test_grid_4x4.file && r_test_grid_4x4.file[0] != '\0') {
+    std::printf("[TEST FAIL] grid_4x4 (%s:%lld)\n", r_test_grid_4x4.file, (long long)r_test_grid_4x4.line);
+} else {
+    std::printf("[TEST FAIL] grid_4x4 (line %lld)\n", (long long)r_test_grid_4x4.line);
+}
             __f += 1;
         } else {
             std::printf("[TEST ok] grid_4x4\n");
             __p += 1;
         }
-        int64_t r_test_stress_collinear_random = test_stress_collinear_random();
-        if (r_test_stress_collinear_random != 0) {
-            std::printf("[TEST FAIL] stress_collinear_random (line %lld)\n", (long long)r_test_stress_collinear_random);
+        GwTestResult r_test_stress_collinear_random = test_stress_collinear_random();
+        if (r_test_stress_collinear_random.line != 0) {
+            if (r_test_stress_collinear_random.file && r_test_stress_collinear_random.file[0] != '\0') {
+    std::printf("[TEST FAIL] stress_collinear_random (%s:%lld)\n", r_test_stress_collinear_random.file, (long long)r_test_stress_collinear_random.line);
+} else {
+    std::printf("[TEST FAIL] stress_collinear_random (line %lld)\n", (long long)r_test_stress_collinear_random.line);
+}
             __f += 1;
         } else {
             std::printf("[TEST ok] stress_collinear_random\n");
             __p += 1;
         }
-        int64_t r_test_introsort_adversarial_patterns = test_introsort_adversarial_patterns();
-        if (r_test_introsort_adversarial_patterns != 0) {
-            std::printf("[TEST FAIL] introsort_adversarial_patterns (line %lld)\n", (long long)r_test_introsort_adversarial_patterns);
+        GwTestResult r_test_introsort_adversarial_patterns = test_introsort_adversarial_patterns();
+        if (r_test_introsort_adversarial_patterns.line != 0) {
+            if (r_test_introsort_adversarial_patterns.file && r_test_introsort_adversarial_patterns.file[0] != '\0') {
+    std::printf("[TEST FAIL] introsort_adversarial_patterns (%s:%lld)\n", r_test_introsort_adversarial_patterns.file, (long long)r_test_introsort_adversarial_patterns.line);
+} else {
+    std::printf("[TEST FAIL] introsort_adversarial_patterns (line %lld)\n", (long long)r_test_introsort_adversarial_patterns.line);
+}
             __f += 1;
         } else {
             std::printf("[TEST ok] introsort_adversarial_patterns\n");
             __p += 1;
         }
-        int64_t r_test_heapsort_points_direct_verification = test_heapsort_points_direct_verification();
-        if (r_test_heapsort_points_direct_verification != 0) {
-            std::printf("[TEST FAIL] heapsort_points_direct_verification (line %lld)\n", (long long)r_test_heapsort_points_direct_verification);
+        GwTestResult r_test_heapsort_points_direct_verification = test_heapsort_points_direct_verification();
+        if (r_test_heapsort_points_direct_verification.line != 0) {
+            if (r_test_heapsort_points_direct_verification.file && r_test_heapsort_points_direct_verification.file[0] != '\0') {
+    std::printf("[TEST FAIL] heapsort_points_direct_verification (%s:%lld)\n", r_test_heapsort_points_direct_verification.file, (long long)r_test_heapsort_points_direct_verification.line);
+} else {
+    std::printf("[TEST FAIL] heapsort_points_direct_verification (line %lld)\n", (long long)r_test_heapsort_points_direct_verification.line);
+}
             __f += 1;
         } else {
             std::printf("[TEST ok] heapsort_points_direct_verification\n");
             __p += 1;
         }
-        int64_t r_test_forced_pure_heapsort_mst = test_forced_pure_heapsort_mst();
-        if (r_test_forced_pure_heapsort_mst != 0) {
-            std::printf("[TEST FAIL] forced_pure_heapsort_mst (line %lld)\n", (long long)r_test_forced_pure_heapsort_mst);
+        GwTestResult r_test_forced_pure_heapsort_mst = test_forced_pure_heapsort_mst();
+        if (r_test_forced_pure_heapsort_mst.line != 0) {
+            if (r_test_forced_pure_heapsort_mst.file && r_test_forced_pure_heapsort_mst.file[0] != '\0') {
+    std::printf("[TEST FAIL] forced_pure_heapsort_mst (%s:%lld)\n", r_test_forced_pure_heapsort_mst.file, (long long)r_test_forced_pure_heapsort_mst.line);
+} else {
+    std::printf("[TEST FAIL] forced_pure_heapsort_mst (line %lld)\n", (long long)r_test_forced_pure_heapsort_mst.line);
+}
             __f += 1;
         } else {
             std::printf("[TEST ok] forced_pure_heapsort_mst\n");

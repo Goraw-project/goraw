@@ -4,9 +4,9 @@
 //! - RAII деструкторы (автоматический маппинг `Type::drop` -> C++ деструктор `~Type()`) с соблюдением "Правила пяти"
 //! - Чистый C++ синтаксис доступа к полям `.` и `->` без оверхеда `gw_deref`
 //! - Конструкторы типов вместо designated initializers для валидности по C++20 (P1008R1)
-//! - Прямой вызов libc `clock()` без подмены FFI сигнатур
+//! - Прямой вызов libc `clock()` и замер времени через `gw_clock_ms()`
 //! - Полное сохранение и прогон shadow-тестов и контрактов через флаг `--test` / `#ifdef GORAW_TEST`
-//! - Минимальные заголовки без замусоривания неиспользуемыми библиотеками
+//! - Модульную генерацию преамбулы на основе реального использования типов и функций
 
 use crate::ast::*;
 use std::collections::{HashMap, HashSet};
@@ -19,6 +19,7 @@ pub fn transpile(prog: &Program, test_mode: bool, line_map: &[(u32, String)]) ->
 #[derive(Clone, Debug)]
 struct VarMeta {
     is_pointer: bool,
+    is_str: bool,
     struct_name: Option<String>,
 }
 
@@ -26,12 +27,14 @@ struct VarMeta {
 struct StructMeta {
     field_names: Vec<String>,
     field_is_ptr: HashMap<String, bool>,
+    field_is_str: HashMap<String, bool>,
     field_struct: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug)]
 struct FnMeta {
     is_ret_pointer: bool,
+    is_ret_str: bool,
     ret_struct_name: Option<String>,
     first_param_is_ptr: bool,
 }
@@ -48,6 +51,15 @@ struct Transpiler {
     used_math: HashSet<String>,
     needs_str: bool,
     needs_slice: bool,
+    needs_array: bool,
+    needs_chrono: bool,
+    needs_ctime: bool,
+    needs_io: bool,
+    needs_alloc: bool,
+    needs_zeroed: bool,
+    needs_len: bool,
+    needs_try: bool,
+    needs_type_traits: bool,
 }
 
 impl Transpiler {
@@ -64,12 +76,22 @@ impl Transpiler {
             used_math: HashSet::new(),
             needs_str: false,
             needs_slice: false,
+            needs_array: false,
+            needs_chrono: false,
+            needs_ctime: false,
+            needs_io: false,
+            needs_alloc: false,
+            needs_zeroed: false,
+            needs_len: false,
+            needs_try: false,
+            needs_type_traits: false,
         }
     }
 
-    fn locate_line(&self, line: u32) -> u32 {
+    /// По глобальной строке в объединенном источнике возвращает (путь_к_файлу, локальная_строка)
+    fn locate_loc(&self, line: u32) -> (String, u32) {
         if self.line_map.is_empty() {
-            return line;
+            return (String::new(), line);
         }
         let mut best = &self.line_map[0];
         for e in &self.line_map {
@@ -79,7 +101,12 @@ impl Transpiler {
                 break;
             }
         }
-        line.saturating_sub(best.0) + 1
+        (best.1.clone(), line.saturating_sub(best.0) + 1)
+    }
+
+    #[allow(dead_code)]
+    fn locate_line(&self, line: u32) -> u32 {
+        self.locate_loc(line).1
     }
 
     fn indent(&self) -> String {
@@ -113,7 +140,7 @@ impl Transpiler {
 
     fn is_expr_pointer(&self, expr: &Expr) -> bool {
         match expr {
-            Expr::Index { .. } => false, // pts[i] возвращает значение/ссылку на структуру, не указатель
+            Expr::Index { .. } => false,
             Expr::Ident(name, _) => {
                 self.lookup_var(name).map(|v| v.is_pointer).unwrap_or(false)
             }
@@ -146,6 +173,48 @@ impl Transpiler {
             }
             Expr::Cast { ty, .. } => {
                 matches!(ty, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..))
+            }
+            _ => false,
+        }
+    }
+
+    fn is_expr_str(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Str(..) => true,
+            Expr::Ident(name, _) => {
+                self.lookup_var(name).map(|v| v.is_str).unwrap_or(false)
+            }
+            Expr::Call { callee, .. } => {
+                if let Expr::Ident(name, _) = &**callee {
+                    if name == "str_from_cstr" {
+                        return true;
+                    }
+                    if let Some(fm) = self.fns.get(name) {
+                        return fm.is_ret_str;
+                    }
+                }
+                false
+            }
+            Expr::Binary { op: BinOp::Add, lhs, rhs, .. } => {
+                self.is_expr_str(lhs) || self.is_expr_str(rhs)
+            }
+            Expr::Slice { base, .. } => {
+                self.is_expr_str(base)
+            }
+            Expr::Field { base, field, .. } => {
+                if let Some(sname) = self.infer_struct_name(base) {
+                    if let Some(sm) = self.struct_defs.get(&sname) {
+                        return sm.field_is_str.get(field).copied().unwrap_or(false);
+                    }
+                }
+                false
+            }
+            Expr::Unary { op, expr, .. } => match op {
+                UnOp::Deref | UnOp::Ref | UnOp::RefMut => self.is_expr_str(expr),
+                _ => false,
+            },
+            Expr::IfExpr { then, els, .. } => {
+                self.is_expr_str(then) || self.is_expr_str(els)
             }
             _ => false,
         }
@@ -207,8 +276,52 @@ impl Transpiler {
         }
     }
 
+    /// Сброс полей перемещенного объекта в безопасное дефолтное состояние
+    fn field_move_reset(f: &Param) -> Option<String> {
+        let name = escape_ident(&f.name);
+        match &f.ty {
+            TypeExpr::Ptr(..) | TypeExpr::PtrMut(..) => {
+                Some(format!("other.{} = nullptr;", name))
+            }
+            TypeExpr::Named(tname, ..) => match tname.as_str() {
+                "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" => {
+                    Some(format!("other.{} = 0;", name))
+                }
+                "f32" | "f64" => {
+                    Some(format!("other.{} = 0.0;", name))
+                }
+                "bool" => {
+                    Some(format!("other.{} = false;", name))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     fn scan_usage(&mut self, prog: &Program) {
+        for s in &prog.structs {
+            for f in &s.fields {
+                self.scan_type(&f.ty);
+            }
+        }
+        for c in &prog.consts {
+            if let Some(t) = &c.ty {
+                self.scan_type(t);
+            }
+            self.scan_expr(&c.value);
+        }
+        for st in &prog.statics {
+            self.scan_type(&st.ty);
+            self.scan_expr(&st.value);
+        }
         for f in &prog.fns {
+            if let Some(r) = &f.ret {
+                self.scan_type(r);
+            }
+            for p in &f.params {
+                self.scan_type(&p.ty);
+            }
             if let Some(body) = &f.body {
                 self.scan_block(body);
             }
@@ -286,21 +399,55 @@ impl Transpiler {
 
     fn scan_type(&mut self, ty: &TypeExpr) {
         match ty {
-            TypeExpr::Named(name, _) if name == "str" => self.needs_str = true,
+            TypeExpr::Named(name, _) if name == "str" => {
+                self.needs_str = true;
+                self.needs_type_traits = true;
+            }
             TypeExpr::Slice(inner, _) => {
                 self.needs_slice = true;
                 self.scan_type(inner);
             }
+            TypeExpr::Array(inner, _, _) => {
+                self.needs_array = true;
+                self.needs_type_traits = true;
+                self.scan_type(inner);
+            }
+            TypeExpr::Fn(params, ret, _) => {
+                self.needs_type_traits = true;
+                for p in params {
+                    self.scan_type(p);
+                }
+                if let Some(r) = ret {
+                    self.scan_type(r);
+                }
+            }
             TypeExpr::Ptr(inner, _) | TypeExpr::PtrMut(inner, _) => self.scan_type(inner),
+            TypeExpr::Generic(_, args, _) => {
+                for a in args {
+                    self.scan_type(a);
+                }
+            }
             _ => {}
         }
     }
 
     fn scan_expr(&mut self, expr: &Expr) {
         match expr {
+            Expr::Str(..) => {
+                self.needs_str = true;
+                self.needs_type_traits = true;
+            }
             Expr::Call { callee, args, .. } => {
                 if let Expr::Ident(name, _) = &**callee {
                     match name.as_str() {
+                        "gw_clock_ms" => self.needs_chrono = true,
+                        "clock" => self.needs_ctime = true,
+                        "print" | "println" => {
+                            self.needs_io = true;
+                            self.needs_type_traits = true;
+                        }
+                        "alloc" | "realloc" => self.needs_alloc = true,
+                        "zeroed" => self.needs_zeroed = true,
                         "abs" | "min" | "max" | "clamp" | "sqrt" | "pow" | "floor" | "ceil" | "sin" | "cos" => {
                             self.used_math.insert(name.clone());
                         }
@@ -317,7 +464,12 @@ impl Transpiler {
                 self.scan_expr(rhs);
             }
             Expr::Unary { expr, .. } => self.scan_expr(expr),
-            Expr::Field { base, .. } => self.scan_expr(base),
+            Expr::Field { base, field, .. } => {
+                if field == "len" || field == "ptr" {
+                    self.needs_len = true;
+                }
+                self.scan_expr(base);
+            }
             Expr::Index { base, index, .. } => {
                 self.scan_expr(base);
                 self.scan_expr(index);
@@ -329,6 +481,8 @@ impl Transpiler {
                 if let Some(e) = end { self.scan_expr(e); }
             }
             Expr::ArrayLit(elems, ..) => {
+                self.needs_array = true;
+                self.needs_type_traits = true;
                 for e in elems {
                     self.scan_expr(e);
                 }
@@ -347,6 +501,10 @@ impl Transpiler {
                 self.scan_type(ty);
                 self.scan_expr(expr);
             }
+            Expr::Try(inner, ..) => {
+                self.needs_try = true;
+                self.scan_expr(inner);
+            }
             _ => {}
         }
     }
@@ -356,33 +514,37 @@ impl Transpiler {
         for s in &prog.structs {
             let mut field_names = Vec::new();
             let mut field_is_ptr = HashMap::new();
+            let mut field_is_str = HashMap::new();
             let mut field_struct = HashMap::new();
             for f in &s.fields {
                 field_names.push(f.name.clone());
                 let is_p = matches!(&f.ty, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..));
                 field_is_ptr.insert(f.name.clone(), is_p);
+                let is_s = matches!(&f.ty, TypeExpr::Named(name, ..) if name == "str");
+                field_is_str.insert(f.name.clone(), is_s);
                 if let Some(st) = Self::extract_struct_name(&f.ty) {
                     field_struct.insert(f.name.clone(), st);
                 }
             }
-            self.struct_defs.insert(s.name.clone(), StructMeta { field_names, field_is_ptr, field_struct });
+            self.struct_defs.insert(s.name.clone(), StructMeta { field_names, field_is_ptr, field_is_str, field_struct });
         }
 
         // Сбор метаданных функций
         for f in &prog.fns {
             let is_p = f.ret.as_ref().map_or(false, |r| matches!(r, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..)));
+            let is_s = f.ret.as_ref().map_or(false, |r| matches!(r, TypeExpr::Named(name, ..) if name == "str"));
             let ret_s = f.ret.as_ref().and_then(|r| Self::extract_struct_name(r));
             let first_ptr = f.params.first().map_or(false, |p| {
                 matches!(&p.ty, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..))
             });
-            let meta = FnMeta { is_ret_pointer: is_p, ret_struct_name: ret_s, first_param_is_ptr: first_ptr };
+            let meta = FnMeta { is_ret_pointer: is_p, is_ret_str: is_s, ret_struct_name: ret_s, first_param_is_ptr: first_ptr };
             self.fns.insert(f.name.clone(), meta.clone());
             self.fns.insert(escape_fn_name(&f.name), meta);
         }
 
         self.scan_usage(prog);
 
-        // 1. Преамбула
+        // 1. Модульная преамбула
         self.out.push_str(
             "// ============================================================================\n\
              // Сгенерировано компилятором Goraw (C++23 Backend)\n\
@@ -391,222 +553,319 @@ impl Transpiler {
              #include <cstddef>\n\
              #include <cstdlib>\n\
              #include <cstdio>\n\
-             #include <cstring>\n\
-             #include <chrono>\n\
-             #include <array>\n\
-             #include <span>\n\
-             #include <string_view>\n\
-             #include <string>\n\
-             #include <iostream>\n\
-             #include <type_traits>\n\
-             #include <cmath>\n\n\
-             // Переносимый замер времени (строго в миллисекундах на всех ОС)\n\
-             inline int64_t gw_clock_ms() noexcept {\n\
-                 return std::chrono::duration_cast<std::chrono::milliseconds>(\n\
-                     std::chrono::steady_clock::now().time_since_epoch()\n\
-                 ).count();\n\
-             }\n\n\
-             inline void* alloc(int64_t sz) noexcept { return std::malloc(sz); }\n\
-             inline void* realloc(void* p, int64_t sz) noexcept { return std::realloc(p, sz); }\n\n\
-             struct GwZeroInit {\n\
-                 template <typename U>\n\
-                 constexpr operator U() const noexcept { return U{}; }\n\
-             };\n\
-             constexpr GwZeroInit zeroed() noexcept { return {}; }\n\n\
-             struct GorawStr {\n\
-                 const char* ptr{\"\"};\n\
-                 int64_t len{0};\n\
-                 constexpr GorawStr() = default;\n\
-                 constexpr GorawStr(const char* s) : ptr(s ? s : \"\"), len(s ? (int64_t)std::string_view(s).size() : 0) {}\n\
-                 constexpr GorawStr(const char* p, int64_t l) : ptr(p ? p : \"\"), len(l) {}\n\
-                 constexpr int64_t size() const noexcept { return len; }\n\
-                 constexpr int64_t length() const noexcept { return len; }\n\
-                 constexpr bool empty() const noexcept { return len == 0; }\n\
-                 constexpr bool is_empty() const noexcept { return len == 0; }\n\
-                 constexpr std::string_view view() const noexcept { return {ptr, (size_t)len}; }\n\
-                 operator std::string_view() const noexcept { return view(); }\n\
-                 const char* c_str() const noexcept { return ptr; }\n\
-                 bool starts_with(std::string_view prefix) const noexcept { return view().starts_with(prefix); }\n\
-                 bool ends_with(std::string_view suffix) const noexcept { return view().ends_with(suffix); }\n\
-                 uint8_t operator[](int64_t idx) const noexcept { return static_cast<uint8_t>(ptr[idx]); }\n\
-                 GorawStr clone() const {\n\
-                     if (len <= 0) return GorawStr();\n\
-                     char* buf = static_cast<char*>(std::malloc(len + 1));\n\
-                     std::memcpy(buf, ptr, len);\n\
-                     buf[len] = '\\0';\n\
-                     return GorawStr(buf, len);\n\
-                 }\n\
-                 friend bool operator==(const GorawStr& a, const GorawStr& b) noexcept { return a.view() == b.view(); }\n\
-                 friend bool operator!=(const GorawStr& a, const GorawStr& b) noexcept { return a.view() != b.view(); }\n\
-                 friend bool operator<(const GorawStr& a, const GorawStr& b) noexcept { return a.view() < b.view(); }\n\
-                 friend std::ostream& operator<<(std::ostream& os, const GorawStr& s) { return os.write(s.ptr, s.len); }\n\
-                 friend GorawStr operator+(const GorawStr& a, const GorawStr& b) {\n\
-                     int64_t total = a.len + b.len;\n\
-                     char* buf = static_cast<char*>(std::malloc(total + 1));\n\
-                     if (a.len > 0) std::memcpy(buf, a.ptr, a.len);\n\
-                     if (b.len > 0) std::memcpy(buf + a.len, b.ptr, b.len);\n\
-                     buf[total] = '\\0';\n\
-                     return GorawStr(buf, total);\n\
-                 }\n\
-             };\n\n\
-             inline GorawStr str_from_cstr(const char* s) noexcept { return GorawStr(s); }\n\
-             inline GorawStr str_from_cstr(const uint8_t* s) noexcept { return GorawStr(reinterpret_cast<const char*>(s)); }\n\n\
-             template <typename T>\n\
-             struct GorawSlice {\n\
-                 T* ptr{nullptr};\n\
-                 int64_t len{0};\n\
-                 constexpr GorawSlice() = default;\n\
-                 constexpr GorawSlice(T* p, int64_t l) : ptr(p), len(l) {}\n\
-                 T& operator[](int64_t idx) { return ptr[idx]; }\n\
-                 const T& operator[](int64_t idx) const { return ptr[idx]; }\n\
-                 T* begin() noexcept { return ptr; }\n\
-                 T* end() noexcept { return ptr + len; }\n\
-                 const T* begin() const noexcept { return ptr; }\n\
-                 const T* end() const noexcept { return ptr + len; }\n\
-                 int64_t size() const noexcept { return len; }\n\
-                 int64_t length() const noexcept { return len; }\n\
-                 bool empty() const noexcept { return len == 0; }\n\
-             };\n\n\
-             template <typename T>\n\
-             inline GorawSlice<T> make_slice(T* ptr, int64_t len) noexcept { return GorawSlice<T>(ptr, len); }\n\n\
-             template <typename T>\n\
-             inline GorawSlice<T> gw_slice(GorawSlice<T> s, int64_t start, int64_t end) noexcept {\n\
-                 if (start < 0) start = 0;\n\
-                 if (end < 0 || end > s.len) end = s.len;\n\
-                 if (start > end) start = end;\n\
-                 return GorawSlice<T>(s.ptr + start, end - start);\n\
-             }\n\
-             template <typename T, size_t N>\n\
-             inline GorawSlice<T> gw_slice(std::array<T, N>& arr, int64_t start, int64_t end) noexcept {\n\
-                 int64_t len = (int64_t)N;\n\
-                 if (start < 0) start = 0;\n\
-                 if (end < 0 || end > len) end = len;\n\
-                 if (start > end) start = end;\n\
-                 return GorawSlice<T>(arr.data() + start, end - start);\n\
-             }\n\
-             template <typename T, size_t N>\n\
-             inline GorawSlice<const T> gw_slice(const std::array<T, N>& arr, int64_t start, int64_t end) noexcept {\n\
-                 int64_t len = (int64_t)N;\n\
-                 if (start < 0) start = 0;\n\
-                 if (end < 0 || end > len) end = len;\n\
-                 if (start > end) start = end;\n\
-                 return GorawSlice<const T>(arr.data() + start, end - start);\n\
-             }\n\
-             template <typename T>\n\
-             inline GorawSlice<T> gw_slice(T* ptr, int64_t start, int64_t end) noexcept {\n\
-                 if (start < 0) start = 0;\n\
-                 int64_t len = (end >= start) ? (end - start) : 0;\n\
-                 return GorawSlice<T>(ptr + start, len);\n\
-             }\n\
-             inline GorawStr gw_slice(const GorawStr& s, int64_t start, int64_t end) noexcept {\n\
-                 if (start < 0) start = 0;\n\
-                 if (end < 0 || end > s.len) end = s.len;\n\
-                 if (start > end) start = end;\n\
-                 return GorawStr(s.ptr + start, end - start);\n\
-             }\n\n\
-             template <typename T>\n\
-             constexpr auto gw_len(const T& x) noexcept {\n\
-                 if constexpr (requires { x.len; }) {\n\
-                     return x.len;\n\
-                 } else if constexpr (requires { x.size(); }) {\n\
-                     return static_cast<int64_t>(x.size());\n\
-                 } else {\n\
-                     return x.len;\n\
-                 }\n\
-             }\n\n\
-             template <typename T>\n\
-             constexpr auto gw_ptr(T& x) noexcept {\n\
-                 if constexpr (requires { x.ptr; }) {\n\
-                     return x.ptr;\n\
-                 } else if constexpr (requires { x.data(); }) {\n\
-                     return x.data();\n\
-                 } else {\n\
-                     return x.ptr;\n\
-                 }\n\
-             }\n\n\
-             template <typename T, size_t N>\n\
-             struct GwArray : std::array<T, N> {\n\
-                 template <typename U>\n\
-                 constexpr operator std::array<U, N>() const {\n\
-                     return [&]<size_t... Is>(std::index_sequence<Is...>) {\n\
-                         return std::array<U, N>{ static_cast<U>((*this)[Is])... };\n\
-                     }(std::make_index_sequence<N>{});\n\
-                 }\n\
-             };\n\n\
-             template <typename... Ts>\n\
-             constexpr auto gw_make_array(Ts&&... args) {\n\
-                 if constexpr (sizeof...(Ts) == 0) {\n\
-                     return GwArray<int64_t, 0>{};\n\
-                 } else {\n\
-                     using CommonType = std::common_type_t<std::decay_t<Ts>...>;\n\
-                     return GwArray<CommonType, sizeof...(Ts)>{ { static_cast<CommonType>(std::forward<Ts>(args))... } };\n\
-                 }\n\
-             };\n\n\
-             template <typename A, typename B>\n\
-             constexpr auto gw_add(A&& a, B&& b) {\n\
-                 if constexpr (std::is_convertible_v<A, std::string_view> && std::is_convertible_v<B, std::string_view>) {\n\
-                     return GorawStr(a) + GorawStr(b);\n\
-                 } else {\n\
-                     return std::forward<A>(a) + std::forward<B>(b);\n\
-                 }\n\
-             }\n\n\
-             template <typename A, typename B>\n\
-             constexpr bool gw_eq(const A& a, const B& b) {\n\
-                 if constexpr (std::is_convertible_v<A, std::string_view> && std::is_convertible_v<B, std::string_view>) {\n\
-                     return std::string_view(a) == std::string_view(b);\n\
-                 } else {\n\
-                     return a == b;\n\
-                 }\n\
-             }\n\n\
-             template <typename A, typename B>\n\
-             constexpr bool gw_ne(const A& a, const B& b) {\n\
-                 if constexpr (std::is_convertible_v<A, std::string_view> && std::is_convertible_v<B, std::string_view>) {\n\
-                     return std::string_view(a) != std::string_view(b);\n\
-                 } else {\n\
-                     return a != b;\n\
-                 }\n\
-             }\n\n\
-             template <typename T>\n\
-             inline void gw_print_val(std::ostream& os, const T& val) {\n\
-                 if constexpr (std::is_same_v<std::decay_t<T>, bool>) {\n\
-                     os << (val ? \"true\" : \"false\");\n\
-                 } else {\n\
-                     os << val;\n\
-                 }\n\
-             }\n\
-             template <typename... Args>\n\
-             inline void print(Args&&... args) {\n\
-                 ((gw_print_val(std::cout, std::forward<Args>(args))), ...);\n\
-             }\n\
-             template <typename... Args>\n\
-             inline void println(Args&&... args) {\n\
-                 ((gw_print_val(std::cout, std::forward<Args>(args))), ...);\n\
-                 std::cout << '\\n';\n\
-             }\n\
-             inline void panic(const char* msg = \"panic\") {\n\
-                 std::cout << std::flush;\n\
-                 std::fprintf(stderr, \"[GORAW PANIC] %s\\n\", msg);\n\
-                 std::abort();\n\
-             }\n\
-             inline void panic(GorawStr msg) {\n\
-                 std::cout << std::flush;\n\
-                 std::fprintf(stderr, \"[GORAW PANIC] %.*s\\n\", (int)msg.len, msg.ptr);\n\
-                 std::abort();\n\
-             }\n\
-             inline void goraw_panic(const char* msg) noexcept { panic(msg); }\n\n\
-             template <typename T>\n\
-             inline auto gw_try(T&& val) { return std::forward<T>(val); }\n"
+             #include <cstring>\n"
         );
 
+        if self.needs_ctime {
+            self.out.push_str("#include <ctime>\n");
+        }
+        if self.needs_chrono {
+            self.out.push_str("#include <chrono>\n");
+        }
+        if self.needs_array {
+            self.out.push_str("#include <array>\n");
+        }
+        if self.needs_str {
+            self.out.push_str("#include <string_view>\n#include <string>\n");
+        }
+        if self.needs_io {
+            self.out.push_str("#include <iostream>\n");
+        }
+        if self.needs_type_traits {
+            self.out.push_str("#include <type_traits>\n");
+        }
         if !self.used_math.is_empty() {
-            self.out.push('\n');
+            self.out.push_str("#include <cmath>\n");
+        }
+        self.out.push('\n');
+
+        if self.needs_chrono {
+            self.out.push_str(
+                "// Переносимый замер времени (строго в миллисекундах на всех ОС)\n\
+                 inline int64_t gw_clock_ms() noexcept {\n\
+                     return std::chrono::duration_cast<std::chrono::milliseconds>(\n\
+                         std::chrono::steady_clock::now().time_since_epoch()\n\
+                     ).count();\n\
+                 }\n\n"
+            );
+        }
+
+        if self.needs_alloc {
+            self.out.push_str(
+                "inline void* alloc(int64_t sz) noexcept { return std::malloc(sz); }\n\
+                 inline void* realloc(void* p, int64_t sz) noexcept { return std::realloc(p, sz); }\n\n"
+            );
+        }
+
+        if self.needs_zeroed {
+            self.out.push_str(
+                "struct GwZeroInit {\n\
+                     template <typename U>\n\
+                     constexpr operator U() const noexcept { return U{}; }\n\
+                 };\n\
+                 constexpr GwZeroInit zeroed() noexcept { return {}; }\n\n"
+            );
+        }
+
+        if !prog.tests.is_empty() {
+            self.out.push_str(
+                "struct GwTestResult {\n\
+                     const char* file{nullptr};\n\
+                     int64_t line{0};\n\
+                     constexpr operator bool() const noexcept { return line != 0; }\n\
+                 };\n\n"
+            );
+        }
+
+        if self.needs_str {
+            self.out.push_str(
+                "struct GorawStr {\n\
+                     const char* ptr{\"\"};\n\
+                     int64_t len{0};\n\
+                     constexpr GorawStr() = default;\n\
+                     constexpr GorawStr(const char* s) : ptr(s ? s : \"\"), len(s ? (int64_t)std::string_view(s).size() : 0) {}\n\
+                     constexpr GorawStr(const char* p, int64_t l) : ptr(p ? p : \"\"), len(l) {}\n\
+                     constexpr int64_t size() const noexcept { return len; }\n\
+                     constexpr int64_t length() const noexcept { return len; }\n\
+                     constexpr bool empty() const noexcept { return len == 0; }\n\
+                     constexpr bool is_empty() const noexcept { return len == 0; }\n\
+                     constexpr std::string_view view() const noexcept { return {ptr, (size_t)len}; }\n\
+                     operator std::string_view() const noexcept { return view(); }\n\
+                     const char* c_str() const noexcept { return ptr; }\n\
+                     bool starts_with(std::string_view prefix) const noexcept { return view().starts_with(prefix); }\n\
+                     bool ends_with(std::string_view suffix) const noexcept { return view().ends_with(suffix); }\n\
+                     uint8_t operator[](int64_t idx) const noexcept { return static_cast<uint8_t>(ptr[idx]); }\n\
+                     GorawStr clone() const {\n\
+                         if (len <= 0) return GorawStr();\n\
+                         char* buf = static_cast<char*>(std::malloc(len + 1));\n\
+                         std::memcpy(buf, ptr, len);\n\
+                         buf[len] = '\\0';\n\
+                         return GorawStr(buf, len);\n\
+                     }\n\
+                     friend bool operator==(const GorawStr& a, const GorawStr& b) noexcept { return a.view() == b.view(); }\n\
+                     friend bool operator!=(const GorawStr& a, const GorawStr& b) noexcept { return a.view() != b.view(); }\n\
+                     friend bool operator<(const GorawStr& a, const GorawStr& b) noexcept { return a.view() < b.view(); }\n"
+            );
+            if self.needs_io {
+                self.out.push_str(
+                    "    friend std::ostream& operator<<(std::ostream& os, const GorawStr& s) { return os.write(s.ptr, s.len); }\n"
+                );
+            }
+            self.out.push_str(
+                "    friend GorawStr operator+(const GorawStr& a, const GorawStr& b) {\n\
+                         int64_t total = a.len + b.len;\n\
+                         char* buf = static_cast<char*>(std::malloc(total + 1));\n\
+                         if (a.len > 0) std::memcpy(buf, a.ptr, a.len);\n\
+                         if (b.len > 0) std::memcpy(buf + a.len, b.ptr, b.len);\n\
+                         buf[total] = '\\0';\n\
+                         return GorawStr(buf, total);\n\
+                     }\n\
+                 };\n\n\
+                 inline GorawStr str_from_cstr(const char* s) noexcept { return GorawStr(s); }\n\
+                 inline GorawStr str_from_cstr(const uint8_t* s) noexcept { return GorawStr(reinterpret_cast<const char*>(s)); }\n\n"
+            );
+        }
+
+        if self.needs_slice {
+            self.out.push_str(
+                "template <typename T>\n\
+                 struct GorawSlice {\n\
+                     T* ptr{nullptr};\n\
+                     int64_t len{0};\n\
+                     constexpr GorawSlice() = default;\n\
+                     constexpr GorawSlice(T* p, int64_t l) : ptr(p), len(l) {}\n\
+                     T& operator[](int64_t idx) { return ptr[idx]; }\n\
+                     const T& operator[](int64_t idx) const { return ptr[idx]; }\n\
+                     T* begin() noexcept { return ptr; }\n\
+                     T* end() noexcept { return ptr + len; }\n\
+                     const T* begin() const noexcept { return ptr; }\n\
+                     const T* end() const noexcept { return ptr + len; }\n\
+                     int64_t size() const noexcept { return len; }\n\
+                     int64_t length() const noexcept { return len; }\n\
+                     bool empty() const noexcept { return len == 0; }\n\
+                 };\n\n\
+                 template <typename T>\n\
+                 inline GorawSlice<T> make_slice(T* ptr, int64_t len) noexcept { return GorawSlice<T>(ptr, len); }\n\n\
+                 template <typename T>\n\
+                 inline GorawSlice<T> gw_slice(GorawSlice<T> s, int64_t start, int64_t end) noexcept {\n\
+                     if (start < 0) start = 0;\n\
+                     if (end < 0 || end > s.len) end = s.len;\n\
+                     if (start > end) start = end;\n\
+                     return GorawSlice<T>(s.ptr + start, end - start);\n\
+                 }\n"
+            );
+            if self.needs_array {
+                self.out.push_str(
+                    "template <typename T, size_t N>\n\
+                     inline GorawSlice<T> gw_slice(std::array<T, N>& arr, int64_t start, int64_t end) noexcept {\n\
+                         int64_t len = (int64_t)N;\n\
+                         if (start < 0) start = 0;\n\
+                         if (end < 0 || end > len) end = len;\n\
+                         if (start > end) start = end;\n\
+                         return GorawSlice<T>(arr.data() + start, end - start);\n\
+                     }\n\
+                     template <typename T, size_t N>\n\
+                     inline GorawSlice<const T> gw_slice(const std::array<T, N>& arr, int64_t start, int64_t end) noexcept {\n\
+                         int64_t len = (int64_t)N;\n\
+                         if (start < 0) start = 0;\n\
+                         if (end < 0 || end > len) end = len;\n\
+                         if (start > end) start = end;\n\
+                         return GorawSlice<const T>(arr.data() + start, end - start);\n\
+                     }\n"
+                );
+            }
+            self.out.push_str(
+                "template <typename T>\n\
+                 inline GorawSlice<T> gw_slice(T* ptr, int64_t start, int64_t end) noexcept {\n\
+                     if (start < 0) start = 0;\n\
+                     int64_t len = (end >= start) ? (end - start) : 0;\n\
+                     return GorawSlice<T>(ptr + start, len);\n\
+                 }\n"
+            );
+            if self.needs_str {
+                self.out.push_str(
+                    "inline GorawStr gw_slice(const GorawStr& s, int64_t start, int64_t end) noexcept {\n\
+                         if (start < 0) start = 0;\n\
+                         if (end < 0 || end > s.len) end = s.len;\n\
+                         if (start > end) start = end;\n\
+                         return GorawStr(s.ptr + start, end - start);\n\
+                     }\n\n"
+                );
+            } else {
+                self.out.push('\n');
+            }
+        }
+
+        if self.needs_len {
+            self.out.push_str(
+                "template <typename T>\n\
+                 constexpr auto gw_len(const T& x) noexcept {\n\
+                     if constexpr (requires { x.len; }) {\n\
+                         return x.len;\n\
+                     } else if constexpr (requires { x.size(); }) {\n\
+                         return static_cast<int64_t>(x.size());\n\
+                     } else {\n\
+                         return x.len;\n\
+                     }\n\
+                 }\n\n\
+                 template <typename T>\n\
+                 constexpr auto gw_ptr(T& x) noexcept {\n\
+                     if constexpr (requires { x.ptr; }) {\n\
+                         return x.ptr;\n\
+                     } else if constexpr (requires { x.data(); }) {\n\
+                         return x.data();\n\
+                     } else {\n\
+                         return x.ptr;\n\
+                     }\n\
+                 }\n\n"
+            );
+        }
+
+        if self.needs_array {
+            self.out.push_str(
+                "template <typename T, size_t N>\n\
+                 struct GwArray : std::array<T, N> {\n\
+                     template <typename U>\n\
+                     constexpr operator std::array<U, N>() const {\n\
+                         return [&]<size_t... Is>(std::index_sequence<Is...>) {\n\
+                             return std::array<U, N>{ static_cast<U>((*this)[Is])... };\n\
+                         }(std::make_index_sequence<N>{});\n\
+                     }\n\
+                 };\n\n\
+                 template <typename... Ts>\n\
+                 constexpr auto gw_make_array(Ts&&... args) {\n\
+                     if constexpr (sizeof...(Ts) == 0) {\n\
+                         return GwArray<int64_t, 0>{};\n\
+                     } else {\n\
+                         using CommonType = std::common_type_t<std::decay_t<Ts>...>;\n\
+                         return GwArray<CommonType, sizeof...(Ts)>{ { static_cast<CommonType>(std::forward<Ts>(args))... } };\n\
+                     }\n\
+                 };\n\n"
+            );
+        }
+
+        if self.needs_str {
+            self.out.push_str(
+                "template <typename A, typename B>\n\
+                 constexpr auto gw_add(A&& a, B&& b) {\n\
+                     if constexpr (std::is_convertible_v<A, std::string_view> && std::is_convertible_v<B, std::string_view>) {\n\
+                         return GorawStr(a) + GorawStr(b);\n\
+                     } else {\n\
+                         return std::forward<A>(a) + std::forward<B>(b);\n\
+                     }\n\
+                 }\n\n\
+                 template <typename A, typename B>\n\
+                 constexpr bool gw_eq(const A& a, const B& b) {\n\
+                     if constexpr (std::is_convertible_v<A, std::string_view> && std::is_convertible_v<B, std::string_view>) {\n\
+                         return std::string_view(a) == std::string_view(b);\n\
+                     } else {\n\
+                         return a == b;\n\
+                     }\n\
+                 }\n\n\
+                 template <typename A, typename B>\n\
+                 constexpr bool gw_ne(const A& a, const B& b) {\n\
+                     if constexpr (std::is_convertible_v<A, std::string_view> && std::is_convertible_v<B, std::string_view>) {\n\
+                         return std::string_view(a) != std::string_view(b);\n\
+                     } else {\n\
+                         return a != b;\n\
+                     }\n\
+                 }\n\n"
+            );
+        }
+
+        if self.needs_io {
+            self.out.push_str(
+                "template <typename T>\n\
+                 inline void gw_print_val(std::ostream& os, const T& val) {\n\
+                     if constexpr (std::is_same_v<std::decay_t<T>, bool>) {\n\
+                         os << (val ? \"true\" : \"false\");\n\
+                     } else {\n\
+                         os << val;\n\
+                     }\n\
+                 }\n\
+                 template <typename... Args>\n\
+                 inline void print(Args&&... args) {\n\
+                     ((gw_print_val(std::cout, std::forward<Args>(args))), ...);\n\
+                 }\n\
+                 template <typename... Args>\n\
+                 inline void println(Args&&... args) {\n\
+                     ((gw_print_val(std::cout, std::forward<Args>(args))), ...);\n\
+                     std::cout << '\\n';\n\
+                 }\n"
+            );
+        }
+
+        self.out.push_str(
+            "inline void panic(const char* msg = \"panic\") {\n\
+                 std::fprintf(stderr, \"[GORAW PANIC] %s\\n\", msg);\n\
+                 std::abort();\n\
+             }\n"
+        );
+        if self.needs_str {
+            self.out.push_str(
+                "inline void panic(GorawStr msg) {\n\
+                     std::fprintf(stderr, \"[GORAW PANIC] %.*s\\n\", (int)msg.len, msg.ptr);\n\
+                     std::abort();\n\
+                 }\n"
+            );
+        }
+        self.out.push_str("inline void goraw_panic(const char* msg) noexcept { panic(msg); }\n\n");
+
+        if self.needs_try {
+            self.out.push_str(
+                "template <typename T>\n\
+                 inline auto gw_try(T&& val) { return std::forward<T>(val); }\n\n"
+            );
+        }
+
+        if !self.used_math.is_empty() {
             let mut sorted_math: Vec<_> = self.used_math.iter().collect();
             sorted_math.sort();
             for m in sorted_math {
                 self.out.push_str(&format!("using std::{m};\n"));
             }
+            self.out.push('\n');
         }
-        self.out.push('\n');
 
         // 2. Встроенные блоки c { } / cpp { }
         if !prog.c_blocks.is_empty() {
@@ -680,8 +939,8 @@ impl Transpiler {
                     self.write_line(&format!("constexpr {}({}&& other) noexcept : {} {{", escape_ident(&s.name), escape_ident(&s.name), move_inits.join(", ")));
                     self.indent_level += 1;
                     for f in &s.fields {
-                        if matches!(&f.ty, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..)) {
-                            self.write_line(&format!("other.{} = nullptr;", escape_ident(&f.name)));
+                        if let Some(reset_stmt) = Self::field_move_reset(f) {
+                            self.write_line(&reset_stmt);
                         }
                     }
                     self.indent_level -= 1;
@@ -789,8 +1048,9 @@ impl Transpiler {
 
             for p in &f.params {
                 let is_p = matches!(&p.ty, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..));
+                let is_s = matches!(&p.ty, TypeExpr::Named(name, ..) if name == "str");
                 let sname = Self::extract_struct_name(&p.ty);
-                self.insert_var(&p.name, VarMeta { is_pointer: is_p, struct_name: sname });
+                self.insert_var(&p.name, VarMeta { is_pointer: is_p, is_str: is_s, struct_name: sname });
                 params_s.push(format!("{} {}", self.transpile_type(&p.ty), escape_ident(&p.name)));
             }
             let plist = if f.name == "main" && f.params.is_empty() {
@@ -820,10 +1080,10 @@ impl Transpiler {
             if let Some(body) = &f.body {
                 self.transpile_block(body);
             }
-            let has_trailing_return = f.body.as_ref().map_or(false, |b| {
-                b.stmts.last().map_or(false, |s| matches!(s, Stmt::Return(..)))
+            let has_return = f.body.as_ref().map_or(false, |b| {
+                b.stmts.iter().any(|s| matches!(s, Stmt::Return(..)))
             });
-            if f.name == "main" && !has_trailing_return {
+            if f.name == "main" && !has_return {
                 self.write_line("return 0;");
             }
             self.indent_level -= 1;
@@ -851,8 +1111,8 @@ impl Transpiler {
                 self.write_line(&format!("{}({});", escape_fn_name(fn_name), drop_arg));
                 for f in fields {
                     self.write_line(&format!("{} = other.{};", escape_ident(&f.name), escape_ident(&f.name)));
-                    if matches!(&f.ty, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..)) {
-                        self.write_line(&format!("other.{} = nullptr;", escape_ident(&f.name)));
+                    if let Some(reset_stmt) = Self::field_move_reset(f) {
+                        self.write_line(&reset_stmt);
                     }
                 }
                 self.indent_level -= 1;
@@ -881,14 +1141,14 @@ impl Transpiler {
                         fn_name = format!("contract_{clean}_{idx}");
                     }
                     contracts_meta.push((fn_name.clone(), t.name.clone()));
-                    self.write_line(&format!("inline int64_t {}() {{", fn_name));
+                    self.write_line(&format!("inline GwTestResult {}() {{", fn_name));
                     self.indent_level += 1;
                     self.scopes.clear();
                     self.scopes.push(HashMap::new());
                     self.in_test = true;
                     self.transpile_block(&t.body);
                     self.in_test = false;
-                    self.write_line("return 0;");
+                    self.write_line("return GwTestResult{};");
                     self.indent_level -= 1;
                     self.write_line("}\n");
                 }
@@ -898,10 +1158,12 @@ impl Transpiler {
                 self.write_line("std::printf(\"\\n--- Shadow Contracts ---\\n\");");
                 for (fn_name, orig_name) in contracts_meta {
                     let escaped_name = orig_name.replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%");
-                    self.write_line(&format!("int64_t r_{fn_name} = {fn_name}();"));
-                    self.write_line(&format!("if (r_{fn_name} != 0) {{"));
+                    self.write_line(&format!("GwTestResult r_{fn_name} = {fn_name}();"));
+                    self.write_line(&format!("if (r_{fn_name}.line != 0) {{"));
                     self.indent_level += 1;
-                    self.write_line(&format!("std::printf(\"[CONTRACT FAIL] {escaped_name} (line %lld)\\n\", (long long)r_{fn_name});"));
+                    self.write_line(&format!(
+                        "if (r_{fn_name}.file && r_{fn_name}.file[0] != '\\0') {{\n    std::printf(\"[CONTRACT FAIL] {escaped_name} (%s:%lld)\\n\", r_{fn_name}.file, (long long)r_{fn_name}.line);\n}} else {{\n    std::printf(\"[CONTRACT FAIL] {escaped_name} (line %lld)\\n\", (long long)r_{fn_name}.line);\n}}"
+                    ));
                     self.write_line("__f += 1;");
                     self.indent_level -= 1;
                     self.write_line("} else {");
@@ -931,14 +1193,14 @@ impl Transpiler {
                         fn_name = format!("test_{clean}_{idx}");
                     }
                     tests_meta.push((fn_name.clone(), t.name.clone()));
-                    self.write_line(&format!("inline int64_t {}() {{", fn_name));
+                    self.write_line(&format!("inline GwTestResult {}() {{", fn_name));
                     self.indent_level += 1;
                     self.scopes.clear();
                     self.scopes.push(HashMap::new());
                     self.in_test = true;
                     self.transpile_block(&t.body);
                     self.in_test = false;
-                    self.write_line("return 0;");
+                    self.write_line("return GwTestResult{};");
                     self.indent_level -= 1;
                     self.write_line("}\n");
                 }
@@ -948,10 +1210,12 @@ impl Transpiler {
                 self.write_line("std::printf(\"\\n--- Integration Tests ---\\n\");");
                 for (fn_name, orig_name) in tests_meta {
                     let escaped_name = orig_name.replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%");
-                    self.write_line(&format!("int64_t r_{fn_name} = {fn_name}();"));
-                    self.write_line(&format!("if (r_{fn_name} != 0) {{"));
+                    self.write_line(&format!("GwTestResult r_{fn_name} = {fn_name}();"));
+                    self.write_line(&format!("if (r_{fn_name}.line != 0) {{"));
                     self.indent_level += 1;
-                    self.write_line(&format!("std::printf(\"[TEST FAIL] {escaped_name} (line %lld)\\n\", (long long)r_{fn_name});"));
+                    self.write_line(&format!(
+                        "if (r_{fn_name}.file && r_{fn_name}.file[0] != '\\0') {{\n    std::printf(\"[TEST FAIL] {escaped_name} (%s:%lld)\\n\", r_{fn_name}.file, (long long)r_{fn_name}.line);\n}} else {{\n    std::printf(\"[TEST FAIL] {escaped_name} (line %lld)\\n\", (long long)r_{fn_name}.line);\n}}"
+                    ));
                     self.write_line("__f += 1;");
                     self.indent_level -= 1;
                     self.write_line("} else {");
@@ -1058,8 +1322,13 @@ impl Transpiler {
                     Some(t) => matches!(t, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..)),
                     None => self.is_expr_pointer(value),
                 };
+                let is_str = match ty {
+                    Some(TypeExpr::Named(tname, ..)) => tname == "str",
+                    None => self.is_expr_str(value),
+                    _ => false,
+                };
                 let sname = ty.as_ref().and_then(|t| Self::extract_struct_name(t)).or_else(|| self.infer_struct_name(value));
-                self.insert_var(name, VarMeta { is_pointer: is_ptr, struct_name: sname });
+                self.insert_var(name, VarMeta { is_pointer: is_ptr, is_str, struct_name: sname });
 
                 let ty_s = match ty {
                     Some(t) => self.transpile_type(t),
@@ -1085,7 +1354,7 @@ impl Transpiler {
                     }
                     None => {
                         if self.in_test {
-                            self.write_line("return 0;");
+                            self.write_line("return GwTestResult{};");
                         } else {
                             self.write_line("return;");
                         }
@@ -1123,11 +1392,16 @@ impl Transpiler {
                                 Some(t) => matches!(t, TypeExpr::Ptr(..) | TypeExpr::PtrMut(..)),
                                 None => self.is_expr_pointer(value),
                             };
+                            let is_str = match ty {
+                                Some(TypeExpr::Named(tname, ..)) => tname == "str",
+                                None => self.is_expr_str(value),
+                                _ => false,
+                            };
                             let sname = match ty {
                                 Some(TypeExpr::Named(n, ..)) => Some(n.clone()),
                                 _ => self.infer_struct_name(value),
                             };
-                            self.insert_var(name, VarMeta { is_pointer: is_ptr, struct_name: sname });
+                            self.insert_var(name, VarMeta { is_pointer: is_ptr, is_str, struct_name: sname });
                             let ty_s = match ty {
                                 Some(t) => self.transpile_type(t),
                                 None => "auto".to_string(),
@@ -1167,7 +1441,8 @@ impl Transpiler {
             }
             Stmt::ForIn { var, iter, body, .. } => {
                 self.scopes.push(HashMap::new());
-                self.insert_var(var, VarMeta { is_pointer: false, struct_name: None });
+                let is_str = self.is_expr_str(iter);
+                self.insert_var(var, VarMeta { is_pointer: false, is_str, struct_name: None });
                 let it_s = self.transpile_expr(iter);
                 self.write_line(&format!("for (auto&& {} : {}) {{", escape_ident(var), it_s));
                 self.indent_level += 1;
@@ -1189,8 +1464,21 @@ impl Transpiler {
             }
             Stmt::Assert(expr, span) => {
                 let e_s = self.transpile_expr(expr);
-                let local_line = self.locate_line(span.lo.line);
-                self.write_line(&format!("if (!({e_s})) return {local_line};"));
+                let (file, local_line) = self.locate_loc(span.lo.line);
+                let escaped_file = file.replace('\\', "\\\\").replace('"', "\\\"");
+                if self.in_test {
+                    self.write_line(&format!("if (!({e_s})) return GwTestResult{{\"{escaped_file}\", {local_line}}};"));
+                } else {
+                    if !escaped_file.is_empty() {
+                        self.write_line(&format!(
+                            "if (!({e_s})) {{\n    std::fprintf(stderr, \"[ASSERTION FAILED] %s:%u\\n\", \"{escaped_file}\", {local_line});\n    std::abort();\n}}"
+                        ));
+                    } else {
+                        self.write_line(&format!(
+                            "if (!({e_s})) {{\n    std::fprintf(stderr, \"[ASSERTION FAILED] line %u\\n\", {local_line});\n    std::abort();\n}}"
+                        ));
+                    }
+                }
             }
             Stmt::Match { scrut, arms, .. } => {
                 let s_s = self.transpile_expr(scrut);
@@ -1270,11 +1558,11 @@ impl Transpiler {
             Expr::Binary { op, lhs, rhs, .. } => {
                 let l_s = self.transpile_expr(lhs);
                 let r_s = self.transpile_expr(rhs);
-                let is_ptr_cmp = self.is_expr_pointer(lhs) || self.is_expr_pointer(rhs);
+                let is_str_op = self.is_expr_str(lhs) || self.is_expr_str(rhs);
                 match op {
-                    BinOp::Add if !is_ptr_cmp => format!("gw_add({l_s}, {r_s})"),
-                    BinOp::Eq if !is_ptr_cmp => format!("gw_eq({l_s}, {r_s})"),
-                    BinOp::Ne if !is_ptr_cmp => format!("gw_ne({l_s}, {r_s})"),
+                    BinOp::Add if is_str_op => format!("gw_add({l_s}, {r_s})"),
+                    BinOp::Eq if is_str_op => format!("gw_eq({l_s}, {r_s})"),
+                    BinOp::Ne if is_str_op => format!("gw_ne({l_s}, {r_s})"),
                     _ => {
                         let op_s = match op {
                             BinOp::Add => "+",
@@ -1313,7 +1601,7 @@ impl Transpiler {
                 let args_s: Vec<String> = args.iter().map(|a| self.transpile_expr(a)).collect();
                 let joined = args_s.join(", ");
                 match &**callee {
-                    Expr::Ident(name, _) if (name == "clock" || name == "gw_clock_ms") && args.is_empty() => {
+                    Expr::Ident(name, _) if name == "gw_clock_ms" && args.is_empty() => {
                         "gw_clock_ms()".to_string()
                     }
                     Expr::Ident(name, _) if name == "sizeof" && args.len() == 1 => {
@@ -1516,4 +1804,3 @@ pub fn sanitize_test_name(name: &str) -> String {
         res.to_string()
     }
 }
-
