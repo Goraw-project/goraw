@@ -15,11 +15,26 @@ function findGorawBinary() {
         return configPath;
     }
 
-    const candidates = [
-        'P:\\Goraw\\target\\release\\goraw.exe',
-        'P:\\Goraw\\target\\debug\\goraw.exe',
-        'C:\\Users\\Letalty\\.cargo\\bin\\goraw.exe'
-    ];
+    const exeName = process.platform === 'win32' ? 'goraw.exe' : 'goraw';
+    const candidates = [];
+
+    // 1. Поиск в открытых папках воркспейса
+    if (vscode.workspace.workspaceFolders) {
+        for (const wf of vscode.workspace.workspaceFolders) {
+            const root = wf.uri.fsPath;
+            candidates.push(path.join(root, 'target', 'debug', exeName));
+            candidates.push(path.join(root, 'target', 'release', exeName));
+            candidates.push(path.join(root, 'bin', exeName));
+            candidates.push(path.join(root, exeName));
+        }
+    }
+
+    // 2. Поиск в ~/.cargo/bin и ~/.goraw/bin
+    const home = process.env.USERPROFILE || process.env.HOME;
+    if (home) {
+        candidates.push(path.join(home, '.cargo', 'bin', exeName));
+        candidates.push(path.join(home, '.goraw', 'bin', exeName));
+    }
 
     for (const c of candidates) {
         if (fs.existsSync(c)) {
@@ -27,7 +42,7 @@ function findGorawBinary() {
         }
     }
 
-    return 'goraw';
+    return exeName;
 }
 
 function startLspServer(outputChannel) {
@@ -135,7 +150,12 @@ function handleMessage(msg, outputChannel) {
         if (msg.method === 'textDocument/publishDiagnostics') {
             const params = msg.params;
             if (params && params.uri) {
-                const uri = vscode.Uri.parse(params.uri);
+                // Ищем точное совпадение Uri в открытых документах VS Code
+                const targetDoc = vscode.workspace.textDocuments.find(d => 
+                    d.uri.toString().toLowerCase() === params.uri.toLowerCase() ||
+                    d.fileName.toLowerCase() === params.uri.replace(/^file:\/\/\/?/i, '').replace(/\//g, '\\').toLowerCase()
+                );
+                const uri = targetDoc ? targetDoc.uri : vscode.Uri.parse(params.uri);
                 const vsDiags = (params.diagnostics || []).map(d => {
                     const range = new vscode.Range(
                         d.range.start.line,
@@ -226,17 +246,27 @@ function activate(context) {
     // Документы
     context.subscriptions.push(
         vscode.workspace.onDidOpenTextDocument(doc => {
-            if (doc.languageId === 'goraw') {
+            if (doc.languageId === 'goraw' || doc.fileName.endsWith('.gw')) {
                 syncDocOpen(doc);
             }
         }),
         vscode.workspace.onDidChangeTextDocument(e => {
-            if (e.document.languageId === 'goraw') {
+            if (e.document.languageId === 'goraw' || e.document.fileName.endsWith('.gw')) {
                 syncDocChange(e.document);
             }
         }),
+        vscode.workspace.onDidSaveTextDocument(doc => {
+            if (doc.languageId === 'goraw' || doc.fileName.endsWith('.gw')) {
+                syncDocChange(doc);
+            }
+        }),
+        vscode.window.onDidChangeActiveTextEditor(editor => {
+            if (editor && (editor.document.languageId === 'goraw' || editor.document.fileName.endsWith('.gw'))) {
+                syncDocOpen(editor.document);
+            }
+        }),
         vscode.workspace.onDidCloseTextDocument(doc => {
-            if (doc.languageId === 'goraw') {
+            if (doc.languageId === 'goraw' || doc.fileName.endsWith('.gw')) {
                 diagnosticCollection.delete(doc.uri);
                 sendNotification('textDocument/didClose', {
                     textDocument: { uri: doc.uri.toString() }

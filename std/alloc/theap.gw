@@ -1,0 +1,165 @@
+fn mi_theap_visit_pages(theap: *mut mi_theap_t, fn: *mut theap_page_visitor_fun, include_full: bool, arg1: *mut void, arg2: *mut void) -> bool {
+    if theap == 0 || theap.page_count == 0 {
+        return true;
+    }
+    let mut total: u64 = theap.page_count;
+    let mut count: u64 = 0;
+    let mut max_bin: u64 = (if include_full { ((73) + 1) } else { ((73) + 1) - 1 });
+    for let mut i: u64 = 0; i <= max_bin; i += 1 {
+        let mut pq: *mut mi_page_queue_t = &mut theap.pages[i];
+        let mut page: *mut mi_page_t = pq.first;
+        while page != 0 {
+            let mut next: *mut mi_page_t = page.next;
+            (if (mi_page_theap(page) == theap) { 0 as void } else { _mi_assert_fail("mi_page_theap(page) == theap", "mimalloc\\src\\theap.c", 41, "mi_theap_visit_pages") });
+            count += 1;
+            if !fn(theap, pq, page, arg1, arg2) {
+                return false;
+            }
+            page = next;
+        }
+    }
+    (if (!include_full || count == total) { 0 as void } else { _mi_assert_fail("!include_full || count == total", "mimalloc\\src\\theap.c", 49, "mi_theap_visit_pages") });
+    return true;
+}
+
+enum mi_collect_e {
+    MI_NORMAL = 0,
+    MI_FORCE = 1,
+    MI_ABANDON = 2,
+}
+
+fn mi_theap_page_collect(theap: *mut mi_theap_t, pq: *mut mi_page_queue_t, page: *mut mi_page_t, arg_collect: *mut void, arg2: *mut void) -> bool {
+    (arg2) as void;
+    (theap) as void;
+    let mut collect: mi_collect_t = *(arg_collect as *mut mi_collect_t);
+    _mi_page_free_collect(page, collect >= MI_FORCE);
+    _mi_page_update_stats(page);
+    if mi_page_all_free(page) {
+        if collect >= MI_FORCE || page.retire_expire == 0 {
+            _mi_page_free(page, pq);
+        }
+    } else if collect == MI_ABANDON {
+        _mi_page_abandon(page, pq);
+    }
+    return true;
+}
+
+fn mi_theap_collect_ex(theap: *mut mi_theap_t, collect: mi_collect_t) {
+    if theap == 0 || !mi_theap_is_initialized(theap) {
+        return;
+    }
+    let mut force: bool = (collect >= MI_FORCE);
+    _mi_deferred_free(theap, force);
+    _mi_theap_collect_retired(theap, force);
+    mi_theap_visit_pages(theap, &mut mi_theap_page_collect, (collect != MI_NORMAL), &mut collect, 0);
+    if collect != MI_ABANDON {
+        _mi_arenas_collect(collect == MI_FORCE, collect >= MI_FORCE, theap.tld);
+    }
+    if mi_option_is_enabled(mi_option_collect_merges_stats) {
+        _mi_theap_merge_stats(theap);
+    }
+}
+
+fn mi_theap_collect(theap: *mut mi_theap_t, force: bool) {
+    mi_theap_collect_ex(theap, (if force { MI_FORCE } else { MI_NORMAL }));
+}
+
+fn mi_collect(force: bool) {
+    mi_theap_collect(_mi_theap_default(), force);
+}
+
+fn mi_heap_collect(heap: *mut mi_heap_t, force: bool) {
+    mi_theap_collect(mi_heap_theap(heap), force);
+}
+
+fn mi_theap_get_default() -> *mut mi_theap_t {
+    let mut theap: *mut mi_theap_t = _mi_theap_default();
+    if __builtin_expect(!!(!mi_theap_is_initialized(theap)), false) {
+        mi_thread_init();
+        theap = _mi_theap_default();
+        (if (mi_theap_is_initialized(theap)) { 0 as void } else { _mi_assert_fail("mi_theap_is_initialized(theap)", "mimalloc\\src\\theap.c", 180, "mi_theap_get_default") });
+    }
+    return theap;
+}
+
+fn mi_theap_set_default(theap: *mut mi_theap_t) -> *mut mi_theap_t {
+    let mut previous: mi_theap_t *const = mi_theap_get_default();
+    if mi_theap_is_initialized(theap) {
+        _mi_theap_default_set(theap);
+    }
+    return previous;
+}
+
+fn mi_theap_options_init(theap: *mut mi_theap_t) {
+    theap.allow_page_reclaim = (mi_option_get(mi_option_page_reclaim_on_free) >= 0);
+    theap.allow_page_abandon = (mi_option_get(mi_option_page_full_retain) >= 0);
+    theap.page_full_retain = mi_option_get_clamp(mi_option_page_full_retain, -1, 32);
+    theap.is_detached = (theap.tld.thread_id == (2 << (2)));
+}
+
+fn mi_theap_free_mem(theap: *mut mi_theap_t) {
+    if theap != 0 {
+        let mut subproc: mi_subproc_t *const = atomic_load_explicit(&mut theap.subproc, memory_order_relaxed);
+        if !theap.is_detached {
+            __mi_stat_decrease_mt(&mut (subproc).stats.theaps, 1);
+        }
+        _mi_meta_free(subproc, theap, theap.memid);
+    }
+}
+
+fn mi_get_fast_divisor(divisor: u64, magic: *mut u64, shift: *mut u64) {
+    (if (divisor > 0 && divisor <= 4294967295) { 0 as void } else { _mi_assert_fail("divisor > 0 && divisor <= UINT32_MAX", "mimalloc\\src\\theap.c", 521, "mi_get_fast_divisor") });
+    *shift = ((1 << (3)) * 8) - mi_clz(divisor - 1);
+    *magic = (((1 as u64 << 32) * ((1 as u64 << *shift) - divisor)) / divisor + 1);
+}
+
+fn mi_fast_divide(n: u64, magic: u64, shift: u64) -> u64 {
+    (if (n <= 4294967295) { 0 as void } else { _mi_assert_fail("n <= UINT32_MAX", "mimalloc\\src\\theap.c", 527, "mi_fast_divide") });
+    let mut hi: u64 = (n as u64 * magic) >> 32;
+    return ((hi + n) >> shift) as u64;
+}
+
+struct mi_theap_area_ex_s {
+    area: mi_heap_area_t,
+    page: *mut mi_page_t,
+}
+
+fn mi_theap_visit_areas_page(theap: *mut mi_theap_t, pq: *mut mi_page_queue_t, page: *mut mi_page_t, vfun: *mut void, arg: *mut void) -> bool {
+    (theap) as void;
+    (pq) as void;
+    let mut fun: *mut mi_theap_area_visit_fun = vfun as *mut mi_theap_area_visit_fun;
+    let mut xarea: mi_theap_area_ex_t = mi_theap_area_ex_t {};
+    xarea.page = page;
+    _mi_heap_area_init(&mut xarea.area, page);
+    return fun(theap, &mut xarea, arg);
+}
+
+fn mi_theap_visit_areas(theap: *mi_theap_t, visitor: *mut mi_theap_area_visit_fun, arg: *mut void) -> bool {
+    if visitor == 0 {
+        return false;
+    }
+    return mi_theap_visit_pages(theap as *mut mi_theap_t, &mut mi_theap_visit_areas_page, true, (visitor) as *mut void, arg);
+}
+
+struct mi_visit_blocks_args_s {
+    visit_blocks: bool,
+    visitor: *mut mi_block_visit_fun,
+    arg: *mut void,
+}
+
+fn mi_theap_area_visitor(theap: *mi_theap_t, xarea: *mi_theap_area_ex_t, arg: *mut void) -> bool {
+    let mut args: *mut mi_visit_blocks_args_t = arg as *mut mi_visit_blocks_args_t;
+    if !args.visitor(_mi_theap_heap(theap), &mut xarea.area, 0, xarea.area.block_size, args.arg) {
+        return false;
+    }
+    if args.visit_blocks {
+        return _mi_theap_area_visit_blocks(&mut xarea.area, xarea.page, args.visitor, args.arg);
+    } else {
+        return true;
+    }
+}
+
+fn mi_theap_visit_blocks(theap: *mi_theap_t, visit_blocks: bool, visitor: *mut mi_block_visit_fun, arg: *mut void) -> bool {
+    let mut args: mi_visit_blocks_args_t = mi_visit_blocks_args_t { visit_blocks, visitor, arg };
+    return mi_theap_visit_areas(theap, &mut mi_theap_area_visitor, &mut args);
+}

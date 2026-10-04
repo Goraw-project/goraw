@@ -1,0 +1,269 @@
+static mut mi_os_mem_config: mi_os_mem_config_t = mi_os_mem_config_t { 4096, 0, 4096, 32 * ((1024) * (1024)), (47), true, false, true, false };
+
+fn mi_os_prim_free(subproc: *mut mi_subproc_t, addr: *mut void, size: u64, commit_size: u64, adjust: bool) {
+    (if (subproc != 0) { 0 as void } else { _mi_assert_fail("subproc!=NULL", "mimalloc\\src\\os.c", 250, "mi_os_prim_free") });
+    (if ((size % _mi_os_page_size()) == 0) { 0 as void } else { _mi_assert_fail("(size % _mi_os_page_size()) == 0", "mimalloc\\src\\os.c", 251, "mi_os_prim_free") });
+    if addr == 0 {
+        return;
+    }
+    let mut err: i32 = _mi_prim_free(addr, size);
+    if err != 0 {
+        _mi_warning_message("unable to free OS memory (error: %d (0x%x), size: 0x%zx bytes, address: %p)\n", err, err, size, addr);
+    }
+    if adjust {
+        if commit_size > 0 {
+            __mi_stat_adjust_decrease_mt(&mut (subproc).stats.committed, commit_size);
+        }
+        __mi_stat_adjust_decrease_mt(&mut (subproc).stats.reserved, size);
+    } else {
+        if commit_size > 0 {
+            __mi_stat_decrease_mt(&mut (subproc).stats.committed, commit_size);
+        }
+        __mi_stat_decrease_mt(&mut (subproc).stats.reserved, size);
+    }
+}
+
+fn mi_os_prim_alloc_at(subproc: *mut mi_subproc_t, hint_addr: *mut void, size: u64, try_alignment: u64, commit: bool, allow_large: bool, is_large: *mut bool, is_zero: *mut bool) -> *mut void {
+    (if (size > 0 && (size % _mi_os_page_size()) == 0) { 0 as void } else { _mi_assert_fail("size > 0 && (size % _mi_os_page_size()) == 0", "mimalloc\\src\\os.c", 313, "mi_os_prim_alloc_at") });
+    (if (is_zero != 0) { 0 as void } else { _mi_assert_fail("is_zero != NULL", "mimalloc\\src\\os.c", 314, "mi_os_prim_alloc_at") });
+    (if (is_large != 0) { 0 as void } else { _mi_assert_fail("is_large != NULL", "mimalloc\\src\\os.c", 315, "mi_os_prim_alloc_at") });
+    if size == 0 {
+        return 0;
+    }
+    if !commit {
+        allow_large = false;
+    }
+    if try_alignment == 0 {
+        try_alignment = 1;
+    }
+    let mut large_page_size: u64 = mi_os_mem_config.large_page_size;
+    if large_page_size > 0 && hint_addr == 0 && size >= 8 * large_page_size && _mi_is_power_of_two(try_alignment) && try_alignment < large_page_size {
+        try_alignment = large_page_size;
+    }
+    *is_zero = false;
+    let mut p: *mut void = 0;
+    let mut err: i32 = _mi_prim_alloc(hint_addr, size, try_alignment, commit, allow_large, is_large, is_zero, &mut p);
+    if err != 0 {
+        _mi_warning_message("unable to allocate OS memory (error: %d (0x%x), addr: %p, size: 0x%zx bytes, align: 0x%zx, commit: %d, allow large: %d)\n", err, err, hint_addr, size, try_alignment, commit, allow_large);
+    }
+    __mi_stat_counter_increase_mt(&mut (subproc).stats.mmap_calls, 1);
+    if p != 0 {
+        __mi_stat_increase_mt(&mut (subproc).stats.reserved, size);
+        if commit {
+            __mi_stat_increase_mt(&mut (subproc).stats.committed, size);
+        }
+    }
+    return p;
+}
+
+fn mi_os_prim_alloc(subproc: *mut mi_subproc_t, size: u64, try_alignment: u64, commit: bool, allow_large: bool, is_large: *mut bool, is_zero: *mut bool) -> *mut void {
+    return mi_os_prim_alloc_at(subproc, 0, size, try_alignment, commit, allow_large, is_large, is_zero);
+}
+
+fn mi_os_prim_alloc_aligned(subproc: *mut mi_subproc_t, size: u64, alignment: u64, commit: bool, allow_large: bool, memid: *mut mi_memid_t) -> *mut void {
+    (if (memid != 0) { 0 as void } else { _mi_assert_fail("memid!=NULL", "mimalloc\\src\\os.c", 356, "mi_os_prim_alloc_aligned") });
+    (if (alignment >= _mi_os_page_size() && ((alignment & (alignment - 1)) == 0)) { 0 as void } else { _mi_assert_fail("alignment >= _mi_os_page_size() && ((alignment & (alignment - 1)) == 0)", "mimalloc\\src\\os.c", 357, "mi_os_prim_alloc_aligned") });
+    (if (size > 0 && (size % _mi_os_page_size()) == 0) { 0 as void } else { _mi_assert_fail("size > 0 && (size % _mi_os_page_size()) == 0", "mimalloc\\src\\os.c", 358, "mi_os_prim_alloc_aligned") });
+    *memid = _mi_memid_none();
+    if !commit {
+        allow_large = false;
+    }
+    if !(alignment >= _mi_os_page_size() && ((alignment & (alignment - 1)) == 0)) {
+        return 0;
+    }
+    size = _mi_align_up(size, _mi_os_page_size());
+    let mut try_direct_alloc: bool = true;
+    let mut os_is_large: bool = false;
+    let mut os_is_zero: bool = false;
+    let mut os_base: *mut void = 0;
+    let mut os_size: u64 = size;
+    let mut p: *mut void = 0;
+    if try_direct_alloc {
+        p = mi_os_prim_alloc(subproc, size, alignment, commit, allow_large, &mut os_is_large, &mut os_is_zero);
+    }
+    if p != 0 && _mi_is_aligned(p, alignment) {
+        os_base = p;
+    } else {
+        if try_direct_alloc {
+            _mi_warning_message("unable to allocate aligned OS memory directly, fall back to over-allocation (size: 0x%zx bytes, address: %p, alignment: 0x%zx, commit: %d)\n", size, p, alignment, commit);
+        }
+        if p != 0 {
+            mi_os_prim_free(subproc, p, size, (if commit { size } else { 0 }), true);
+        }
+        if size >= (18446744073709551615 - alignment) {
+            return 0;
+        }
+        let mut over_size: u64 = size + alignment;
+        if !mi_os_mem_config.has_partial_free {
+            p = mi_os_prim_alloc(subproc, over_size, 1, false, false, &mut os_is_large, &mut os_is_zero);
+            if p == 0 {
+                return 0;
+            }
+            os_base = p;
+            os_size = over_size;
+            p = _mi_align_up_ptr(p, alignment);
+            if commit {
+                if !_mi_os_commit(subproc, p, size, 0) {
+                    mi_os_prim_free(subproc, os_base, over_size, 0, true);
+                    return 0;
+                }
+            }
+        } else {
+            p = mi_os_prim_alloc(subproc, over_size, 1, commit, allow_large, &mut os_is_large, &mut os_is_zero);
+            if p == 0 {
+                return 0;
+            }
+            let mut aligned_p: void *const = _mi_align_up_ptr(p, alignment);
+            let mut pre_size: u64 = aligned_p as *mut u8 - p as *mut u8;
+            let mut mid_size: u64 = _mi_align_up(size, _mi_os_page_size());
+            let mut post_size: u64 = over_size - pre_size - mid_size;
+            (if (pre_size < over_size && post_size < over_size && mid_size >= size) { 0 as void } else { _mi_assert_fail("pre_size < over_size&& post_size < over_size&& mid_size >= size", "mimalloc\\src\\os.c", 426, "mi_os_prim_alloc_aligned") });
+            if pre_size > 0 {
+                mi_os_prim_free(subproc, p, pre_size, (if commit { pre_size } else { 0 }), true);
+            }
+            if post_size > 0 {
+                mi_os_prim_free(subproc, aligned_p as *mut u8 + mid_size, post_size, (if commit { post_size } else { 0 }), true);
+            }
+            p = aligned_p;
+            os_base = aligned_p;
+            os_size = mid_size;
+        }
+    }
+    (if (p != 0 && os_base != 0 && _mi_is_aligned(p, alignment)) { 0 as void } else { _mi_assert_fail("p != NULL && os_base != NULL && _mi_is_aligned(p,alignment)", "mimalloc\\src\\os.c", 436, "mi_os_prim_alloc_aligned") });
+    (if (os_base <= p && size <= os_size) { 0 as void } else { _mi_assert_fail("os_base <= p && size <= os_size", "mimalloc\\src\\os.c", 437, "mi_os_prim_alloc_aligned") });
+    *memid = _mi_memid_create_os(os_base, os_size, commit, os_is_zero, os_is_large);
+    return p;
+}
+
+fn mi_os_ensure_zero(subproc: *mut mi_subproc_t, p: *mut void, size: u64, memid: *mut mi_memid_t) -> *mut void {
+    if p == 0 || size == 0 {
+        return p;
+    }
+    if !memid.initially_committed {
+        let mut is_zero: bool = false;
+        if !_mi_os_commit(subproc, p, size, &mut is_zero) {
+            _mi_os_free(subproc, p, size, *memid);
+            return 0;
+        }
+        memid.initially_committed = true;
+    }
+    if memid.initially_zero {
+        return p;
+    }
+    _mi_memzero_aligned(p, size);
+    memid.initially_zero = true;
+    return p;
+}
+
+fn mi_os_page_align_areax(conservative: bool, addr: *mut void, size: u64, newsize: *mut u64) -> *mut void {
+    (if (addr != 0 && size > 0) { 0 as void } else { _mi_assert_fail("addr != NULL && size > 0", "mimalloc\\src\\os.c", 546, "mi_os_page_align_areax") });
+    if newsize != 0 {
+        *newsize = 0;
+    }
+    if size == 0 || addr == 0 {
+        return 0;
+    }
+    let mut start: *mut void = (if conservative { _mi_align_up_ptr(addr, _mi_os_page_size()) } else { _mi_align_down_ptr(addr, _mi_os_page_size()) });
+    let mut end: *mut void = (if conservative { _mi_align_down_ptr(addr as *mut u8 + size, _mi_os_page_size()) } else { _mi_align_up_ptr(addr as *mut u8 + size, _mi_os_page_size()) });
+    let mut diff: ptrdiff_t = end as *mut u8 - start as *mut u8;
+    if diff <= 0 {
+        return 0;
+    }
+    (if ((conservative && diff as u64 <= size) || (!conservative && diff as u64 >= size)) { 0 as void } else { _mi_assert_fail("(conservative && (size_t)diff <= size) || (!conservative && (size_t)diff >= size)", "mimalloc\\src\\os.c", 558, "mi_os_page_align_areax") });
+    if newsize != 0 {
+        *newsize = diff as u64;
+    }
+    return start;
+}
+
+fn mi_os_page_align_area_conservative(addr: *mut void, size: u64, newsize: *mut u64) -> *mut void {
+    return mi_os_page_align_areax(true, addr, size, newsize);
+}
+
+fn mi_os_decommit_ex(subproc: *mut mi_subproc_t, addr: *mut void, size: u64, needs_recommit: *mut bool, stat_size: u64) -> bool {
+    (if (needs_recommit != 0) { 0 as void } else { _mi_assert_fail("needs_recommit!=NULL", "mimalloc\\src\\os.c", 602, "mi_os_decommit_ex") });
+    let mut csize: u64 = 0;
+    let mut start: *mut void = mi_os_page_align_area_conservative(addr, size, &mut csize);
+    if csize == 0 {
+        return true;
+    }
+    *needs_recommit = true;
+    let mut err: i32 = _mi_prim_decommit(start, csize, needs_recommit);
+    if err != 0 {
+        _mi_warning_message("cannot decommit OS memory (error: %d (0x%x), address: %p, size: 0x%zx bytes)\n", err, err, start, csize);
+    } else if *needs_recommit {
+        __mi_stat_decrease_mt(&mut (subproc).stats.committed, stat_size);
+    }
+    (if (err == 0) { 0 as void } else { _mi_assert_fail("err == 0", "mimalloc\\src\\os.c", 618, "mi_os_decommit_ex") });
+    return (err == 0);
+}
+
+fn mi_os_protectx(addr: *mut void, size: u64, protect: bool) -> bool {
+    let mut csize: u64 = 0;
+    let mut start: *mut void = mi_os_page_align_area_conservative(addr, size, &mut csize);
+    if csize == 0 {
+        return false;
+    }
+    let mut err: i32 = _mi_prim_protect(start, csize, protect);
+    if err != 0 {
+        _mi_warning_message("cannot %s OS memory (error: %d (0x%x), address: %p, size: 0x%zx bytes)\n", (if protect { "protect" } else { "unprotect" }), err, err, start, csize);
+    }
+    return (err == 0);
+}
+
+static mut mi_huge_start: atomic<uintptr_t> = atomic<uintptr_t> {};
+
+fn mi_os_claim_huge_pages(pages: u64, total_size: *mut u64) -> *mut u8 {
+    if total_size != 0 {
+        *total_size = 0;
+    }
+    let mut size: u64 = 0;
+    if mi_mul_overflow(pages, ((((1024) * (1024)) * (1024))), &mut size) {
+        _mi_warning_message("too many huge pages requested: %zu\n", pages);
+        return 0;
+    }
+    let mut start: u64 = 0;
+    let mut end: u64 = 0;
+    let mut huge_start: u64 = atomic_load_explicit(&mut mi_huge_start, memory_order_relaxed);
+    while true {
+        {
+        start = huge_start;
+        if start == 0 {
+            start = (32 as u64 << 40);
+        }
+        end = start + size;
+    }
+        if !(!atomic_compare_exchange_weak_explicit(&mut mi_huge_start, &mut huge_start, end, memory_order_acq_rel, memory_order_acquire)) { break; }
+    }
+    if total_size != 0 {
+        *total_size = size;
+    }
+    return start as *mut u8;
+}
+
+fn mi_os_free_huge_os_pages(subproc: *mut mi_subproc_t, p: *mut void, size: u64) {
+    if p == 0 || size == 0 {
+        return;
+    }
+    let mut base: *mut u8 = p as *mut u8;
+    while size >= ((((1024) * (1024)) * (1024))) {
+        mi_os_prim_free(subproc, base, ((((1024) * (1024)) * (1024))), ((((1024) * (1024)) * (1024))), false);
+        size -= ((((1024) * (1024)) * (1024)));
+        base += ((((1024) * (1024)) * (1024)));
+    }
+}
+
+static mut mi_numa_node_count: atomic<size_t> = atomic<size_t> {};
+
+fn mi_os_numa_node_get() -> i32 {
+    let mut numa_count: i32 = _mi_os_numa_node_count();
+    if numa_count <= 1 {
+        return 0;
+    }
+    let mut n: u64 = _mi_prim_numa_node();
+    let mut numa_node: i32 = (if n < 2147483647 { n as i32 } else { 0 });
+    if numa_node >= numa_count {
+        numa_node = numa_node % numa_count;
+    }
+    return numa_node;
+}

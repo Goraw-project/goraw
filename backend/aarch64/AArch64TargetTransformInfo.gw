@@ -1,0 +1,3813 @@
+// Внешние системные функции libc
+extern fn sqrt(x: f64) -> f64;
+
+static mut EnableFalkorHWPFUnrollFix: i32 = "enable-falkor-hwpf-unroll-fix";
+
+static mut SVEPreferFixedOverScalableIfEqualCost: i32 = "sve-prefer-fixed-over-scalable-if-equal";
+
+static mut SVEGatherOverhead: i32 = "sve-gather-overhead";
+
+static mut SVEScatterOverhead: i32 = "sve-scatter-overhead";
+
+static mut SVETailFoldInsnThreshold: i32 = "sve-tail-folding-insn-threshold";
+
+static mut NeonNonConstStrideOverhead: i32 = "neon-nonconst-stride-overhead";
+
+static mut CallPenaltyChangeSM: i32 = "call-penalty-sm-change";
+
+static mut InlineCallPenaltyChangeSM: i32 = "inline-call-penalty-sm-change";
+
+static mut EnableOrLikeSelectOpt: i32 = "enable-aarch64-or-like-select";
+
+static mut EnableLSRCostOpt: i32 = "enable-aarch64-lsr-cost-opt";
+
+static mut BaseHistCntCost: i32 = "aarch64-base-histcnt-cost";
+
+static mut DMBLookaheadThreshold: i32 = "dmb-lookahead-threshold";
+
+static mut Aarch64ForceUnrollThreshold: i32 = "aarch64-force-unroll-threshold";
+
+struct TailFoldingOption {
+    InitialBits: TailFoldingOpts,
+    EnableBits: TailFoldingOpts,
+    DisableBits: TailFoldingOpts,
+    NeedsDefault: bool,
+}
+
+fn TailFoldingOption::setInitialBits(self, Bits: TailFoldingOpts) {
+    self.InitialBits = Bits;
+}
+
+fn TailFoldingOption::setNeedsDefault(self, V: bool) {
+    self.NeedsDefault = V;
+}
+
+fn TailFoldingOption::setEnableBit(self, Bit: TailFoldingOpts) {
+    self.EnableBits;
+    operator&=(self.DisableBits, Bit());
+}
+
+fn TailFoldingOption::setDisableBit(self, Bit: TailFoldingOpts) {
+    operator&=(self.EnableBits, Bit());
+    self.DisableBits;
+}
+
+fn TailFoldingOption::getBits(self: *TailFoldingOption, DefaultBits: TailFoldingOpts) -> TailFoldingOpts {
+    let mut Bits: TailFoldingOpts = Disabled;
+    assert!((self.InitialBits == Disabled || !self.NeedsDefault), "Initial bits should only include one of (disabled|all|simple|default)");
+    Bits = if self.NeedsDefault { DefaultBits } else { self.InitialBits };
+    Bits(self.EnableBits);
+    operator&=(Bits, self.DisableBits);
+    return Bits;
+}
+
+fn TailFoldingOption::reportError(self, Opt: str) {
+    errs() << Opt << "' to -sve-tail-folding=; the option should be of the form\n  (disabled|all|default|simple)[+(reductions|recurrences|reverse|noreductions|norecurrences|noreverse)]\n";
+    report_fatal_error("Unrecognised tail-folding option", true);
+}
+
+fn TailFoldingOption::operator=(self, Val: str) {
+    if Val.is_empty() {
+        self.reportError("");
+        return;
+    }
+    self.setNeedsDefault(false);
+    let mut TailFoldTypes: SmallVector<StringRef, 4> = zeroed();
+    Val('+', -1, false);
+    let mut StartIdx: u32 = 1;
+    if TailFoldTypes()[0] == "disabled" {
+        self.setInitialBits(Disabled);
+    } else if TailFoldTypes()[0] == "all" {
+        self.setInitialBits(All);
+    } else if TailFoldTypes()[0] == "default" {
+        self.setNeedsDefault(true);
+    } else if TailFoldTypes()[0] == "simple" {
+        self.setInitialBits(Simple);
+    } else {
+        StartIdx = 0;
+        self.setInitialBits(Disabled);
+    }
+    for let mut I: u32 = StartIdx; I < TailFoldTypes()(); I += 1 {
+        if TailFoldTypes()[I] == "reductions" {
+            self.setEnableBit(Reductions);
+        } else if TailFoldTypes()[I] == "recurrences" {
+            self.setEnableBit(Recurrences);
+        } else if TailFoldTypes()[I] == "reverse" {
+            self.setEnableBit(Reverse);
+        } else if TailFoldTypes()[I] == "noreductions" {
+            self.setDisableBit(Reductions);
+        } else if TailFoldTypes()[I] == "norecurrences" {
+            self.setDisableBit(Recurrences);
+        } else if TailFoldTypes()[I] == "noreverse" {
+            self.setDisableBit(Reverse);
+        } else {
+            self.reportError(Val);
+        }
+    }
+}
+
+fn TailFoldingOption::isDisabled(self: *TailFoldingOption, DefaultBits: TailFoldingOpts) -> bool {
+    return self.getBits(DefaultBits) == Disabled;
+}
+
+fn TailFoldingOption::satisfies(self: *TailFoldingOption, DefaultBits: TailFoldingOpts, Required: TailFoldingOpts) -> bool {
+    return (self.getBits(DefaultBits)) == Required;
+}
+
+static mut TailFoldingOptionLoc: TailFoldingOption = TailFoldingOption {};
+
+static mut SVETailFolding: string>> = zeroed();
+
+static mut EnableFixedwidthAutovecInStreamingMode: i32 = "enable-fixedwidth-autovec-in-streaming-mode";
+
+static mut EnableScalableAutovecInStreamingMode: i32 = "enable-scalable-autovec-in-streaming-mode";
+
+fn isSMEABIRoutineCall(CI: *CallInst, TLI: *AArch64TargetLowering) -> bool {
+    let mut F: *auto = CI.getCalledFunction;
+    return  && ().isSMEABIRoutine();
+}
+
+fn hasPossibleIncompatibleOps(F: *Function, TLI: *AArch64TargetLowering) -> bool {
+    return false;
+}
+
+fn extractAttrFeatures(F: *Function, TTI: *AArch64TTIImpl, Features: *mut SmallVectorImpl<StringRef>) {
+    let mut AttributeStr: str = if TTI.isMultiversionedFunction(F) { "fmv-features" } else { "target-features" };
+    let mut FeatureStr: str = F.getFnAttribute(AttributeStr).getValueAsString();
+    FeatureStr.split(Features, ",", -1, true);
+}
+
+fn AArch64TTIImpl::getFeatureMask(self: *AArch64TTIImpl, F: *Function) -> APInt {
+    let mut Features: SmallVector<StringRef, 8> = zeroed();
+    extractAttrFeatures(F, self);
+    return getCpuSupportsMask();
+}
+
+fn AArch64TTIImpl::getPriorityMask(self: *AArch64TTIImpl, F: *Function) -> APInt {
+    let mut Features: SmallVector<StringRef, 8> = zeroed();
+    extractAttrFeatures(F, self);
+    return getFMVPriority();
+}
+
+fn AArch64TTIImpl::isMultiversionedFunction(self: *AArch64TTIImpl, F: *Function) -> bool {
+    return F.hasFnAttribute("fmv-features");
+}
+
+fn AArch64TTIImpl::areInlineCompatible(self: *AArch64TTIImpl, Caller: *Function, Callee: *Function) -> bool {
+    let mut CallAttrs: SMECallAttrs = SMECallAttrs { SMEAttrs { *Caller, null }, SMEAttrs { *Callee, null }, Normal };
+    if CallAttrs.caller().hasNonStreamingInterfaceAndBody() && CallAttrs.callee().hasStreamingInterfaceOrBody() {
+        return false;
+    }
+    if CallAttrs.callee().hasStreamingBody() {
+        CallAttrs.callee().set(SM_Compatible, false);
+        CallAttrs.callee().set(SM_Enabled, true);
+    }
+    if CallAttrs.callee().isNewZA() || CallAttrs.callee().isNewZT0() {
+        return false;
+    }
+    if CallAttrs.requiresLazySave() || CallAttrs.requiresSMChange() || CallAttrs.requiresPreservingZT0() || CallAttrs.requiresPreservingAllZAState() {
+        if hasPossibleIncompatibleOps(Callee, *self.getTLI()) {
+            return false;
+        }
+    }
+}
+
+fn AArch64TTIImpl::areTypesABICompatible(self: *AArch64TTIImpl, Caller: *Function, Callee: *Function, Types: ArrayRef<Type *>) -> bool {
+    if  {
+        return false;
+    }
+    if self.ST.useSVEForFixedLengthVectors() && any_of(Closure_1 {}) {
+        return false;
+    }
+    return true;
+}
+
+fn AArch64TTIImpl::getInlineCallPenalty(self: *AArch64TTIImpl, F: *Function, Call: *CallBase, DefaultCallPenalty: u32) -> u32 {
+    let mut FAttrs: SMEAttrs = SMEAttrs { *F, null };
+    let mut CallAttrs: SMECallAttrs = Call;
+    if SMECallAttrs { FAttrs, CallAttrs.callee(), Normal }.requiresSMChange() {
+        if F == Call.getCaller() {
+            return  * DefaultCallPenalty;
+        }
+        if SMECallAttrs { FAttrs, CallAttrs.caller(), Normal }.requiresSMChange() {
+            return  * DefaultCallPenalty;
+        }
+    }
+    return DefaultCallPenalty;
+}
+
+fn AArch64TTIImpl::shouldMaximizeVectorBandwidth(self: *AArch64TTIImpl, K: RegisterKind) -> bool {
+    assert!(K != RGK_Scalar);
+    if K == RGK_FixedWidthVector && self.ST.isNeonAvailable() {
+        return true;
+    }
+    return K == RGK_ScalableVector && self.ST.isSVEorStreamingSVEAvailable() && operator!(self.ST());
+}
+
+fn AArch64TTIImpl::getIntImmCost(self: *AArch64TTIImpl, Val: i64) -> InstructionCost {
+    if Val == 0 || isLogicalImmediate(Val, 64) {
+        return 0;
+    }
+    if Val < 0 {
+        Val = ~Val;
+    }
+    let mut Insn: ImmInsnModel, 4> = zeroed();
+    expandMOVImm(Val, 64);
+    return ();
+}
+
+fn AArch64TTIImpl::getIntImmCost(self: *AArch64TTIImpl, Imm: *APInt, Ty: *mut Type, CostKind: TargetCostKind) -> InstructionCost {
+    assert!(Ty.isIntegerTy();
+    let mut BitSize: u32 = Ty.getPrimitiveSizeInBits();
+    if BitSize == 0 {
+        return ~0;
+    }
+    let mut ImmVal: APInt = Imm;
+    if BitSize & 63 {
+        ImmVal = Imm.sext((BitSize + 63) & ~63);
+    }
+    let mut Cost: InstructionCost = 0;
+    for let mut ShiftVal: u32 = 0; ShiftVal < BitSize; ShiftVal += 64 {
+        let mut Tmp: APInt = ImmVal.ashr(ShiftVal).sextOrTrunc(64);
+        let mut Val: i64 = Tmp.getSExtValue();
+        operator(Cost, self.getIntImmCost(Val));
+    }
+    return max(1, Cost);
+}
+
+fn AArch64TTIImpl::getIntImmCostInst(self: *AArch64TTIImpl, Opcode: u32, Idx: u32, Imm: *APInt, Ty: *mut Type, CostKind: TargetCostKind, Inst: *mut Instruction) -> InstructionCost {
+    assert!(Ty.isIntegerTy();
+    let mut BitSize: u32 = Ty.getPrimitiveSizeInBits();
+    if BitSize == 0 {
+        return TCC_Free;
+    }
+    let mut ImmIdx: u32 = ~0;
+    match Opcode {
+        _ => {
+            return TCC_Free;
+        },
+        GetElementPtr => {
+            if Idx == 0 {
+                return 2 * TCC_Basic;
+            }
+        },
+        Store => {
+            ImmIdx = 0;
+        },
+        Add => {
+            Sub;
+        },
+        Shl => {
+            LShr;
+        },
+        Trunc => {
+            ZExt;
+        },
+    }
+    if Idx == ImmIdx {
+        let mut NumConstants: i32 = (BitSize + 63) / 64;
+        let mut Cost: InstructionCost = self.getIntImmCost(Imm, Ty, CostKind);
+        return if (Cost <= NumConstants * TCC_Basic) { TCC_Free as i32 } else { Cost };
+    }
+    return self.getIntImmCost(Imm, Ty, CostKind);
+}
+
+fn AArch64TTIImpl::getIntImmCostIntrin(self: *AArch64TTIImpl, IID: ID, Idx: u32, Imm: *APInt, Ty: *mut Type, CostKind: TargetCostKind) -> InstructionCost {
+    assert!(Ty.isIntegerTy();
+    let mut BitSize: u32 = Ty.getPrimitiveSizeInBits();
+    if BitSize == 0 {
+        return TCC_Free;
+    }
+    if  {
+        return self.getIntImmCost(Imm, Ty, CostKind);
+    }
+    match IID {
+        _ => {
+            return TCC_Free;
+        },
+        sadd_with_overflow => {
+            uadd_with_overflow;
+        },
+        experimental_stackmap => {
+            if (Idx < 2) || (Imm.getBitWidth() <= 64 && isInt(Imm.getSExtValue())) {
+                return TCC_Free;
+            }
+        },
+        experimental_patchpoint_void => {
+            experimental_patchpoint;
+        },
+        experimental_gc_statepoint => {
+            if (Idx < 5) || (Imm.getBitWidth() <= 64 && isInt(Imm.getSExtValue())) {
+                return TCC_Free;
+            }
+        },
+    }
+    return self.getIntImmCost(Imm, Ty, CostKind);
+}
+
+fn AArch64TTIImpl::getPopcntSupport(self: *AArch64TTIImpl, TyWidth: u32) -> PopcntSupportKind {
+    assert!(isPowerOf2_32(TyWidth), "Ty width must be power of 2");
+    if TyWidth == 32 || TyWidth == 64 {
+        return PSK_FastHardware;
+    }
+    return PSK_Software;
+}
+
+fn AArch64TTIImpl::getBranchMispredictPenalty(self: *AArch64TTIImpl) -> InstructionCost {
+    return self.ST();
+}
+
+fn isUnpackedVectorVT(VecVT: EVT) -> bool {
+    return VecVT.isScalableVector() && VecVT.getSizeInBits()() < SVEBitsPerBlock;
+}
+
+fn getHistogramCost(ST: *AArch64Subtarget, ICA: *IntrinsicCostAttributes) -> InstructionCost {
+    if ICA.getArgTypes()() < 2 {
+        return getInvalid(0);
+    }
+    if operator!(ST()()) {
+        return getInvalid(0);
+    }
+    let mut BucketPtrsTy: *mut Type = null;
+    let mut EltTy: *mut Type = null;
+    let mut TotalHistCnts: u32 = 1;
+    let mut EltSize: u32 = EltTy.getScalarSizeInBits();
+    if (!EltTy.isIntegerTy() && !EltTy.isPointerTy()) || EltSize > 64 {
+        return getInvalid(0);
+    }
+    if dyn_cast(BucketPtrsTy) {
+        VTy;
+    } else {
+        let mut EC: u32 = VTy.getElementCount()();
+        if !isPowerOf2_64(EC) || !VTy.isScalableTy() || EC == 1 {
+            return getInvalid(0);
+        }
+        let mut LegalEltSize: u32 = if EltSize <= 32 { 32 } else { 64 };
+        if EC == 2 || (LegalEltSize == 32 && EC == 4) {
+            return ;
+        }
+        let mut NaturalVectorWidth: u32 = SVEBitsPerBlock / LegalEltSize;
+        TotalHistCnts = EC / NaturalVectorWidth;
+        return  * TotalHistCnts;
+    }
+    return getInvalid(0);
+}
+
+fn AArch64TTIImpl::getIntrinsicInstrCost(self: *AArch64TTIImpl, ICA: *IntrinsicCostAttributes, CostKind: TargetCostKind) -> InstructionCost {
+    let mut RetTy: *mut Type = ICA.getReturnType();
+    if  {
+        if VTy()() == (1) && !is_contained(void { masked_load, masked_store }, ICA.getID()) {
+            return getInvalid(0);
+        }
+    }
+    match ICA.getID() {
+        experimental_vector_histogram_add => {
+            let mut HistCost: InstructionCost = getHistogramCost(self.ST, ICA);
+            if HistCost.isValid() {
+                return HistCost;
+            }
+            break;
+        },
+        clmul => {
+            let mut LT: auto = getTypeLegalizationCost(RetTy);
+            if self.ST() {
+                if LT() == v8i8 ||  == v16i8 {
+                    return ;
+                }
+                if self.TLI.getValueType == i8 {
+                    let mut VecTy: *mut FixedVectorType = get(getInt8Ty(RetTy.getContext()), 8);
+                    return 1 + self.getVectorInstrCost(ExtractElement, VecTy, CostKind, -1, null, null, None) * 2 + self.getVectorInstrCost(InsertElement, VecTy, CostKind, -1, null, null, None);
+                }
+            }
+            if LT() == nxv2i64 {
+                if self.ST() && (self.ST.isSVEAvailable() || self.ST()) {
+                    return  * 3;
+                }
+            }
+            if self.ST() || self.ST() {
+                match LT() {
+                    nxv16i8 => {
+                        return ;
+                    },
+                    nxv8i16 => {
+                        return  * 6;
+                    },
+                    nxv4i32 => {
+                        return  * 3;
+                    },
+                    nxv2i64 => {
+                        return  * 8;
+                    },
+                    _ => {
+                        break;
+                    },
+                }
+            }
+            if LT() == nxv2i64 {
+                return 192;
+            }
+            if self.ST() {
+                match LT() {
+                    i16 => {
+                        i32;
+                    },
+                    v1i64 => {
+                        return ;
+                    },
+                    v2i64 => {
+                        return  * 3;
+                    },
+                    v2i32 => {
+                        return  * 6;
+                    },
+                    v4i32 => {
+                        return  * 11;
+                    },
+                    v4i16 => {
+                        return  * 14;
+                    },
+                    _ => {
+                        break;
+                    },
+                }
+            }
+            break;
+        },
+        umin => {
+            umax;
+        },
+        scmp => {
+            ucmp;
+        },
+        sadd_sat => {
+            ssub_sat;
+        },
+        abs => {
+            let mut ValidAbsTys: SimpleValueType> = zeroed();
+            let mut LT: auto = getTypeLegalizationCost(RetTy);
+            if any_of(equal_to()) {
+                return ;
+            }
+            break;
+        },
+        bswap => {
+            let mut ValidAbsTys: SimpleValueType> = zeroed();
+            let mut LT: auto = getTypeLegalizationCost(RetTy);
+            if any_of(equal_to()) && () == RetTy.getScalarSizeInBits() {
+                return ;
+            }
+            break;
+        },
+        fma => {
+            fmuladd;
+        },
+        stepvector => {
+            let mut Cost: InstructionCost = 1;
+            let mut LT: auto = getTypeLegalizationCost(RetTy);
+            if LT() > 1 {
+                let mut LegalVTy: *mut Type = .getTypeForEVT(RetTy.getContext());
+                let mut AddCost: InstructionCost = self.getArithmeticInstrCost(Add, LegalVTy, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, OperandValueInfo { OK_AnyValue, OP_None }, void {}, null);
+                operator+=(Cost, AddCost * (LT() - 1));
+            }
+            return Cost;
+        },
+        vector_extract => {
+            vector_insert;
+        },
+        bitreverse => {
+            let mut BitreverseTbl: []CostTblEntry = zeroed();
+            let mut LegalisationCost: auto = getTypeLegalizationCost(RetTy);
+            let mut Entry: *auto = CostTableLookup(ICA.getID());
+            if Entry() {
+                if self.TLI.getValueType == i8 || self.TLI.getValueType == i16 {
+                    return  *  + 1;
+                }
+                return  * ;
+            }
+            break;
+        },
+        ctpop => {
+            let mut LT: auto = getTypeLegalizationCost(RetTy);
+            let mut MTy: MVT = ;
+            if self.ST() && !RetTy.isVectorTy() {
+                let mut ExtraCost: i32 = if MTy.getScalarSizeInBits() != RetTy.getScalarSizeInBits() { 1 } else { 0 };
+                return  + ExtraCost;
+            }
+            if operator!(self.ST()) {
+                return getTypeLegalizationCost(RetTy) * 12;
+            }
+            let mut CtpopCostTbl: []CostTblEntry = zeroed();
+            if self.ST.isSVEorStreamingSVEAvailable() && MTy.isFixedLengthVector() {
+                MTy = getScalableVectorVT(MTy.getVectorElementType(), 128 / MTy.getScalarSizeInBits());
+            }
+            if  {
+                let mut ExtraCost: i32 = if MTy.isVector() && MTy.getScalarSizeInBits() != RetTy.getScalarSizeInBits() { 1 } else { 0 };
+                return  *  + ExtraCost;
+            }
+            break;
+        },
+        sadd_with_overflow => {
+            uadd_with_overflow;
+        },
+        fptosi_sat => {
+            fptoui_sat;
+        },
+        fshl => {
+            fshr;
+        },
+        get_active_lane_mask => {
+            let mut RetTy: auto = cast(ICA.getReturnType());
+            let mut RetVT: EVT = self.getTLI().getValueType;
+            let mut OpVT: EVT = self.getTLI().getValueType;
+            if self.getTLI().shouldExpandGetActiveLaneMask(RetVT, OpVT) {
+                break;
+            }
+            if RetTy()() {
+                if self.TLI(RetVT) != TypeSplitVector {
+                    break;
+                }
+                let mut LT: auto = getTypeLegalizationCost();
+                let mut Cost: InstructionCost = ;
+                if self.ST() || self.ST() {
+                    operator(Cost, 2);
+                    if Cost == 1 {
+                        return Cost;
+                    }
+                }
+                let mut OpTy: *mut Type = null;
+                let mut AddAttrs: IntrinsicCostAttributes = uadd_sat(OpTy, void { OpTy, OpTy });
+                let mut SplitCost: InstructionCost = self.getIntrinsicInstrCost(AddAttrs, CostKind);
+                let mut CondTy: *mut Type = OpTy.getWithNewBitWidth(1);
+                operator(SplitCost, self.getCmpSelInstrCost(Select, OpTy, CondTy, ICMP_UGT, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, OperandValueInfo { OK_AnyValue, OP_None }, null));
+                return Cost + (SplitCost * (Cost - 1));
+            } else if operator!(self.getTLI().isTypeLegal) {
+                return cast()() * 2;
+            }
+            break;
+        },
+        experimental_vector_match => {
+            if operator!(self.ST()) || !self.ST.isSVEAvailable() {
+                break;
+            }
+            let mut NeedleTy: *mut auto = cast();
+            let mut SearchSize: u32 = ();
+            if SearchSize <= 2 {
+                break;
+            }
+            if operator!(is_contained(void { nxv8i16, nxv16i8, v8i16, v16i8, v8i8 })) {
+                break;
+            }
+            let mut ElementSizeInBits: u32 = ();
+            let mut NeedleEltsPerMatch: u32 = SVEBitsPerBlock / ElementSizeInBits;
+            let mut MatchesRequiredForNeedle: u32 = divideCeil(SearchSize, NeedleEltsPerMatch);
+            let mut Cost: InstructionCost = 4;
+            if isa(RetTy) {
+                operator(Cost, 10);
+            }
+            return Cost *  * MatchesRequiredForNeedle;
+        },
+        cttz => {
+            let mut LT: auto = getTypeLegalizationCost();
+            if LT() == v8i8 ||  == v16i8 {
+                return  * 2;
+            }
+            if LT() == v4i16 ||  == v8i16 ||  == v2i32 ||  == v4i32 {
+                return  * 3;
+            }
+            break;
+        },
+        experimental_cttz_elts => {
+            let mut ArgVT: EVT = self.getTLI().getValueType;
+            if self.getTLI().isOperationCustom {
+                return 4;
+            }
+            break;
+        },
+        loop_dependence_raw_mask => {
+            loop_dependence_war_mask;
+        },
+        experimental_vector_extract_last_active => {
+            if self.ST.isSVEorStreamingSVEAvailable() {
+                return ;
+            }
+        },
+        pow => {
+            let mut VT: EVT = self.getTLI().getValueType;
+            let mut LC: Libcall = getPOW(VT);
+            let mut HasLibcall: bool = self.getTLI().getLibcallImpl != Unsupported;
+            let mut CanLowerWithLibcalls: bool = !isa(RetTy) || HasLibcall;
+            if CanLowerWithLibcalls && ICA.getInst() && operator!(ICA.getArgs()()) {
+                let mut ExpC: *Constant = dyn_cast();
+                if ExpC && isa(ExpC.getType()) {
+                    ExpC = ExpC.getSplatValue(false);
+                }
+                if  {
+                    let mut Is025: bool = ()(0.25);
+                    let mut Is075: bool = ()(0.75);
+                    let mut FMF: FastMathFlags = ICA.getInst().getFastMathFlags;
+                    if (Is025 || Is075) && FMF.noInfs() && FMF.approxFunc() && (!Is025 || FMF.noSignedZeros()) {
+                        let mut Attrs: IntrinsicCostAttributes = sqrt(RetTy, void { RetTy }, FMF);
+                        let mut Sqrt: InstructionCost = self.getIntrinsicInstrCost(Attrs, CostKind);
+                        if Is025 {
+                            return 2 * Sqrt;
+                        }
+                        let mut FMul: InstructionCost = self.getArithmeticInstrCost(FMul, RetTy, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, OperandValueInfo { OK_AnyValue, OP_None }, void {}, null);
+                        return (Sqrt * 2) + FMul;
+                    }
+                }
+            }
+            if HasLibcall {
+                return getCallInstrCost(null, RetTy, ICA.getArgTypes(), CostKind);
+            }
+            break;
+        },
+        sqrt => {
+            fabs;
+        },
+        _ => {
+            break;
+        },
+    }
+}
+
+fn processPhiNode(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut Worklist: SmallVector<Instruction *, 32> = zeroed();
+    let mut RequiredType: auto = II.getType;
+    let mut PN: *mut auto = dyn_cast(II.getArgOperand);
+    (((operator!(operator!((PN() && "Expected Phi Node!")))) || (_wassert(L"PN && \"Expected Phi Node!\"", L"llvm\\lib\\Target\\AArch64\\AArch64TargetTransformInfo.cpp", (1316) as u32) , 0)) as void);
+    if operator!() {
+        return nullopt();
+    }
+    IC()();
+    let mut NPN: *mut PHINode = IC()();
+    Worklist()();
+    for let mut I: u32 = 0; I < PN()(); I += 1 {
+        let mut Reinterpret: *mut auto = cast((I));
+        NPN.addIncoming((0), (I));
+        Worklist()();
+    }
+    return IC.replaceInstUsesWith;
+}
+
+struct SVEIntrinsicInfo {
+    GoverningPredicateIdx: u32,
+    UndefIntrinsic: ID,
+    IROpcode: u32,
+    CmpPredicate: Predicate,
+    ResultLanes: PredicationStyle,
+    ResultIsZeroInitialized: bool,
+    OperandIdxForInactiveLanes: u32,
+    OperandIdxWithNoActiveLanes: u32,
+}
+
+fn SVEIntrinsicInfo::defaultMergingOp(self, IID: ID) -> SVEIntrinsicInfo {
+    return SVEIntrinsicInfo {}.setGoverningPredicateOperandIdx(0).setOperandIdxInactiveLanesTakenFrom(1).setMatchingUndefIntrinsic(IID);
+}
+
+fn SVEIntrinsicInfo::defaultMergingUnaryOp(self) -> SVEIntrinsicInfo {
+    return SVEIntrinsicInfo {}.setGoverningPredicateOperandIdx(1).setOperandIdxInactiveLanesTakenFrom(0).setOperandIdxWithNoActiveLanes(0);
+}
+
+fn SVEIntrinsicInfo::defaultMergingUnaryNarrowingTopOp(self) -> SVEIntrinsicInfo {
+    return SVEIntrinsicInfo {}.setGoverningPredicateOperandIdx(1).setOperandIdxInactiveLanesTakenFrom(0);
+}
+
+fn SVEIntrinsicInfo::defaultUndefOp(self) -> SVEIntrinsicInfo {
+    return SVEIntrinsicInfo {}.setGoverningPredicateOperandIdx(0).setInactiveLanesAreNotDefined();
+}
+
+fn SVEIntrinsicInfo::defaultVoidOp(self, GPIndex: u32) -> SVEIntrinsicInfo {
+    return SVEIntrinsicInfo {}.setGoverningPredicateOperandIdx(GPIndex).setInactiveLanesAreUnused();
+}
+
+fn SVEIntrinsicInfo::defaultZeroingOp(self) -> SVEIntrinsicInfo {
+    return SVEIntrinsicInfo {}.setGoverningPredicateOperandIdx(0).setInactiveLanesAreUnused().setResultIsZeroInitialized();
+}
+
+fn SVEIntrinsicInfo::hasGoverningPredicate(self: *SVEIntrinsicInfo) -> bool {
+    return self.GoverningPredicateIdx != max();
+}
+
+fn SVEIntrinsicInfo::getGoverningPredicateOperandIdx(self: *SVEIntrinsicInfo) -> u32 {
+    assert!(self.hasGoverningPredicate(), "Property not set!");
+    return self.GoverningPredicateIdx;
+}
+
+fn SVEIntrinsicInfo::setGoverningPredicateOperandIdx(self, Index: u32) -> *mut SVEIntrinsicInfo {
+    assert!(!self.hasGoverningPredicate(), "Cannot set property twice!");
+    self.GoverningPredicateIdx = Index;
+    return *self;
+}
+
+fn SVEIntrinsicInfo::hasMatchingUndefIntrinsic(self: *SVEIntrinsicInfo) -> bool {
+    return self.UndefIntrinsic != not_intrinsic;
+}
+
+fn SVEIntrinsicInfo::getMatchingUndefIntrinsic(self: *SVEIntrinsicInfo) -> ID {
+    assert!(self.hasMatchingUndefIntrinsic(), "Property not set!");
+    return self.UndefIntrinsic;
+}
+
+fn SVEIntrinsicInfo::setMatchingUndefIntrinsic(self, IID: ID) -> *mut SVEIntrinsicInfo {
+    assert!(!self.hasMatchingUndefIntrinsic(), "Cannot set property twice!");
+    self.UndefIntrinsic = IID;
+    return *self;
+}
+
+fn SVEIntrinsicInfo::hasMatchingIROpode(self: *SVEIntrinsicInfo) -> bool {
+    return self.IROpcode != 0;
+}
+
+fn SVEIntrinsicInfo::getMatchingIROpode(self: *SVEIntrinsicInfo) -> u32 {
+    assert!(self.hasMatchingIROpode(), "Property not set!");
+    return self.IROpcode;
+}
+
+fn SVEIntrinsicInfo::setMatchingIROpcode(self, Opcode: u32) -> *mut SVEIntrinsicInfo {
+    assert!(!self.hasMatchingIROpode(), "Cannot set property twice!");
+    self.IROpcode = Opcode;
+    return *self;
+}
+
+fn SVEIntrinsicInfo::hasCmpPredicate(self: *SVEIntrinsicInfo) -> bool {
+    return self.CmpPredicate != BAD_ICMP_PREDICATE;
+}
+
+fn SVEIntrinsicInfo::getCmpPredicate(self: *SVEIntrinsicInfo) -> Predicate {
+    assert!(self.hasCmpPredicate(), "Property not set!");
+    return self.CmpPredicate;
+}
+
+fn SVEIntrinsicInfo::setCmpPredicate(self, Pred: Predicate) -> *mut SVEIntrinsicInfo {
+    assert!(!self.hasCmpPredicate(), "Cannot set property twice!");
+    self.CmpPredicate = Pred;
+    if isFPPredicate(Pred) {
+        return self.setMatchingIROpcode(FCmp);
+    }
+    if isIntPredicate(Pred) {
+        return self.setMatchingIROpcode(ICmp);
+    }
+    llvm_unreachable_internal("Unsupported compare predicate!", "llvm\\lib\\Target\\AArch64\\AArch64TargetTransformInfo.cpp", 1488);
+}
+
+fn SVEIntrinsicInfo::inactiveLanesTakenFromOperand(self: *SVEIntrinsicInfo) -> bool {
+    return self.ResultLanes == InactiveLanesTakenFromOperand;
+}
+
+fn SVEIntrinsicInfo::getOperandIdxInactiveLanesTakenFrom(self: *SVEIntrinsicInfo) -> u32 {
+    assert!(self.inactiveLanesTakenFromOperand(), "Property not set!");
+    return self.OperandIdxForInactiveLanes;
+}
+
+fn SVEIntrinsicInfo::setOperandIdxInactiveLanesTakenFrom(self, Index: u32) -> *mut SVEIntrinsicInfo {
+    assert!(self.ResultLanes == Uninitialized, "Cannot set property twice!");
+    self.ResultLanes = InactiveLanesTakenFromOperand;
+    self.OperandIdxForInactiveLanes = Index;
+    return *self;
+}
+
+fn SVEIntrinsicInfo::inactiveLanesAreNotDefined(self: *SVEIntrinsicInfo) -> bool {
+    return self.ResultLanes == InactiveLanesAreNotDefined;
+}
+
+fn SVEIntrinsicInfo::setInactiveLanesAreNotDefined(self) -> *mut SVEIntrinsicInfo {
+    assert!(self.ResultLanes == Uninitialized, "Cannot set property twice!");
+    self.ResultLanes = InactiveLanesAreNotDefined;
+    return *self;
+}
+
+fn SVEIntrinsicInfo::inactiveLanesAreUnused(self: *SVEIntrinsicInfo) -> bool {
+    return self.ResultLanes == InactiveLanesAreUnused;
+}
+
+fn SVEIntrinsicInfo::setInactiveLanesAreUnused(self) -> *mut SVEIntrinsicInfo {
+    assert!(self.ResultLanes == Uninitialized, "Cannot set property twice!");
+    self.ResultLanes = InactiveLanesAreUnused;
+    return *self;
+}
+
+fn SVEIntrinsicInfo::resultIsZeroInitialized(self: *SVEIntrinsicInfo) -> bool {
+    return self.ResultIsZeroInitialized;
+}
+
+fn SVEIntrinsicInfo::setResultIsZeroInitialized(self) -> *mut SVEIntrinsicInfo {
+    self.ResultIsZeroInitialized = true;
+    return *self;
+}
+
+fn SVEIntrinsicInfo::hasOperandWithNoActiveLanes(self: *SVEIntrinsicInfo) -> bool {
+    return self.OperandIdxWithNoActiveLanes != max();
+}
+
+fn SVEIntrinsicInfo::getOperandIdxWithNoActiveLanes(self: *SVEIntrinsicInfo) -> u32 {
+    assert!(self.hasOperandWithNoActiveLanes(), "Property not set!");
+    return self.OperandIdxWithNoActiveLanes;
+}
+
+fn SVEIntrinsicInfo::setOperandIdxWithNoActiveLanes(self, Index: u32) -> *mut SVEIntrinsicInfo {
+    assert!(!self.hasOperandWithNoActiveLanes(), "Cannot set property twice!");
+    self.OperandIdxWithNoActiveLanes = Index;
+    return *self;
+}
+
+fn constructSVEIntrinsicInfo(II: *mut IntrinsicInst) -> SVEIntrinsicInfo {
+    if operator!(isa(II.getType)) && all_of(II()(), Closure_2 {}) {
+        return SVEIntrinsicInfo {};
+    }
+    let mut IID: ID = II.getIntrinsicID();
+    match IID {
+        _ => {
+            break;
+        },
+    }
+    return SVEIntrinsicInfo {};
+}
+
+fn isAllActivePredicate(Pred: *mut Value) -> bool {
+    let mut UncastedPred: *mut Value = null;
+    if match(Pred) {
+        let mut OrigPredTy: *mut auto = cast(Pred.getType());
+        Pred = UncastedPred;
+        if match(Pred) {
+            if OrigPredTy()() <= cast(UncastedPred.getType())() {
+                Pred = UncastedPred;
+            }
+        }
+    }
+    let mut C: *mut auto = dyn_cast(Pred);
+    return  && ();
+}
+
+fn stripInactiveLanes(V: *mut Value, Pg: *Value) -> *mut Value {
+    let mut Dup: *mut auto = dyn_cast(V);
+    if  {
+        return getSplat(cast(V.getType())(), cast((2)));
+    }
+    return V;
+}
+
+fn simplifySVEIntrinsicBinOp(IC: *mut InstCombiner, II: *mut IntrinsicInst, IInfo: *SVEIntrinsicInfo) -> optional<Instruction *> {
+    let mut Opc: u32 = IInfo.getMatchingIROpode();
+    assert!(isBinaryOp(Opc), "Expected a binary operation!");
+    let mut Pg: *mut Value = II.getOperand;
+    let mut Op1: *mut Value = II.getOperand;
+    let mut Op2: *mut Value = II.getOperand;
+    let mut DL: *DataLayout = II.getDataLayout;
+    if isCommutative(Opc) && IInfo.inactiveLanesAreNotDefined() && isa(Op1) && !isa(Op2) {
+        IC.replaceOperand;
+        IC.replaceOperand;
+        return &mut II;
+    }
+    Op1 = stripInactiveLanes(Op1, Pg);
+    Op2 = stripInactiveLanes(Op2, Pg);
+    let mut SimpleII: *mut Value = null;
+    if  {
+        SimpleII = simplifyBinOp(Opc, Op1, Op2, DL);
+    } else {
+        SimpleII = simplifyBinOp(Opc, Op1, Op2, DL);
+    }
+    let mut NarrowOp1: *mut Value = null;
+    let mut NarrowOp2: *mut Value = null;
+    if !SimpleII && match(Op1) && match(Op2) && NarrowOp1.getType() == NarrowOp2.getType() {
+        let mut SimpleNarrow: *mut Value = simplifyBinOp(Opc, NarrowOp1, NarrowOp2, DL);
+        if SimpleNarrow && !isa(SimpleNarrow) {
+            if match(SimpleNarrow) {
+                SimpleII = getNullValue(II.getType);
+            } else if SimpleNarrow == NarrowOp1 {
+                SimpleII = Op1;
+            } else if SimpleNarrow == NarrowOp2 {
+                SimpleII = Op2;
+            } else {
+                SimpleII = IC();
+            }
+        }
+    }
+    if !SimpleII || isa(SimpleII) {
+        return nullopt();
+    }
+    if IInfo.inactiveLanesAreNotDefined() {
+        return IC.replaceInstUsesWith;
+    }
+    let mut Inactive: *mut Value = if IInfo.resultIsZeroInitialized() { getNullValue(II.getType) } else { II.getOperand };
+    if SimpleII == Inactive {
+        return IC.replaceInstUsesWith;
+    }
+    SimpleII = IC()(Pg, SimpleII, Inactive);
+    return IC.replaceInstUsesWith;
+}
+
+fn simplifySVEIntrinsicCompare(IC: *mut InstCombiner, II: *mut IntrinsicInst, IInfo: *SVEIntrinsicInfo) -> optional<Instruction *> {
+    let mut Opc: u32 = IInfo.getMatchingIROpode();
+    assert!((Opc == ICmp || Opc == FCmp), "Expected a compare operation!");
+    let mut Pg: *mut Value = II.getOperand;
+    let mut LHS: *mut Value = II.getOperand;
+    let mut RHS: *mut Value = II.getOperand;
+    let mut CmpPred: Predicate = IInfo.getCmpPredicate();
+    let mut IsWideICmp: bool = Opc == ICmp && LHS.getType() != RHS.getType();
+    assert!((IsWideICmp || LHS.getType() == RHS.getType()), "Unexpected wide compare!");
+    if (isCommutative(CmpPred) || isCommutative(CmpPred)) && isa(LHS) && !isa(RHS) && !IsWideICmp {
+        IC.replaceOperand;
+        IC.replaceOperand;
+        return &mut II;
+    }
+    LHS = stripInactiveLanes(LHS, Pg);
+    RHS = stripInactiveLanes(RHS, Pg);
+    if IsWideICmp {
+        let mut LHSVal: *APInt = null;
+        let mut RHSVal: *APInt = null;
+        if operator!(match(LHS)) || operator!(match(RHS)) {
+            return nullopt();
+        }
+        let mut WideVT: *mut Type = get(RHS.getType().getScalarType(), cast(LHS.getType()));
+        if isUnsigned(CmpPred) {
+            LHS = get(WideVT, LHSVal.getZExtValue(), false, false);
+            RHS = get(WideVT, RHSVal.getZExtValue(), false, false);
+        } else {
+            LHS = get(WideVT, LHSVal.getSExtValue(), false, false);
+            RHS = get(WideVT, RHSVal.getSExtValue(), false, false);
+        }
+    }
+    let mut DL: *DataLayout = II.getDataLayout;
+    let mut SimpleII: *mut Value = simplifyCmpInst(CmpPred, LHS, RHS, DL);
+    if !SimpleII {
+        return nullopt();
+    }
+    assert!(IInfo.resultIsZeroInitialized(), "Expected a zeroing operation!");
+    if match(SimpleII) {
+        return IC.replaceInstUsesWith;
+    }
+    SimpleII = IC()(Pg, SimpleII);
+    return IC.replaceInstUsesWith;
+}
+
+fn simplifySVEIntrinsic(IC: *mut InstCombiner, II: *mut IntrinsicInst, IInfo: *SVEIntrinsicInfo) -> optional<Instruction *> {
+    if !IInfo.hasGoverningPredicate() {
+        return nullopt();
+    }
+    let mut OpPredicate: *mut auto = II.getOperand;
+    if match() {
+        if IInfo.inactiveLanesTakenFromOperand() {
+            return IC.replaceInstUsesWith(II, II.getOperand);
+        }
+        if IInfo.inactiveLanesAreUnused() {
+            if IInfo.resultIsZeroInitialized() {
+                IC.replaceInstUsesWith(II, getNullValue(II.getType));
+            }
+            return IC.eraseInstFromFunction;
+        }
+    }
+    if isAllActivePredicate() {
+        if IInfo.hasOperandWithNoActiveLanes() {
+            let mut OpIdx: u32 = IInfo.getOperandIdxWithNoActiveLanes();
+            if operator!(isa(II.getOperand)) {
+                return IC.replaceOperand(II, OpIdx, get(II.getType));
+            }
+        }
+        if IInfo.hasMatchingUndefIntrinsic() {
+            let mut NewDecl: *mut auto = getOrInsertDeclaration(II, IInfo.getMatchingUndefIntrinsic(), void { II.getType });
+            II();
+            return &mut II;
+        }
+    }
+    if !IInfo.hasMatchingIROpode() {
+        return nullopt();
+    }
+    let mut Opc: u32 = IInfo.getMatchingIROpode();
+    return nullopt();
+}
+
+fn tryCombineFromSVBoolBinOp(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut m_ConvertToSVBool: Closure_3 = Closure_3 {};
+    let mut ConvertFromSVBool: ID = zeroed();
+    let mut Ty: *mut Type = II.getType;
+    let mut LHS: *mut Value = null;
+    let mut RHS: *mut Value = null;
+    let mut NarrowLHS: *mut Value = null;
+    let mut NarrowRHS: *mut Value = null;
+    if match(II.getOperand) {
+        NarrowLHS = IC()(ConvertFromSVBool, Ty, LHS);
+        let mut NarrowAnd: *mut Value = IC()(NarrowLHS, NarrowRHS);
+        return IC.replaceInstUsesWith;
+    }
+    if match(II.getOperand) {
+        NarrowRHS = IC()(ConvertFromSVBool, Ty, RHS);
+        let mut NarrowAnd: *mut Value = IC()(NarrowLHS, NarrowRHS);
+        return IC.replaceInstUsesWith;
+    }
+    let mut BinOp: auto = dyn_cast(II.getOperand);
+    if operator!() {
+        return nullopt();
+    }
+    let mut BinOpIID: ID = ();
+    match BinOpIID {
+        _ => {
+            return nullopt();
+        },
+    }
+    let mut BinOpPred: *mut Value = (0);
+    let mut BinOpOp1: *mut Value = (1);
+    let mut BinOpOp2: *mut Value = (2);
+    let mut NarrowBinOpPred: *mut Value = null;
+    if operator!(match(BinOpPred, m_ConvertToSVBool(m_SpecificType(Ty, NarrowBinOpPred)))) {
+        return nullopt();
+    }
+    let mut NarrowBinOpOp1: *mut Value = IC()(ConvertFromSVBool, Ty, BinOpOp1);
+    let mut NarrowBinOpOp2: *mut Value = NarrowBinOpOp1;
+    if BinOpOp1 != BinOpOp2 {
+        NarrowBinOpOp2 = IC()(ConvertFromSVBool, Ty, BinOpOp2);
+    }
+    let mut NarrowedBinOp: *mut Value = IC()(BinOpIID, Ty, void { NarrowBinOpPred, NarrowBinOpOp1, NarrowBinOpOp2 });
+    return IC.replaceInstUsesWith;
+}
+
+fn instCombineConvertFromSVBool(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    if  {
+        return ;
+    }
+    if isa(II.getArgOperand()) || isa(II.getType) {
+        return nullopt();
+    }
+    let mut CandidatesForRemoval: SmallVector<Instruction *, 32> = zeroed();
+    let mut Cursor: *mut Value = II.getOperand;
+    let mut EarliestReplacement: *mut Value = null;
+    let mut IVTy: *auto = cast(II.getType);
+    while Cursor {
+        let mut CursorVTy: *auto = cast(Cursor.getType());
+        if CursorVTy()()() < ()() {
+            break;
+        }
+        if Cursor.getType() ==  {
+            EarliestReplacement = Cursor;
+        }
+        let mut IntrinsicCursor: *mut auto = dyn_cast(Cursor);
+        if  {
+            break;
+        }
+        CandidatesForRemoval()();
+        Cursor = (0);
+    }
+    if !EarliestReplacement {
+        return nullopt();
+    }
+    return IC.replaceInstUsesWith;
+}
+
+fn instCombineSVESel(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut OpPredicate: *mut auto = II.getOperand;
+    if isAllActivePredicate() {
+        return IC.replaceInstUsesWith(II, II.getOperand);
+    }
+    let mut Select: auto = IC()(II.getOperand, II.getOperand);
+    return IC.replaceInstUsesWith(II);
+}
+
+fn instCombineSVEDup(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut Pg: *mut Value = II.getOperand;
+    if isAllActivePredicate(Pg) {
+        let mut RetTy: *mut auto = cast(II.getType);
+        let mut Splat: *mut Value = IC()(II.getArgOperand);
+        return IC.replaceInstUsesWith;
+    }
+    if operator!(match(Pg)) {
+        return nullopt();
+    }
+    let mut Insert: *mut Value = IC()(II.getArgOperand, II.getArgOperand, 0);
+    return IC.replaceInstUsesWith;
+}
+
+fn instCombineSVEDupX(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut RetTy: *mut auto = cast(II.getType);
+    let mut Splat: *mut Value = IC()(II.getArgOperand);
+    Splat.takeName;
+    return IC.replaceInstUsesWith;
+}
+
+fn instCombineXorSVECmpCC(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    if operator!(II.hasOneUse) {
+        return nullopt();
+    }
+    let mut User: *mut auto = cast(operator*(II()()));
+    if operator!(match(m_c_Xor(m_Specific(&mut II), m_Specific(II.getOperand)))) {
+        return nullopt();
+    }
+    let mut IID: ID = zeroed();
+    match II.getIntrinsicID() {
+        _ => {
+            return nullopt();
+        },
+    }
+    IC()();
+    let mut CMPCC: *mut Value = IC()(IID, II.getOperand(), void { II.getOperand, II.getOperand, II.getOperand });
+    IC.replaceInstUsesWith(operator*(), CMPCC);
+    IC.eraseInstFromFunction(operator*());
+    return &mut II;
+}
+
+fn instCombineZExtSVECmpNE(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    if operator!(isAllActivePredicate(II.getOperand)) || operator!(match(II.getOperand, m_Zero())) {
+        return nullopt();
+    }
+    return nullopt();
+}
+
+fn instCombineSVECmpNE(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut Ctx: *mut LLVMContext = II.getContext;
+    if  {
+        return ;
+    }
+    if  {
+        return ;
+    }
+    if operator!(isAllActivePredicate(II.getArgOperand)) {
+        return nullopt();
+    }
+    let mut SplatValue: *mut auto = dyn_cast_or_null(getSplatValue(II.getArgOperand));
+    if operator!() || operator!() {
+        return nullopt();
+    }
+    let mut DupQLane: *mut auto = dyn_cast(II.getArgOperand);
+    if  {
+        return nullopt();
+    }
+    let mut DupQLaneIdx: *mut auto = dyn_cast((1));
+    if operator!() || operator!() {
+        return nullopt();
+    }
+    let mut VecIns: *mut auto = dyn_cast((0));
+    if operator!() || () != vector_insert {
+        return nullopt();
+    }
+    if operator!(isa((0))) {
+        return nullopt();
+    }
+    if operator!(cast((2))()) {
+        return nullopt();
+    }
+    let mut ConstVec: *mut auto = dyn_cast((1));
+    if operator!() {
+        return nullopt();
+    }
+    let mut VecTy: *mut auto = dyn_cast();
+    let mut OutTy: *mut auto = dyn_cast(II.getType);
+    if operator!() || operator!() || () != () {
+        return nullopt();
+    }
+    let mut NumElts: u32 = ();
+    let mut PredicateBits: u32 = 0;
+    for let mut I: u32 = 0; I < NumElts; I += 1 {
+        let mut Arg: *mut auto = dyn_cast((I));
+        if operator!() {
+            return nullopt();
+        }
+        if operator!() {
+            PredicateBits |= 1 << (I * (16 / NumElts));
+        }
+    }
+    if PredicateBits == 0 {
+        let mut PFalse: *mut auto = getNullValue(II.getType);
+        PFalse()(&mut II);
+        return IC.replaceInstUsesWith(II);
+    }
+    let mut Mask: u32 = 8;
+    for let mut I: u32 = 0; I < 16; I += 1 {
+        if (PredicateBits & (1 << I)) != 0 {
+            Mask |= (I % 8);
+        }
+    }
+    let mut PredSize: u32 = Mask & -Mask;
+    let mut PredType: *mut auto = get(getInt1Ty(Ctx), SVEBitsPerBlock / (PredSize * 8));
+    for let mut I: u32 = 0; I < 16; I += PredSize {
+        if (PredicateBits & (1 << I)) == 0 {
+            return nullopt();
+        }
+    }
+    let mut ConvertToSVBool: *mut auto = IC();
+    let mut ConvertFromSVBool: *mut auto = IC();
+    ConvertFromSVBool()(&mut II);
+    return IC.replaceInstUsesWith(II);
+}
+
+fn instCombineSVELast(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut Pg: *mut Value = II.getArgOperand;
+    let mut Vec: *mut Value = II.getArgOperand;
+    let mut IntrinsicID: ID = II.getIntrinsicID();
+    let mut IsAfter: bool = false;
+    if  {
+        return IC.replaceInstUsesWith(II);
+    }
+    let mut LHS: *mut Value = null;
+    let mut RHS: *mut Value = null;
+    if match(Vec, m_OneUse(m_BinOp(m_Value(LHS), m_Value(RHS)))) {
+        if isSplatValue(LHS, -1, 0) || isSplatValue(RHS, -1, 0) {
+            let mut OldBinOp: *mut auto = cast(Vec);
+            let mut OpC: auto = ();
+            let mut NewLHS: *mut auto = IC()(IntrinsicID, void { Vec.getType() }, void { Pg, LHS });
+            let mut NewRHS: *mut auto = IC()(IntrinsicID, void { Vec.getType() }, void { Pg, RHS });
+            let mut NewBinOp: *mut auto = CreateWithCopiedFlags(II()());
+            return IC.replaceInstUsesWith(II);
+        }
+    }
+    let mut C: *mut auto = dyn_cast(Pg);
+    if IsAfter &&  && () {
+        let mut IdxTy: *mut auto = getInt64Ty(II.getContext);
+        let mut Extract: *mut auto = Create(Vec, get(0));
+        Extract()(II()());
+        Extract()(&mut II);
+        return IC.replaceInstUsesWith(II);
+    }
+    let mut IntrPG: *mut auto = dyn_cast(Pg);
+    if operator!() {
+        return nullopt();
+    }
+    if  {
+        return nullopt();
+    }
+    let mut PTruePattern: auto = cast((0))();
+    let mut MinNumElts: u32 = getNumElementsFromSVEPredPattern();
+    if !MinNumElts {
+        return nullopt();
+    }
+    let mut Idx: u32 = MinNumElts - 1;
+    if IsAfter {
+        Idx += 1;
+    }
+    let mut PgVTy: *mut auto = cast(Pg.getType());
+    if Idx >= () {
+        return nullopt();
+    }
+    let mut IdxTy: *mut auto = getInt64Ty(II.getContext);
+    let mut Extract: *mut auto = Create(Vec, get(Idx));
+    Extract()(II()());
+    Extract()(&mut II);
+    return IC.replaceInstUsesWith(II);
+}
+
+fn instCombineSVECondLast(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut Pg: *mut Value = II.getArgOperand;
+    let mut Fallback: *mut Value = II.getArgOperand;
+    let mut Vec: *mut Value = II.getArgOperand;
+    let mut Ty: *mut Type = II.getType;
+    if !Ty.isIntegerTy() {
+        return nullopt();
+    }
+    let mut FPTy: *mut Type = null;
+    match cast(Ty)() {
+        _ => {
+            return nullopt();
+        },
+        16 => {
+            FPTy = IC()();
+        },
+        32 => {
+            FPTy = IC()();
+        },
+        64 => {
+            FPTy = IC()();
+        },
+    }
+    let mut FPFallBack: *mut Value = IC()(Fallback, FPTy);
+    let mut FPVTy: *mut auto = get(FPTy, cast(Vec.getType())());
+    let mut FPVec: *mut Value = IC()(Vec);
+    let mut FPII: *mut auto = IC()(II.getIntrinsicID(), void { FPVec.getType() }, void { Pg, FPFallBack, FPVec });
+    let mut FPIItoInt: *mut Value = IC()(II.getType);
+    return IC.replaceInstUsesWith;
+}
+
+fn instCombineRDFFR(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut RDFFR: *mut auto = IC();
+    RDFFR()(&mut II);
+    return IC.replaceInstUsesWith(II);
+}
+
+fn instCombineSVECntElts(IC: *mut InstCombiner, II: *mut IntrinsicInst, NumElts: u32) -> optional<Instruction *> {
+    let mut Pattern: auto = cast(II.getArgOperand)();
+    if  {
+        let mut Cnt: *mut Value = IC()(II.getType, (NumElts));
+        Cnt.takeName;
+        return IC.replaceInstUsesWith;
+    }
+    let mut MinNumElts: u32 = getNumElementsFromSVEPredPattern();
+    return MinNumElts && NumElts >= MinNumElts;
+}
+
+fn instCombineSMECntsd(IC: *mut InstCombiner, II: *mut IntrinsicInst, ST: *AArch64Subtarget) -> optional<Instruction *> {
+    if !ST.isStreaming() {
+        return nullopt();
+    }
+    let mut Cnt: *mut Value = IC()(II.getType, (2));
+    Cnt.takeName;
+    return IC.replaceInstUsesWith;
+}
+
+fn instCombineSVEPTest(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut PgVal: *mut Value = II.getArgOperand;
+    let mut OpVal: *mut Value = II.getArgOperand;
+    if  {
+        let mut Ops: [2]*mut Value = [PgVal, OpVal];
+        let mut Tys: [1]*mut Type = [PgVal.getType()];
+        let mut PTest: *mut auto = IC();
+        PTest()(&mut II);
+        return IC.replaceInstUsesWith(II);
+    }
+    let mut Pg: *mut IntrinsicInst = dyn_cast(PgVal);
+    let mut Op: *mut IntrinsicInst = dyn_cast(OpVal);
+    if !Pg || !Op {
+        return nullopt();
+    }
+    let mut OpIID: ID = Op.getIntrinsicID();
+    if  {
+        let mut Ops: []*mut Value = void { Pg.getArgOperand, Op.getArgOperand };
+        let mut Tys: []*mut Type = void { Pg.getArgOperand() };
+        let mut PTest: *mut auto = IC()(II.getIntrinsicID(), Tys, Ops);
+        PTest()(&mut II);
+        return IC.replaceInstUsesWith(II);
+    }
+    if  {
+        let mut Ops: []*mut Value = void { Pg.getArgOperand, Pg };
+        let mut Tys: []*mut Type = void { Pg.getType };
+        let mut PTest: *mut auto = IC()(II.getIntrinsicID(), Tys, Ops);
+        PTest()(&mut II);
+        return IC.replaceInstUsesWith(II);
+    }
+    return nullopt();
+}
+
+// ========================================================
+// [C++ Template - Неинстанциированный шаблон функции: instCombineSVEVectorFuseMulAddSub]
+// template <typename MulOpc, typename FuseOpc>
+// fn instCombineSVEVectorFuseMulAddSub(IC: *mut InstCombiner, II: *mut IntrinsicInst, MergeIntoAddendOp: bool) -> optional<Instruction *> {
+//     let mut P: *mut Value = II.getOperand;
+//     let mut MulOp0: *mut Value = null;
+//     let mut MulOp1: *mut Value = null;
+//     let mut AddendOp: *mut Value = null;
+//     let mut Mul: *mut Value = null;
+//     if MergeIntoAddendOp {
+//         AddendOp = II.getOperand;
+//         Mul = II.getOperand;
+//     } else {
+//         AddendOp = II.getOperand;
+//         Mul = II.getOperand;
+//     }
+//     if operator!(match(Mul, m_Intrinsic(m_Specific(P), m_Value(MulOp0), m_Value(MulOp1)))) {
+//         return nullopt();
+//     }
+//     if !Mul.hasOneUse() {
+//         return nullopt();
+//     }
+//     let mut FMFSource: *mut Instruction = null;
+//     if II.getType() {
+//         let mut FAddFlags: FastMathFlags = II.getFastMathFlags;
+//         if FAddFlags != cast(Mul)() {
+//             return nullopt();
+//         }
+//         if !FAddFlags.allowContract() {
+//             return nullopt();
+//         }
+//         FMFSource(&mut II);
+//     }
+//     let mut Res: *mut Value = null;
+//     if MergeIntoAddendOp {
+//         Res = IC()(FuseOpc, void { II.getType }, void { P, AddendOp, MulOp0, MulOp1 }, FMFSource);
+//     } else {
+//         Res = IC()(FuseOpc, void { II.getType }, void { P, MulOp0, MulOp1, AddendOp }, FMFSource);
+//     }
+//     return IC.replaceInstUsesWith;
+// }
+// ========================================================
+
+fn instCombineSVELD1(IC: *mut InstCombiner, II: *mut IntrinsicInst, DL: *DataLayout) -> optional<Instruction *> {
+    let mut Pred: *mut Value = II.getOperand;
+    let mut PtrOp: *mut Value = II.getOperand;
+    let mut VecTy: *mut Type = II.getType;
+    if isAllActivePredicate(Pred) {
+        let mut Load: *mut LoadInst = IC()(VecTy, PtrOp);
+        Load.copyMetadata;
+        return IC.replaceInstUsesWith;
+    }
+    let mut MaskedLoad: *mut CallInst = IC()(VecTy, PtrOp, PtrOp.getPointerAlignment(DL), Pred, get(VecTy));
+    MaskedLoad.copyMetadata;
+    return IC.replaceInstUsesWith;
+}
+
+fn instCombineSVEST1(IC: *mut InstCombiner, II: *mut IntrinsicInst, DL: *DataLayout) -> optional<Instruction *> {
+    let mut VecOp: *mut Value = II.getOperand;
+    let mut Pred: *mut Value = II.getOperand;
+    let mut PtrOp: *mut Value = II.getOperand;
+    if isAllActivePredicate(Pred) {
+        let mut Store: *mut StoreInst = IC()(VecOp, PtrOp);
+        Store.copyMetadata;
+        return IC.eraseInstFromFunction;
+    }
+    let mut MaskedStore: *mut CallInst = IC()(VecOp, PtrOp, PtrOp.getPointerAlignment(DL), Pred);
+    MaskedStore.copyMetadata;
+    return IC.eraseInstFromFunction;
+}
+
+fn intrinsicIDToBinOpCode(Intrinsic: u32) -> BinaryOps {
+    match Intrinsic {
+        _ => {
+            return BinaryOpsEnd;
+        },
+    }
+}
+
+fn instCombineSVEVectorBinOp(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    if II.isStrictFP {
+        return nullopt();
+    }
+    let mut OpPredicate: *mut auto = II.getOperand;
+    let mut BinOpCode: BinaryOps = intrinsicIDToBinOpCode(II.getIntrinsicID());
+    if BinOpCode == BinaryOpsEnd || operator!(isAllActivePredicate()) {
+        return nullopt();
+    }
+    let mut BinOp: auto = IC()(BinOpCode, II.getOperand, II.getOperand, II.getFastMathFlags);
+    return IC.replaceInstUsesWith(II);
+}
+
+fn instCombineSVEVectorMlaU(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut Acc: *mut Value = II.getArgOperand;
+    let mut MulOp0: *mut Value = II.getArgOperand;
+    let mut MulOp1: *mut Value = II.getArgOperand;
+    if match(MulOp0) {
+        return IC.replaceInstUsesWith(II, IC()(Acc, MulOp1));
+    }
+    if match(MulOp1) {
+        return IC.replaceInstUsesWith(II, IC()(Acc, MulOp0));
+    }
+    if match(MulOp0) {
+        return IC.replaceInstUsesWith(II, IC()(Acc, MulOp1));
+    }
+    if match(MulOp1) {
+        return IC.replaceInstUsesWith(II, IC()(Acc, MulOp0));
+    }
+    if isa(MulOp0) && !isa(MulOp1) {
+        II.setArgOperand;
+        II.setArgOperand;
+        return &mut II;
+    }
+    return nullopt();
+}
+
+fn instCombineSVEPairwiseAddLong(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut User: *mut auto = dyn_cast_or_null(II);
+    if operator!() || operator!(match(II.getArgOperand, m_Zero())) {
+        return nullopt();
+    }
+    let mut Acc: *mut Value = null;
+    if operator!(match(m_c_Add(m_Specific(&mut II), m_Value(Acc)))) {
+        return nullopt();
+    }
+    IC()();
+    let mut PairwiseAddLong: *mut Value = IC()(II.getIntrinsicID(), void { II.getType }, void { II.getArgOperand, Acc, II.getArgOperand });
+    IC.replaceInstUsesWith(operator*(), PairwiseAddLong);
+    IC.eraseInstFromFunction(operator*());
+    return &mut II;
+}
+
+fn instCombineSVEVectorAdd(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    if  {
+        return ;
+    }
+    if  {
+        return ;
+    }
+    return nullopt();
+}
+
+fn instCombineSVEVectorFAdd(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    if  {
+        return ;
+    }
+    if  {
+        return ;
+    }
+    if  {
+        return ;
+    }
+    return nullopt();
+}
+
+fn instCombineSVEVectorFAddU(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    if  {
+        return ;
+    }
+    if  {
+        return ;
+    }
+    if  {
+        return ;
+    }
+}
+
+fn instCombineSVEVectorFSub(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    if  {
+        return ;
+    }
+    if  {
+        return ;
+    }
+    if  {
+        return ;
+    }
+    return nullopt();
+}
+
+fn instCombineSVEVectorFSubU(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    if  {
+        return ;
+    }
+    if  {
+        return ;
+    }
+    if  {
+        return ;
+    }
+}
+
+fn instCombineSVEVectorSub(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    if  {
+        return ;
+    }
+    return nullopt();
+}
+
+fn instCombineSVEUnpack(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut UnpackArg: *mut Value = II.getArgOperand;
+    let mut RetTy: *mut auto = cast(II.getType);
+    let mut IsSigned: bool = false;
+    if  {
+        ScalarArg() = IC()(IsSigned);
+        let mut NewVal: *mut Value = IC()();
+        NewVal.takeName;
+        return IC.replaceInstUsesWith;
+    }
+    return nullopt();
+}
+
+fn instCombineSVETBL(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut OpVal: *mut auto = II.getOperand;
+    let mut OpIndices: *mut auto = II.getOperand;
+    let mut VTy: *mut VectorType = cast(II.getType);
+    let mut SplatValue: *mut auto = dyn_cast_or_null(getSplatValue());
+    if operator!() || ()(VTy.getElementCount()()) {
+        return nullopt();
+    }
+    let mut Extract: *mut auto = IC()();
+    let mut VectorSplat: *mut auto = IC()(VTy.getElementCount());
+    VectorSplat()(&mut II);
+    return IC.replaceInstUsesWith(II);
+}
+
+fn instCombineSVEUzp1(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut A: *mut Value = null;
+    let mut B: *mut Value = null;
+    let mut RetTy: *mut Type = II.getType;
+    let mut FromSVB: ID = zeroed();
+    let mut ToSVB: ID = zeroed();
+    if (match(II.getArgOperand, m_Intrinsic(m_Intrinsic(m_Value(A)))) && match(II.getArgOperand, m_Intrinsic(m_Intrinsic(m_Value(B))))) || (match(II.getArgOperand, m_Intrinsic(m_Value(A))) && match(II.getArgOperand, m_Intrinsic(m_Value(B)))) {
+        let mut TyA: *mut auto = cast(A.getType());
+        if TyA() == B.getType() && RetTy == getDoubleElementsVectorType() {
+            let mut SubVec: *mut auto = IC()(RetTy, get(RetTy), A, 0);
+            let mut ConcatVec: *mut auto = IC()(RetTy, B);
+            ConcatVec()(&mut II);
+            return IC.replaceInstUsesWith(II);
+        }
+    }
+    return nullopt();
+}
+
+fn instCombineSVEZip(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut A: *mut Value = null;
+    let mut B: *mut Value = null;
+    if match(II.getArgOperand) && match(II.getArgOperand) {
+        return IC.replaceInstUsesWith;
+    }
+    return nullopt();
+}
+
+fn instCombineLD1GatherIndex(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut Mask: *mut Value = II.getOperand;
+    let mut BasePtr: *mut Value = II.getOperand;
+    let mut Index: *mut Value = II.getOperand;
+    let mut Ty: *mut Type = II.getType;
+    let mut PassThru: *mut Value = get(Ty);
+    let mut IndexBase: *mut Value = null;
+    if match(Index) {
+        let mut Alignment: Align = BasePtr.getPointerAlignment(II.getDataLayout);
+        let mut Ptr: *mut Value = IC()(cast(Ty)(), BasePtr, IndexBase);
+        let mut MaskedLoad: *mut CallInst = IC()(Ty, Ptr, Alignment, Mask, PassThru);
+        MaskedLoad.takeName;
+        return IC.replaceInstUsesWith;
+    }
+    return nullopt();
+}
+
+fn instCombineST1ScatterIndex(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut Val: *mut Value = II.getOperand;
+    let mut Mask: *mut Value = II.getOperand;
+    let mut BasePtr: *mut Value = II.getOperand;
+    let mut Index: *mut Value = II.getOperand;
+    let mut Ty: *mut Type = Val.getType();
+    let mut IndexBase: *mut Value = null;
+    if match(Index) {
+        let mut Alignment: Align = BasePtr.getPointerAlignment(II.getDataLayout);
+        let mut Ptr: *mut Value = IC()(cast(Ty)(), BasePtr, IndexBase);
+        IC()(Val, Ptr, Alignment, Mask) as void;
+        return IC.eraseInstFromFunction;
+    }
+    return nullopt();
+}
+
+fn instCombineSVESDIV(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut Int32Ty: *mut Type = IC()();
+    let mut Pred: *mut Value = II.getOperand;
+    let mut Vec: *mut Value = II.getOperand;
+    let mut DivVec: *mut Value = II.getOperand;
+    let mut SplatValue: *mut Value = getSplatValue(DivVec);
+    let mut SplatConstantInt: *mut ConstantInt = dyn_cast_or_null(SplatValue);
+    if !SplatConstantInt {
+        return nullopt();
+    }
+    let mut Divisor: APInt = SplatConstantInt.getValue();
+    let mut DivisorValue: i64 = Divisor.getSExtValue();
+    if DivisorValue == -1 {
+        return nullopt();
+    }
+    if DivisorValue == 1 {
+        IC.replaceInstUsesWith;
+    }
+    if Divisor.isPowerOf2() {
+        let mut DivisorLog2: *mut Constant = get(Int32Ty, Divisor.logBase2(), false, false);
+        let mut ASRD: auto = IC();
+        return IC.replaceInstUsesWith(II);
+    }
+    if Divisor.isNegatedPowerOf2() {
+        Divisor.negate();
+        let mut DivisorLog2: *mut Constant = get(Int32Ty, Divisor.logBase2(), false, false);
+        let mut ASRD: auto = IC();
+        let mut NEG: auto = IC();
+        return IC.replaceInstUsesWith(II);
+    }
+    return nullopt();
+}
+
+fn SimplifyValuePattern(Vec: *mut i32, AllowPoison: bool) -> bool {
+    let mut VecSize: u64 = ();
+    if VecSize == 1 {
+        return true;
+    }
+    if !isPowerOf2_64(VecSize) {
+        return false;
+    }
+    let mut HalfVecSize: u64 = VecSize / 2;
+    for let mut LHS: auto = ();
+let mut RHS: auto = () + HalfVecSize; RHS() != ();  += 1 , RHS() += 1 {
+        if operator*() != null && operator*() != null {
+            if operator*() == operator*() {
+                continue;
+            } else {
+                return false;
+            }
+        }
+        if !AllowPoison {
+            return false;
+        }
+        if operator*() == null && operator*() != null {
+            operator*() = operator*();
+        }
+    }
+    Vec()(HalfVecSize);
+    SimplifyValuePattern(AllowPoison);
+    return true;
+}
+
+fn instCombineSVEDupqLane(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut CurrentInsertElt: *mut Value = null;
+    let mut Default: *mut Value = null;
+    if operator!(match(II.getOperand, m_Intrinsic(m_Value(Default), m_Value(CurrentInsertElt), m_Value()))) || !isa(CurrentInsertElt.getType()) {
+        return nullopt();
+    }
+    let mut IIScalableTy: auto = cast(II.getType);
+    let mut Elts: i32 = IIScalableTy()();
+    while  {
+        let mut Idx: auto = cast((2));
+        Elts()[()()] = (1);
+        CurrentInsertElt = (0);
+    }
+    let mut AllowPoison: bool = isa(CurrentInsertElt) && isa(Default);
+    if  {
+        return nullopt();
+    }
+    let mut InsertEltChain: *mut Value = get(CurrentInsertElt.getType());
+    for let mut I: u64 = 0; I < Elts()(); I += 1 {
+        if Elts()[I] == null {
+            continue;
+        }
+        InsertEltChain = IC()(InsertEltChain, [I], IC()(I));
+    }
+    if InsertEltChain == null {
+        return nullopt();
+    }
+    let mut PatternWidth: u32 = () * ();
+    let mut PatternElementCount: u32 = () * () / PatternWidth;
+    let mut WideTy: *mut IntegerType = IC()(PatternWidth);
+    let mut WideScalableTy: *mut auto = get(WideTy, PatternElementCount);
+    let mut WideShuffleMaskTy: *mut auto = get(IC()(), PatternElementCount);
+    let mut InsertSubvector: auto = IC()(II.getType, get(II.getType), InsertEltChain, 0);
+    let mut WideBitcast: auto = IC()();
+    let mut WideShuffleMask: auto = get();
+    let mut WideShuffle: auto = IC()(get());
+    let mut NarrowBitcast: auto = IC()(II.getType);
+    return IC.replaceInstUsesWith(II);
+}
+
+fn instCombineMaxMinNM(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut A: *mut Value = II.getArgOperand;
+    let mut B: *mut Value = II.getArgOperand;
+    if A == B {
+        return IC.replaceInstUsesWith;
+    }
+    return nullopt();
+}
+
+fn instCombineSVESrshl(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut Pred: *mut Value = II.getOperand;
+    let mut Vec: *mut Value = II.getOperand;
+    let mut Shift: *mut Value = II.getOperand;
+    let mut AbsPred: *mut Value = null;
+    let mut MergedValue: *mut Value = null;
+    if operator!(match(Vec)) && operator!(match(Vec)) {
+        return nullopt();
+    }
+    if !isa(MergedValue) && operator!(match(MergedValue)) && AbsPred != Pred && !isAllActivePredicate(AbsPred) {
+        return nullopt();
+    }
+    if operator!(match(Shift)) {
+        return nullopt();
+    }
+    let mut LSL: auto = IC();
+    return IC.replaceInstUsesWith(II);
+}
+
+fn instCombineSVEInsr(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut Vec: *mut Value = II.getOperand;
+    if getSplatValue(Vec) == II.getOperand {
+        return IC.replaceInstUsesWith;
+    }
+    return nullopt();
+}
+
+fn instCombineDMB(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut NI: *mut auto = II()();
+    let mut LookaheadThreshold: u32 = ;
+    let mut CanSkipOver: Closure_4 = Closure_4 {};
+    while LookaheadThreshold -= 1 && CanSkipOver() {
+        let mut NIBB: *mut auto = ();
+        NI() = ();
+        if operator!() {
+            if  {
+                NI() = operator&(operator*());
+            } else {
+                break;
+            }
+        }
+    }
+    let mut NextII: *mut auto = dyn_cast_or_null();
+    if NextII() && II.isIdenticalTo() {
+        return IC.eraseInstFromFunction;
+    }
+    return nullopt();
+}
+
+fn instCombineWhilelo(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    return IC.replaceInstUsesWith(II, IC()(get_active_lane_mask, void { II.getType, II.getOperand() }, void { II.getOperand, II.getOperand }));
+}
+
+fn instCombinePTrue(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut PredPattern: u32 = cast(II.getOperand)();
+    if  {
+        return IC.replaceInstUsesWith(II, getTrue(II.getType));
+    }
+    return nullopt();
+}
+
+fn instCombineSVEUxt(IC: *mut InstCombiner, II: *mut IntrinsicInst, NumBits: u32) -> optional<Instruction *> {
+    let mut Passthru: *mut Value = II.getOperand;
+    let mut Pg: *mut Value = II.getOperand;
+    let mut Op: *mut Value = II.getOperand;
+    if isa(Passthru) || isAllActivePredicate(Pg) {
+        let mut Ty: *mut auto = cast(II.getType);
+        let mut MaskValue: auto = getLowBitsSet(NumBits);
+        let mut Mask: *mut auto = get();
+        let mut And: *mut auto = IC();
+        return IC.replaceInstUsesWith(II);
+    }
+    return nullopt();
+}
+
+fn instCombineInStreamingMode(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut FnSMEAttrs: SMEAttrs = operator*(II);
+    let mut IsStreaming: bool = FnSMEAttrs.hasStreamingInterfaceOrBody();
+    if IsStreaming || !FnSMEAttrs.hasStreamingCompatibleInterface() {
+        return IC.replaceInstUsesWith(II, getBool(II.getType, IsStreaming));
+    }
+    return nullopt();
+}
+
+fn instCombineSVEUMin(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut UMinID: ID = zeroed();
+    let mut A: *mut Value = null;
+    let mut B: *mut Value = null;
+    let mut Pg: *mut Value = II.getOperand;
+    if match(II.getOperand, m_OneUse(m_Intrinsic(m_Specific(Pg), m_Value(A)))) && match(II.getOperand, m_OneUse(m_Intrinsic(m_Specific(Pg), m_Value(B)))) {
+        let mut NewUMin: *mut Value = IC()(UMinID, II.getType, void { Pg, A, B });
+        let mut NewLogicalUMin: *mut Value = IC()(UMinID, II.getType, void { Pg, NewUMin, get(II.getType, 1) });
+        return IC.replaceInstUsesWith;
+    }
+    if match(II.getOperand, m_Intrinsic(m_Specific(Pg), m_Value())) && match(II.getOperand) {
+        return IC.replaceInstUsesWith(II, II.getOperand);
+    }
+    return nullopt();
+}
+
+fn instCombineSVEOrr(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut UMinID: ID = zeroed();
+    let mut Pg: *mut Value = II.getOperand;
+    let mut A: *mut Value = null;
+    let mut B: *mut Value = null;
+    if operator!(match(II.getOperand, m_OneUse(m_Intrinsic(m_Specific(Pg), m_Value(A))))) || operator!(match(II.getOperand, m_OneUse(m_Intrinsic(m_Specific(Pg), m_Value(B))))) {
+        return nullopt();
+    }
+    let mut NewOrr: *mut Value = IC();
+    let mut NewUMin: *mut Value = IC()(UMinID, II.getType, void { Pg, NewOrr, get(II.getType, 1) });
+    return IC.replaceInstUsesWith;
+}
+
+fn instCombineSVEAnd(IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut CmphsID: ID = zeroed();
+    let mut Pg: *mut Value = II.getOperand;
+    let mut LHS: *mut Value = II.getOperand;
+    let mut RHS: *mut Value = II.getOperand;
+    let mut A: *mut Value = null;
+    let mut PgLHS: *mut Value = null;
+    let mut PgRHS: *mut Value = null;
+    let mut ConstA: u64 = 0;
+    let mut ConstB: u64 = 0;
+    if operator!(match(LHS, m_Intrinsic(m_Value(PgLHS), m_ConstantInt(ConstA), m_Value(A)))) || operator!(match(RHS, m_Intrinsic(m_Value(PgRHS), m_Specific(A), m_ConstantInt(ConstB)))) || !LHS.hasOneUser() || !RHS.hasOneUser() {
+        return nullopt();
+    }
+    if ConstB > ConstA {
+        return IC.replaceInstUsesWith(II, getNullValue(II.getType));
+    }
+    if PgLHS != PgRHS || (Pg != LHS && Pg != RHS && Pg != PgLHS) {
+        return nullopt();
+    }
+    let mut VecTy: *mut Type = A.getType();
+    let mut Base: *mut Constant = get(VecTy, ConstB, false, false);
+    let mut Sub: *mut Value = IC();
+    let mut Limit: *mut Constant = get(VecTy, ConstA - ConstB, false, false);
+    let mut NewCmphs: *mut Value = IC()(CmphsID, VecTy, void { PgLHS, Limit, Sub });
+    return IC.replaceInstUsesWith;
+}
+
+fn AArch64TTIImpl::instCombineIntrinsic(self: *AArch64TTIImpl, IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
+    let mut IInfo: *SVEIntrinsicInfo = constructSVEIntrinsicInfo(II);
+    if  {
+        return ;
+    }
+    let mut IID: ID = II.getIntrinsicID();
+    match IID {
+        _ => {
+            break;
+        },
+    }
+    return nullopt();
+}
+
+fn AArch64TTIImpl::simplifyDemandedVectorEltsIntrinsic(self: *AArch64TTIImpl, IC: *mut InstCombiner, II: *mut IntrinsicInst, OrigDemandedElts: APInt, UndefElts: *mut APInt, UndefElts2: *mut APInt, UndefElts3: *mut APInt, SimplifyAndSetOp: function<void (Instruction *, unsigned int, APInt, APInt &)>) -> optional<Value *> {
+    match II.getIntrinsicID() {
+        _ => {
+            break;
+        },
+    }
+    return nullopt();
+}
+
+fn AArch64TTIImpl::enableScalableVectorization(self: *AArch64TTIImpl) -> bool {
+    return self.ST.isSVEAvailable() || (self.ST.isSVEorStreamingSVEAvailable() && );
+}
+
+fn AArch64TTIImpl::getRegisterBitWidth(self: *AArch64TTIImpl, K: RegisterKind) -> TypeSize {
+    match K {
+        RGK_Scalar => {
+            return (64);
+        },
+        RGK_FixedWidthVector => {
+            if self.ST.useSVEForFixedLengthVectors() && (self.ST.isSVEAvailable() || ) {
+                return (max(self.ST.getMinSVEVectorSizeInBits(), 128));
+            } else if self.ST.isNeonAvailable() {
+                return (128);
+            } else {
+                return (0);
+            }
+        },
+        RGK_ScalableVector => {
+            if self.ST.isSVEAvailable() || (self.ST.isSVEorStreamingSVEAvailable() && ) {
+                return (128);
+            } else {
+                return (0);
+            }
+        },
+    }
+    llvm_unreachable_internal("Unsupported register kind", "llvm\\lib\\Target\\AArch64\\AArch64TargetTransformInfo.cpp", 3698);
+}
+
+fn AArch64TTIImpl::isSingleExtWideningInstruction(self: *AArch64TTIImpl, Opcode: u32, DstTy: *mut Type, Args: ArrayRef<const Value *>, SrcOverrideTy: *mut Type) -> bool {
+    let mut toVectorTy: Closure_5 = Closure_5 { DstTy: &mut DstTy };
+    let mut DstEltSize: u32 = DstTy.getScalarSizeInBits();
+    if !self.useNeonVector(DstTy) || () != 2 || (DstEltSize != 16 && DstEltSize != 32 && DstEltSize != 64) {
+        return false;
+    }
+    let mut SrcTy: *mut Type = SrcOverrideTy;
+    match Opcode {
+        Add => {
+            Sub;
+        },
+        _ => {
+            return false;
+        },
+    }
+    let mut DstTyL: auto = getTypeLegalizationCost(DstTy);
+    if operator!() || DstEltSize != DstTy.getScalarSizeInBits() {
+        return false;
+    }
+    assert!(SrcTy, "Expected some SrcTy");
+    let mut SrcTyL: auto = getTypeLegalizationCost(SrcTy);
+    let mut SrcElTySize: u32 = ();
+    if operator!() || SrcElTySize != SrcTy.getScalarSizeInBits() {
+        return false;
+    }
+    let mut NumDstEls: InstructionCost =  * ();
+    let mut NumSrcEls: InstructionCost =  * ();
+    return NumDstEls == NumSrcEls && 2 * SrcElTySize == DstEltSize;
+}
+
+fn AArch64TTIImpl::isBinExtWideningInstruction(self: *AArch64TTIImpl, Opcode: u32, DstTy: *mut Type, Args: ArrayRef<const Value *>, SrcOverrideTy: *mut Type) -> *mut Type {
+    if Opcode != Add && Opcode != Sub && Opcode != Mul {
+        return null;
+    }
+    let mut DstEltSize: u32 = DstTy.getScalarSizeInBits();
+    if !self.useNeonVector(DstTy) || () != 2 || (DstEltSize != 16 && DstEltSize != 32 && DstEltSize != 64) {
+        return null;
+    }
+    let mut getScalarSizeWithOverride: Closure_6 = Closure_6 { SrcOverrideTy: &mut SrcOverrideTy };
+    let mut MaxEltSize: u32 = 0;
+    if (isa([0]) && isa([1])) || (isa([0]) && isa([1])) {
+        let mut EltSize0: u32 = getScalarSizeWithOverride([0]);
+        let mut EltSize1: u32 = getScalarSizeWithOverride([1]);
+        MaxEltSize = max(EltSize0, EltSize1);
+    } else if isa([0]) && isa([1]) {
+        let mut EltSize0: u32 = getScalarSizeWithOverride([0]);
+        let mut EltSize1: u32 = getScalarSizeWithOverride([1]);
+        if EltSize0 >= DstEltSize / 2 || EltSize1 >= DstEltSize / 2 {
+            return null;
+        }
+        MaxEltSize = DstEltSize / 2;
+    } else if Opcode == Mul && (isa([0]) || isa([1])) {
+        let mut Known: KnownBits = computeKnownBits(if isa([0]) { [1] } else { [0] });
+        if Args()[0]()() - Known.Zero.countLeadingOnes() > DstTy.getScalarSizeInBits() / 2 {
+            return null;
+        }
+        MaxEltSize = getScalarSizeWithOverride(if isa([0]) { [0] } else { [1] });
+    } else {
+        return null;
+    }
+    if MaxEltSize * 2 > DstEltSize {
+        return null;
+    }
+    let mut ExtTy: *mut Type = DstTy.getWithNewBitWidth(MaxEltSize * 2);
+    if ExtTy.getPrimitiveSizeInBits() {
+        return null;
+    }
+    return ExtTy;
+}
+
+fn AArch64TTIImpl::isExtPartOfAvgExpr(self: *AArch64TTIImpl, ExtUser: *Instruction, Dst: *mut Type, Src: *mut Type) -> bool {
+    if !Src.isVectorTy() || operator!(self.TLI.isTypeLegal(self.TLI.getValueType)) || (Src.isScalableTy() && operator!(self.ST())) {
+        return false;
+    }
+    if ExtUser.getOpcode() != Add || operator!(ExtUser.hasOneUse) {
+        return false;
+    }
+    let mut Add: *Instruction = ExtUser;
+    let mut AddUser: *mut auto = dyn_cast_or_null(Add);
+    if AddUser() && () == Add {
+        Add = ;
+    }
+    let mut Shr: *mut auto = dyn_cast_or_null(Add);
+    if operator!() || () != LShr {
+        return false;
+    }
+    let mut Trunc: *mut auto = dyn_cast_or_null();
+    if operator!() || () != Trunc || Src.getScalarSizeInBits() != cast()()() {
+        return false;
+    }
+    let mut Ex1: *mut Instruction = null;
+    let mut Ex2: *mut Instruction = null;
+    if operator!((match(Add, m_c_Add(m_Instruction(Ex1), m_c_Add(m_Instruction(Ex2)))))) {
+        return false;
+    }
+    if match(Ex1, m_ZExtOrSExt(m_Value())) && Ex1.getOpcode() == Ex2.getOpcode() {
+        return true;
+    }
+    return false;
+}
+
+fn AArch64TTIImpl::getCastInstrCost(self: *AArch64TTIImpl, Opcode: u32, Dst: *mut Type, Src: *mut Type, CCH: CastContextHint, CostKind: TargetCostKind, I: *Instruction) -> InstructionCost {
+    let mut ISD: i32 = self.TLI.InstructionOpcodeToISD;
+    assert!(ISD, "Invalid opcode");
+    if I && operator!(I()()()) {
+        let mut GetUserAbsorbedCastCost: Closure_7 = Closure_7 { cap_0: self, Dst: &mut Dst, Src: &mut Src, I: &mut I, Opcode: &mut Opcode, CostKind: &mut CostKind };
+        let mut MaxAbsorbedCost: InstructionCost = 0;
+        let mut AllUsersAbsorbCast: bool = true;
+        if AllUsersAbsorbCast {
+            return MaxAbsorbedCost;
+        }
+    }
+    let mut SrcTy: EVT = self.TLI.getValueType;
+    let mut DstTy: EVT = self.TLI.getValueType;
+    if (ISD == ZERO_EXTEND || ISD == SIGN_EXTEND) && DstTy.getScalarSizeInBits() > 64 && SrcTy.getScalarSizeInBits() <= 64 && DstTy.isFixedLengthVector() {
+        let mut LaneCost: InstructionCost = self.getVectorInstrCost(ExtractElement, Src, CostKind, -1, null, null, None);
+        let mut ExtCost: InstructionCost = self.getCastInstrCost(Opcode, Dst.getScalarType(), Src.getScalarType(), CCH, CostKind, null);
+        return DstTy.getVectorNumElements() * (LaneCost + ExtCost);
+    }
+    if operator!(self.ST()) && !self.ST.isStreamingSVEAvailable() && ISD == FP_ROUND && SrcTy.isScalableVector() && DstTy.getScalarType() == bf16 && SrcTy.getScalarType() == f64 {
+        return getInvalid(0);
+    }
+    let mut BF16Tbl: []TypeConversionCostTblEntry = zeroed();
+    if self.ST() {
+        if  {
+            return ;
+        }
+    }
+    let mut WiderTy: EVT = if SrcTy.bitsGT(DstTy) { SrcTy } else { DstTy };
+    if SrcTy.isFixedLengthVector() && DstTy.isFixedLengthVector() && SrcTy.getVectorNumElements() == DstTy.getVectorNumElements() && self.ST.useSVEForFixedLengthVectors(WiderTy) {
+        let mut LT: pair<InstructionCost, MVT> = zeroed();
+        let mut NumElements: u32 = SVEBitsPerBlock / ();
+        return  * self.getCastInstrCost(Opcode, get(Dst.getScalarType(), NumElements), get(Src.getScalarType(), NumElements), CCH, CostKind, I);
+    }
+    let mut SVE_EXT_COST: u32 = 1;
+    let mut SVE_FCVT_COST: u32 = 1;
+    let mut SVE_UNPACK_ONCE: u32 = 4;
+    let mut SVE_UNPACK_TWICE: u32 = 16;
+    let mut ConversionTbl: []TypeConversionCostTblEntry = zeroed();
+    if  {
+        return ;
+    }
+    let mut FP16Tbl: []TypeConversionCostTblEntry = zeroed();
+    if self.ST() {
+        if  {
+            return ;
+        }
+    }
+    if (ISD == ZERO_EXTEND || ISD == SIGN_EXTEND) && CCH == Masked && self.ST.isSVEorStreamingSVEAvailable() && self.TLI == TypePromoteInteger && self.TLI == TypeSplitVector {
+        let mut SrcLT: pair<InstructionCost, MVT> = zeroed();
+        let mut LegalTy: *mut Type = .getTypeForEVT(Src.getContext());
+        let mut Part1: InstructionCost = self.getCastInstrCost(Opcode, LegalTy, Src, CCH, CostKind, I);
+        let mut Part2: InstructionCost = self.getCastInstrCost(Opcode, Dst, LegalTy, None, CostKind, I);
+        return Part1 + Part2;
+    }
+    if (ISD == ZERO_EXTEND || ISD == SIGN_EXTEND) && CCH == Masked && self.ST.isSVEorStreamingSVEAvailable() && self.TLI.isTypeLegal {
+        CCH = Normal;
+    }
+}
+
+fn AArch64TTIImpl::getExtractWithExtendCost(self: *AArch64TTIImpl, Opcode: u32, Dst: *mut Type, VecTy: *mut VectorType, Index: u32, CostKind: TargetCostKind) -> InstructionCost {
+    assert!((Opcode == SExt || Opcode == ZExt), "Invalid opcode");
+    let mut Src: *mut Type = VecTy.getElementType();
+    assert!(isa(Dst) && isa(Src), "Invalid type");
+    let mut Cost: InstructionCost = self.getVectorInstrCost(ExtractElement, VecTy, CostKind, Index, null, null, None);
+    let mut VecLT: auto = getTypeLegalizationCost(VecTy);
+    let mut DstVT: auto = self.TLI.getValueType;
+    let mut SrcVT: auto = self.TLI.getValueType;
+    if operator!() || operator!(self.TLI.isTypeLegal()) {
+        return Cost + self.getCastInstrCost(Opcode, Dst, Src, None, CostKind, null);
+    }
+    if DstVT()() < () {
+        return Cost + self.getCastInstrCost(Opcode, Dst, Src, None, CostKind, null);
+    }
+    match Opcode {
+        _ => {
+            llvm_unreachable_internal("Opcode should be either SExt or ZExt", "llvm\\lib\\Target\\AArch64\\AArch64TargetTransformInfo.cpp", 4620);
+        },
+        SExt => {
+            return Cost;
+        },
+        ZExt => {
+            if DstVT()() != 64 || () == 32 {
+                return Cost;
+            }
+        },
+    }
+    return Cost + self.getCastInstrCost(Opcode, Dst, Src, None, CostKind, null);
+}
+
+fn AArch64TTIImpl::getCFInstrCost(self: *AArch64TTIImpl, Opcode: u32, CostKind: TargetCostKind, I: *Instruction) -> InstructionCost {
+    if CostKind != TCK_RecipThroughput {
+        return if Opcode == PHI { 0 } else { 1 };
+    }
+    assert!(CostKind == TCK_RecipThroughput, "unexpected CostKind");
+    return 0;
+}
+
+fn AArch64TTIImpl::getVectorInstrCostHelper(self: *AArch64TTIImpl, Opcode: u32, Ty: *mut Type, CostKind: TargetCostKind, Index: u32, I: *Instruction, Scalar: *mut Value, ScalarUserAndIdx: tuple<Value *, User *, int>>, VIC: VectorInstrContext) -> InstructionCost {
+    assert!(Ty.isVectorTy(), "This must be a vector type");
+    if Index != -1 {
+        let mut LT: pair<InstructionCost, MVT> = zeroed();
+        if operator!() {
+            return 0;
+        }
+        if LT()() {
+            let mut Width: u32 = ();
+            Index = Index % Width;
+        }
+        if Index == 0 && !Ty.getScalarType().isIntegerTy() {
+            return 0;
+        }
+        if self.ST.useSVEForFixedLengthVectors() {
+            let mut Cost: InstructionCost = if CostKind == TCK_CodeSize { 1 } else { self.ST.getVectorInsertExtractBaseCost() };
+            if Index * Ty.getScalarSizeInBits() < 128 {
+                return Cost;
+            }
+            if Index * Ty.getScalarSizeInBits() < 512 && Opcode == ExtractElement {
+                return if Ty.getScalarType().isIntegerTy() { Cost + 1 } else { Cost };
+            }
+            if Opcode == ExtractElement {
+                return Cost + 2;
+            }
+            if Opcode == InsertElement {
+                return Cost + 3;
+            }
+            llvm_unreachable_internal("unexpected opcode", "llvm\\lib\\Target\\AArch64\\AArch64TargetTransformInfo.cpp", 4697);
+        }
+        if VIC == Load {
+            if self.ST() {
+                return 0;
+            }
+            return if CostKind == TCK_CodeSize { 0 } else { self.ST.getVectorInsertExtractBaseCost() + 1 };
+        }
+        if Ty.getScalarSizeInBits() == 1 {
+            return if CostKind == TCK_CodeSize { 2 } else { self.ST.getVectorInsertExtractBaseCost() + 1 };
+        }
+    }
+    let mut ExtractCanFuseWithFmul: Closure_8 = Closure_8 { Index: &mut Index, cap_1: self, Ty: &mut Ty, Scalar: &mut Scalar, I: &mut I };
+    if Opcode == ExtractElement && (I || Scalar) && ExtractCanFuseWithFmul() {
+        return 0;
+    }
+    return if CostKind == TCK_CodeSize { 1 } else { self.ST.getVectorInsertExtractBaseCost() };
+}
+
+fn AArch64TTIImpl::getVectorInstrCost(self: *AArch64TTIImpl, Opcode: u32, Ty: *mut Type, CostKind: TargetCostKind, Index: u32, Op0: *Value, Op1: *Value, VIC: VectorInstrContext) -> InstructionCost {
+    if Opcode == InsertElement && Index == 0 && Op0 && isa(Op0) {
+        return 0;
+    }
+    return self.getVectorInstrCostHelper;
+}
+
+fn AArch64TTIImpl::getVectorInstrCost(self: *AArch64TTIImpl, Opcode: u32, Ty: *mut Type, CostKind: TargetCostKind, Index: u32, Scalar: *mut Value, ScalarUserAndIdx: tuple<Value *, User *, int>>, VIC: VectorInstrContext) -> InstructionCost {
+    return self.getVectorInstrCostHelper(Opcode, Ty, CostKind, Index, null, Scalar, VIC);
+}
+
+fn AArch64TTIImpl::getVectorInstrCost(self: *AArch64TTIImpl, I: *Instruction, Ty: *mut Type, CostKind: TargetCostKind, Index: u32, VIC: VectorInstrContext) -> InstructionCost {
+    return self.getVectorInstrCostHelper;
+}
+
+fn AArch64TTIImpl::getIndexedVectorInstrCostFromEnd(self: *AArch64TTIImpl, Opcode: u32, Ty: *mut Type, CostKind: TargetCostKind, Index: u32) -> InstructionCost {
+    return if CostKind == TCK_CodeSize { 2 } else { self.ST.getVectorInsertExtractBaseCost() + 1 };
+}
+
+fn AArch64TTIImpl::getScalarizationOverhead(self: *AArch64TTIImpl, Ty: *mut VectorType, DemandedElts: *APInt, Insert: bool, Extract: bool, CostKind: TargetCostKind, ForPoisonSrc: bool, VL: ArrayRef<Value *>, VIC: VectorInstrContext) -> InstructionCost {
+    if isa(Ty) {
+        return getInvalid(0);
+    }
+    let mut VecInstCost: u32 = if CostKind == TCK_CodeSize { 1 } else { self.ST.getVectorInsertExtractBaseCost() };
+    return DemandedElts.popcount() * (Insert + Extract) * VecInstCost;
+}
+
+fn AArch64TTIImpl::getFP16BF16PromoteCost(self: *AArch64TTIImpl, Ty: *mut Type, CostKind: TargetCostKind, Op1Info: OperandValueInfo, Op2Info: OperandValueInfo, IncludeTrunc: bool, CanUseSVE: bool, InstCost: function<InstructionCost (Type *)>) -> optional<InstructionCost> {
+    if !Ty.getScalarType().isHalfTy() && !Ty.getScalarType().isBFloatTy() {
+        return nullopt();
+    }
+    if Ty.getScalarType().isHalfTy() && self.ST() {
+        return nullopt();
+    }
+    if CanUseSVE && self.ST() && self.ST.isNonStreamingSVEorSME2Available() {
+        return nullopt();
+    }
+    let mut PromotedTy: *mut Type = Ty.getWithNewType(getFloatTy(Ty.getContext()));
+    let mut Cost: InstructionCost = self.getCastInstrCost(FPExt, PromotedTy, Ty, None, CostKind, null);
+    if !Op1Info.isConstant() && !Op2Info.isConstant() {
+        operator(Cost, 2);
+    }
+    operator+=(Cost, (PromotedTy));
+    if IncludeTrunc {
+        operator(Cost, self.getCastInstrCost(FPTrunc, Ty, PromotedTy, None, CostKind, null));
+    }
+    return Cost;
+}
+
+fn AArch64TTIImpl::getArithmeticInstrCost(self: *AArch64TTIImpl, Opcode: u32, Ty: *mut Type, CostKind: TargetCostKind, Op1Info: OperandValueInfo, Op2Info: OperandValueInfo, Args: ArrayRef<const Value *>, CtxI: *Instruction) -> InstructionCost {
+    let mut ISD: i32 = self.TLI.InstructionOpcodeToISD;
+    if  {
+        if VTy()() == (1) {
+            if !is_contained(void { ADD, SUB, MUL }, ISD) {
+                return getInvalid(0);
+            }
+        }
+    }
+    let mut LT: pair<InstructionCost, MVT> = zeroed();
+    if ISD == FADD || ISD == FSUB || ISD == FMUL || ISD == FDIV || ISD == FREM {
+        if  {
+            return operator*();
+        }
+        if Ty.getScalarType().isFP128Ty() {
+            return (if CostKind == TCK_CodeSize { 1 } else { 10 }) * ;
+        }
+    }
+    if self.isBinExtWideningInstruction(Opcode, Ty) {
+        ExtTy;
+    } else {
+        if ExtTy != Ty {
+            return self.getArithmeticInstrCost(Opcode, ExtTy, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, OperandValueInfo { OK_AnyValue, OP_None }, void {}, null) + self.getCastInstrCost(ZExt, Ty, ExtTy, None, CostKind, null);
+        }
+        return ;
+    }
+    match ISD {
+        _ => {
+            
+        },
+        ADD => {
+            SUB;
+        },
+        MUL => {
+            let mut Mul64CostFactor: u32 = if (CostKind == TCK_RecipThroughput && self.ST()) { 4 } else { 1 };
+            if Ty.getScalarSizeInBits() > 64 {
+                let mut NumLanes: u32 = if isa(Ty) { cast(Ty)() } else { 1 };
+                let mut CostPerLane: InstructionCost =  / NumLanes;
+                return CostPerLane * CostPerLane * NumLanes * Mul64CostFactor;
+            }
+            if LT() == v2i64 {
+                if self.ST() {
+                    return  * Mul64CostFactor;
+                }
+                return cast(Ty)()() * (self.getArithmeticInstrCost(Opcode, Ty.getScalarType(), CostKind, OperandValueInfo { OK_AnyValue, OP_None }, OperandValueInfo { OK_AnyValue, OP_None }, void {}, null) + self.getVectorInstrCost(ExtractElement, Ty, CostKind, -1, null, null, None) * 2 + self.getVectorInstrCost(InsertElement, Ty, CostKind, -1, null, null, None));
+            }
+            if LT() == nxv2i64 {
+                return  * Mul64CostFactor;
+            }
+            return ;
+        },
+        SREM => {
+            SDIV;
+        },
+        UDIV => {
+            UREM;
+        },
+        XOR => {
+            OR;
+        },
+        SRL => {
+            SRA;
+        },
+        FNEG => {
+            if (Ty.isFloatTy() || Ty.isDoubleTy() || (Ty.isHalfTy() && self.ST())) && CtxI && ((CtxI.hasOneUse && match(operator*(CtxI()()), m_FMul(m_Value(), m_Value()))) || match(CtxI.getOperand, m_FMul(m_Value(), m_Value()))) {
+                return 0;
+            }
+        },
+        FADD => {
+            FSUB;
+        },
+        FMUL => {
+            FDIV;
+        },
+        FREM => {
+            if !Ty.isVectorTy() {
+                return getCallInstrCost(null, Ty, void { Ty, Ty }, CostKind);
+            }
+        },
+    }
+}
+
+fn AArch64TTIImpl::getAddressComputationCost(self: *AArch64TTIImpl, PtrTy: *mut Type, SE: *mut ScalarEvolution, Ptr: *SCEV, CostKind: TargetCostKind) -> InstructionCost {
+    let mut NumVectorInstToHideOverhead: u32 = ;
+    let mut MaxMergeDistance: i32 = 64;
+    if  {
+        return NumVectorInstToHideOverhead;
+    }
+    return 1;
+}
+
+fn AArch64TTIImpl::hasKnownLowerThroughputFromSchedulingModel(self: *AArch64TTIImpl, Opcode1: u32, Opcode2: u32) -> bool {
+    let mut Sched: *MCSchedModel = self.ST();
+    let mut TII: *TargetInstrInfo = self.ST.getInstrInfo();
+    if !Sched.hasInstrSchedModel() {
+        return false;
+    }
+    let mut SCD1: *MCSchedClassDesc = Sched.getSchedClassDesc(TII.get());
+    let mut SCD2: *MCSchedClassDesc = Sched.getSchedClassDesc(TII.get());
+    assert!(!SCD1.isVariant() && !SCD2.isVariant(), "Cannot handle variant scheduling classes without an MI");
+    if !SCD1.isValid() || !SCD2.isValid() {
+        return false;
+    }
+    return  > ;
+}
+
+fn AArch64TTIImpl::getCmpSelInstrCost(self: *AArch64TTIImpl, Opcode: u32, ValTy: *mut Type, CondTy: *mut Type, VecPred: Predicate, CostKind: TargetCostKind, Op1Info: OperandValueInfo, Op2Info: OperandValueInfo, I: *Instruction) -> InstructionCost {
+    if isa(ValTy) && Opcode == Select {
+        let mut AmortizationCost: i32 = 20;
+        if VecPred == BAD_ICMP_PREDICATE && I && I.getType == ValTy {
+            let mut CurrentPred: CmpPredicate = CmpPredicate {};
+            if match(I, m_Select(m_Cmp(CurrentPred, m_Value(), m_Value()), m_Value(), m_Value())) {
+                VecPred = CurrentPred.operator llvm::CmpInst::Predicate();
+            }
+        }
+        if isIntPredicate(VecPred) || VecPred == FCMP_OLE || VecPred == FCMP_OLT || VecPred == FCMP_OGT || VecPred == FCMP_OGE || VecPred == FCMP_OEQ || VecPred == FCMP_UNE {
+            let mut ValidMinMaxTys: SimpleValueType> = zeroed();
+            let mut ValidFP16MinMaxTys: SimpleValueType> = zeroed();
+            let mut LT: auto = getTypeLegalizationCost(ValTy);
+            if any_of(equal_to()) || (self.ST() && any_of(equal_to())) {
+                return ;
+            }
+        }
+        let mut VectorSelectTbl: []TypeConversionCostTblEntry = zeroed();
+        let mut SelCondTy: EVT = self.TLI.getValueType;
+        let mut SelValTy: EVT = self.TLI.getValueType;
+        if SelCondTy.isSimple() && SelValTy.isSimple() {
+            if  {
+                return ;
+            }
+        }
+    }
+    if Opcode == FCmp {
+        if  {
+            return operator*();
+        }
+        let mut LT: auto = getTypeLegalizationCost(ValTy);
+        if LT()() != f64 && () != f32 && () != f16 {
+            return  * getCallInstrCost(null, ValTy, void { ValTy, ValTy }, CostKind);
+        }
+        let mut Factor: u32 = 1;
+        if !CondTy.isVectorTy() && (VecPred == FCMP_ONE || VecPred == FCMP_UEQ) {
+            Factor = 2;
+        } else if isa(ValTy) && (VecPred == FCMP_ONE || VecPred == FCMP_UEQ || VecPred == FCMP_ORD || VecPred == FCMP_UNO) {
+            Factor = 3;
+        } else if isa(ValTy) && (VecPred == FCMP_ONE || VecPred == FCMP_UEQ) {
+            Factor = 3;
+        }
+        if isa(ValTy) && CostKind == TCK_RecipThroughput && self.hasKnownLowerThroughputFromSchedulingModel {
+            Factor *= 2;
+        }
+        return Factor * (if CostKind == TCK_Latency { 2 } else {  });
+    }
+    if CostKind == TCK_RecipThroughput && ValTy.isIntegerTy() && Opcode == ICmp && I && !isUnsigned(VecPred) && self.TLI.isTypeLegal(self.TLI.getValueType) && match(I.getOperand, m_And(m_Value(), m_Value())) {
+        if match(I.getOperand, m_Zero()) {
+            return 0;
+        }
+        if match(I.getOperand) && (VecPred == ICMP_SLT || VecPred == ICMP_SGE) {
+            return 0;
+        }
+        if match(I.getOperand) && (VecPred == ICMP_SLE || VecPred == ICMP_SGT) {
+            return 0;
+        }
+    }
+}
+
+fn AArch64TTIImpl::enableMemCmpExpansion(self: *AArch64TTIImpl, OptSize: bool, IsZeroCmp: bool) -> MemCmpExpansionOptions {
+    let mut Options: MemCmpExpansionOptions = MemCmpExpansionOptions {};
+    if self.ST() {
+        return Options;
+    }
+    Options.AllowOverlappingLoads = true;
+    Options.MaxNumLoads = self.TLI.getMaxExpandSizeMemcmp;
+    Options.NumLoadsPerBlock = if IsZeroCmp { Options.MaxNumLoads } else { 1 };
+    Options() = void { 8, 4, 2, 1 };
+    Options() = void { 3, 5, 6 };
+    return Options;
+}
+
+fn AArch64TTIImpl::prefersVectorizedAddressing(self: *AArch64TTIImpl) -> bool {
+    return self.ST();
+}
+
+fn AArch64TTIImpl::getMemIntrinsicInstrCost(self: *AArch64TTIImpl, MICA: *MemIntrinsicCostAttributes, CostKind: TargetCostKind) -> InstructionCost {
+    match MICA.getID() {
+        masked_scatter => {
+            masked_gather;
+        },
+        masked_load => {
+            masked_store;
+        },
+    }
+}
+
+fn AArch64TTIImpl::getMaskedMemoryOpCost(self: *AArch64TTIImpl, MICA: *MemIntrinsicCostAttributes, CostKind: TargetCostKind) -> InstructionCost {
+    let mut Src: *mut Type = MICA.getDataType();
+    let mut LT: auto = getTypeLegalizationCost(Src);
+    if operator!() {
+        return getInvalid(0);
+    }
+    let mut VT: *mut auto = cast(Src);
+    if VT()()(1) {
+        return getInvalid(0);
+    }
+    if VT()() == (1) {
+        return if is_contained(void { masked_load, masked_store }, MICA.getID()) {  + 1 } else { getInvalid(0) };
+    }
+    let mut MemOpCost: InstructionCost = ;
+    if MICA.getID() == masked_expandload {
+        if !self.isLegalMaskedExpandLoad(Src, MICA.getAlignment()) {
+            return getInvalid(0);
+        }
+        operator(MemOpCost, 4);
+    }
+    if MICA.getID() == masked_compressstore {
+        if !self.isLegalMaskedCompressStore(Src, MICA.getAlignment()) {
+            return getInvalid(0);
+        }
+        operator(MemOpCost, 4);
+    }
+    if LT() > 1 && () > 8 {
+        return MemOpCost * 2;
+    }
+    return MemOpCost;
+}
+
+fn getSVEGatherScatterOverhead(Opcode: u32, ST: *AArch64Subtarget) -> u32 {
+    assert!((Opcode == Load || Opcode == Store), "Should be called on only load or stores.");
+    match Opcode {
+        Load => {
+            if SVEGatherOverhead()() > 0 {
+                return ;
+            }
+        },
+        Store => {
+            if SVEScatterOverhead()() > 0 {
+                return ;
+            }
+        },
+        _ => {
+            llvm_unreachable_internal("Shouldn't have reached here", "llvm\\lib\\Target\\AArch64\\AArch64TargetTransformInfo.cpp", 5622);
+        },
+    }
+}
+
+fn AArch64TTIImpl::getGatherScatterOpCost(self: *AArch64TTIImpl, MICA: *MemIntrinsicCostAttributes, CostKind: TargetCostKind) -> InstructionCost {
+    let mut Opcode: u32 = if (MICA.getID() == masked_gather || MICA.getID() == vp_gather) { Load } else { Store };
+    let mut DataTy: *mut Type = MICA.getDataType();
+    let mut Alignment: Align = MICA.getAlignment();
+    let mut I: *Instruction = MICA.getInst();
+    let mut VT: *mut auto = cast(DataTy);
+    let mut LT: auto = getTypeLegalizationCost(DataTy);
+    if operator!() {
+        return getInvalid(0);
+    }
+    if operator!() || operator!(self.isElementTypeLegalForScalableVector()) || ()(1) {
+        return getInvalid(0);
+    }
+    if VT()() == (1) {
+        return getInvalid(0);
+    }
+    let mut LegalVF: ElementCount = ();
+    let mut MemOpCost: InstructionCost = self.getMemoryOpCost(Opcode, Alignment, 0, CostKind, void { OK_AnyValue, OP_None }, I);
+    operator(MemOpCost, getSVEGatherScatterOverhead(Opcode, self.ST));
+    return  * MemOpCost * self.getMaxNumElements(LegalVF);
+}
+
+fn AArch64TTIImpl::useNeonVector(self: *AArch64TTIImpl, Ty: *Type) -> bool {
+    return isa(Ty) && !self.ST.useSVEForFixedLengthVectors();
+}
+
+fn AArch64TTIImpl::getMemoryOpCost(self: *AArch64TTIImpl, Opcode: u32, Ty: *mut Type, Alignment: Align, AddressSpace: u32, CostKind: TargetCostKind, OpInfo: OperandValueInfo, I: *Instruction) -> InstructionCost {
+    let mut VT: EVT = self.TLI.getValueType;
+    let mut LT: auto = getTypeLegalizationCost(Ty);
+    if operator!() {
+        return getInvalid(0);
+    }
+    if  {
+        if VTy()()(1) && operator!(()((16))) {
+            return getInvalid(0);
+        }
+        if VTy()() == (1) {
+            let mut IID: ID = if Opcode == Load { masked_load } else { masked_store };
+            return self.getMaskedMemoryOpCost(MemIntrinsicCostAttributes { IID, Ty, Alignment, AddressSpace, null }, CostKind) + 1;
+        }
+    }
+    if CostKind == TCK_CodeSize || CostKind == TCK_SizeAndLatency {
+        return ;
+    }
+    if CostKind == TCK_Latency {
+        if Opcode == Store {
+            return 1;
+        }
+        if self.ST.getFixedLoadLatency() {
+            return (LT() - 1) + self.ST.getFixedLoadLatency();
+        }
+        let mut Inst: u32 = 0;
+        if LT()() || self.ST() {} else if LT()() || () {
+            match LT()() {
+                8 => {
+                    
+                },
+                16 => {
+                    
+                },
+                32 => {
+                    
+                },
+                64 => {
+                    
+                },
+                128 => {
+                    
+                },
+                _ => {
+                    llvm_unreachable_internal("Unexpected float or vector type", "llvm\\lib\\Target\\AArch64\\AArch64TargetTransformInfo.cpp", 5748);
+                },
+            }
+        } else {
+            match LT()() {
+                8 => {
+                    
+                },
+                16 => {
+                    
+                },
+                32 => {
+                    
+                },
+                64 => {
+                    
+                },
+                _ => {
+                    llvm_unreachable_internal("Unexpected integer type", "llvm\\lib\\Target\\AArch64\\AArch64TargetTransformInfo.cpp", 5765);
+                },
+            }
+        }
+        let mut Sched: *MCSchedModel = self.ST();
+        let mut TII: *TargetInstrInfo = self.ST.getInstrInfo();
+        let mut SchedClass: u32 = TII.get();
+        let mut SCD: *MCSchedClassDesc = if Sched.hasInstrSchedModel() { Sched.getSchedClassDesc(SchedClass) } else { null };
+        if !SCD || !SCD.isValid() || SCD.isVariant() {
+            return (LT() - 1) + self.ST();
+        }
+        let mut NumLoads: f32 = (LT() - 1)();
+        return NumLoads * Sched + Sched;
+    }
+    if self.ST() && Opcode == Store && () && Alignment < 16 {
+        let mut AmortizationCost: i32 = 6;
+        return  * 2 * AmortizationCost;
+    }
+    if Ty.isPtrOrPtrVectorTy() {
+        return ;
+    }
+    if self.useNeonVector(Ty) {
+        if Ty.getScalarSizeInBits() != () {
+            if VT == v4i8 {
+                return 2;
+            }
+            return cast(Ty)() * 2;
+        }
+        let mut EltVT: EVT = VT.getVectorElementType();
+        let mut EltSize: u32 = EltVT.getScalarSizeInBits();
+        if !isPowerOf2_32(EltSize) || EltSize < 8 || EltSize > 64 || Alignment != 1 {
+            return ;
+        }
+        if VT.getVectorNumElements() == 3 && EltVT == i8 {
+            return ;
+        }
+        let mut Cost: InstructionCost = VT.getVectorNumElements() / (128 / EltSize);
+        let mut Remainder: u32 = VT.getVectorNumElements() % (128 / EltSize);
+        if Remainder != 0 {
+            let mut TypeWorklist: i32 = 0;
+            TypeWorklist()(void { Remainder, 0 });
+            while operator!() {
+                if isPowerOf2_32() {
+                    continue;
+                }
+                let mut PrevPow2: u32 = NextPowerOf2() / 2;
+                TypeWorklist()(void { PrevPow2,  });
+                TypeWorklist()(void {  - PrevPow2,  + PrevPow2 });
+            }
+        }
+        return Cost;
+    }
+    return ;
+}
+
+fn AArch64TTIImpl::getInterleavedMemoryOpCost(self: *AArch64TTIImpl, Opcode: u32, VecTy: *mut Type, Factor: u32, Indices: ArrayRef<unsigned int>, Alignment: Align, AddressSpace: u32, CostKind: TargetCostKind, UseMaskForCond: bool, UseMaskForGaps: bool) -> InstructionCost {
+    assert!(Factor >= 2, "Invalid interleave factor");
+    let mut VecVTy: *mut auto = cast(VecTy);
+    if VecTy.isScalableTy() && operator!(self.ST()) {
+        return getInvalid(0);
+    }
+    if VecTy.isScalableTy() {
+        if Factor > self.TLI.getMaxSupportedInterleaveFactor() {
+            return getInvalid(0);
+        }
+        if  {
+            return getInvalid(0);
+        }
+    }
+    let mut LT: auto = getTypeLegalizationCost(VecTy);
+    let mut MaxNativeInterleaveFactor: u32 = self.TLI.getMaxSupportedInterleaveFactor();
+    if !VecTy.isScalableTy() && (UseMaskForCond || UseMaskForGaps || (Factor > MaxNativeInterleaveFactor && self.TLI.useSVEForFixedLengthVectorVT())) {
+        return getInvalid(0);
+    }
+    if !UseMaskForGaps && Factor <= MaxNativeInterleaveFactor {
+        let mut EC: ElementCount = ();
+        let mut SubVecTy: *mut auto = get(EC()(Factor));
+        let mut UseScalable: bool = false;
+        if EC()(Factor) && self.TLI.isLegalInterleavedAccessType {
+            return Factor * self.TLI.getNumInterleavedAccesses;
+        }
+        if VecTy.isScalableTy() && EC()(Factor) {
+            if SubVecTy()() == (1) {
+                return getInvalid(0);
+            }
+            let mut MemCost: InstructionCost = InstructionCost {};
+            if UseMaskForCond {
+                let mut IID: u32 = if Opcode == Load { masked_load } else { masked_store };
+                MemCost = self.getMemIntrinsicInstrCost(MemIntrinsicCostAttributes { IID, VecTy, Alignment, AddressSpace, null }, CostKind);
+            } else {
+                MemCost = self.getMemoryOpCost(Opcode, VecTy, Alignment, AddressSpace, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, null);
+            }
+            let mut SubVecCost: auto = getTypeLegalizationCost();
+            let mut ResultCost: auto = getTypeLegalizationCost(VecTy);
+            let mut LegalizationCost: InstructionCost = ;
+            if Opcode == Store && Factor == 4 && () == (4 * ()) {
+                operator(LegalizationCost, 4);
+            }
+            return MemCost + (Factor * LegalizationCost) + (Factor * Log2_64(Factor));
+        }
+    }
+}
+
+fn AArch64TTIImpl::getCostOfKeepingLiveOverCall(self: *AArch64TTIImpl, Tys: ArrayRef<Type *>) -> InstructionCost {
+    let mut Cost: InstructionCost = 0;
+    let mut CostKind: TargetCostKind = TCK_RecipThroughput;
+    return Cost;
+}
+
+fn AArch64TTIImpl::isLegalMaskedExpandLoad(self: *AArch64TTIImpl, DataTy: *mut Type, Alignment: Align) -> bool {
+    if self.useNeonVector(DataTy) {
+        return false;
+    }
+    return (self.ST.isSVEAvailable() && self.ST()) || (self.ST.isSVEorStreamingSVEAvailable() && self.ST());
+}
+
+fn AArch64TTIImpl::isLegalSpeculativeLoad(self: *AArch64TTIImpl, DataType: *mut Type, AddressSpace: u32) -> bool {
+    if AddressSpace != 0 {
+        return false;
+    }
+    let mut Size: TypeSize = zeroed();
+    return operator!(Size()()) && isPowerOf2_64(Size()()) && Size()() <= 16;
+}
+
+fn AArch64TTIImpl::getMaxInterleaveFactor(self: *AArch64TTIImpl, VF: ElementCount, HasUnorderedReductions: bool) -> u32 {
+    if VF.isScalar() || (HasUnorderedReductions && VF()() <= 4) {
+        return 4;
+    }
+    return self.ST.getMaxInterleaveFactor();
+}
+
+fn getFalkorUnrollingPreferences(L: *mut Loop, SE: *mut ScalarEvolution, UP: *mut UnrollingPreferences) {
+    let mut countStridedLoads: Closure_12 = Closure_12 {};
+    let mut StridedLoads: i32 = countStridedLoads.call(L, SE);
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("aarch64tti", 1) {
+            dbgs() << "falkor-hwpf: detected " << StridedLoads << " strided loads\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    if StridedLoads {
+        UP.MaxCount = 1 << Log2_32(MaxStridedLoads / StridedLoads);
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("aarch64tti", 1) {
+                dbgs() << "falkor-hwpf: setting unroll MaxCount to " << UP.MaxCount << 10;
+            }
+        }
+            if !(false) { break; }
+        }
+    }
+}
+
+fn isLoopSizeWithinBudget(L: *mut Loop, TTI: *AArch64TTIImpl, Budget: InstructionCost, FinalSize: *mut u32) -> bool {
+    let mut LoopCost: InstructionCost = 0;
+    if FinalSize {
+        *FinalSize = LoopCost.getValue();
+    }
+    return true;
+}
+
+fn shouldUnrollMultiExitLoop(L: *mut Loop, SE: *mut ScalarEvolution, TTI: *AArch64TTIImpl) -> bool {
+    let mut BTC: *SCEV = SE.getSymbolicMaxBackedgeTakenCount(L);
+    if isa(BTC) || isa(BTC) {
+        return false;
+    }
+    let mut MaxTC: u32 = SE.getSmallConstantMaxTripCount(L, null);
+    if MaxTC > 0 && MaxTC <= 32 {
+        return false;
+    }
+    if !isLoopSizeWithinBudget(L, TTI, 5, null) {
+        return false;
+    }
+    let mut Blocks: ArrayRef<BasicBlock *> = zeroed();
+    if Blocks()() != 2 {
+        return false;
+    }
+    if any_of(Closure_13 {}) {
+        return false;
+    }
+    return true;
+}
+
+fn getAppleRuntimeUnrollPreferences(L: *mut Loop, SE: *mut ScalarEvolution, UP: *mut UnrollingPreferences, TTI: *AArch64TTIImpl) {
+    if operator!(L()()) || L()() > 8 {
+        return;
+    }
+    if operator!(L()()) {
+        return;
+    }
+    let mut HasParellelizableReductions: bool = L()() == 1 && any_of(L()()(), Closure_14 { SE: &mut SE, L: L }) && isLoopSizeWithinBudget(L, TTI, 12, null);
+    if HasParellelizableReductions && SE(L, L()()) % 2 == 0 {
+        UP.Partial = true;
+        UP.MaxCount = 4;
+        UP.AddAdditionalAccumulators = true;
+    }
+    let mut BTC: *SCEV = SE.getSymbolicMaxBackedgeTakenCount(L);
+    if isa(BTC) || isa(BTC) || (SE.getSmallConstantMaxTripCount(L, null) > 0 && SE.getSmallConstantMaxTripCount(L, null) <= 32) {
+        return;
+    }
+    if findStringMetadataForLoop(L, "llvm.loop.isvectorized") {
+        return;
+    }
+    if SE.getSymbolicMaxBackedgeTakenCount(L) != SE.getBackedgeTakenCount(L, Exact) {
+        return;
+    }
+    UP.SCEVExpansionBudget = 1;
+    if HasParellelizableReductions {
+        UP.Runtime = true;
+        UP.DefaultUnrollRuntimeCount = 4;
+        UP.AddAdditionalAccumulators = true;
+    }
+    let mut Header: *mut BasicBlock = L()();
+    let mut Latch: *mut BasicBlock = L()();
+    if Header == Latch {
+        let mut Size: u32 = 0;
+        let mut Width: u32 = 10;
+        if !isLoopSizeWithinBudget(L, TTI, Width, &mut Size) {
+            return;
+        }
+        let mut MaxInstsPerLine: u32 = 16;
+        let mut UC: u32 = 1;
+        let mut BestUC: u32 = 1;
+        let mut SizeWithBestUC: u32 = BestUC * Size;
+        while UC <= 8 {
+            let mut SizeWithUC: u32 = UC * Size;
+            if SizeWithUC > 48 {
+                break;
+            }
+            if (SizeWithUC % MaxInstsPerLine) == 0 || (SizeWithBestUC % MaxInstsPerLine) < (SizeWithUC % MaxInstsPerLine) {
+                BestUC = UC;
+                SizeWithBestUC = BestUC * Size;
+            }
+            UC += 1;
+        }
+        if BestUC == 1 {
+            return;
+        }
+        let mut LoadedValuesPlus: SmallPtrSet<Value *, 8> = zeroed();
+        let mut Stores: i32 = 0;
+        if none_of(Closure_15 {}) {
+            return;
+        }
+        UP.Runtime = true;
+        UP.DefaultUnrollRuntimeCount = BestUC;
+        return;
+    }
+    let mut Term: *mut auto = dyn_cast(Header.getTerminator());
+    let mut Preds: i32 = predecessors(Latch);
+    if operator!() || () == 1 || operator!(is_contained(Header)) || none_of(Closure_16 { L: L }) {
+        return;
+    }
+    let mut DependsOnLoopLoad: function<bool (Instruction *, unsigned int)> = zeroed();
+    let mut Pred: CmpPredicate = CmpPredicate {};
+    let mut I: *mut Instruction = null;
+    if match(m_Br(m_ICmp(Pred, m_Instruction(I), m_Value()), m_Value(), m_Value())) && (I, 0) {
+        UP.Runtime = true;
+    }
+}
+
+fn AArch64TTIImpl::getUnrollingPreferences(self: *AArch64TTIImpl, L: *mut Loop, SE: *mut ScalarEvolution, UP: *mut UnrollingPreferences, ORE: *mut OptimizationRemarkEmitter) {
+    UP.UpperBound = true;
+    if L()() && !SE.isBackedgeTakenCountMaxOrZero(L) && isa(SE.getBackedgeTakenCount(L, Exact)) {
+        UP.MaxUpperBound = 5;
+        UP.Runtime = false;
+    }
+    if L()() > 1 {
+        UP.PartialThreshold *= 2;
+    }
+    UP.PartialOptSizeThreshold = 0;
+    let mut IsVectorized: bool = getBooleanLoopAttribute(L, "llvm.loop.isvectorized");
+    let mut Cost: InstructionCost = 0;
+    if self.ST.isAppleMLike() {
+        getAppleRuntimeUnrollPreferences(L, SE, UP, *self);
+    } else if  {
+        getFalkorUnrollingPreferences(L, SE, UP);
+    }
+    if operator!(L()()) && shouldUnrollMultiExitLoop(L, SE, *self) {
+        UP.RuntimeUnrollMultiExit = true;
+        UP.Runtime = true;
+        UP.DefaultUnrollRuntimeCount = 4;
+        UP.SCEVExpansionBudget = 5;
+        return;
+    }
+    if self.ST.getProcFamily() != Generic && operator!(self.ST()()) {
+        UP.Runtime = true;
+        UP.Partial = true;
+        UP.UnrollRemainder = true;
+        UP.DefaultUnrollRuntimeCount = 4;
+        UP.UnrollAndJam = true;
+        UP.UnrollAndJamInnerLoopThreshold = 60;
+    }
+    if Cost < Aarch64ForceUnrollThreshold() {
+        UP.Force = true;
+    }
+}
+
+fn AArch64TTIImpl::getPeelingPreferences(self: *AArch64TTIImpl, L: *mut Loop, SE: *mut ScalarEvolution, PP: *mut PeelingPreferences) {}
+
+fn AArch64TTIImpl::getOrCreateResultFromMemIntrinsic(self: *AArch64TTIImpl, Inst: *mut IntrinsicInst, ExpectedType: *mut Type, CanCreate: bool) -> *mut Value {
+    match Inst.getIntrinsicID() {
+        _ => {
+            return null;
+        },
+    }
+}
+
+fn AArch64TTIImpl::getTgtMemIntrinsic(self: *AArch64TTIImpl, Inst: *mut IntrinsicInst, Info: *mut MemIntrinsicInfo) -> bool {
+    match Inst.getIntrinsicID() {
+        _ => {
+            break;
+        },
+    }
+    match Inst.getIntrinsicID() {
+        _ => {
+            return false;
+        },
+    }
+    return true;
+}
+
+fn AArch64TTIImpl::shouldConsiderAddressTypePromotion(self: *AArch64TTIImpl, I: *Instruction, AllowPromotionWithoutCommonHeader: *mut bool) -> bool {
+    let mut Considerable: bool = false;
+    AllowPromotionWithoutCommonHeader = false;
+    if !isa(&mut I) {
+        return false;
+    }
+    let mut ConsideredSExtType: *mut Type = getInt64Ty(I()()()());
+    if I.getType != ConsideredSExtType {
+        return false;
+    }
+    return Considerable;
+}
+
+fn AArch64TTIImpl::isLegalToVectorizeReduction(self: *AArch64TTIImpl, RdxDesc: *RecurrenceDescriptor, VF: ElementCount) -> bool {
+    if operator!(VF()()) {
+        return true;
+    }
+    let mut Ty: *mut Type = RdxDesc.getRecurrenceType();
+    if Ty.isBFloatTy() || !self.isElementTypeLegalForScalableVector(Ty) {
+        return false;
+    }
+    match RdxDesc.getRecurrenceKind() {
+        Sub => {
+            FSub;
+        },
+        _ => {
+            return false;
+        },
+    }
+}
+
+fn AArch64TTIImpl::getMinMaxReductionCost(self: *AArch64TTIImpl, IID: ID, Ty: *mut VectorType, FMF: FastMathFlags, CostKind: TargetCostKind) -> InstructionCost {
+    if  {
+        if VTy()() == (1) {
+            return getInvalid(0);
+        }
+    }
+    let mut LT: pair<InstructionCost, MVT> = zeroed();
+    let mut LegalizationCost: InstructionCost = 0;
+    if LT() > 1 {
+        let mut LegalVTy: *mut Type = .getTypeForEVT(Ty.getContext());
+        let mut Attrs: IntrinsicCostAttributes = IID(LegalVTy, void { LegalVTy, LegalVTy }, FMF);
+        LegalizationCost = self.getIntrinsicInstrCost(Attrs, CostKind) * (LT() - 1);
+    }
+    return LegalizationCost + 2;
+}
+
+fn AArch64TTIImpl::getArithmeticReductionCostSVE(self: *AArch64TTIImpl, Opcode: u32, ValTy: *mut VectorType, CostKind: TargetCostKind) -> InstructionCost {
+    let mut LT: pair<InstructionCost, MVT> = zeroed();
+    let mut LegalizationCost: InstructionCost = 0;
+    if LT() > 1 {
+        let mut LegalVTy: *mut Type = .getTypeForEVT(ValTy.getContext());
+        LegalizationCost = self.getArithmeticInstrCost(Opcode, LegalVTy, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, OperandValueInfo { OK_AnyValue, OP_None }, void {}, null);
+        LegalizationCost *=  - 1;
+    }
+    let mut ISD: i32 = self.TLI.InstructionOpcodeToISD;
+    assert!(ISD, "Invalid opcode");
+    match ISD {
+        ADD => {
+            AND;
+        },
+        _ => {
+            return getInvalid(0);
+        },
+    }
+}
+
+fn AArch64TTIImpl::getArithmeticReductionCost(self: *AArch64TTIImpl, Opcode: u32, ValTy: *mut VectorType, FMF: optional<FastMathFlags>, CostKind: TargetCostKind) -> InstructionCost {
+    if  {
+        if VTy()() == (1) {
+            return getInvalid(0);
+        }
+    }
+    if requiresOrderedReduction() {
+        if  {
+            let mut BaseCost: InstructionCost = zeroed();
+            return BaseCost + ();
+        }
+        if Opcode != FAdd || ValTy.getElementType().isBFloatTy() {
+            return getInvalid(0);
+        }
+        let mut VTy: *mut auto = cast(ValTy);
+        let mut Cost: InstructionCost = self.getArithmeticInstrCost(Opcode, CostKind);
+        Cost *= self.getMaxNumElements();
+        return Cost;
+    }
+    let mut LT: pair<InstructionCost, MVT> = zeroed();
+    let mut MTy: MVT = ;
+    if isa(ValTy) || self.TLI.useSVEForFixedLengthVectorVT(MTy, false) {
+        return self.getArithmeticReductionCostSVE(Opcode, ValTy, CostKind);
+    }
+    let mut ISD: i32 = self.TLI.InstructionOpcodeToISD;
+    assert!(ISD, "Invalid opcode");
+    let mut CostTblNoPairwise: []CostTblEntry = zeroed();
+    match ISD {
+        _ => {
+            break;
+        },
+        FADD => {
+            let mut EltTy: *mut Type = ValTy.getScalarType();
+            if MTy.isVector() && (EltTy.isFloatTy() || EltTy.isDoubleTy() || (EltTy.isHalfTy() && self.ST())) {
+                let mut NElts: u32 = MTy.getVectorNumElements();
+                if ValTy.getElementCount()() >= 2 && NElts >= 2 && isPowerOf2_32(NElts) {
+                    return (LT() - 1) + Log2_32(NElts);
+                }
+            }
+        },
+        ADD => {
+            if  {
+                return (LT() - 1) + ;
+            }
+        },
+        XOR => {
+            AND;
+        },
+    }
+}
+
+fn AArch64TTIImpl::getExtendedReductionCost(self: *AArch64TTIImpl, Opcode: u32, IsUnsigned: bool, ResTy: *mut Type, VecTy: *mut VectorType, FMF: optional<FastMathFlags>, CostKind: TargetCostKind) -> InstructionCost {
+    let mut VecVT: EVT = self.TLI.getValueType;
+    let mut ResVT: EVT = self.TLI.getValueType;
+    if Opcode == Add && VecVT.isSimple() && ResVT.isSimple() && VecVT.getSizeInBits() {
+        let mut LT: pair<InstructionCost, MVT> = zeroed();
+        let mut RevVTSize: u32 = ResVT.getSizeInBits();
+        if ((LT() == v8i8 ||  == v16i8) && RevVTSize <= 32) || ((LT() == v4i16 ||  == v8i16) && RevVTSize <= 32) || ((LT() == v2i32 ||  == v4i32) && RevVTSize <= 64) {
+            return (LT() - 1) * 2 + 2;
+        }
+    }
+}
+
+fn AArch64TTIImpl::getMulAccReductionCost(self: *AArch64TTIImpl, IsUnsigned: bool, RedOpcode: u32, ResTy: *mut Type, VecTy: *mut VectorType, CostKind: TargetCostKind) -> InstructionCost {
+    let mut VecVT: EVT = self.TLI.getValueType;
+    let mut ResVT: EVT = self.TLI.getValueType;
+    if self.ST() && VecVT.isSimple() && ResVT.isSimple() && RedOpcode == Add {
+        let mut LT: pair<InstructionCost, MVT> = zeroed();
+        if (LT() == v8i8 ||  == v16i8) && ResVT == i32 {
+            return  + 2;
+        }
+    }
+}
+
+fn AArch64TTIImpl::getSpliceCost(self: *AArch64TTIImpl, Tp: *mut VectorType, Index: i32, CostKind: TargetCostKind) -> InstructionCost {
+    let mut ShuffleTbl: []CostTblEntry = zeroed();
+    if Tp.getElementCount() == (1) {
+        return getInvalid(0);
+    }
+    let mut LT: pair<InstructionCost, MVT> = zeroed();
+    let mut LegalVTy: *mut Type = .getTypeForEVT(Tp.getContext());
+    let mut PromotedVT: EVT = if () == i1 { self.TLI.getPromotedVTForPredicate() } else {  };
+    let mut PromotedVTy: *mut Type = PromotedVT.getTypeForEVT(Tp.getContext());
+    let mut LegalizationCost: InstructionCost = 0;
+    if Index < 0 {
+        LegalizationCost = self.getCmpSelInstrCost(ICmp, PromotedVTy, PromotedVTy, BAD_ICMP_PREDICATE, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, OperandValueInfo { OK_AnyValue, OP_None }, null) + self.getCmpSelInstrCost(Select, PromotedVTy, LegalVTy, BAD_ICMP_PREDICATE, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, OperandValueInfo { OK_AnyValue, OP_None }, null);
+    }
+    if LT()() == i1 {
+        operator(LegalizationCost, self.getCastInstrCost(ZExt, PromotedVTy, LegalVTy, None, CostKind, null) + self.getCastInstrCost(Trunc, LegalVTy, PromotedVTy, None, CostKind, null));
+    }
+    let mut Entry: *auto = CostTableLookup(SK_Splice, PromotedVT.getSimpleVT());
+    (((operator!(operator!((Entry() && "Illegal Type for Splice")))) || (_wassert(L"Entry && \"Illegal Type for Splice\"", L"llvm\\lib\\Target\\AArch64\\AArch64TargetTransformInfo.cpp", (6814) as u32) , 0)) as void);
+    operator+=(LegalizationCost);
+    return LegalizationCost * ;
+}
+
+fn AArch64TTIImpl::getPartialReductionCost(self: *AArch64TTIImpl, Opcode: u32, InputTypeA: *mut Type, InputTypeB: *mut Type, AccumType: *mut Type, VF: ElementCount, OpAExtend: PartialReductionExtendKind, OpBExtend: PartialReductionExtendKind, BinOp: optional<unsigned int>, CostKind: TargetCostKind, FMF: optional<FastMathFlags>) -> InstructionCost {
+    let mut Invalid: InstructionCost = getInvalid(0);
+    if CostKind != TCK_RecipThroughput {
+        return Invalid;
+    }
+    if (Opcode != Add && Opcode != Sub && Opcode != FAdd && Opcode != FSub) {
+        return Invalid;
+    }
+    if AccumType.isFloatingPointTy() {
+        (((operator!(operator!((FMF() && "Missing FastMathFlags for floating-point partial reduction")))) || (_wassert(L"FMF && \"Missing FastMathFlags for floating-point partial reduction\"", L"llvm\\lib\\Target\\AArch64\\AArch64TargetTransformInfo.cpp", (6836) as u32) , 0)) as void);
+        if operator!() || operator!() {
+            return Invalid;
+        }
+    } else {
+        (((operator!(operator!((operator!() && "FastMathFlags only apply to floating-point partial reductions")))) || (_wassert(L"!FMF && \"FastMathFlags only apply to floating-point partial reductions\"", L"llvm\\lib\\Target\\AArch64\\AArch64TargetTransformInfo.cpp", (6841) as u32) , 0)) as void);
+    }
+    (((operator!(operator!(((BinOp() || (OpBExtend == PR_None && !InputTypeB)) && (operator!() || (OpBExtend != PR_None && InputTypeB)) && "Unexpected values for OpBExtend or InputTypeB")))) || (_wassert(L"(BinOp || (OpBExtend == TTI::PR_None && !InputTypeB)) && (!BinOp || (OpBExtend != TTI::PR_None && InputTypeB)) && \"Unexpected values for OpBExtend or InputTypeB\"", L"llvm\\lib\\Target\\AArch64\\AArch64TargetTransformInfo.cpp", (6846) as u32) , 0)) as void);
+    if BinOp() && ((operator*() != Mul && operator*() != FMul) || InputTypeA != InputTypeB) {
+        return Invalid;
+    }
+    if !is_contained(void { 8, 16, 32, 64 }, AccumType.getScalarSizeInBits()) {
+        return Invalid;
+    }
+    if !OpAExtend {
+        assert!(!OpBExtend, "Extended second operand without extended first.");
+        assert!(InputTypeA == AccumType, "Type mismatch with no extensions.");
+        let mut VTy: *mut VectorType = get(AccumType, VF);
+        return self.getArithmeticInstrCost(Opcode, VTy, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, OperandValueInfo { OK_AnyValue, OP_None }, void {}, null);
+    }
+    let mut IsUSDot: bool = OpBExtend != PR_None && OpAExtend != OpBExtend;
+    if IsUSDot && operator!(self.ST()) && operator!(self.ST()) {
+        return Invalid;
+    }
+    let mut Ratio: u32 = AccumType.getScalarSizeInBits() / InputTypeA.getScalarSizeInBits();
+    if VF()() <= Ratio {
+        return Invalid;
+    }
+    let mut InputVectorType: *mut VectorType = get(InputTypeA, VF);
+    let mut AccumVectorType: *mut VectorType = get(AccumType, VF()(Ratio));
+    let mut TC: auto = self.TLI.getTypeConversion;
+    match TC() {
+        _ => {
+            return Invalid;
+        },
+        TypeLegal => {
+            TypePromoteInteger;
+        },
+    }
+    let mut AccumLT: pair<InstructionCost, MVT> = zeroed();
+    let mut InputLT: pair<InstructionCost, MVT> = zeroed();
+    let mut IsSupported: Closure_17 = Closure_17 { cap_0: self };
+    let mut IsSub: bool = Opcode == Sub || Opcode == FSub;
+    let mut Cost: InstructionCost =  * TCC_Basic;
+    let mut INegCost: InstructionCost = if IsSub { 2 *  * TCC_Basic } else { 0 };
+    if AccumLT()() == i32 && () == i8 {
+        if !IsUSDot && IsSupported(true, self.ST()) {
+            return Cost + INegCost;
+        }
+        if IsUSDot && IsSupported(self.ST(), self.ST()) {
+            return Cost + INegCost;
+        }
+        if IsUSDot && IsSupported(false, self.ST()) {
+            return Cost * 3 + INegCost;
+        }
+    }
+    if self.ST.isSVEorStreamingSVEAvailable() && !IsUSDot {
+        if AccumLT()() == i64 && () == i16 {
+            return Cost + INegCost;
+        }
+        if AccumLT()() == i32 && () == i16 && (self.ST() || self.ST()) && !IsSub {
+            return Cost;
+        }
+        if AccumLT()() == i64 && () == i8 {
+            return Cost + INegCost;
+        }
+        if AccumLT()() == i16 && () == i8 && (self.ST() || self.ST()) && !IsSub {
+            return Cost;
+        }
+    }
+    if Opcode == FAdd && !IsSub && IsSupported(self.ST() || self.ST(), self.ST()) && () == f32 && () == f16 {
+        return Cost;
+    }
+    if Ratio == 2 && !IsUSDot {
+        let mut InVT: MVT = ();
+        if IsSupported(self.ST() || self.ST(), true) && is_contained(void { i8, i16, i32 }, InVT.SimpleTy) {
+            return if (BinOp() || IsSub) { Cost * 2 } else { Cost };
+        }
+        if IsSupported(self.ST(), self.ST()) && InVT == f16 {
+            return Cost * 2;
+        }
+        if IsSupported(self.ST() || self.ST(), false) && InVT == bf16 && IsSub {
+            return Cost * 2;
+        }
+        let mut FNegCost: InstructionCost = if IsSub {  * TCC_Basic } else { 0 };
+        if IsSupported(self.ST(), self.ST()) && InVT == bf16 {
+            return Cost * 2 + FNegCost;
+        }
+    }
+}
+
+fn AArch64TTIImpl::getShuffleCost(self: *AArch64TTIImpl, Kind: ShuffleKind, DstTy: *mut VectorType, SrcTy: *mut VectorType, CostKind: TargetCostKind, Mask: ArrayRef<int>, Index: i32, SubTp: *mut VectorType, Args: ArrayRef<const Value *>, CtxI: *Instruction, VIC: VectorInstrContext) -> InstructionCost {
+    (((operator!(operator!(((Mask()() || DstTy.isScalableTy() || () == DstTy.getElementCount()()) && "Expected the Mask to match the return size if given")))) || (_wassert(L"(Mask.empty() || DstTy->isScalableTy() || Mask.size() == DstTy->getElementCount().getKnownMinValue()) && \"Expected the Mask to match the return size if given\"", L"llvm\\lib\\Target\\AArch64\\AArch64TargetTransformInfo.cpp", (7015) as u32) , 0)) as void);
+    assert!(SrcTy.getScalarType() == DstTy.getScalarType(), "Expected the same scalar types");
+    let mut LT: pair<InstructionCost, MVT> = zeroed();
+    if operator!() && isa(SrcTy) && () && () * () > 128 && SrcTy.getScalarSizeInBits() == () && () > () && !Index && !SubTp {
+        if Args()() >= 1 && isa([0]) && (isDeInterleaveMaskOfFactor(3) || isDeInterleaveMaskOfFactor(4)) {
+            return if 1 >  / 4 { 1 } else {  / 4 };
+        }
+        if CtxI && CtxI.hasOneUse && isa(operator*(CtxI()())) && (isInterleaveMask(4, SrcTy.getElementCount()() * 2) || isInterleaveMask(3, SrcTy.getElementCount()() * 2)) {
+            return ;
+        }
+        let mut TpNumElts: u32 = ();
+        let mut LTNumElts: u32 = ();
+        let mut NumVecs: u32 = (TpNumElts + LTNumElts - 1) / LTNumElts;
+        let mut NTp: *mut VectorType = get(SrcTy.getScalarType());
+        let mut Cost: InstructionCost = InstructionCost {};
+        let mut PreviousCosts: i32 = 0;
+        for let mut N: u32 = 0; N < NumVecs; N += 1 {
+            let mut NMask: i32 = 0;
+            let mut Source1: u32 = -1;
+            let mut Source2: u32 = -1;
+            let mut NumSources: u32 = 0;
+            for let mut E: u32 = 0; E < LTNumElts; E += 1 {
+                let mut MaskElt: i32 = if (N * LTNumElts + E < TpNumElts) { [N * LTNumElts + E] } else { PoisonMaskElem };
+                if MaskElt < 0 {
+                    NMask()(PoisonMaskElem);
+                    continue;
+                }
+                let mut Source: u32 = MaskElt / LTNumElts;
+                if NumSources == 0 {
+                    Source1 = Source;
+                    NumSources = 1;
+                } else if NumSources == 1 && Source != Source1 {
+                    Source2 = Source;
+                    NumSources = 2;
+                } else if NumSources >= 2 && Source != Source1 && Source != Source2 {
+                    NumSources += 1;
+                }
+                if Source == Source1 {
+                    NMask()(MaskElt % LTNumElts);
+                } else if Source == Source2 {
+                    NMask()(MaskElt % LTNumElts + LTNumElts);
+                } else {
+                    NMask()(MaskElt % LTNumElts);
+                }
+            }
+            let mut Result: auto = (void { make_tuple(Source1, Source2), 0 });
+            if operator!() {
+                continue;
+            }
+            let mut NCost: InstructionCost = if NumSources <= 2 { self.getShuffleCost(if NumSources <= 1 { SK_PermuteSingleSrc } else { SK_PermuteTwoSrc }, NTp, NTp, CostKind, 0, null, CtxI) } else { LTNumElts };
+            Result() = NCost;
+            operator(Cost, NCost);
+        }
+        return Cost;
+    }
+    Kind = improveShuffleKindFromMask(Kind, SrcTy, Index, SubTp);
+    let mut IsExtractSubvector: bool = Kind == SK_ExtractSubvector;
+    if IsExtractSubvector && () {
+        if LT()() >= 128 && cast(SubTp)() == () / 2 {
+            if Index == 0 {
+                return 0;
+            }
+            if Index == () as i32 / 2 {
+                return 1;
+            }
+        }
+        Kind = SK_PermuteSingleSrc;
+    }
+    if Kind == SK_InsertSubvector {
+        LT() = getTypeLegalizationCost(DstTy);
+        SrcTy = DstTy;
+    }
+    if operator!() && () && (Kind == SK_PermuteTwoSrc || Kind == SK_PermuteSingleSrc) && all_of(enumerate(), Closure_18 {}) {
+        return 0;
+    }
+    if Kind == SK_PermuteSingleSrc && isa(SrcTy) && operator!() && SrcTy.getPrimitiveSizeInBits()() && SrcTy.getPrimitiveSizeInBits()(SVEBitsPerBlock) {
+        let mut VTy: *mut FixedVectorType = cast(SrcTy);
+        let mut Segments: u32 = VTy.getPrimitiveSizeInBits();
+        let mut SegmentElts: u32 = VTy.getNumElements() / Segments;
+        if  {
+            return ;
+        }
+        if self.ST.isSVEorStreamingSVEAvailable() && isDUPFirstSegmentMask(Segments, SegmentElts) {
+            return ;
+        }
+    }
+    if CostKind == TCK_CodeSize && Kind == SK_Broadcast {
+        let mut IsLoad: bool = operator!() && isa([0]);
+        if IsLoad && () && self.isLegalBroadcastLoad(SrcTy.getElementType()) {
+            return 0;
+        }
+    }
+    if Mask()() == 4 && SrcTy.getElementCount() == (4) && (SrcTy.getScalarSizeInBits() == 16 || SrcTy.getScalarSizeInBits() == 32) && all_of(Closure_19 {}) {
+        return getPerfectShuffleCost();
+    }
+    let mut Unused: u32 = 0;
+    if LT()() && () == () && (Kind == SK_PermuteTwoSrc || Kind == SK_PermuteSingleSrc || Kind == SK_InsertSubvector) && (isZIPMask(Unused, Unused) || isTRNMask(Unused, Unused) || isUZPMask(Unused) || isREVMask(16) || isREVMask(32) || isREVMask(64) || all_of(drop_begin(), Closure_20 {})) {
+        return 1;
+    }
+    if Kind == SK_Broadcast || Kind == SK_Transpose || Kind == SK_Select || Kind == SK_PermuteSingleSrc || Kind == SK_Reverse || Kind == SK_Splice {
+        let mut ShuffleTbl: []CostTblEntry = zeroed();
+        if  {
+            return  * ;
+        }
+    }
+    if Kind == SK_Splice && isa(SrcTy) {
+        return self.getSpliceCost(SrcTy, Index, CostKind);
+    }
+    if Kind == SK_InsertSubvector && () && () <= 128 && SubTp {
+        let mut SubLT: pair<InstructionCost, MVT> = zeroed();
+        if SubLT()() {
+            let mut NumElts: i32 = ();
+            let mut NumSubElts: i32 = ();
+            if (Index % NumSubElts) == 0 && (NumElts % NumSubElts) == 0 {
+                return ;
+            }
+        }
+    }
+    if IsExtractSubvector {
+        Kind = SK_ExtractSubvector;
+    }
+}
+
+fn containsDecreasingPointers(TheLoop: *mut Loop, PSE: *mut PredicatedScalarEvolution, DT: *DominatorTree) -> bool {
+    let mut Strides: *auto = SymbolicStrideMap();
+    return false;
+}
+
+fn AArch64TTIImpl::preferFixedOverScalableIfEqualCost(self: *AArch64TTIImpl) -> bool {
+    if SVEPreferFixedOverScalableIfEqualCost()() {
+        return ;
+    }
+    return self.ST();
+}
+
+fn AArch64TTIImpl::getEpilogueVectorizationMinVF(self: *AArch64TTIImpl) -> u32 {
+    return self.ST.getEpilogueVectorizationMinVF();
+}
+
+fn AArch64TTIImpl::preferTailFoldingOverEpilogue(self: *AArch64TTIImpl, TFI: *mut TailFoldingInfo) -> bool {
+    let mut DefaultOpts: TailFoldingOpts = self.ST.getSVETailFoldingDefaultOpts();
+    if operator!(self.ST()) || TailFoldingOptionLoc.isDisabled(DefaultOpts) {
+        return false;
+    }
+    if TFI.IAI.hasGroups() {
+        return false;
+    }
+    let mut Required: TailFoldingOpts = Disabled;
+    if TFI.LVL()() {
+        Required(Reductions);
+    }
+    if TFI.LVL.getFixedOrderRecurrences()() {
+        Required(Recurrences);
+    }
+    if containsDecreasingPointers(TFI.LVL.getLoop(), TFI.LVL.getPredicatedScalarEvolution(), *TFI.LVL.getDominatorTree()) {
+        Required(Reverse);
+    }
+    if Required == Disabled {
+        Required(Simple);
+    }
+    if !TailFoldingOptionLoc.satisfies(DefaultOpts, Required) {
+        return false;
+    }
+    let mut NumInsns: u32 = 0;
+    return NumInsns >= ;
+}
+
+fn AArch64TTIImpl::getScalingFactorCost(self: *AArch64TTIImpl, Ty: *mut Type, BaseGV: *mut GlobalValue, BaseOffset: StackOffset, HasBaseReg: bool, Scale: i64, AddrSpace: u32) -> InstructionCost {
+    let mut AM: AddrMode = AddrMode {};
+    AM.BaseGV = BaseGV;
+    AM.BaseOffs = BaseOffset.getFixed();
+    AM.HasBaseReg = HasBaseReg;
+    AM.Scale = Scale;
+    AM.ScalableOffset = BaseOffset.getScalable();
+    if self.getTLI().isLegalAddressingMode {
+        return AM.Scale != 0 && AM.Scale != 1;
+    }
+    return getInvalid(0);
+}
+
+fn AArch64TTIImpl::shouldTreatInstructionLikeSelect(self: *AArch64TTIImpl, I: *Instruction) -> bool {
+    if EnableOrLikeSelectOpt() {
+        if I.getOpcode() == Or && isa(I()()) {
+            return true;
+        }
+        if I.getOpcode() == Add || I.getOpcode() == Sub {
+            return true;
+        }
+    }
+}
+
+fn AArch64TTIImpl::isLSRCostLess(self: *AArch64TTIImpl, C1: *LSRCost, C2: *LSRCost) -> bool {
+    if EnableLSRCostOpt() {
+        return tie(C1.NumRegs, C1.Insns, C1.NumBaseAdds, C1.AddRecCost, C1.NumIVMuls, C1.ScaleCost, C1.ImmCost, C1.SetupCost) < tie(C2.NumRegs, C2.Insns, C2.NumBaseAdds, C2.AddRecCost, C2.NumIVMuls, C2.ScaleCost, C2.ImmCost, C2.SetupCost);
+    }
+}
+
+fn isSplatShuffle(V: *mut Value) -> bool {
+    if  {
+        return all_equal();
+    }
+    return false;
+}
+
+fn areExtractShuffleVectors(Op1: *mut Value, Op2: *mut Value, AllowSplat: bool) -> bool {
+    if Op1.getType().isScalableTy() || Op2.getType().isScalableTy() {
+        return false;
+    }
+    let mut areTypesHalfed: Closure_21 = Closure_21 {};
+    let mut extractHalf: Closure_22 = Closure_22 {};
+    let mut M1: ArrayRef<int> = zeroed();
+    let mut M2: ArrayRef<int> = zeroed();
+    let mut S1Op1: *mut Value = null;
+    let mut S2Op1: *mut Value = null;
+    if operator!(match(Op1, m_Shuffle(m_Value(S1Op1), m_Undef()))) || operator!(match(Op2, m_Shuffle(m_Value(S2Op1), m_Undef()))) {
+        return false;
+    }
+    if AllowSplat && isSplatShuffle(Op1) {
+        S1Op1 = null;
+    }
+    if AllowSplat && isSplatShuffle(Op2) {
+        S2Op1 = null;
+    }
+    if (S1Op1 && (operator!(areTypesHalfed(S1Op1, Op1)) || operator!(extractHalf(S1Op1, Op1)))) || (S2Op1 && (operator!(areTypesHalfed(S2Op1, Op2)) || operator!(extractHalf(S2Op1, Op2)))) {
+        return false;
+    }
+    let mut M1Start: i32 = 0;
+    let mut M2Start: i32 = 0;
+    let mut NumElements: i32 = cast(Op1.getType())() * 2;
+    if (S1Op1 && operator!(isExtractSubvectorMask(NumElements, M1Start))) || (S2Op1 && operator!(isExtractSubvectorMask(NumElements, M2Start))) {
+        return false;
+    }
+    if (M1Start != 0 && M1Start != (NumElements / 2)) || (M2Start != 0 && M2Start != (NumElements / 2)) {
+        return false;
+    }
+    if S1Op1 && S2Op1 && M1Start != M2Start {
+        return false;
+    }
+    return true;
+}
+
+fn areExtractExts(Ext1: *mut Value, Ext2: *mut Value) -> bool {
+    let mut areExtDoubled: Closure_23 = Closure_23 {};
+    if operator!(match(Ext1, m_ZExtOrSExt(m_Value()))) || operator!(match(Ext2, m_ZExtOrSExt(m_Value()))) || operator!(areExtDoubled(cast(Ext1))) || operator!(areExtDoubled(cast(Ext2))) {
+        return false;
+    }
+    return true;
+}
+
+fn isOperandOfVmullHighP64(Op: *mut Value) -> bool {
+    let mut VectorOperand: *mut Value = null;
+    let mut ElementIndex: *mut ConstantInt = null;
+    return match(Op, m_ExtractElt(m_Value(VectorOperand), m_ConstantInt(ElementIndex))) && ElementIndex.getValue() == 1 && isa(VectorOperand.getType()) && cast(VectorOperand.getType())() == 2;
+}
+
+fn areOperandsOfVmullHighP64(Op1: *mut Value, Op2: *mut Value) -> bool {
+    return isOperandOfVmullHighP64(Op1) && isOperandOfVmullHighP64(Op2);
+}
+
+fn shouldSinkVectorOfPtrs(Ptrs: *mut Value, Ops: *mut SmallVectorImpl<Use *>) -> bool {
+    let mut GEP: *mut auto = dyn_cast(Ptrs);
+    if operator!() || () != 2 {
+        return false;
+    }
+    let mut Base: *mut Value = (0);
+    let mut Offsets: *mut Value = (1);
+    if Base.getType().isVectorTy() || !Offsets.getType().isVectorTy() {
+        return false;
+    }
+    if isa(Offsets) || isa(Offsets) {
+        let mut OffsetsInst: *mut auto = cast(Offsets);
+        if OffsetsInst()()() > 32 && (0)()() <= 32 {
+            Ops()(operator&((1)));
+        }
+    }
+    return true;
+}
+
+fn shouldSinkVScale(Op: *mut Value, Ops: *mut SmallVectorImpl<Use *>) -> bool {
+    if match(Op) {
+        return true;
+    }
+    if match(Op, m_Shl(m_ConstantInt())) || match(Op, m_Mul(m_ConstantInt())) {
+        Ops()(operator&(cast(Op)(0)));
+        return true;
+    }
+    if match(Op, m_Shl(m_ZExt(), m_ConstantInt())) || match(Op, m_Mul(m_ZExt(), m_ConstantInt())) {
+        let mut ZExtOp: *mut Value = cast(Op)(0);
+        Ops()(operator&(cast(ZExtOp)(0)));
+        Ops()(operator&(cast(Op)(0)));
+        return true;
+    }
+    return false;
+}
+
+fn isFNeg(Op: *mut Value) -> bool {
+    return match(Op, m_FNeg(m_Value()));
+}
+
+fn AArch64TTIImpl::isProfitableToSinkOperands(self: *AArch64TTIImpl, I: *mut Instruction, Ops: *mut SmallVectorImpl<Use *>) -> bool {
+    if dyn_cast(I) {
+        II;
+    } else {
+        match II.getIntrinsicID() {
+            fma => {
+                fmuladd;
+            },
+            masked_gather => {
+                if operator!(shouldSinkVectorOfPtrs(II.getArgOperand, Ops)) {
+                    return false;
+                }
+            },
+            masked_scatter => {
+                if operator!(shouldSinkVectorOfPtrs(II.getArgOperand, Ops)) {
+                    return false;
+                }
+            },
+            _ => {
+                return false;
+            },
+        }
+    }
+    let mut ShouldSinkCondition: Closure_24 = Closure_24 {};
+    match I.getOpcode() {
+        GetElementPtr => {
+            Add;
+        },
+        Select => {
+            if operator!(ShouldSinkCondition(I.getOperand, Ops)) {
+                return false;
+            }
+            Ops()(operator&(I));
+            return true;
+        },
+        UncondBr => {
+            return false;
+        },
+        CondBr => {
+            if operator!(ShouldSinkCondition(cast(I)(), Ops)) {
+                return false;
+            }
+            Ops()(operator&(I));
+            return true;
+        },
+        FMul => {
+            if cast(I)() {
+                if isFNeg(I.getOperand) {
+                    Ops()(operator&(I));
+                }
+                if isFNeg(I.getOperand) {
+                    Ops()(operator&(I));
+                }
+            }
+        },
+        Xor => {
+            if I.getType() && self.ST.isNeonAvailable() {
+                let mut HasBSL2N: bool = self.ST.isSVEorStreamingSVEAvailable() && (self.ST() || self.ST());
+                if !HasBSL2N {
+                    break;
+                }
+            }
+        },
+        And => {
+            Or;
+        },
+        _ => {
+            break;
+        },
+    }
+    if operator!(I.getType()) {
+        return operator!(Ops()());
+    }
+    match I.getOpcode() {
+        Sub => {
+            Add;
+        },
+        Or => {
+            if self.ST() {
+                let mut OtherAnd: *mut Instruction = null;
+                let mut IA: *mut Instruction = null;
+                let mut IB: *mut Instruction = null;
+                let mut MaskValue: *mut Value = null;
+                if match(I, m_c_Or(m_OneUse(m_Instruction(OtherAnd)), m_OneUse(m_c_And(m_OneUse(m_Not(m_Value(MaskValue))), m_Instruction(IA))))) {
+                    if match(OtherAnd, m_c_And(m_Specific(MaskValue), m_Instruction(IB))) {
+                        let mut MainAnd: *mut Instruction = if I.getOperand == OtherAnd { cast(I.getOperand) } else { cast(I.getOperand) };
+                        if I()() != MainAnd()() || I()() != OtherAnd()() {
+                            return false;
+                        }
+                        if I()() != IA()() || I()() != IB()() {
+                            return false;
+                        }
+                        Ops()(operator&(MainAnd(if MainAnd.getOperand == IA { 1 } else { 0 })));
+                        Ops()(operator&(I));
+                        Ops()(operator&(I));
+                        return true;
+                    }
+                }
+            }
+            return false;
+        },
+        Mul => {
+            let mut ShouldSinkSplatForIndexedVariant: Closure_25 = Closure_25 {};
+            let mut NumZExts: i32 = 0;
+            let mut NumSExts: i32 = 0;
+            if operator!(Ops()()) && (NumSExts == 2 || NumZExts == 2) {
+                return true;
+            }
+            if operator!(ShouldSinkSplatForIndexedVariant(I)) {
+                return false;
+            }
+            Ops()();
+            if isSplatShuffle(I.getOperand) {
+                Ops()(operator&(I));
+            }
+            if isSplatShuffle(I.getOperand) {
+                Ops()(operator&(I));
+            }
+            return operator!(Ops()());
+        },
+        FMul => {
+            if I.getType() {
+                return operator!(Ops()());
+            }
+            if cast(I.getType)()() && operator!(self.ST()) {
+                return operator!(Ops()());
+            }
+            if isSplatShuffle(I.getOperand) {
+                Ops()(operator&(I));
+            }
+            if isSplatShuffle(I.getOperand) {
+                Ops()(operator&(I));
+            }
+            return operator!(Ops()());
+        },
+        _ => {
+            return false;
+        },
+    }
+    return false;
+}
+
+fn AArch64TTIImpl::isLegalMaskedCompressStore(self: *AArch64TTIImpl, DataType: *mut Type, Alignment: Align) -> bool {
+    if operator!((self.ST.isSVEAvailable() || (self.ST.isSVEorStreamingSVEAvailable() && self.ST()))) {
+        return false;
+    }
+    if isa(DataType) && DataType.getPrimitiveSizeInBits()() < 128 {
+        return false;
+    }
+    if !isa(DataType) {
+        return self.isElementTypeLegalForScalableVector(DataType);
+    }
+    let mut LT: auto = getTypeLegalizationCost(DataType);
+    if operator!() {
+        return false;
+    }
+    let mut Ctx: *mut LLVMContext = DataType.getContext();
+    match LT() {
+        nxv2f16 => {
+            nxv2bf16;
+        },
+        nxv4f16 => {
+            nxv4bf16;
+        },
+        _ => {
+            break;
+        },
+    }
+    return self.isElementTypeLegalForCompressStore(().getTypeForEVT(Ctx));
+}
+
+struct Closure_1 {}
+
+fn Closure_1::call(self: *Closure_1, Ty: *mut Type) -> auto {
+        let mut FVTy: auto = dyn_cast(Ty);
+    }
+
+struct Closure_2 {}
+
+fn Closure_2::call(self: *Closure_2, V: *Value) -> auto {}
+
+struct Closure_3 {}
+
+fn Closure_3::call(self: *Closure_3) {}
+
+struct Closure_4 {}
+
+fn Closure_4::call(self: *Closure_4, I: *mut Instruction) -> bool {
+        return !I.mayReadOrWriteMemory() && !I.mayHaveSideEffects();
+    }
+
+struct Closure_5 {
+    DstTy: *mut *mut Type,
+}
+
+unsafe fn Closure_5::call(self: *mut Closure_5, ArgTy: *mut Type) -> auto {}
+
+struct Closure_6 {
+    SrcOverrideTy: *mut *mut Type,
+}
+
+unsafe fn Closure_6::call(self: *mut Closure_6, V: *Value) -> u32 {
+        if (*self.SrcOverrideTy) {
+            return (*self.SrcOverrideTy).getScalarSizeInBits();
+        }
+    }
+
+struct Closure_7 {
+    cap_0: *AArch64TTIImpl,
+    Dst: *mut *mut Type,
+    Src: *mut *mut Type,
+    I: *mut *Instruction,
+    Opcode: *mut u32,
+    CostKind: *mut TargetCostKind,
+}
+
+unsafe fn Closure_7::call(self: *mut Closure_7, Usr: *Instruction) -> auto {
+            let mut Operands: SmallVector<const Value *, 4> = zeroed();
+            if self.isBinExtWideningInstruction(Usr.getOpcode(), (*self.Dst), if (*self.Src) != (*self.I).getOperand() { (*self.Src) } else { null }) {
+                ExtTy;
+            } else {
+                if ExtTy.getScalarSizeInBits() > (*self.Src).getScalarSizeInBits() * 2 {
+                    let mut DoubleSrcTy: *mut Type = (*self.Src).getWithNewBitWidth((*self.Src).getScalarSizeInBits() * 2);
+                }
+            }
+            if self.isSingleExtWideningInstruction(Usr.getOpcode(), (*self.Dst), if (*self.Src) != (*self.I).getOperand() { (*self.Src) } else { null }) {
+                if Usr.getOpcode() == Add {} else {}
+            }
+        }
+
+struct Closure_9 {
+    cap_0: *AArch64TTIImpl,
+}
+
+fn Closure_9::call(self: *Closure_9, T: *Type) -> auto {}
+
+struct Closure_10 {}
+
+fn Closure_10::call(self: *Closure_10, EEUser: *Value) -> auto {
+            let mut BO: *auto = dyn_cast(EEUser);
+        }
+
+struct Closure_11 {
+    cap_0: *AArch64TTIImpl,
+}
+
+fn Closure_11::call(self: *Closure_11, Idx: u32, EltSz: u32) -> auto {
+            let mut RegWidth: auto = self.getRegisterBitWidth(RGK_FixedWidthVector)();
+        }
+
+struct Closure_8 {
+    Index: *mut u32,
+    cap_1: *AArch64TTIImpl,
+    Ty: *mut *mut Type,
+    Scalar: *mut *mut Value,
+    I: *mut *Instruction,
+}
+
+unsafe fn Closure_8::call(self: *mut Closure_8) -> bool {
+        if (*self.Index) == 0 {
+            return false;
+        }
+        let mut IsAllowedScalarTy: Closure_9 = Closure_9 { cap_0: self };
+        let mut IsUserFMulScalarTy: Closure_10 = Closure_10 {};
+        let mut IsExtractLaneEquivalentToZero: Closure_11 = Closure_11 { cap_0: self };
+        if !isa((*self.Ty)) || operator!(IsAllowedScalarTy((*self.Ty).getScalarType())) {
+            return false;
+        }
+        if (*self.Scalar) {
+            let mut UserToExtractIdx: i32 = 0;
+            if UserToExtractIdx()() {
+                return false;
+            }
+        } else {
+            let mut EE: *auto = cast((*self.I));
+            let mut IdxOp: *auto = dyn_cast();
+            if operator!() {
+                return false;
+            }
+        }
+    }
+
+struct Closure_12 {}
+
+fn Closure_12::call(self: *Closure_12, L: *mut Loop, SE: *mut ScalarEvolution) -> i32 {
+        let mut StridedLoads: i32 = 0;
+        return StridedLoads;
+    }
+
+struct Closure_13 {}
+
+fn Closure_13::call(self: *Closure_13, BB: *mut BasicBlock) -> auto {}
+
+struct Closure_14 {
+    SE: *mut ScalarEvolution,
+    L: *mut Loop,
+}
+
+unsafe fn Closure_14::call(self: *mut Closure_14, Phi: *mut PHINode) -> auto {}
+
+struct Closure_15 {}
+
+fn Closure_15::call(self: *Closure_15, SI: *mut StoreInst) -> auto {}
+
+struct Closure_16 {
+    L: *mut Loop,
+}
+
+fn Closure_16::call(self: *Closure_16, Pred: *mut BasicBlock) -> auto {}
+
+struct Closure_17 {
+    cap_0: *AArch64TTIImpl,
+}
+
+fn Closure_17::call(self: *mut Closure_17, SVEPred: bool, NEONPred: bool) -> auto {
+        return (self.ST.isSVEorStreamingSVEAvailable() && SVEPred) || (AccumLT()() && () <= 128 && self.ST.isNeonAvailable() && NEONPred);
+    }
+
+struct Closure_18 {}
+
+fn Closure_18::call(self: *Closure_18) {
+        return M() < 0 || M() == M() as i32;
+    }
+
+struct Closure_19 {}
+
+fn Closure_19::call(self: *Closure_19, E: i32) -> bool {
+        return E < 8;
+    }
+
+struct Closure_20 {}
+
+fn Closure_20::call(self: *Closure_20, M: i32) -> auto {}
+
+struct Closure_21 {}
+
+fn Closure_21::call(self: *Closure_21, FullV: *mut Value, HalfV: *mut Value) -> auto {
+        let mut FullTy: *mut Type = FullV.getType();
+        let mut HalfTy: *mut Type = HalfV.getType();
+    }
+
+struct Closure_22 {}
+
+fn Closure_22::call(self: *Closure_22, FullV: *mut Value, HalfV: *mut Value) -> auto {
+        let mut FullVT: *mut auto = cast(FullV.getType());
+        let mut HalfVT: *mut auto = cast(HalfV.getType());
+    }
+
+struct Closure_23 {}
+
+fn Closure_23::call(self: *Closure_23, Ext: *mut Instruction) -> auto {}
+
+struct Closure_24 {}
+
+fn Closure_24::call(self: *mut Closure_24, Cond: *mut Value, Ops: *mut SmallVectorImpl<Use *>) -> auto {
+        if !isa(Cond) {
+            return false;
+        }
+        let mut II: *mut auto = dyn_cast(Cond);
+        if II()() != vector_reduce_or || operator!(isa((0)())) {
+            return false;
+        }
+        if isa((0)) {
+            Ops()(operator&((0)));
+        }
+        return true;
+    }
+
+struct Closure_25 {}
+
+fn Closure_25::call(self: *Closure_25, V: *mut Value) -> bool {
+                let mut Ty: *mut auto = cast(V.getType());
+                if Ty()() {
+                    return false;
+                }
+            }

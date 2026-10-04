@@ -1,0 +1,155 @@
+struct mi_tls_slot_s {
+    version: u64,
+    value: *mut void,
+}
+
+struct mi_thread_locals_s {
+    count: u64,
+    memid: mi_memid_t,
+    slots: [1]mi_tls_slot_t,
+}
+
+static mut mi_thread_locals_empty: mi_thread_locals_t = mi_thread_locals_t { , mi_memid_t { union (unnamed at p:\Goraw\mimalloc\include\mimalloc\types.h:349:3) { mi_memid_os_info_t { ,  } },  }, [1]mi_tls_slot_t {} };
+
+fn mi_key_index(key: u64) -> u64 {
+    return (key & ((1 << (((1 << (3)) * 8) / 4)) - 1));
+}
+
+fn mi_key_version(key: u64) -> u64 {
+    return (key >> (((1 << (3)) * 8) / 4));
+}
+
+fn mi_key_create(index: u64, version: u64) -> mi_thread_local_t {
+    (if (version != 0 && version <= ((1 << (((1 << (3)) * 8) - (((1 << (3)) * 8) / 4))) - 1)) { 0 as void } else { _mi_assert_fail("version != 0 && version <= MI_TLS_VERSION_MAX", "mimalloc\\src\\threadlocal.c", 95, "mi_key_create") });
+    (if (index <= ((1 << (((1 << (3)) * 8) / 4)) - 1)) { 0 as void } else { _mi_assert_fail("index <= MI_TLS_IDX_MAX", "mimalloc\\src\\threadlocal.c", 96, "mi_key_create") });
+    let mut key: mi_thread_local_t = ((version << (((1 << (3)) * 8) / 4)) | index);
+    (if (key != 0) { 0 as void } else { _mi_assert_fail("key != 0", "mimalloc\\src\\threadlocal.c", 98, "mi_key_create") });
+    return key;
+}
+
+fn mi_thread_locals_expand(least_idx: u64) -> *mut mi_thread_locals_t {
+    let mut tls_old: *mut mi_thread_locals_t = mi_thread_locals_get();
+    let mut count_old: u64 = tls_old.count;
+    let mut count: u64 = 0;
+    if count_old == 0 {
+        tls_old = 0;
+        count = 16;
+    } else if count_old >= 1024 {
+        count = count_old + 1024;
+    } else {
+        count = 2 * count_old;
+    }
+    if count <= least_idx {
+        count = least_idx + 1;
+    }
+    if count > ((1 << (((1 << (3)) * 8) / 4)) - 1) {
+        return 0;
+    }
+    let mut memid: mi_memid_t = (if tls_old == 0 { _mi_memid_none() } else { tls_old.memid });
+    let mut tls: *mut mi_thread_locals_t = _mi_meta_rezalloc(_mi_subproc(), tls_old,  + count * , &mut memid) as *mut mi_thread_locals_t;
+    if __builtin_expect(!!(tls == 0), false) {
+        return 0;
+    }
+    tls.memid = memid;
+    tls.count = count;
+    mi_thread_locals_set(tls);
+    return tls;
+}
+
+fn mi_thread_local_set_expand(key: mi_thread_local_t, val: *mut void) -> bool {
+    if val == 0 {
+        return true;
+    }
+    let mut idx: u64 = mi_key_index(key);
+    let mut tls: *mut mi_thread_locals_t = mi_thread_locals_expand(idx);
+    if tls == 0 {
+        _mi_error_message(14, "unable to allocate thread local variables\n");
+        return false;
+    }
+    (if (tls == mi_thread_locals_get()) { 0 as void } else { _mi_assert_fail("tls == mi_thread_locals_get()", "mimalloc\\src\\threadlocal.c", 141, "mi_thread_local_set_expand") });
+    (if (idx < tls.count) { 0 as void } else { _mi_assert_fail("idx < tls->count", "mimalloc\\src\\threadlocal.c", 142, "mi_thread_local_set_expand") });
+    tls.slots[idx].value = val;
+    tls.slots[idx].version = mi_key_version(key);
+    return true;
+}
+
+fn mi_thread_local_set_regular(key: mi_thread_local_t, val: *mut void) -> bool {
+    let mut tls: *mut mi_thread_locals_t = mi_thread_locals_get();
+    (if (tls != 0) { 0 as void } else { _mi_assert_fail("tls!=NULL", "mimalloc\\src\\threadlocal.c", 152, "mi_thread_local_set_regular") });
+    (if (key != 0) { 0 as void } else { _mi_assert_fail("key!=0", "mimalloc\\src\\threadlocal.c", 153, "mi_thread_local_set_regular") });
+    let mut idx: u64 = mi_key_index(key);
+    if __builtin_expect(!!(idx < tls.count), true) {
+        tls.slots[idx].value = val;
+        tls.slots[idx].version = mi_key_version(key);
+        return true;
+    } else {
+        return mi_thread_local_set_expand(key, val);
+    }
+}
+
+fn mi_thread_local_get_regular(key: mi_thread_local_t) -> *mut void {
+    let mut tls: mi_thread_locals_t *const = mi_thread_locals_peek();
+    if __builtin_expect(!!(tls == 0), false) {
+        return 0;
+    }
+    let mut idx: u64 = mi_key_index(key);
+    if __builtin_expect(!!(idx < tls.count && mi_key_version(key) == tls.slots[idx].version), true) {
+        return tls.slots[idx].value;
+    } else {
+        return 0;
+    }
+}
+
+static mut mi_thread_locals_lock: mi_lock_t = mi_lock_t {};
+
+static mut mi_thread_locals_free: *mut mi_bitmap_t = null;
+
+static mut mi_thread_locals_memid: mi_memid_t = mi_memid_t {};
+
+static mut mi_thread_locals_version: u64 = 0;
+
+fn mi_thread_local_claim_fun(_slice_index: u64, _arena: *mut mi_arena_t, keep_set: *mut bool) -> bool {
+    (_slice_index) as void;
+    (_arena) as void;
+    *keep_set = false;
+    return true;
+}
+
+fn mi_thread_local_claim() -> mi_thread_local_t {
+    let mut idx: u64 = 0;
+    if mi_thread_locals_free != 0 && mi_bitmap_try_find_and_claim(mi_thread_locals_free, 0, &mut idx, &mut mi_thread_local_claim_fun, 0) {
+        mi_thread_locals_version += 1;
+        if mi_thread_locals_version >= ((1 << (((1 << (3)) * 8) - (((1 << (3)) * 8) / 4))) - 1) {
+            mi_thread_locals_version = 1;
+        }
+        return mi_key_create(idx, mi_thread_locals_version);
+    } else {
+        return 0;
+    }
+}
+
+fn mi_thread_local_create_expand() -> bool {
+    let mut slots: mi_bitmap_t *const = mi_thread_locals_free;
+    let mut oldcount: u64 = (if slots == 0 { 0 } else { mi_bitmap_max_bits(slots) });
+    let mut newcount: u64 = 1024 + oldcount;
+    if newcount > ((1 << (((1 << (3)) * 8) / 4)) - 1) {
+        return false;
+    }
+    let mut newsize: u64 = mi_bitmap_size(newcount, 0);
+    let mut memid: mi_memid_t = mi_memid_t {};
+    let mut newslots: *mut mi_bitmap_t = _mi_meta_zalloc_aligned(_mi_subproc_main(), newsize, ((1 << (6 + (3))) / 8), &mut memid) as *mut mi_bitmap_t;
+    (if (_mi_is_aligned(newslots, ((1 << (6 + (3))) / 8))) { 0 as void } else { _mi_assert_fail("_mi_is_aligned(newslots,MI_BCHUNK_SIZE)", "mimalloc\\src\\threadlocal.c", 273, "mi_thread_local_create_expand") });
+    if newslots == 0 {
+        return false;
+    }
+    if slots != 0 {
+        let mut oldsize: u64 = mi_bitmap_size(oldcount, 0);
+        _mi_memcpy_aligned(newslots, slots, oldsize);
+        _mi_meta_free(_mi_subproc_main(), slots, mi_thread_locals_memid);
+    }
+    mi_bitmap_init(newslots, newcount, true);
+    mi_bitmap_unsafe_setN(newslots, oldcount, newcount - oldcount);
+    mi_thread_locals_free = newslots;
+    mi_thread_locals_memid = memid;
+    return true;
+}

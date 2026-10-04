@@ -1,0 +1,1875 @@
+fn mi_arena_id_from_arena(arena: *mut mi_arena_t) -> mi_arena_id_t {
+    (if (arena == 0 || arena.parent == 0) { 0 as void } else { _mi_assert_fail("arena==NULL || arena->parent==NULL", "mimalloc\\src\\arena.c", 43, "mi_arena_id_from_arena") });
+    return (if arena == 0 { _mi_arena_id_none() } else { arena as mi_arena_id_t });
+}
+
+fn mi_arena_is_suitable(arena: *mut mi_arena_t, req_arena: *mut mi_arena_t) -> bool {
+    if arena == req_arena {
+        return true;
+    }
+    if arena == 0 {
+        return false;
+    }
+    if req_arena == 0 && !arena.is_exclusive {
+        return true;
+    }
+    if arena.parent != 0 && arena.parent == req_arena {
+        return true;
+    }
+    return false;
+}
+
+fn mi_arenas_get_count(subproc: *mut mi_subproc_t) -> u64 {
+    return atomic_load_explicit(&mut subproc.arena_count, memory_order_relaxed);
+}
+
+fn mi_arena_from_index(subproc: *mut mi_subproc_t, idx: u64) -> *mut mi_arena_t {
+    (if (idx < mi_arenas_get_count(subproc)) { 0 as void } else { _mi_assert_fail("idx < mi_arenas_get_count(subproc)", "mimalloc\\src\\arena.c", 70, "mi_arena_from_index") });
+    return atomic_load_explicit(&mut subproc.arenas[idx], memory_order_acquire);
+}
+
+fn mi_arena_info_slices(arena: *mut mi_arena_t) -> u64 {
+    return arena.info_slices;
+}
+
+fn mi_heap_has_page(heap: *mut mi_heap_t, arena: *mut mi_arena_t, page: *mut mi_page_t) -> bool {
+    (if (arena.arena_idx < (160)) { 0 as void } else { _mi_assert_fail("arena->arena_idx < MI_MAX_ARENAS", "mimalloc\\src\\arena.c", 80, "mi_heap_has_page") });
+    let mut arena_pages: *mut mi_arena_pages_t = heap.arena_pages[arena.arena_idx].operator mi_arena_pages_s *();
+    return (page.memid.memkind == MI_MEM_ARENA && page.memid.mem.arena.arena == arena && arena_pages != 0 && mi_bitmap_is_setN(arena_pages.pages, page.memid.mem.arena.slice_index, 1));
+}
+
+fn mi_arena_min_alignment() -> u64 {
+    return (((1 << (3)) * (1 << (6 + (3)))) * (1 << (13 + (3))));
+}
+
+fn mi_arena_min_size() -> u64 {
+    return ((1 << (6 + (3))) * (1 << (13 + (3))));
+}
+
+fn mi_arena_page_meta_aligned_slice_count() -> u64 {
+    return _mi_divide_up(((1 << (3)) * (1 << (6 + (3)))) * , (1 << (13 + (3))));
+}
+
+fn mi_arena_max_fixed_object_size() -> u64 {
+    return ((((1 << (3)) * (1 << (6 + (3)))) * (1 << (13 + (3)))) - _mi_align_up(((1 << (3)) * (1 << (6 + (3)))) * , (1 << (13 + (3)))));
+}
+
+fn mi_arena_max_object_size() -> u64 {
+    let mut max_size: u64 = mi_option_get_size(mi_option_arena_max_object_size);
+    max_size = _mi_align_up(max_size, (1 << (13 + (3))));
+    if max_size <= ((1) * (1 << (13 + (3)))) {
+        return ((1) * (1 << (13 + (3))));
+    } else if max_size >= mi_arena_max_fixed_object_size() {
+        return mi_arena_max_fixed_object_size();
+    } else {
+        return max_size;
+    }
+}
+
+fn mi_arena_commit(subproc: *mut mi_subproc_t, arena: *mut mi_arena_t, start: *mut void, size: u64, is_zero: *mut bool, stat_already_committed: u64) -> bool {
+    (if (subproc != 0) { 0 as void } else { _mi_assert_fail("subproc!=NULL", "mimalloc\\src\\arena.c", 131, "mi_arena_commit") });
+    if arena != 0 && arena.commit_fun != 0 {
+        return *arena.commit_fun(true, start, size, is_zero, arena.commit_fun_arg);
+    } else if stat_already_committed > 0 {
+        return _mi_os_commit_ex(subproc, start, size, is_zero, stat_already_committed);
+    } else {
+        return _mi_os_commit(subproc, start, size, is_zero);
+    }
+}
+
+fn mi_arena_size(arena: *mut mi_arena_t) -> u64 {
+    return mi_size_of_slices(arena.slice_count);
+}
+
+fn mi_arena_start(arena: *mut mi_arena_t) -> *mut u8 {
+    return (arena.start as *mut u8);
+}
+
+fn mi_arena_slice_start(arena: *mut mi_arena_t, slice_index: u64) -> *mut u8 {
+    (if (slice_index < arena.slice_count) { 0 as void } else { _mi_assert_fail("slice_index < arena->slice_count", "mimalloc\\src\\arena.c", 162, "mi_arena_slice_start") });
+    return (mi_arena_start(arena) + mi_size_of_slices(slice_index));
+}
+
+fn mi_arena_page_at_slice(arena: *mut mi_arena_t, slice_index: u64) -> *mut mi_page_t {
+    (if (slice_index < arena.slice_count) { 0 as void } else { _mi_assert_fail("slice_index < arena->slice_count", "mimalloc\\src\\arena.c", 167, "mi_arena_page_at_slice") });
+    let mut page: mi_page_t *const = _mi_aligned_ptr_page(mi_arena_slice_start(arena, slice_index));
+    return page;
+}
+
+fn mi_arena_area(arena_id: mi_arena_id_t, size: *mut u64) -> *mut void {
+    if size != 0 {
+        *size = 0;
+    }
+    let mut arena: *mut mi_arena_t = _mi_arena_from_id(arena_id);
+    if arena == 0 {
+        return 0;
+    }
+    if size != 0 {
+        (if (mi_size_of_slices(arena.slice_count) <= arena.total_size) { 0 as void } else { _mi_assert_fail("mi_size_of_slices(arena->slice_count) <= arena->total_size", "mimalloc\\src\\arena.c", 192, "mi_arena_area") });
+        *size = arena.total_size;
+    }
+    return mi_arena_start(arena);
+}
+
+fn mi_memid_create_arena(arena: *mut mi_arena_t, slice_index: u64, slice_count: u64) -> mi_memid_t {
+    (if (slice_index < 4294967295) { 0 as void } else { _mi_assert_fail("slice_index < UINT32_MAX", "mimalloc\\src\\arena.c", 201, "mi_memid_create_arena") });
+    (if (slice_count < 4294967295) { 0 as void } else { _mi_assert_fail("slice_count < UINT32_MAX", "mimalloc\\src\\arena.c", 202, "mi_memid_create_arena") });
+    (if (slice_count > 0) { 0 as void } else { _mi_assert_fail("slice_count > 0", "mimalloc\\src\\arena.c", 203, "mi_memid_create_arena") });
+    (if (slice_index < arena.slice_count) { 0 as void } else { _mi_assert_fail("slice_index < arena->slice_count", "mimalloc\\src\\arena.c", 204, "mi_memid_create_arena") });
+    let mut memid: mi_memid_t = _mi_memid_create(MI_MEM_ARENA);
+    memid.mem.arena.arena = arena;
+    memid.mem.arena.slice_index = slice_index as u32;
+    memid.mem.arena.slice_count = slice_count as u32;
+    return memid;
+}
+
+fn mi_arena_from_memid(memid: mi_memid_t, slice_index: *mut u64, slice_count: *mut u64) -> *mut mi_arena_t {
+    (if (memid.memkind == MI_MEM_ARENA) { 0 as void } else { _mi_assert_fail("memid.memkind == MI_MEM_ARENA", "mimalloc\\src\\arena.c", 214, "mi_arena_from_memid") });
+    let mut arena: *mut mi_arena_t = memid.mem.arena.arena;
+    if slice_index != 0 {
+        *slice_index = memid.mem.arena.slice_index;
+    }
+    if slice_count != 0 {
+        *slice_count = memid.mem.arena.slice_count;
+    }
+    return arena;
+}
+
+fn mi_page_full_size(page: *mut mi_page_t) -> u64 {
+    if page.memid.memkind == MI_MEM_ARENA {
+        return page.memid.mem.arena.slice_count * (1 << (13 + (3)));
+    } else if mi_memid_is_os(page.memid) || page.memid.memkind == MI_MEM_EXTERNAL {
+        (if (page.memid.mem.os.base as *mut u8 <= page as *mut u8) { 0 as void } else { _mi_assert_fail("(uint8_t*)page->memid.mem.os.base <= (uint8_t*)page", "mimalloc\\src\\arena.c", 226, "mi_page_full_size") });
+        let mut presize: ptrdiff_t = page as *mut u8 - page.memid.mem.os.base as *mut u8;
+        (if (page.memid.mem.os.size as ptrdiff_t >= presize) { 0 as void } else { _mi_assert_fail("(ptrdiff_t)page->memid.mem.os.size >= presize", "mimalloc\\src\\arena.c", 228, "mi_page_full_size") });
+        return (if presize > page.memid.mem.os.size as ptrdiff_t { 0 } else { page.memid.mem.os.size - presize });
+    } else {
+        return 0;
+    }
+}
+
+fn mi_arena_try_alloc_at(arena: *mut mi_arena_t, slice_count: u64, commit: bool, tseq: u64, memid: *mut mi_memid_t) -> *mut void {
+    (if (arena != 0) { 0 as void } else { _mi_assert_fail("arena!=NULL", "mimalloc\\src\\arena.c", 243, "mi_arena_try_alloc_at") });
+    (if (slice_count > 0) { 0 as void } else { _mi_assert_fail("slice_count>0", "mimalloc\\src\\arena.c", 244, "mi_arena_try_alloc_at") });
+    let mut slice_index: u64 = 0;
+    if !mi_bbitmap_try_find_and_clearN(arena.slices_free, tseq, slice_count, &mut slice_index) {
+        return 0;
+    }
+    let mut p: *mut void = mi_arena_slice_start(arena, slice_index);
+    *memid = mi_memid_create_arena(arena, slice_index, slice_count);
+    memid.is_pinned = arena.memid.is_pinned;
+    let mut touched_slices: u64 = slice_count;
+    if arena.memid.initially_zero {
+        let mut already_dirty: u64 = 0;
+        memid.initially_zero = mi_bitmap_setN(arena.slices_dirty, slice_index, slice_count, &mut already_dirty);
+        (if (already_dirty <= touched_slices) { 0 as void } else { _mi_assert_fail("already_dirty <= touched_slices", "mimalloc\\src\\arena.c", 258, "mi_arena_try_alloc_at") });
+        touched_slices -= already_dirty;
+    } else {
+        touched_slices = 0;
+    }
+    if commit {
+        let mut already_committed: u64 = mi_bitmap_popcountN(arena.slices_committed, slice_index, slice_count);
+        if already_committed < slice_count {
+            let mut commit_zero: bool = false;
+            if !mi_arena_commit(arena.subproc, arena, p, mi_size_of_slices(slice_count), &mut commit_zero, mi_size_of_slices(already_committed)) {
+                mi_bbitmap_setN(arena.slices_free, slice_index, slice_count);
+                return 0;
+            }
+            if commit_zero {
+                memid.initially_zero = true;
+            }
+            mi_bitmap_setN(arena.slices_committed, slice_index, slice_count, 0);
+            if memid.initially_zero {
+                if !mi_mem_is_zero(p, mi_size_of_slices(slice_count)) {
+                    _mi_error_message(14, "internal error: arena allocation was not zero-initialized!\n");
+                    memid.initially_zero = false;
+                }
+            }
+        } else {
+            _mi_os_reuse(arena.subproc, p, mi_size_of_slices(slice_count));
+            if _mi_os_has_overcommit() && touched_slices > 0 && !arena.memid.is_pinned {
+                __mi_stat_increase_mt(&mut (arena.subproc).stats.committed, mi_size_of_slices(touched_slices));
+            }
+        }
+        (if (mi_bitmap_is_setN(arena.slices_committed, slice_index, slice_count)) { 0 as void } else { _mi_assert_fail("mi_bitmap_is_setN(arena->slices_committed, slice_index, slice_count)", "mimalloc\\src\\arena.c", 306, "mi_arena_try_alloc_at") });
+        memid.initially_committed = true;
+        if memid.initially_zero {} else {}
+    } else {
+        memid.initially_committed = mi_bitmap_is_setN(arena.slices_committed, slice_index, slice_count);
+        if !memid.initially_committed {
+            let mut already_committed_count: u64 = 0;
+            mi_bitmap_setN(arena.slices_committed, slice_index, slice_count, &mut already_committed_count);
+            mi_bitmap_clearN(arena.slices_committed, slice_index, slice_count);
+            __mi_stat_decrease_mt(&mut (arena.subproc).stats.committed, mi_size_of_slices(already_committed_count));
+        }
+    }
+    (if (mi_bbitmap_is_clearN(arena.slices_free, slice_index, slice_count)) { 0 as void } else { _mi_assert_fail("mi_bbitmap_is_clearN(arena->slices_free, slice_index, slice_count)", "mimalloc\\src\\arena.c", 329, "mi_arena_try_alloc_at") });
+    if commit {
+        (if (mi_bitmap_is_setN(arena.slices_committed, slice_index, slice_count)) { 0 as void } else { _mi_assert_fail("mi_bitmap_is_setN(arena->slices_committed, slice_index, slice_count)", "mimalloc\\src\\arena.c", 330, "mi_arena_try_alloc_at") });
+    }
+    if commit {
+        (if (memid.initially_committed) { 0 as void } else { _mi_assert_fail("memid->initially_committed", "mimalloc\\src\\arena.c", 331, "mi_arena_try_alloc_at") });
+    }
+    (if (mi_bitmap_is_setN(arena.slices_dirty, slice_index, slice_count)) { 0 as void } else { _mi_assert_fail("mi_bitmap_is_setN(arena->slices_dirty, slice_index, slice_count)", "mimalloc\\src\\arena.c", 332, "mi_arena_try_alloc_at") });
+    return p;
+}
+
+fn mi_arena_reserve(subproc: *mut mi_subproc_t, req_size: u64, allow_large: bool, arena_id: *mut mi_arena_id_t) -> bool {
+    let mut arena_count: u64 = mi_arenas_get_count(subproc);
+    if arena_count > ((160) - 4) {
+        return false;
+    }
+    let mut arena_reserve: u64 = mi_option_get_size(mi_option_arena_reserve);
+    if arena_reserve == 0 {
+        return false;
+    }
+    if !_mi_os_has_virtual_reserve() {
+        arena_reserve = arena_reserve / 4;
+    }
+    arena_reserve = _mi_align_up(arena_reserve, (1 << (13 + (3))));
+    if arena_count >= 1 && arena_count <= 128 {
+        let mut multiplier: u64 = 1 as u64 << _mi_clamp(arena_count / 8, 0, 16);
+        let mut reserve: u64 = 0;
+        if !mi_mul_overflow(multiplier, arena_reserve, &mut reserve) {
+            arena_reserve = reserve;
+        }
+    }
+    req_size = _mi_align_up(req_size + (((1 << (6 + (3)))) * (1 << (13 + (3)))), (((1 << (6 + (3)))) * (1 << (13 + (3)))));
+    if arena_reserve < req_size {
+        arena_reserve = req_size;
+    }
+    let mut min_reserve: u64 = ((1 << (6 + (3))) * (1 << (13 + (3))));
+    let mut max_reserve: u64 = ((((1 << (6 + (3)))) * (1 << (6 + (3)))) * (1 << (13 + (3))));
+    if arena_reserve < min_reserve {
+        arena_reserve = min_reserve;
+    } else if arena_reserve > max_reserve {
+        arena_reserve = max_reserve;
+    }
+    if arena_reserve < req_size {
+        return false;
+    }
+    let mut arena_commit: bool = false;
+    let mut overcommit: bool = _mi_os_has_overcommit();
+    if mi_option_get(mi_option_arena_eager_commit) == 2 {
+        arena_commit = overcommit || mi_option_is_enabled(mi_option_allow_large_os_pages);
+    } else if mi_option_get(mi_option_arena_eager_commit) == 1 {
+        arena_commit = true;
+    }
+    let mut adjust: bool = (overcommit && arena_commit);
+    if adjust {
+        __mi_stat_adjust_decrease_mt(&mut (subproc).stats.committed, arena_reserve);
+    }
+    let mut err: i32 = mi_reserve_os_memory_ex2(subproc, arena_reserve, arena_commit, allow_large, false, arena_id);
+    if err != 0 {
+        if adjust {
+            __mi_stat_adjust_increase_mt(&mut (subproc).stats.committed, arena_reserve);
+        }
+        let mut small_arena_reserve: u64 = 4 * ((1 << (6 + (3))) * (1 << (13 + (3))));
+        if arena_reserve > small_arena_reserve && small_arena_reserve > req_size {
+            if adjust {
+                __mi_stat_adjust_decrease_mt(&mut (subproc).stats.committed, small_arena_reserve);
+            }
+            err = mi_reserve_os_memory_ex2(subproc, small_arena_reserve, arena_commit, allow_large, false, arena_id);
+            if err != 0 && adjust {
+                __mi_stat_adjust_increase_mt(&mut (subproc).stats.committed, small_arena_reserve);
+            }
+        }
+    }
+    return (err == 0);
+}
+
+fn mi_arena_is_suitable_ex(arena: *mut mi_arena_t, req_arena: *mut mi_arena_t, match_numa: bool, numa_node: i32, allow_pinned: bool) -> bool {
+    if !allow_pinned && arena.memid.is_pinned {
+        return false;
+    }
+    if !mi_arena_is_suitable(arena, req_arena) {
+        return false;
+    }
+    if req_arena == 0 {
+        let mut numa_suitable: bool = (numa_node < 0 || arena.numa_node < 0 || arena.numa_node == numa_node);
+        if match_numa {
+            if !numa_suitable {
+                return false;
+            }
+        } else {
+            if numa_suitable {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+fn mi_arena_start_idx(heap: *mut mi_heap_t, tseq: u64, arena_cycle: u64) -> u64 {
+    let mut hseq: u64 = heap.heap_seq;
+    let mut hcount: u64 = atomic_load_explicit(&mut heap.subproc.heap_count, memory_order_relaxed);
+    if arena_cycle <= 1 {
+        return 0;
+    }
+    if hseq == 0 || hcount <= 1 || arena_cycle > 2303 {
+        return (tseq % arena_cycle);
+    }
+    let mut start: u64 = 0;
+    (if (arena_cycle <= 2303) { 0 as void } else { _mi_assert_fail("arena_cycle <= 0x8FF", "mimalloc\\src\\arena.c", 437, "mi_arena_start_idx") });
+    let mut frac: u64 = (arena_cycle * 256) / hcount;
+    if frac == 0 {
+        start = (hseq % arena_cycle);
+    } else {
+        let mut hspot: u64 = (hseq % hcount);
+        start = (frac * hspot) / 256;
+        if frac >= 512 {
+            start = start + (tseq % (frac / 256));
+        }
+    }
+    (if (start < arena_cycle) { 0 as void } else { _mi_assert_fail("start < arena_cycle", "mimalloc\\src\\arena.c", 450, "mi_arena_start_idx") });
+    return start;
+}
+
+fn mi_arenas_try_find_free(heap: *mut mi_heap_t, slice_count: u64, alignment: u64, commit: bool, allow_large: bool, req_arena: *mut mi_arena_t, tseq: u64, numa_node: i32, memid: *mut mi_memid_t) -> *mut void {
+    (if (alignment <= ((1 << (13 + (3))))) { 0 as void } else { _mi_assert_fail("alignment <= MI_ARENA_SLICE_ALIGN", "mimalloc\\src\\arena.c", 499, "mi_arenas_try_find_free") });
+    if alignment > ((1 << (13 + (3)))) {
+        return 0;
+    }
+    {
+        let mut _arena_count: u64 = mi_arenas_get_count(heap.subproc);
+        let mut _arena_cycle: u64 = (if _arena_count == 0 { 0 } else { _arena_count - 1 });
+        let mut _start: u64 = (if req_arena == 0 { mi_arena_start_idx(heap, tseq, _arena_cycle) } else { (req_arena as *mut mi_arena_t).arena_idx });
+        (if (_start <= _arena_count) { 0 as void } else { _mi_assert_fail("_start <= _arena_count", "mimalloc\\src\\arena.c", 503, "mi_arenas_try_find_free") });
+        for let mut _i: u64 = 0; _i < _arena_count; _i += 1 {
+            let mut arena: *mut mi_arena_t = null;
+            let mut _idx: u64 = 0;
+            if _i < _arena_cycle {
+                _idx = _i + _start;
+                if _idx >= _arena_cycle {
+                    _idx -= _arena_cycle;
+                }
+            } else {
+                _idx = _i;
+            }
+            arena = mi_arena_from_index(heap.subproc, _idx);
+            if req_arena != 0 && arena != req_arena && (arena == 0 || arena.parent != req_arena) {
+                continue;
+            }
+            if arena != 0 {
+                {
+                    if mi_arena_is_suitable_ex(arena, req_arena, true, numa_node, allow_large) {
+                        {
+                            let mut p: *mut void = mi_arena_try_alloc_at(arena, slice_count, commit, tseq, memid);
+                            if p != 0 {
+                                return p;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if numa_node < 0 {
+        return 0;
+    }
+    {
+        let mut _arena_count: u64 = mi_arenas_get_count(heap.subproc);
+        let mut _arena_cycle: u64 = (if _arena_count == 0 { 0 } else { _arena_count - 1 });
+        let mut _start: u64 = (if req_arena == 0 { mi_arena_start_idx(heap, tseq, _arena_cycle) } else { (req_arena as *mut mi_arena_t).arena_idx });
+        (if (_start <= _arena_count) { 0 as void } else { _mi_assert_fail("_start <= _arena_count", "mimalloc\\src\\arena.c", 512, "mi_arenas_try_find_free") });
+        for let mut _i: u64 = 0; _i < _arena_count; _i += 1 {
+            let mut arena: *mut mi_arena_t = null;
+            let mut _idx: u64 = 0;
+            if _i < _arena_cycle {
+                _idx = _i + _start;
+                if _idx >= _arena_cycle {
+                    _idx -= _arena_cycle;
+                }
+            } else {
+                _idx = _i;
+            }
+            arena = mi_arena_from_index(heap.subproc, _idx);
+            if req_arena != 0 && arena != req_arena && (arena == 0 || arena.parent != req_arena) {
+                continue;
+            }
+            if arena != 0 {
+                {
+                    if mi_arena_is_suitable_ex(arena, req_arena, false, numa_node, allow_large) {
+                        {
+                            let mut p: *mut void = mi_arena_try_alloc_at(arena, slice_count, commit, tseq, memid);
+                            if p != 0 {
+                                return p;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+fn mi_arenas_try_alloc(heap: *mut mi_heap_t, slice_count: u64, alignment: u64, commit: bool, allow_large: bool, req_arena: *mut mi_arena_t, tseq: u64, numa_node: i32, memid: *mut mi_memid_t) -> *mut void {
+    (if (alignment <= ((1 << (13 + (3))))) { 0 as void } else { _mi_assert_fail("alignment <= MI_ARENA_SLICE_ALIGN", "mimalloc\\src\\arena.c", 529, "mi_arenas_try_alloc") });
+    let mut p: *mut void = null;
+    if slice_count * (1 << (13 + (3))) > ((((1 << (6 + (3)))) * (1 << (6 + (3)))) * (1 << (13 + (3)))) {
+        return 0;
+    }
+    p = mi_arenas_try_find_free(heap, slice_count, alignment, commit, allow_large, req_arena, tseq, numa_node, memid);
+    if p != 0 {
+        return p;
+    }
+    if req_arena != 0 {
+        return 0;
+    }
+    if mi_option_is_enabled(mi_option_disallow_os_alloc) {
+        return 0;
+    }
+    let mut subproc: mi_subproc_t *const = heap.subproc;
+    let mut arena_count: u64 = mi_arenas_get_count(subproc);
+    for let mut _mi_go: bool = (mi_lock_acquire(&mut subproc.arena_reserve_lock) , true); _mi_go; (mi_lock_release(&mut subproc.arena_reserve_lock) , _mi_go = false) {
+        if arena_count == mi_arenas_get_count(subproc) {
+            let mut arena_id: mi_arena_id_t = _mi_arena_id_none();
+            mi_arena_reserve(subproc, mi_size_of_slices(slice_count), allow_large, &mut arena_id);
+        } else {}
+    }
+    (if (req_arena == 0) { 0 as void } else { _mi_assert_fail("req_arena == NULL", "mimalloc\\src\\arena.c", 562, "mi_arenas_try_alloc") });
+    p = mi_arenas_try_find_free(heap, slice_count, alignment, commit, allow_large, req_arena, tseq, numa_node, memid);
+    if p != 0 {
+        return p;
+    }
+    return 0;
+}
+
+fn mi_arena_os_alloc_aligned(subproc: *mut mi_subproc_t, size: u64, alignment: u64, align_offset: u64, commit: bool, allow_large: bool, req_arena_id: mi_arena_id_t, memid: *mut mi_memid_t) -> *mut void {
+    if mi_option_is_enabled(mi_option_disallow_os_alloc) || req_arena_id != _mi_arena_id_none() {
+        (*_errno()) = 12;
+        return 0;
+    }
+    if align_offset > 0 {
+        return _mi_os_alloc_aligned_at_offset(subproc, size, alignment, align_offset, commit, allow_large, memid);
+    } else {
+        return _mi_os_alloc_aligned(subproc, size, alignment, commit, allow_large, memid);
+    }
+}
+
+fn mi_abandoned_page_unown(page: *mut mi_page_t, current_theapx: *mut mi_theap_t) -> bool {
+    (if (mi_page_is_owned(page)) { 0 as void } else { _mi_assert_fail("mi_page_is_owned(page)", "mimalloc\\src\\arena.c", 629, "mi_abandoned_page_unown") });
+    (if (mi_page_is_abandoned(page)) { 0 as void } else { _mi_assert_fail("mi_page_is_abandoned(page)", "mimalloc\\src\\arena.c", 630, "mi_abandoned_page_unown") });
+    (if (mi_theap_matches_thread(current_theapx)) { 0 as void } else { _mi_assert_fail("mi_theap_matches_thread(current_theapx)", "mimalloc\\src\\arena.c", 631, "mi_abandoned_page_unown") });
+    let mut tf_new: mi_thread_free_t = zeroed();
+    let mut tf_old: mi_thread_free_t = atomic_load_explicit(&mut page.xthread_free, memory_order_relaxed);
+    while true {
+        {
+        (if (mi_tf_is_owned(tf_old)) { 0 as void } else { _mi_assert_fail("mi_tf_is_owned(tf_old)", "mimalloc\\src\\arena.c", 635, "mi_abandoned_page_unown") });
+        while __builtin_expect(!!(mi_tf_block(tf_old) != 0), false) {
+            _mi_page_free_collect(page, false);
+            if mi_page_all_free(page) {
+                _mi_arenas_page_unabandon(page, current_theapx);
+                _mi_arenas_page_free(page, current_theapx);
+                return true;
+            }
+            tf_old = atomic_load_explicit(&mut page.xthread_free, memory_order_relaxed);
+        }
+        (if (mi_tf_block(tf_old) == 0) { 0 as void } else { _mi_assert_fail("mi_tf_block(tf_old)==NULL", "mimalloc\\src\\arena.c", 645, "mi_abandoned_page_unown") });
+        tf_new = mi_tf_create(0, false);
+    }
+        if !(!atomic_compare_exchange_weak_explicit(&mut page.xthread_free, &mut tf_old, tf_new, memory_order_acq_rel, memory_order_acquire)) { break; }
+    }
+    return false;
+}
+
+fn mi_arena_try_claim_abandoned(slice_index: u64, arena: *mut mi_arena_t, keep_abandoned: *mut bool) -> bool {
+    let mut page: mi_page_t *const = mi_arena_page_at_slice(arena, slice_index);
+    if !mi_page_claim_ownership(page) {
+        *keep_abandoned = true;
+        return false;
+    } else {
+        *keep_abandoned = false;
+        return true;
+    }
+}
+
+fn mi_heap_arena_pages(heap: *mut mi_heap_t, arena: *mut mi_arena_t) -> *mut mi_arena_pages_t {
+    (if (arena != 0) { 0 as void } else { _mi_assert_fail("arena!=NULL", "mimalloc\\src\\arena.c", 675, "mi_heap_arena_pages") });
+    (if (heap != 0) { 0 as void } else { _mi_assert_fail("heap!=NULL", "mimalloc\\src\\arena.c", 676, "mi_heap_arena_pages") });
+    (if (arena.arena_idx < (160)) { 0 as void } else { _mi_assert_fail("arena->arena_idx < MI_MAX_ARENAS", "mimalloc\\src\\arena.c", 677, "mi_heap_arena_pages") });
+    return atomic_load_explicit(&mut heap.arena_pages[arena.arena_idx], memory_order_acquire);
+}
+
+fn mi_page_arena_pages(page: *mut mi_page_t, slice_index: *mut u64, slice_count: *mut u64, parena_pages: *mut *mut mi_arena_pages_t) -> *mut mi_arena_t {
+    (if (mi_page_is_owned(page)) { 0 as void } else { _mi_assert_fail("mi_page_is_owned(page)", "mimalloc\\src\\arena.c", 683, "mi_page_arena_pages") });
+    let mut arena: mi_arena_t *const = mi_arena_from_memid(page.memid, slice_index, slice_count);
+    (if (arena != 0) { 0 as void } else { _mi_assert_fail("arena != NULL", "mimalloc\\src\\arena.c", 685, "mi_page_arena_pages") });
+    if parena_pages != 0 {
+        let mut heap: *mut mi_heap_t = mi_page_heap(page);
+        let mut arena_pages: mi_arena_pages_t *const = mi_heap_arena_pages(heap, arena);
+        (if (arena_pages != 0) { 0 as void } else { _mi_assert_fail("arena_pages != NULL", "mimalloc\\src\\arena.c", 689, "mi_page_arena_pages") });
+        (if (slice_index == 0 || mi_bitmap_is_set(arena_pages.pages, *slice_index)) { 0 as void } else { _mi_assert_fail("slice_index==NULL || mi_bitmap_is_set(arena_pages->pages, *slice_index)", "mimalloc\\src\\arena.c", 690, "mi_page_arena_pages") });
+        *parena_pages = arena_pages;
+    }
+    return arena;
+}
+
+fn mi_heap_ensure_arena_pages(heap: *mut mi_heap_t, arena: *mut mi_arena_t) -> *mut mi_arena_pages_t {
+    (if (arena != 0) { 0 as void } else { _mi_assert_fail("arena!=NULL", "mimalloc\\src\\arena.c", 697, "mi_heap_ensure_arena_pages") });
+    (if (heap != 0) { 0 as void } else { _mi_assert_fail("heap!=NULL", "mimalloc\\src\\arena.c", 698, "mi_heap_ensure_arena_pages") });
+    (if (arena.arena_idx < (160)) { 0 as void } else { _mi_assert_fail("arena->arena_idx < MI_MAX_ARENAS", "mimalloc\\src\\arena.c", 699, "mi_heap_ensure_arena_pages") });
+    let mut arena_pages: *mut mi_arena_pages_t = mi_heap_arena_pages(heap, arena);
+    if arena_pages == 0 {
+        for let mut _mi_go: bool = (mi_lock_acquire(&mut heap.arena_pages_lock) , true); _mi_go; (mi_lock_release(&mut heap.arena_pages_lock) , _mi_go = false) {
+            arena_pages = atomic_load_explicit(&mut heap.arena_pages[arena.arena_idx], memory_order_acquire);
+            if arena_pages == 0 {
+                if _mi_is_heap_main(heap) {
+                    arena_pages = &mut arena.pages_main;
+                } else {
+                    arena_pages = mi_arena_pages_alloc(arena);
+                }
+                atomic_store_explicit(&mut heap.arena_pages[arena.arena_idx], arena_pages as *mut mi_arena_pages_t, memory_order_release);
+            }
+        }
+    }
+    if _mi_is_heap_main(heap) {
+        (if (arena_pages != 0) { 0 as void } else { _mi_assert_fail("arena_pages != NULL", "mimalloc\\src\\arena.c", 718, "mi_heap_ensure_arena_pages") });
+    }
+    return arena_pages;
+}
+
+fn mi_arenas_page_try_find_abandoned(theap: *mut mi_theap_t, slice_count: u64, block_size: u64) -> *mut mi_page_t {
+    let mut heap: mi_heap_t *const = _mi_theap_heap(theap);
+    let mut tseq: u64 = theap.tld.thread_seq;
+    let mut req_arena: mi_arena_t *const = heap.exclusive_arena;
+    (slice_count) as void;
+    let mut bin: u64 = _mi_bin(block_size);
+    if bin >= ((60) + 1) {
+        return 0;
+    }
+    (if (heap != 0) { 0 as void } else { _mi_assert_fail("heap != NULL", "mimalloc\\src\\arena.c", 735, "mi_arenas_page_try_find_abandoned") });
+    if atomic_load_explicit(&mut heap.abandoned_count[bin], memory_order_relaxed) == 0 {
+        return 0;
+    }
+    let mut allow_large: bool = true;
+    let mut any_numa: i32 = -1;
+    let mut match_numa: bool = true;
+    {
+        let mut _arena_count: u64 = mi_arenas_get_count(heap.subproc);
+        let mut _arena_cycle: u64 = (if _arena_count == 0 { 0 } else { _arena_count - 1 });
+        let mut _start: u64 = (if req_arena == 0 { mi_arena_start_idx(heap, tseq, _arena_cycle) } else { (req_arena as *mut mi_arena_t).arena_idx });
+        (if (_start <= _arena_count) { 0 as void } else { _mi_assert_fail("_start <= _arena_count", "mimalloc\\src\\arena.c", 744, "mi_arenas_page_try_find_abandoned") });
+        for let mut _i: u64 = 0; _i < _arena_count; _i += 1 {
+            let mut arena: *mut mi_arena_t = null;
+            let mut _idx: u64 = 0;
+            if _i < _arena_cycle {
+                _idx = _i + _start;
+                if _idx >= _arena_cycle {
+                    _idx -= _arena_cycle;
+                }
+            } else {
+                _idx = _i;
+            }
+            arena = mi_arena_from_index(heap.subproc, _idx);
+            if req_arena != 0 && arena != req_arena && (arena == 0 || arena.parent != req_arena) {
+                continue;
+            }
+            if arena != 0 {
+                {
+                    if mi_arena_is_suitable_ex(arena, req_arena, match_numa, any_numa, allow_large) {
+                        {
+                            let mut arena_pages: mi_arena_pages_t *const = mi_heap_arena_pages(heap, arena);
+                            if arena_pages != 0 {
+                                let mut slice_index: u64 = 0;
+                                let mut bitmap: mi_bitmap_t *const = arena_pages.pages_abandoned[bin];
+                                if mi_bitmap_try_find_and_claim(bitmap, tseq, &mut slice_index, &mut mi_arena_try_claim_abandoned, arena) {
+                                    let mut page: *mut mi_page_t = mi_arena_page_at_slice(arena, slice_index);
+                                    (if (mi_page_is_owned(page)) { 0 as void } else { _mi_assert_fail("mi_page_is_owned(page)", "mimalloc\\src\\arena.c", 755, "mi_arenas_page_try_find_abandoned") });
+                                    (if (mi_page_is_abandoned(page)) { 0 as void } else { _mi_assert_fail("mi_page_is_abandoned(page)", "mimalloc\\src\\arena.c", 756, "mi_arenas_page_try_find_abandoned") });
+                                    (if (mi_heap_has_page(heap, arena, page)) { 0 as void } else { _mi_assert_fail("mi_heap_has_page(heap, arena, page)", "mimalloc\\src\\arena.c", 757, "mi_arenas_page_try_find_abandoned") });
+                                    atomic_fetch_sub_explicit(&mut heap.abandoned_count[bin], 1 as u64, memory_order_relaxed);
+                                    __mi_stat_decrease(&mut (theap).stats.pages_abandoned, 1);
+                                    __mi_stat_counter_increase(&mut (theap).stats.pages_reclaim_on_alloc, 1);
+                                    _mi_page_free_collect(page, false);
+                                    (if (mi_bbitmap_is_clearN(arena.slices_free, slice_index, slice_count)) { 0 as void } else { _mi_assert_fail("mi_bbitmap_is_clearN(arena->slices_free, slice_index, slice_count)", "mimalloc\\src\\arena.c", 763, "mi_arenas_page_try_find_abandoned") });
+                                    (if (mi_page_slice_committed(page) > 0 || mi_bitmap_is_setN(arena.slices_committed, slice_index, slice_count)) { 0 as void } else { _mi_assert_fail("mi_page_slice_committed(page) > 0 || mi_bitmap_is_setN(arena->slices_committed, slice_index, slice_count)", "mimalloc\\src\\arena.c", 764, "mi_arenas_page_try_find_abandoned") });
+                                    (if (mi_bitmap_is_setN(arena.slices_dirty, slice_index, slice_count)) { 0 as void } else { _mi_assert_fail("mi_bitmap_is_setN(arena->slices_dirty, slice_index, slice_count)", "mimalloc\\src\\arena.c", 765, "mi_arenas_page_try_find_abandoned") });
+                                    (if (_mi_is_aligned(mi_page_slice_start(page), ((1 << (13 + (3)))))) { 0 as void } else { _mi_assert_fail("_mi_is_aligned(mi_page_slice_start(page), MI_PAGE_ALIGN)", "mimalloc\\src\\arena.c", 766, "mi_arenas_page_try_find_abandoned") });
+                                    (if (_mi_ptr_page(mi_page_start(page)) == page) { 0 as void } else { _mi_assert_fail("_mi_ptr_page(mi_page_start(page))==page", "mimalloc\\src\\arena.c", 767, "mi_arenas_page_try_find_abandoned") });
+                                    (if (mi_page_block_size(page) == block_size) { 0 as void } else { _mi_assert_fail("mi_page_block_size(page) == block_size", "mimalloc\\src\\arena.c", 768, "mi_arenas_page_try_find_abandoned") });
+                                    (if (!mi_page_is_full(page)) { 0 as void } else { _mi_assert_fail("!mi_page_is_full(page)", "mimalloc\\src\\arena.c", 769, "mi_arenas_page_try_find_abandoned") });
+                                    return page;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+fn mi_arenas_page_alloc_fresh_area(theap: *mut mi_theap_t, slice_count: u64, max_page_meta_count: u64, block_alignment: u64, os_align: bool, commit: bool, memid: *mut mi_memid_t, parena_pages: *mut *mut mi_arena_pages_t) -> *mut u8 {
+    (max_page_meta_count) as void;
+    (if (parena_pages != 0) { 0 as void } else { _mi_assert_fail("parena_pages!=NULL", "mimalloc\\src\\arena.c", 780, "mi_arenas_page_alloc_fresh_area") });
+    *parena_pages = 0;
+    let mut allow_large: bool = (0 < 5);
+    let mut page_alignment: u64 = ((1 << (13 + (3))));
+    let mut heap: mi_heap_t *const = _mi_theap_heap(theap);
+    let mut tld: mi_tld_t *const = theap.tld;
+    let mut req_arena: mi_arena_t *const = heap.exclusive_arena;
+    let mut numa_node: i32 = (if heap.numa_node >= 0 { heap.numa_node } else { tld.numa_node });
+    let mut start: *mut u8 = 0;
+    *memid = _mi_memid_none();
+    let mut alloc_size: u64 = mi_size_of_slices(slice_count);
+    if !mi_option_is_enabled(mi_option_disallow_arena_alloc) && !os_align && slice_count <= mi_arena_max_object_size() / (1 << (13 + (3))) {
+        start = mi_arenas_try_alloc(heap, slice_count, page_alignment, commit, allow_large, req_arena, tld.thread_seq, numa_node, memid) as *mut u8;
+        if start != 0 {
+            let mut arena_pages: mi_arena_pages_t *const = mi_heap_ensure_arena_pages(heap, memid.mem.arena.arena);
+            *parena_pages = arena_pages;
+            if arena_pages == 0 {
+                _mi_arenas_free(heap.subproc, start, mi_size_of_slices(slice_count), *memid);
+                start = 0;
+            } else {
+                (if (mi_bitmap_is_clear(arena_pages.pages, memid.mem.arena.slice_index)) { 0 as void } else { _mi_assert_fail("mi_bitmap_is_clear(arena_pages->pages, memid->mem.arena.slice_index)", "mimalloc\\src\\arena.c", 810, "mi_arenas_page_alloc_fresh_area") });
+            }
+        }
+    }
+    if start == 0 {
+        let mut page_offset: u64 = 0;
+        let mut os_start: *mut u8 = null;
+        if block_alignment < (((1 << (3)) * (1 << (6 + (3)))) * (1 << (13 + (3)))) {
+            page_offset = (if block_alignment < ((1 << (13 + (3)))) { ((1 << (13 + (3)))) } else { block_alignment });
+            os_start = mi_arena_os_alloc_aligned(heap.subproc, alloc_size + page_offset, (((1 << (3)) * (1 << (6 + (3)))) * (1 << (13 + (3)))), 0, false, false, req_arena, memid) as *mut u8;
+        } else {
+            _mi_warning_message("requested alignment is too large (%zu KiB)\n", block_alignment / (1024));
+            (*_errno()) = 22;
+            return 0;
+        }
+        if os_start == 0 {
+            return 0;
+        }
+        let mut min_page_count: u64 = _mi_divide_up(page_offset + (1 << (13 + (3))), (1 << (13 + (3)))) + max_page_meta_count;
+        let mut min_page_meta: u64 = min_page_count * ;
+        (if (min_page_meta < page_offset) { 0 as void } else { _mi_assert_fail("min_page_meta < page_offset", "mimalloc\\src\\arena.c", 838, "mi_arenas_page_alloc_fresh_area") });
+        let mut is_zero: bool = false;
+        let mut ok: bool = mi_arena_commit(heap.subproc, req_arena, os_start, min_page_meta, &mut is_zero, min_page_meta);
+        if ok && commit {
+            ok = mi_arena_commit(heap.subproc, req_arena, os_start + page_offset, alloc_size, 0, 0);
+        }
+        if !ok {
+            _mi_os_free(heap.subproc, os_start, alloc_size + page_offset, *memid);
+            return 0;
+        }
+        if !is_zero && !memid.initially_zero {
+            _mi_memzero_aligned(os_start, min_page_meta);
+        }
+        start = os_start + page_offset;
+        (if (_mi_is_aligned(start, block_alignment)) { 0 as void } else { _mi_assert_fail("_mi_is_aligned(start,block_alignment)", "mimalloc\\src\\arena.c", 849, "mi_arenas_page_alloc_fresh_area") });
+        (if (_mi_is_aligned(os_start, (((1 << (3)) * (1 << (6 + (3)))) * (1 << (13 + (3)))))) { 0 as void } else { _mi_assert_fail("_mi_is_aligned(os_start,MI_PAGE_META_ALIGNMENT)", "mimalloc\\src\\arena.c", 850, "mi_arenas_page_alloc_fresh_area") });
+        (if (_mi_align_down_ptr(start - 1, (((1 << (3)) * (1 << (6 + (3)))) * (1 << (13 + (3))))) == os_start) { 0 as void } else { _mi_assert_fail("_mi_align_down_ptr(start-1,MI_PAGE_META_ALIGNMENT) == os_start", "mimalloc\\src\\arena.c", 851, "mi_arenas_page_alloc_fresh_area") });
+        (if (_mi_aligned_ptr_page0(start) as *mut u8 < os_start + min_page_meta) { 0 as void } else { _mi_assert_fail("(uint8_t*)_mi_aligned_ptr_page0(start) < os_start + min_page_meta", "mimalloc\\src\\arena.c", 852, "mi_arenas_page_alloc_fresh_area") });
+        memid.initially_committed = true;
+        if start != 0 {
+            __mi_stat_increase_mt(&mut (heap).stats.pages_os_allocated, 1);
+        }
+    }
+    if start == 0 {
+        return 0;
+    }
+    (if (_mi_is_aligned(start, ((1 << (13 + (3)))))) { 0 as void } else { _mi_assert_fail("_mi_is_aligned(start, MI_PAGE_ALIGN)", "mimalloc\\src\\arena.c", 868, "mi_arenas_page_alloc_fresh_area") });
+    return start;
+}
+
+fn mi_page_block_start(block_size: u64, os_align: bool) -> u64 {
+    let mut offset: u64 = 0;
+    let mut os_page_size: u64 = _mi_os_page_size();
+    (if (((1 << (13 + (3)))) >= os_page_size) { 0 as void } else { _mi_assert_fail("MI_PAGE_ALIGN >= os_page_size", "mimalloc\\src\\arena.c", 880, "mi_page_block_start") });
+    if !os_align && block_size % os_page_size == 0 && block_size > os_page_size {
+        offset = _mi_align_up(mi_page_info_size(), os_page_size);
+    } else if os_align {
+        offset = ((1 << (13 + (3))));
+    } else if block_size != 0 && _mi_is_power_of_two(block_size) && block_size <= (4 * (1024)) {
+        offset = _mi_align_up(mi_page_info_size(), block_size);
+        if block_size < 64 {
+            offset += 3 * block_size;
+        }
+    } else if block_size != 0 && block_size <= (128 * ) {
+        offset = _mi_align_up(mi_page_info_size(), block_size);
+    } else if block_size != 0 && (block_size % (4 * (1024))) == 0 {
+        offset = _mi_align_up(mi_page_info_size(), (4 * (1024)));
+    } else {
+        offset = mi_page_info_size();
+    }
+    return _mi_align_up(offset, 16);
+}
+
+fn mi_arena_page_meta(memid_slice: mi_memid_t, slice_start: *void) -> *mut mi_page_t {
+    if memid_slice.memkind == MI_MEM_ARENA || mi_memid_is_os(memid_slice) {
+        if memid_slice.memkind == MI_MEM_ARENA {
+            let mut arena: mi_arena_t *const = memid_slice.mem.arena.arena;
+            let mut meta_slices: uint8_t *const = _mi_align_down_ptr(slice_start, (((1 << (3)) * (1 << (6 + (3)))) * (1 << (13 + (3))))) as *mut u8;
+            (if (meta_slices >= mi_arena_start(arena)) { 0 as void } else { _mi_assert_fail("meta_slices >= mi_arena_start(arena)", "mimalloc\\src\\arena.c", 920, "mi_arena_page_meta") });
+            let mut meta_slice_index: u64 = (meta_slices - mi_arena_start(arena)) / (1 << (13 + (3)));
+            if __builtin_expect(!!(mi_bitmap_is_clear(arena.slices_committed, meta_slice_index)), false) {
+                let mut meta_slice_count: u64 = mi_arena_page_meta_aligned_slice_count();
+                let mut commit_size: u64 = meta_slice_count * (1 << (13 + (3)));
+                if !mi_arena_commit(arena.subproc, arena, meta_slices, commit_size, 0, 0) {
+                    return 0;
+                }
+                mi_bitmap_setN(arena.slices_committed, meta_slice_index, meta_slice_count, 0);
+            }
+        }
+        let mut page_meta: mi_page_t *const = _mi_aligned_ptr_page0(slice_start);
+        return page_meta;
+    }
+    return 0;
+}
+
+fn mi_arenas_page_alloc_fresh(theap: *mut mi_theap_t, slice_count: u64, block_size: u64, block_alignment: u64, commit: bool) -> *mut mi_page_t {
+    let mut os_align: bool = (block_alignment > (1 << (13 + (3))));
+    let mut singleton: bool = (os_align || block_size > (((1 << (3)) * (8 * ((1) * (1 << (13 + (3)))))) / 8));
+    let mut max_page_meta_count: u64 = (if singleton && slice_count > 2 { 2 } else { slice_count });
+    let mut alloc_size: u64 = mi_size_of_slices(slice_count);
+    let mut memid: mi_memid_t = _mi_memid_none();
+    let mut arena_pages: *mut mi_arena_pages_t = 0;
+    let mut slice_start: uint8_t *const = mi_arenas_page_alloc_fresh_area(theap, slice_count, max_page_meta_count, block_alignment, os_align, commit, &mut memid, &mut arena_pages);
+    if !slice_start {
+        return 0;
+    }
+    let mut page_noguard_size: u64 = alloc_size;
+    let mut page: *mut mi_page_t = 0;
+    let mut page_meta_is_separate: bool = false;
+    let mut block_start: u64 = 0;
+    let mut page_meta: mi_page_t *const = mi_arena_page_meta(memid, slice_start);
+    if page_meta != 0 {
+        (if (page_meta.block_size == 0) { 0 as void } else { _mi_assert_fail("page_meta->block_size == 0", "mimalloc\\src\\arena.c", 981, "mi_arenas_page_alloc_fresh") });
+        {
+            page_meta_is_separate = true;
+            page = page_meta;
+            block_start = 0;
+            if block_size >= (1 << (3)) && block_size <= (8 * ((1 << (3)) * 8)) && _mi_is_power_of_two(block_size) {
+                block_start = _mi_align_up(mi_page_info_size(), block_size);
+                if block_size < 64 {
+                    block_start += 3 * block_size;
+                }
+            }
+            (if (page.block_size == 0) { 0 as void } else { _mi_assert_fail("page->block_size == 0", "mimalloc\\src\\arena.c", 1005, "mi_arenas_page_alloc_fresh") });
+            _mi_memzero_aligned(page, (*page));
+        }
+    }
+    if page == 0 {
+        _mi_arenas_free(_mi_theap_subproc(theap), slice_start, alloc_size, memid);
+        return 0;
+    }
+    (if (block_size < 16 || block_start % 16 == 0) { 0 as void } else { _mi_assert_fail("block_size < MI_MAX_ALIGN_SIZE || block_start % MI_MAX_ALIGN_SIZE == 0", "mimalloc\\src\\arena.c", 1020, "mi_arenas_page_alloc_fresh") });
+    if _mi_is_power_of_two(block_size) && block_size <= (4 * (1024)) {
+        (if (block_start % block_size == 0) { 0 as void } else { _mi_assert_fail("block_start % block_size == 0", "mimalloc\\src\\arena.c", 1022, "mi_arenas_page_alloc_fresh") });
+    }
+    let mut commit_size: u64 = 0;
+    if !memid.initially_committed {
+        commit_size = _mi_align_up(block_start + block_size, mi_page_min_commit_size());
+        if commit_size > page_noguard_size {
+            commit_size = page_noguard_size;
+        }
+        let mut is_zero: bool = false;
+        if __builtin_expect(!!(!mi_arena_commit(_mi_theap_subproc(theap), mi_memid_arena(memid), slice_start, commit_size, &mut is_zero, 0)), false) {
+            _mi_arenas_free(_mi_theap_subproc(theap), slice_start, alloc_size, memid);
+            return 0;
+        }
+    }
+    if !memid.initially_zero && !page_meta_is_separate {
+        _mi_memzero_aligned(page, (*page));
+    }
+    if !memid.initially_zero && memid.initially_committed {} else if memid.initially_committed {}
+    if memid.initially_zero && memid.initially_committed {
+        if !mi_mem_is_zero(slice_start, page_noguard_size) {
+            _mi_error_message(14, "internal error: page memory was not zero initialized.\n");
+            memid.initially_zero = false;
+            if block_start > 0 {
+                _mi_memzero_aligned(page, (*page));
+            }
+        }
+    }
+    let mut reserved: u64 = (if os_align { 1 } else { (page_noguard_size - block_start) / block_size });
+    (if (reserved > 0 && reserved <= 65535) { 0 as void } else { _mi_assert_fail("reserved > 0 && reserved <= UINT16_MAX", "mimalloc\\src\\arena.c", 1067, "mi_arenas_page_alloc_fresh") });
+    let mut start: uint8_t *const = slice_start + block_start;
+    (if (start > page as *mut u8) { 0 as void } else { _mi_assert_fail("start > (uint8_t*)page", "mimalloc\\src\\arena.c", 1071, "mi_arenas_page_alloc_fresh") });
+    page.page_offset = start - page as *mut u8;
+    page.reserved = reserved as u16;
+    page.block_size = block_size;
+    page.memid = memid;
+    page.free_is_zero = memid.initially_zero;
+    (if ((commit && commit_size == 0) || (!commit && (commit_size <= 65535 * _mi_os_page_size()))) { 0 as void } else { _mi_assert_fail("(commit && commit_size==0) || (!commit && (commit_size <= UINT16_MAX * _mi_os_page_size()))", "mimalloc\\src\\arena.c", 1080, "mi_arenas_page_alloc_fresh") });
+    page.slice_pcommitted = (commit_size / _mi_os_page_size()) as u16;
+    page.heap = _mi_theap_heap(theap);
+    mi_page_set_theap(page, theap);
+    (if (page_meta != 0) { 0 as void } else { _mi_assert_fail("page_meta!=NULL", "mimalloc\\src\\arena.c", 1088, "mi_arenas_page_alloc_fresh") });
+    atomic_store_explicit(&mut page_meta.self, page as *mut mi_page_t, memory_order_release);
+    if slice_count > 1 {
+        for let mut i: u64 = 1; i < max_page_meta_count; i += 1 {
+            (if (page_meta[i].block_size == 0) { 0 as void } else { _mi_assert_fail("page_meta[i].block_size == 0", "mimalloc\\src\\arena.c", 1093, "mi_arenas_page_alloc_fresh") });
+            atomic_store_explicit(&mut page_meta[i].self, page as *mut mi_page_t, memory_order_release);
+        }
+    }
+    let mut pstart: *mut mi_page_t = _mi_aligned_ptr_page0(slice_start);
+    (if (atomic_load_explicit(&mut pstart.self, memory_order_acquire) == page) { 0 as void } else { _mi_assert_fail("mi_atomic_load_ptr_acquire(mi_page_t,&pstart->self)==page", "mimalloc\\src\\arena.c", 1099, "mi_arenas_page_alloc_fresh") });
+    if reserved > 1 {
+        let mut pend: *mut mi_page_t = _mi_aligned_ptr_page0(slice_start + (slice_count * (1 << (13 + (3)))) - 1);
+        (if (atomic_load_explicit(&mut pend.self, memory_order_acquire) == page) { 0 as void } else { _mi_assert_fail("mi_atomic_load_ptr_acquire(mi_page_t,&pend->self)==page", "mimalloc\\src\\arena.c", 1102, "mi_arenas_page_alloc_fresh") });
+    }
+    (if (page.free == 0) { 0 as void } else { _mi_assert_fail("page->free==NULL", "mimalloc\\src\\arena.c", 1107, "mi_arenas_page_alloc_fresh") });
+    (if (page_meta_is_separate == mi_page_meta_is_separated(page)) { 0 as void } else { _mi_assert_fail("page_meta_is_separate == mi_page_meta_is_separated(page)", "mimalloc\\src\\arena.c", 1108, "mi_arenas_page_alloc_fresh") });
+    (if (mi_page_slice_start(page) == slice_start) { 0 as void } else { _mi_assert_fail("mi_page_slice_start(page) == slice_start", "mimalloc\\src\\arena.c", 1109, "mi_arenas_page_alloc_fresh") });
+    (if (mi_page_size(page) <= page_noguard_size) { 0 as void } else { _mi_assert_fail("mi_page_size(page) <= page_noguard_size", "mimalloc\\src\\arena.c", 1110, "mi_arenas_page_alloc_fresh") });
+    if arena_pages != 0 {
+        (if (memid.memkind == MI_MEM_ARENA) { 0 as void } else { _mi_assert_fail("memid.memkind == MI_MEM_ARENA", "mimalloc\\src\\arena.c", 1115, "mi_arenas_page_alloc_fresh") });
+        mi_bitmap_set(arena_pages.pages, memid.mem.arena.slice_index);
+    }
+    mi_page_claim_ownership(page);
+    if __builtin_expect(!!(!_mi_page_map_register(page)), false) {
+        mi_arenas_page_free_prim(page);
+        return 0;
+    }
+    __mi_stat_increase(&mut (theap).stats.pages, 1);
+    __mi_stat_increase(&mut (theap).stats.page_bins[_mi_page_stats_bin(page)], 1);
+    (if (_mi_is_aligned(mi_page_slice_start(page), ((1 << (13 + (3)))))) { 0 as void } else { _mi_assert_fail("_mi_is_aligned(mi_page_slice_start(page),MI_PAGE_ALIGN)", "mimalloc\\src\\arena.c", 1132, "mi_arenas_page_alloc_fresh") });
+    (if (_mi_ptr_page(mi_page_start(page)) == page) { 0 as void } else { _mi_assert_fail("_mi_ptr_page(mi_page_start(page))==page", "mimalloc\\src\\arena.c", 1133, "mi_arenas_page_alloc_fresh") });
+    (if (mi_page_block_size(page) == block_size) { 0 as void } else { _mi_assert_fail("mi_page_block_size(page) == block_size", "mimalloc\\src\\arena.c", 1134, "mi_arenas_page_alloc_fresh") });
+    (if (mi_page_is_owned(page)) { 0 as void } else { _mi_assert_fail("mi_page_is_owned(page)", "mimalloc\\src\\arena.c", 1136, "mi_arenas_page_alloc_fresh") });
+    return page;
+}
+
+fn mi_arenas_page_regular_alloc(theap: *mut mi_theap_t, slice_count: u64, block_size: u64) -> *mut mi_page_t {
+    let mut page: *mut mi_page_t = mi_arenas_page_try_find_abandoned(theap, slice_count, block_size);
+    if page != 0 {
+        return page;
+    }
+    let mut commit_on_demand: i64 = mi_option_get(mi_option_page_commit_on_demand);
+    let mut commit: bool = (mi_page_min_commit_size() >= slice_count * (1 << (13 + (3))) || (slice_count >= mi_slice_count_of_size(65535 * _mi_os_page_size())) || (commit_on_demand == 2 && _mi_os_has_overcommit()) || (commit_on_demand == 0));
+    page = mi_arenas_page_alloc_fresh(theap, slice_count, block_size, 1, commit);
+    if page == 0 {
+        return 0;
+    }
+    (if (page.memid.memkind != MI_MEM_ARENA || page.memid.mem.arena.slice_count == slice_count) { 0 as void } else { _mi_assert_fail("page->memid.memkind != MI_MEM_ARENA || page->memid.mem.arena.slice_count == slice_count", "mimalloc\\src\\arena.c", 1158, "mi_arenas_page_regular_alloc") });
+    if !_mi_page_init(theap, page) {
+        _mi_arenas_page_free(page, theap);
+        return 0;
+    }
+    return page;
+}
+
+fn mi_arenas_page_singleton_alloc(theap: *mut mi_theap_t, block_size: u64, block_alignment: u64) -> *mut mi_page_t {
+    let mut info_size: u64 = 0;
+    let mut slice_count: u64 = mi_slice_count_of_size(info_size + block_size);
+    let mut page: *mut mi_page_t = mi_arenas_page_alloc_fresh(theap, slice_count, block_size, block_alignment, true);
+    if page == 0 {
+        return 0;
+    }
+    (if (page.reserved == 1) { 0 as void } else { _mi_assert_fail("page->reserved == 1", "mimalloc\\src\\arena.c", 1185, "mi_arenas_page_singleton_alloc") });
+    if !_mi_page_init(theap, page) {
+        _mi_arenas_page_free(page, theap);
+        return 0;
+    }
+    return page;
+}
+
+fn mi_arenas_page_free_prim(page: *mut mi_page_t) {
+    (if (_mi_is_aligned(mi_page_slice_start(page), ((1 << (13 + (3)))))) { 0 as void } else { _mi_assert_fail("_mi_is_aligned(mi_page_slice_start(page), MI_PAGE_ALIGN)", "mimalloc\\src\\arena.c", 1229, "mi_arenas_page_free_prim") });
+    (if (_mi_ptr_page(mi_page_start(page)) == page) { 0 as void } else { _mi_assert_fail("_mi_ptr_page(mi_page_start(page))==page", "mimalloc\\src\\arena.c", 1230, "mi_arenas_page_free_prim") });
+    (if (mi_page_is_owned(page)) { 0 as void } else { _mi_assert_fail("mi_page_is_owned(page)", "mimalloc\\src\\arena.c", 1231, "mi_arenas_page_free_prim") });
+    (if (mi_page_all_free(page)) { 0 as void } else { _mi_assert_fail("mi_page_all_free(page)", "mimalloc\\src\\arena.c", 1232, "mi_arenas_page_free_prim") });
+    (if (page.next == 0 && page.prev == 0) { 0 as void } else { _mi_assert_fail("page->next==NULL && page->prev==NULL", "mimalloc\\src\\arena.c", 1233, "mi_arenas_page_free_prim") });
+    if page.memid.memkind == MI_MEM_ARENA && !mi_page_is_full(page) {
+        let mut bin: u64 = _mi_bin(mi_page_block_size(page));
+        let mut slice_index: u64 = 0;
+        let mut slice_count: u64 = 0;
+        let mut arena_pages: *mut mi_arena_pages_t = 0;
+        let mut arena: mi_arena_t *const = mi_page_arena_pages(page, &mut slice_index, &mut slice_count, &mut arena_pages);
+        (if (mi_bbitmap_is_clearN(arena.slices_free, slice_index, slice_count)) { 0 as void } else { _mi_assert_fail("mi_bbitmap_is_clearN(arena->slices_free, slice_index, slice_count)", "mimalloc\\src\\arena.c", 1242, "mi_arenas_page_free_prim") });
+        (if (mi_page_slice_committed(page) > 0 || mi_bitmap_is_setN(arena.slices_committed, slice_index, slice_count)) { 0 as void } else { _mi_assert_fail("mi_page_slice_committed(page) > 0 || mi_bitmap_is_setN(arena->slices_committed, slice_index, slice_count)", "mimalloc\\src\\arena.c", 1243, "mi_arenas_page_free_prim") });
+        (if (bin >= ((60) + 1) || mi_bitmap_is_clearN(arena_pages.pages_abandoned[bin], slice_index, 1)) { 0 as void } else { _mi_assert_fail("bin >= MI_ARENA_BIN_COUNT || mi_bitmap_is_clearN(arena_pages->pages_abandoned[bin], slice_index, 1)", "mimalloc\\src\\arena.c", 1244, "mi_arenas_page_free_prim") });
+        (if (mi_bitmap_is_setN(arena_pages.pages, slice_index, 1)) { 0 as void } else { _mi_assert_fail("mi_bitmap_is_setN(arena_pages->pages, slice_index, 1)", "mimalloc\\src\\arena.c", 1245, "mi_arenas_page_free_prim") });
+    }
+    _mi_page_map_unregister(page);
+    if page.memid.memkind == MI_MEM_ARENA {
+        let mut arena_pages: *mut mi_arena_pages_t = null;
+        let mut slice_index: u64 = 0;
+        let mut slice_count: u64 = 0;
+        (slice_count) as void;
+        let mut arena: mi_arena_t *const = mi_page_arena_pages(page, &mut slice_index, &mut slice_count, &mut arena_pages);
+        (if (arena_pages != 0) { 0 as void } else { _mi_assert_fail("arena_pages!=NULL", "mimalloc\\src\\arena.c", 1269, "mi_arenas_page_free_prim") });
+        (if (arena.subproc == mi_page_subproc(page)) { 0 as void } else { _mi_assert_fail("arena->subproc == mi_page_subproc(page)", "mimalloc\\src\\arena.c", 1270, "mi_arenas_page_free_prim") });
+        mi_bitmap_clear(arena_pages.pages, slice_index);
+        let mut slice_committed: u64 = mi_page_slice_committed(page);
+        if slice_committed > 0 {
+            (if (mi_page_full_size(page) >= slice_committed) { 0 as void } else { _mi_assert_fail("mi_page_full_size(page) >= slice_committed", "mimalloc\\src\\arena.c", 1275, "mi_arenas_page_free_prim") });
+            let mut total_slices: u64 = slice_committed / (1 << (13 + (3)));
+            (if (slice_count >= total_slices) { 0 as void } else { _mi_assert_fail("slice_count >= total_slices", "mimalloc\\src\\arena.c", 1278, "mi_arenas_page_free_prim") });
+            if total_slices > 0 {
+                mi_bitmap_setN(arena.slices_committed, slice_index, total_slices, 0);
+            }
+            let mut extra: u64 = slice_committed % (1 << (13 + (3)));
+            if extra > 0 {
+                __mi_stat_decrease_mt(&mut (arena.subproc).stats.committed, extra);
+            }
+        } else {
+            (if (mi_bitmap_is_setN(arena.slices_committed, slice_index, slice_count)) { 0 as void } else { _mi_assert_fail("mi_bitmap_is_setN(arena->slices_committed, slice_index, slice_count)", "mimalloc\\src\\arena.c", 1290, "mi_arenas_page_free_prim") });
+        }
+    } else {
+        __mi_stat_decrease_mt(&mut (page.heap).stats.pages_os_allocated, 1);
+    }
+    if mi_page_meta_is_separated(page) {
+        page.block_size = 0;
+    }
+    _mi_arenas_free(mi_page_subproc(page), mi_page_slice_start(page), mi_page_full_size(page), page.memid);
+}
+
+fn mi_arena_strictly_contains(arena: *mut mi_arena_t, p: *void) -> bool {
+    return (arena != 0 && mi_arena_start(arena) <= p as *u8 && mi_arena_start(arena) + mi_size_of_slices(arena.slice_count) > p as *u8);
+}
+
+fn mi_arenas_contain_ex(p: *void, parent: *mut mi_arena_t) -> bool {
+    let mut subproc: *mut mi_subproc_t = _mi_subproc();
+    let mut max_arena: u64 = mi_arenas_get_count(subproc);
+    for let mut i: u64 = 0; i < max_arena; i += 1 {
+        let mut arena: *mut mi_arena_t = atomic_load_explicit(&mut subproc.arenas[i], memory_order_acquire);
+        if arena != 0 {
+            if parent == 0 || arena == parent || arena.parent == parent {
+                if mi_arena_strictly_contains(arena, p) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+fn mi_arena_contains(arena_id: mi_arena_id_t, p: *void) -> bool {
+    let mut arena: *mut mi_arena_t = _mi_arena_from_id(arena_id);
+    if arena == 0 {
+        return false;
+    } else if mi_arena_strictly_contains(arena, p) {
+        return true;
+    } else {
+        return mi_arenas_contain_ex(p, arena);
+    }
+}
+
+fn mi_arenas_unsafe_destroy(subproc: *mut mi_subproc_t) {
+    (if (subproc != 0) { 0 as void } else { _mi_assert_fail("subproc != NULL", "mimalloc\\src\\arena.c", 1567, "mi_arenas_unsafe_destroy") });
+    let mut arena_count: u64 = mi_arenas_get_count(subproc);
+    for let mut i: u64 = 0; i < arena_count; i += 1 {
+        let mut arena: *mut mi_arena_t = atomic_load_explicit(&mut subproc.arenas[i], memory_order_acquire);
+        if arena != 0 {
+            atomic_store_explicit(&mut subproc.arenas[i], 0 as *mut mi_arena_t, memory_order_release);
+            if mi_memkind_is_os(arena.memid.memkind) {
+                _mi_os_free_ex(subproc, mi_arena_start(arena), mi_arena_size(arena), true, arena.memid);
+            }
+        }
+    }
+    let mut expected: u64 = arena_count;
+    atomic_compare_exchange_strong_explicit(&mut subproc.arena_count, &mut expected, 0 as u64, memory_order_acq_rel, memory_order_acquire);
+}
+
+fn mi_arenas_add(subproc: *mut mi_subproc_t, arena: *mut mi_arena_t, arena_id: *mut mi_arena_id_t) -> bool {
+    (if (arena != 0) { 0 as void } else { _mi_assert_fail("arena != NULL", "mimalloc\\src\\arena.c", 1599, "mi_arenas_add") });
+    (if (arena.slice_count > 0) { 0 as void } else { _mi_assert_fail("arena->slice_count > 0", "mimalloc\\src\\arena.c", 1600, "mi_arenas_add") });
+    if arena_id != 0 {
+        *arena_id = _mi_arena_id_none();
+    }
+    let mut expected: *mut mi_arena_t = null;
+    let mut count: u64 = mi_arenas_get_count(subproc);
+    for let mut i: u64 = 0; i < count; i += 1 {
+        if mi_arena_from_index(subproc, i) == 0 {
+            arena.arena_idx = i;
+            expected = 0;
+            if atomic_compare_exchange_strong_explicit(&mut subproc.arenas[i], &mut expected, arena as *mut mi_arena_t, memory_order_release, memory_order_relaxed) {
+                if arena_id != 0 {
+                    *arena_id = mi_arena_id_from_arena(arena);
+                }
+                return true;
+            }
+        }
+    }
+    while count < (160) {
+        if atomic_compare_exchange_strong_explicit(&mut subproc.arena_count, &mut count, count + 1, memory_order_release, memory_order_relaxed) {
+            arena.arena_idx = count;
+            expected = 0;
+            if atomic_compare_exchange_strong_explicit(&mut subproc.arenas[count], &mut expected, arena as *mut mi_arena_t, memory_order_release, memory_order_relaxed) {
+                __mi_stat_counter_increase_mt(&mut (arena.subproc).stats.arena_count, 1);
+                if arena_id != 0 {
+                    *arena_id = mi_arena_id_from_arena(arena);
+                }
+                return true;
+            }
+        }
+    }
+    arena.arena_idx = 0;
+    arena.subproc = 0;
+    return false;
+}
+
+fn mi_arena_pages_size(slice_count: u64, bitmap_base: *mut u64) -> u64 {
+    if slice_count == 0 {
+        slice_count = (1 << (6 + (3)));
+    }
+    (if ((slice_count % (1 << (6 + (3)))) == 0) { 0 as void } else { _mi_assert_fail("(slice_count % MI_BCHUNK_BITS) == 0", "mimalloc\\src\\arena.c", 1639, "mi_arena_pages_size") });
+    let mut base_size: u64 = _mi_align_up(sizeof, ((1 << (6 + (3))) / 8));
+    let mut bitmaps_count: u64 = 1 + ((60) + 1);
+    let mut bitmaps_size: u64 = bitmaps_count * mi_bitmap_size(slice_count, 0);
+    let mut size: u64 = base_size + bitmaps_size;
+    if bitmap_base != 0 {
+        *bitmap_base = base_size;
+    }
+    return size;
+}
+
+fn mi_arena_info(area: *mut void) -> *mut mi_arena_t {
+    return (area as *mut u8 + mi_size_of_slices(mi_arena_page_meta_aligned_slice_count())) as *mut mi_arena_t;
+}
+
+fn mi_arena_info_slices_needed(slice_count: u64, bitmap_base: *mut u64) -> u64 {
+    if slice_count == 0 {
+        slice_count = (1 << (6 + (3)));
+    }
+    (if ((slice_count % (1 << (6 + (3)))) == 0) { 0 as void } else { _mi_assert_fail("(slice_count % MI_BCHUNK_BITS) == 0", "mimalloc\\src\\arena.c", 1654, "mi_arena_info_slices_needed") });
+    let mut base_size: u64 = mi_size_of_slices(mi_arena_page_meta_aligned_slice_count()) + _mi_align_up(sizeof, ((1 << (6 + (3))) / 8));
+    let mut bitmaps_count: u64 = 4 + ((60) + 1);
+    let mut bitmaps_size: u64 = bitmaps_count * mi_bitmap_size(slice_count, 0) + mi_bbitmap_size(slice_count, 0);
+    let mut pages_size: u64 = 0;
+    let mut size: u64 = base_size + bitmaps_size + pages_size;
+    let mut os_page_size: u64 = _mi_os_page_size();
+    let mut info_size: u64 = _mi_align_up(size, os_page_size) + _mi_os_secure_guard_page_size();
+    let mut info_slices: u64 = mi_slice_count_of_size(info_size);
+    if bitmap_base != 0 {
+        *bitmap_base = base_size;
+    }
+    return info_slices;
+}
+
+fn mi_arena_bitmap_init(slice_count: u64, base: *mut *mut u8) -> *mut mi_bitmap_t {
+    let mut bitmap: *mut mi_bitmap_t = (*base) as *mut mi_bitmap_t;
+    *base = (*base) + mi_bitmap_init(bitmap, slice_count, true);
+    return bitmap;
+}
+
+fn mi_arena_bbitmap_init(subproc: *mut mi_subproc_t, slice_count: u64, base: *mut *mut u8) -> *mut mi_bbitmap_t {
+    let mut bbitmap: *mut mi_bbitmap_t = (*base) as *mut mi_bbitmap_t;
+    *base = (*base) + mi_bbitmap_init(subproc, bbitmap, slice_count, true);
+    return bbitmap;
+}
+
+fn mi_arena_pages_alloc(arena: *mut mi_arena_t) -> *mut mi_arena_pages_t {
+    let mut slice_count: u64 = arena.slice_count;
+    let mut bitmap_base: u64 = 0;
+    let mut size: u64 = mi_arena_pages_size(slice_count, &mut bitmap_base);
+    let mut arena_pages: *mut mi_arena_pages_t = mi_heap_zalloc_aligned(arena.subproc.heap_main.operator mi_heap_s *(), size, ((1 << (6 + (3))) / 8)) as *mut mi_arena_pages_t;
+    if arena_pages == 0 {
+        return 0;
+    }
+    let mut base: *mut u8 = arena_pages as *mut u8 + bitmap_base;
+    (if (_mi_is_aligned(base, ((1 << (6 + (3))) / 8))) { 0 as void } else { _mi_assert_fail("_mi_is_aligned(base, MI_BCHUNK_SIZE)", "mimalloc\\src\\arena.c", 1692, "mi_arena_pages_alloc") });
+    arena_pages.pages = mi_arena_bitmap_init(slice_count, &mut base);
+    for let mut i: u64 = 0; i < ((60) + 1); i += 1 {
+        arena_pages.pages_abandoned[i] = mi_arena_bitmap_init(slice_count, &mut base);
+    }
+    return arena_pages;
+}
+
+fn mi_arena_initialize(subproc: *mut mi_subproc_t, start: *mut void, slice_count: u64, parent: *mut mi_arena_t, total_size: u64, numa_node: i32, exclusive: bool, memid: mi_memid_t, commit_fun: *mut mi_commit_fun_t, commit_fun_arg: *mut void, arena_id: *mut mi_arena_id_t) -> *mut mi_arena_t {
+    (if (_mi_is_aligned(start, (((1 << (3)) * (1 << (6 + (3)))) * (1 << (13 + (3)))))) { 0 as void } else { _mi_assert_fail("_mi_is_aligned(start,MI_ARENA_ALIGNMENT)", "mimalloc\\src\\arena.c", 1705, "mi_arena_initialize") });
+    (if (mi_size_of_slices(slice_count) >= ((1 << (6 + (3))) * (1 << (13 + (3))))) { 0 as void } else { _mi_assert_fail("mi_size_of_slices(slice_count)>=MI_ARENA_MIN_SIZE", "mimalloc\\src\\arena.c", 1706, "mi_arena_initialize") });
+    if slice_count > (((1 << (6 + (3)))) * (1 << (6 + (3)))) {
+        _mi_warning_message("cannot use OS memory since it is too large (size %zu MiB, maximum is %zu MiB)", mi_size_of_slices(slice_count) / ((1024) * (1024)), mi_size_of_slices((((1 << (6 + (3)))) * (1 << (6 + (3))))) / ((1024) * (1024)));
+        return 0;
+    }
+    let mut bitmap_base: u64 = 0;
+    let mut info_slices: u64 = mi_arena_info_slices_needed(slice_count, &mut bitmap_base);
+    if slice_count < info_slices + 1 {
+        _mi_warning_message("cannot use OS memory since it is not large enough (size %zu KiB, minimum required is %zu KiB)", mi_size_of_slices(slice_count) / (1024), mi_size_of_slices(info_slices + 1) / (1024));
+        return 0;
+    }
+    if !memid.initially_committed {
+        let mut commit_size: u64 = mi_size_of_slices(info_slices);
+        if !memid.is_pinned {
+            commit_size -= _mi_os_secure_guard_page_size();
+        }
+        let mut ok: bool = false;
+        if commit_fun != 0 {
+            ok = *commit_fun(true, start, commit_size, 0, commit_fun_arg);
+        } else {
+            ok = _mi_os_commit(subproc, start, commit_size, 0);
+        }
+        if !ok {
+            _mi_warning_message("unable to commit meta-data for OS memory");
+            return 0;
+        }
+    } else if !memid.is_pinned {
+        _mi_os_secure_guard_page_set_before(subproc, start as *mut u8 + mi_size_of_slices(info_slices), memid);
+    }
+    if !memid.initially_zero {
+        _mi_memzero(start, mi_size_of_slices(info_slices) - _mi_os_secure_guard_page_size());
+    }
+    let mut arena: *mut mi_arena_t = mi_arena_info(start);
+    arena.start = start;
+    arena.subproc = subproc;
+    arena.memid = memid;
+    arena.is_exclusive = exclusive;
+    arena.slice_count = slice_count;
+    arena.info_slices = info_slices;
+    if numa_node < 0 && mi_option_is_enabled(mi_option_arena_is_numa_local) {
+        arena.numa_node = _mi_os_numa_node();
+    } else {
+        arena.numa_node = numa_node;
+    }
+    arena.purge_expire = 0;
+    arena.commit_fun = commit_fun;
+    arena.commit_fun_arg = commit_fun_arg;
+    arena.parent = parent;
+    arena.total_size = total_size;
+    let mut base: *mut u8 = mi_arena_start(arena) + bitmap_base;
+    arena.slices_free = mi_arena_bbitmap_init(subproc, slice_count, &mut base);
+    arena.slices_committed = mi_arena_bitmap_init(slice_count, &mut base);
+    arena.slices_dirty = mi_arena_bitmap_init(slice_count, &mut base);
+    arena.slices_purge = mi_arena_bitmap_init(slice_count, &mut base);
+    arena.pages_main.pages = mi_arena_bitmap_init(slice_count, &mut base);
+    for let mut i: u64 = 0; i < ((60) + 1); i += 1 {
+        arena.pages_main.pages_abandoned[i] = mi_arena_bitmap_init(slice_count, &mut base);
+    }
+    arena.pages_meta = 0;
+    (if (mi_size_of_slices(info_slices) >= (base - mi_arena_start(arena)) as u64) { 0 as void } else { _mi_assert_fail("mi_size_of_slices(info_slices) >= (size_t)(base - mi_arena_start(arena))", "mimalloc\\src\\arena.c", 1787, "mi_arena_initialize") });
+    for let mut i: u64 = 0; i < arena.slice_count; i += ((1 << (3)) * (1 << (6 + (3)))) {
+        let mut meta_slices: u64 = (if i == 0 { info_slices } else { mi_arena_page_meta_aligned_slice_count() });
+        let mut start_idx: u64 = (i + meta_slices);
+        let mut count: u64 = ((1 << (3)) * (1 << (6 + (3)))) - meta_slices;
+        if start_idx < arena.slice_count {
+            if count + start_idx > arena.slice_count {
+                count = arena.slice_count - start_idx;
+                (if (count > 0) { 0 as void } else { _mi_assert_fail("count > 0", "mimalloc\\src\\arena.c", 1799, "mi_arena_initialize") });
+            }
+            mi_bbitmap_unsafe_setN(arena.slices_free, start_idx, count);
+        }
+    }
+    if memid.initially_committed {
+        mi_bitmap_unsafe_setN(arena.slices_committed, 0, arena.slice_count);
+    }
+    if !memid.initially_zero {
+        mi_bitmap_unsafe_setN(arena.slices_dirty, 0, arena.slice_count);
+    }
+    if !mi_arenas_add(subproc, arena, arena_id) {
+        return 0;
+    }
+    return arena;
+}
+
+fn mi_manage_os_memory_ex2(subproc: *mut mi_subproc_t, start: *mut void, size: u64, numa_node: i32, exclusive: bool, memid: mi_memid_t, commit_fun: *mut mi_commit_fun_t, commit_fun_arg: *mut void, arena_id: *mut mi_arena_id_t) -> bool {
+    (if (start != 0) { 0 as void } else { _mi_assert_fail("start!=NULL", "mimalloc\\src\\arena.c", 1822, "mi_manage_os_memory_ex2") });
+    if arena_id != 0 {
+        *arena_id = _mi_arena_id_none();
+    }
+    if start == 0 {
+        return false;
+    }
+    if !_mi_is_aligned(start, (((1 << (3)) * (1 << (6 + (3)))) * (1 << (13 + (3))))) {
+        let mut aligned_start: void *const = _mi_align_up_ptr(start, (((1 << (3)) * (1 << (6 + (3)))) * (1 << (13 + (3)))));
+        let mut diff: u64 = aligned_start as *mut u8 - start as *mut u8;
+        if diff >= size || (size - diff) < (((1 << (3)) * (1 << (6 + (3)))) * (1 << (13 + (3)))) {
+            _mi_warning_message("after alignment, the size of the arena becomes too small (memory at %p with size %zu)\n", start, size);
+            return false;
+        }
+        start = aligned_start;
+        size = size - diff;
+    }
+    let mut total_slice_count: u64 = _mi_align_down(size / (1 << (13 + (3))), (1 << (6 + (3))));
+    let mut total_size: u64 = mi_size_of_slices(total_slice_count);
+    if total_size < ((1 << (6 + (3))) * (1 << (13 + (3)))) {
+        _mi_warning_message("cannot use OS memory since it is not large enough (size %zu KiB, minimum required is %zu KiB)", size / (1024), ((1 << (6 + (3))) * (1 << (13 + (3)))) / (1024));
+        return false;
+    }
+    let mut parent: *mut mi_arena_t = 0;
+    while true {
+        {
+        let mut slice_count: u64 = total_slice_count;
+        if slice_count > (((1 << (6 + (3)))) * (1 << (6 + (3)))) {
+            slice_count = (((1 << (6 + (3)))) * (1 << (6 + (3))));
+        }
+        let mut arena: *mut mi_arena_t = mi_arena_initialize(subproc, start, slice_count, parent, (if parent == 0 { total_size } else { 0 }), numa_node, exclusive, memid, commit_fun, commit_fun_arg, (if parent == 0 { arena_id } else { 0 }));
+        if arena == 0 {
+            if parent == 0 {
+                return false;
+            } else {
+                (if (mi_size_of_slices(total_slice_count) <= parent.total_size) { 0 as void } else { _mi_assert_fail("mi_size_of_slices(total_slice_count) <= parent->total_size", "mimalloc\\src\\arena.c", 1867, "mi_manage_os_memory_ex2") });
+                parent.total_size -= mi_size_of_slices(total_slice_count);
+                return true;
+            }
+        }
+        if parent == 0 {
+            parent = arena;
+            memid.memkind = MI_MEM_NONE;
+        }
+        (if (slice_count <= total_slice_count) { 0 as void } else { _mi_assert_fail("slice_count <= total_slice_count", "mimalloc\\src\\arena.c", 1878, "mi_manage_os_memory_ex2") });
+        total_slice_count -= slice_count;
+        start = start as *mut u8 + mi_size_of_slices(slice_count);
+    }
+        if !(total_slice_count > 0) { break; }
+    }
+    return true;
+}
+
+fn mi_manage_os_memory_ex(start: *mut void, size: u64, is_committed: bool, is_pinned: bool, is_zero: bool, numa_node: i32, exclusive: bool, arena_id: *mut mi_arena_id_t) -> bool {
+    let mut memid: mi_memid_t = _mi_memid_create(MI_MEM_EXTERNAL);
+    memid.mem.os.base = start;
+    memid.mem.os.size = size;
+    memid.initially_committed = is_committed;
+    memid.initially_zero = is_zero;
+    memid.is_pinned = is_pinned;
+    return mi_manage_os_memory_ex2(_mi_subproc(), start, size, numa_node, exclusive, memid, 0, 0, arena_id);
+}
+
+fn mi_manage_memory(start: *mut void, size: u64, is_committed: bool, is_pinned: bool, is_zero: bool, numa_node: i32, exclusive: bool, commit_fun: *mut mi_commit_fun_t, commit_fun_arg: *mut void, arena_id: *mut mi_arena_id_t) -> bool {
+    let mut memid: mi_memid_t = _mi_memid_create(MI_MEM_EXTERNAL);
+    memid.mem.os.base = start;
+    memid.mem.os.size = size;
+    memid.initially_committed = is_committed;
+    memid.initially_zero = is_zero;
+    memid.is_pinned = is_pinned;
+    return mi_manage_os_memory_ex2(_mi_subproc(), start, size, numa_node, exclusive, memid, commit_fun, commit_fun_arg, arena_id);
+}
+
+fn mi_reserve_os_memory_ex2(subproc: *mut mi_subproc_t, size: u64, commit: bool, allow_large: bool, exclusive: bool, arena_id: *mut mi_arena_id_t) -> i32 {
+    if arena_id != 0 {
+        *arena_id = _mi_arena_id_none();
+    }
+    if size <= 9223372036854775807 {
+        size = _mi_align_up(size, (1 << (13 + (3))));
+    }
+    if size > 9223372036854775807 {
+        _mi_error_message(132, "memory reservation request is too large (size %zu)\n", size);
+        return 12;
+    }
+    let mut memid: mi_memid_t = mi_memid_t {};
+    let mut start: *mut void = _mi_os_alloc_aligned(subproc, size, (((1 << (3)) * (1 << (6 + (3)))) * (1 << (13 + (3)))), commit, allow_large, &mut memid);
+    if start == 0 {
+        return 12;
+    }
+    if !mi_manage_os_memory_ex2(subproc, start, size, -1, exclusive, memid, 0, 0, arena_id) {
+        _mi_os_free_ex(subproc, start, size, commit, memid);
+        _mi_verbose_message("failed to reserve %zu KiB memory\n", _mi_divide_up(size, 1024));
+        return 12;
+    }
+    _mi_verbose_message("reserved %zu KiB memory%s\n", _mi_divide_up(size, 1024), if memid.is_pinned { " (in large os pages)" } else { "" });
+    return 0;
+}
+
+fn mi_reserve_os_memory_ex(size: u64, commit: bool, allow_large: bool, exclusive: bool, arena_id: *mut mi_arena_id_t) -> i32 {
+    return mi_reserve_os_memory_ex2(_mi_subproc(), size, commit, allow_large, exclusive, arena_id);
+}
+
+fn mi_manage_os_memory(start: *mut void, size: u64, is_committed: bool, is_large: bool, is_zero: bool, numa_node: i32) -> bool {
+    return mi_manage_os_memory_ex(start, size, is_committed, is_large, is_zero, numa_node, false, 0);
+}
+
+fn mi_reserve_os_memory(size: u64, commit: bool, allow_large: bool) -> i32 {
+    return mi_reserve_os_memory_ex(size, commit, allow_large, false, 0);
+}
+
+fn mi_arena_used_slices(arena: *mut mi_arena_t) -> u64 {
+    let mut idx: u64 = 0;
+    if mi_bbitmap_bsr_inv(arena.slices_free, &mut idx) {
+        return (idx + 1);
+    } else {
+        return mi_arena_info_slices(arena);
+    }
+}
+
+fn mi_debug_show_bfield(field: mi_bfield_t, buf: *mut u8, k: *mut u64) -> u64 {
+    let mut bit_set_count: u64 = 0;
+    for let mut bit: i32 = 0; bit < (1 << ((3) + 3)); bit += 1 {
+        let mut is_set: bool = (((1 as mi_bfield_t << bit) & field) != 0);
+        if is_set {
+            bit_set_count += 1;
+        }
+        buf[*k] = (if is_set { 'x' } else { '.' });
+        *k = *k + 1;
+    }
+    return bit_set_count;
+}
+
+enum mi_ansi_color_e {
+    MI_BLACK = 0,
+    MI_MAROON = 1,
+    MI_DARKGREEN = 2,
+    MI_ORANGE = 3,
+    MI_NAVY = 4,
+    MI_PURPLE = 5,
+    MI_TEAL = 6,
+    MI_GRAY = 7,
+    MI_DARKGRAY = 8,
+    MI_RED = 9,
+    MI_GREEN = 10,
+    MI_YELLOW = 11,
+    MI_BLUE = 12,
+    MI_MAGENTA = 13,
+    MI_CYAN = 14,
+    MI_WHITE = 15,
+}
+
+fn mi_debug_color(buf: *mut u8, k: *mut u64, color: mi_ansi_color_t) {
+    *k += _mi_snprintf(buf + *k, 32, "\033[%dm", color as i32);
+}
+
+fn mi_page_commit_usage(page: *mut mi_page_t) -> i32 {
+    let mut committed_size: u64 = mi_page_committed(page);
+    let mut used_size: u64 = mi_page_used(page) * mi_page_block_size(page);
+    return (used_size * 100 / committed_size) as i32;
+}
+
+fn mi_debug_show_page_bfield(buf: *mut u8, k: *mut u64, arena: *mut mi_arena_t, slice_index: u64, pbit_of_page: *mut i64, pcolor_of_page: *mut mi_ansi_color_t) -> u64 {
+    let mut bit_set_count: u64 = 0;
+    let mut bit_of_page: i64 = *pbit_of_page;
+    let mut color: mi_ansi_color_t = *pcolor_of_page;
+    let mut prev_color: mi_ansi_color_t = MI_GRAY;
+    for let mut bit: i32 = 0; bit < (1 << ((3) + 3)); bit += 1 , bit_of_page -= 1 {
+        let mut start: *mut void = mi_arena_slice_start(arena, slice_index + bit);
+        let mut page: *mut mi_page_t = _mi_safe_ptr_page(start);
+        let mut c: i8 = ' ';
+        if page != 0 && start == mi_page_slice_start(page) {
+            (if (bit_of_page <= 0) { 0 as void } else { _mi_assert_fail("bit_of_page <= 0", "mimalloc\\src\\arena.c", 2015, "mi_debug_show_page_bfield") });
+            bit_set_count += 1;
+            c = 'p';
+            color = MI_GRAY;
+            if _mi_meta_is_meta_page(arena.subproc, page) {
+                c = 'm';
+            } else if mi_page_is_singleton(page) {
+                c = 's';
+            } else if mi_page_is_full(page) {
+                c = 'f';
+            }
+            if !mi_page_is_abandoned(page) {
+                c = _mi_toupper(c);
+            }
+            let mut commit_usage: i32 = mi_page_commit_usage(page);
+            if commit_usage < 25 {
+                color = MI_MAROON;
+            } else if commit_usage < 50 {
+                color = MI_ORANGE;
+            } else if commit_usage < 75 {
+                color = MI_TEAL;
+            } else {
+                color = MI_DARKGREEN;
+            }
+            bit_of_page = page.memid.mem.arena.slice_count as i64;
+        } else {
+            c = '?';
+            if bit_of_page > 0 {
+                c = '-';
+            } else if slice_index + bit < arena.info_slices {
+                c = 'i';
+                color = MI_GRAY;
+            } else if (slice_index % ((1 << (3)) * (1 << (6 + (3))))) == 0 && bit as u64 <= mi_arena_page_meta_aligned_slice_count() {
+                {
+                    c = 'i';
+                    color = MI_GRAY;
+                }
+            } else if mi_bbitmap_is_setN(arena.slices_free, slice_index + bit, 1) {
+                if mi_bitmap_is_set(arena.slices_purge, slice_index + bit) {
+                    c = '~';
+                    color = MI_ORANGE;
+                } else if mi_bitmap_is_set(arena.slices_committed, slice_index + bit) {
+                    c = '_';
+                    color = MI_GRAY;
+                } else {
+                    c = '.';
+                    color = MI_GRAY;
+                }
+            }
+            if bit == (1 << ((3) + 3)) - 1 && bit_of_page > 1 {
+                c = '>';
+            }
+        }
+        if color != prev_color {
+            mi_debug_color(buf, k, color);
+            prev_color = color;
+        }
+        buf[*k] = c;
+        *k += 1;
+    }
+    mi_debug_color(buf, k, MI_GRAY);
+    *pbit_of_page = bit_of_page;
+    *pcolor_of_page = color;
+    return bit_set_count;
+}
+
+fn mi_debug_show_chunks(header1: *u8, header2: *u8, header3: *u8, slice_count: u64, chunk_count: u64, chunks: *mut mi_bchunk_t, chunk_bins: *mut mi_bchunkmap_t, invert: bool, arena: *mut mi_arena_t, narrow: bool) -> u64 {
+    _mi_raw_message("\033[37m%s%s%s (use/commit: \033[31m0 - 25%%\033[33m - 50%%\033[36m - 75%%\033[32m - 100%%\033[0m)\n", header1, header2, header3);
+    let mut fields_per_line: u64 = (if narrow { 2 } else { 4 });
+    let mut used_slice_count: u64 = mi_arena_used_slices(arena);
+    let mut bit_count: u64 = 0;
+    let mut bit_set_count: u64 = 0;
+    let mut bit_of_page: i64 = 0;
+    let mut color_of_page: mi_ansi_color_t = MI_GRAY;
+    for let mut i: u64 = 0; i < chunk_count && bit_count < slice_count; i += 1 {
+        let mut buf: [2624]i8 = zeroed();
+        _mi_memzero(buf, (buf));
+        if bit_count > used_slice_count && i + 2 < chunk_count {
+            let mut diff: u64 = chunk_count - 1 - i;
+            bit_count += diff * (1 << (6 + (3)));
+            _mi_raw_message("  |\n");
+            i = chunk_count - 1;
+        }
+        let mut k: u64 = 0;
+        if i < 10 {
+            buf[k += 1] = ('0' + i as i8);
+            buf[k += 1] = ' ';
+            buf[k += 1] = ' ';
+        } else if i < 100 {
+            buf[k += 1] = ('0' + (i / 10) as i8);
+            buf[k += 1] = ('0' + (i % 10) as i8);
+            buf[k += 1] = ' ';
+        } else if i < 1000 {
+            buf[k += 1] = ('0' + (i / 100) as i8);
+            buf[k += 1] = ('0' + ((i % 100) / 10) as i8);
+            buf[k += 1] = ('0' + (i % 10) as i8);
+        }
+        let mut chunk_kind: i8 = ' ';
+        if chunk_bins != 0 {
+            match mi_bbitmap_debug_get_bin(chunk_bins, i) {
+                MI_CBIN_SMALL => {
+                    chunk_kind = 'S';
+                },
+                MI_CBIN_MEDIUM => {
+                    chunk_kind = 'M';
+                },
+                MI_CBIN_LARGE => {
+                    chunk_kind = 'L';
+                },
+                MI_CBIN_HUGE => {
+                    chunk_kind = 'H';
+                },
+                MI_CBIN_OTHER => {
+                    chunk_kind = 'X';
+                },
+                _ => {
+                    chunk_kind = ' ';
+                },
+            }
+        }
+        buf[k += 1] = chunk_kind;
+        buf[k += 1] = ' ';
+        for let mut j: u64 = 0; j < ((1 << (6 + (3))) / (1 << ((3) + 3))); j += 1 {
+            if j > 0 && (j % fields_per_line) == 0 {
+                _mi_raw_message("  %s\n\033[37m", buf);
+                _mi_memzero(buf, (buf));
+                _mi_memset(buf, ' ', 5);
+                k = 5;
+            }
+            if bit_count < slice_count {
+                let mut bfield: mi_bfield_t = 0;
+                if chunks != 0 {
+                    bfield = chunks[i].bfields[j].operator unsigned long long();
+                }
+                if invert {
+                    bfield = ~bfield;
+                }
+                let mut xcount: u64 = (if chunks == 0 { mi_debug_show_page_bfield(buf, &mut k, arena, bit_count, &mut bit_of_page, &mut color_of_page) } else { mi_debug_show_bfield(bfield, buf, &mut k) });
+                if invert {
+                    xcount = (1 << ((3) + 3)) - xcount;
+                }
+                bit_set_count += xcount;
+                buf[k += 1] = ' ';
+            } else {
+                _mi_memset(buf + k, 'o', (1 << ((3) + 3)));
+                k += (1 << ((3) + 3));
+            }
+            bit_count += (1 << ((3) + 3));
+        }
+        _mi_raw_message("  %s\n\033[37m", buf);
+    }
+    _mi_raw_message("\033[0m  total pages: %zu\n", bit_set_count);
+    return bit_set_count;
+}
+
+fn mi_debug_show_arenas_ex(heap: *mut mi_heap_t, show_pages: bool, narrow: bool) {
+    let mut subproc: *mut mi_subproc_t = heap.subproc;
+    let mut max_arenas: u64 = mi_arenas_get_count(subproc);
+    let mut page_total: u64 = 0;
+    for let mut i: u64 = 0; i < max_arenas; i += 1 {
+        let mut arena: *mut mi_arena_t = atomic_load_explicit(&mut subproc.arenas[i], memory_order_acquire);
+        if arena == 0 {
+            continue;
+        }
+        (if (arena.subproc == subproc) { 0 as void } else { _mi_assert_fail("arena->subproc == subproc", "mimalloc\\src\\arena.c", 2147, "mi_debug_show_arenas_ex") });
+        _mi_raw_message("%sarena %zu at %p: %zu slices (%zu MiB)%s%s, subproc: %zu, numa: %i\n", (if arena.parent == 0 { "" } else { "(sub)" }), i, arena, arena.slice_count, (mi_size_of_slices(arena.slice_count) / ((1024) * (1024))) as u64, (if arena.memid.is_pinned { ", pinned" } else { "" }), (if arena.is_exclusive { ", exclusive" } else { "" }), arena.subproc.subproc_seq, arena.numa_node);
+        if show_pages {
+            {
+                let mut header1: *u8 = "chunks (p:page, f:full, s:single, m:meta-data, i:arena-info, P,F,S,M:not abandoned, ~:free-purgable, _:free-committed, .:free-reserved)";
+                let mut header2: *u8 = (if narrow { "\n       " } else { " " });
+                let mut header3: *u8 = "(chunk bin: S:small, M : medium, L : large, X : other)";
+                page_total += mi_debug_show_chunks(header1, header2, header3, arena.slice_count, mi_bbitmap_chunk_count(arena.slices_free), 0, arena.slices_free.chunkmap_bins, false, arena, narrow);
+            }
+        }
+    }
+    if show_pages {
+        _mi_raw_message("total pages in arenas: %zu\n", page_total);
+    }
+}
+
+fn mi_debug_show_arenas() {
+    mi_debug_show_arenas_ex(mi_heap_main(), true, true);
+}
+
+fn mi_arenas_print() {
+    mi_debug_show_arenas();
+}
+
+fn mi_reserve_huge_os_pages_at_ex(pages: u64, numa_node: i32, timeout_msecs: u64, exclusive: bool, arena_id: *mut mi_arena_id_t) -> i32 {
+    if arena_id != 0 {
+        *arena_id = 0;
+    }
+    if pages == 0 {
+        return 0;
+    }
+    if numa_node < -1 {
+        numa_node = -1;
+    }
+    if numa_node >= 0 {
+        numa_node = numa_node % _mi_os_numa_node_count();
+    }
+    let mut subproc: *mut mi_subproc_t = _mi_subproc();
+    let mut hsize: u64 = 0;
+    let mut pages_reserved: u64 = 0;
+    let mut memid: mi_memid_t = mi_memid_t {};
+    let mut p: *mut void = _mi_os_alloc_huge_os_pages(subproc, pages, numa_node, timeout_msecs, &mut pages_reserved, &mut hsize, &mut memid);
+    if p == 0 || pages_reserved == 0 {
+        _mi_warning_message("failed to reserve %zu GiB huge pages\n", pages);
+        return 12;
+    }
+    _mi_verbose_message("numa node %i: reserved %zu GiB huge pages (of the %zu GiB requested)\n", numa_node, pages_reserved, pages);
+    if !mi_manage_os_memory_ex2(subproc, p, hsize, numa_node, exclusive, memid, 0, 0, arena_id) {
+        _mi_os_free(subproc, p, hsize, memid);
+        return 12;
+    }
+    return 0;
+}
+
+fn mi_reserve_huge_os_pages_at(pages: u64, numa_node: i32, timeout_msecs: u64) -> i32 {
+    return mi_reserve_huge_os_pages_at_ex(pages, numa_node, timeout_msecs, false, 0);
+}
+
+fn mi_reserve_huge_os_pages_interleave(pages: u64, numa_nodes: u64, timeout_msecs: u64) -> i32 {
+    if pages == 0 {
+        return 0;
+    }
+    let mut numa_count: i32 = (if numa_nodes > 0 && numa_nodes <= 2147483647 { numa_nodes as i32 } else { _mi_os_numa_node_count() });
+    if numa_count <= 0 {
+        numa_count = 1;
+    }
+    let mut pages_per: u64 = pages / numa_count;
+    let mut pages_mod: u64 = pages % numa_count;
+    let mut timeout_per: u64 = (if timeout_msecs == 0 { 0 } else { (timeout_msecs / numa_count) + 50 });
+    for let mut numa_node: i32 = 0; numa_node < numa_count && pages > 0; numa_node += 1 {
+        let mut node_pages: u64 = pages_per;
+        if numa_node as u64 < pages_mod {
+            node_pages += 1;
+        }
+        let mut err: i32 = mi_reserve_huge_os_pages_at(node_pages, numa_node, timeout_per);
+        if err {
+            return err;
+        }
+        if pages < node_pages {
+            pages = 0;
+        } else {
+            pages -= node_pages;
+        }
+    }
+    return 0;
+}
+
+fn mi_reserve_huge_os_pages(pages: u64, max_secs: f64, pages_reserved: *mut u64) -> i32 {
+    (max_secs) as void;
+    _mi_warning_message("mi_reserve_huge_os_pages is deprecated: use mi_reserve_huge_os_pages_interleave/at instead\n");
+    if pages_reserved != 0 {
+        *pages_reserved = 0;
+    }
+    let mut err: i32 = mi_reserve_huge_os_pages_interleave(pages, 0, (max_secs * 1000.0) as u64);
+    if err == 0 && pages_reserved != 0 {
+        *pages_reserved = pages;
+    }
+    return err;
+}
+
+fn mi_arena_purge_delay() -> i64 {
+    let mut delay: i64 = mi_option_get(mi_option_purge_delay);
+    let mut mult: i64 = mi_option_get(mi_option_arena_purge_mult);
+    if delay < 0 || mult < 0 {
+        return -1;
+    }
+    if delay == 0 || mult == 0 {
+        return 0;
+    }
+    let mut total: u64 = 0;
+    if mi_mul_overflow(delay as u64, mult as u64, &mut total) {
+        return delay;
+    }
+    if total > 2147483647 {
+        return delay;
+    }
+    return total as i64;
+}
+
+fn mi_arena_purge(arena: *mut mi_arena_t, slice_index: u64, slice_count: u64) -> bool {
+    (if (!arena.memid.is_pinned) { 0 as void } else { _mi_assert_fail("!arena->memid.is_pinned", "mimalloc\\src\\arena.c", 2282, "mi_arena_purge") });
+    (if (mi_bbitmap_is_clearN(arena.slices_free, slice_index, slice_count)) { 0 as void } else { _mi_assert_fail("mi_bbitmap_is_clearN(arena->slices_free, slice_index, slice_count)", "mimalloc\\src\\arena.c", 2283, "mi_arena_purge") });
+    let mut size: u64 = mi_size_of_slices(slice_count);
+    let mut p: void *const = mi_arena_slice_start(arena, slice_index);
+    let mut already_committed: u64 = 0;
+    mi_bitmap_setN(arena.slices_committed, slice_index, slice_count, &mut already_committed);
+    let mut all_committed: bool = (already_committed == slice_count);
+    let mut needs_recommit: bool = _mi_os_purge_ex(arena.subproc, p, size, all_committed, mi_size_of_slices(already_committed), arena.commit_fun, arena.commit_fun_arg);
+    if needs_recommit {
+        mi_bitmap_clearN(arena.slices_committed, slice_index, slice_count);
+    } else if !all_committed {
+        mi_bitmap_clearN(arena.slices_committed, slice_index, slice_count);
+    }
+    return needs_recommit;
+}
+
+fn mi_arena_schedule_purge(arena: *mut mi_arena_t, slice_index: u64, slice_count: u64) {
+    let mut delay: i64 = mi_arena_purge_delay();
+    if arena.memid.is_pinned || delay < 0 || _mi_preloading() {
+        return;
+    }
+    (if (mi_bbitmap_is_clearN(arena.slices_free, slice_index, slice_count)) { 0 as void } else { _mi_assert_fail("mi_bbitmap_is_clearN(arena->slices_free, slice_index, slice_count)", "mimalloc\\src\\arena.c", 2316, "mi_arena_schedule_purge") });
+    if delay == 0 {
+        mi_arena_purge(arena, slice_index, slice_count);
+    } else {
+        let mut expire: mi_msecs_t = _mi_clock_now() + delay;
+        let mut expire0: mi_msecs_t = 0;
+        if atomic_compare_exchange_strong_explicit(&mut arena.purge_expire, &mut expire0, expire, memory_order_acq_rel, memory_order_acquire) {
+            (if (expire0 == 0) { 0 as void } else { _mi_assert_fail("expire0==0", "mimalloc\\src\\arena.c", 2328, "mi_arena_schedule_purge") });
+            atomic_compare_exchange_strong_explicit(&mut arena.subproc.purge_expire, &mut expire0, expire, memory_order_acq_rel, memory_order_acquire);
+        } else {}
+        mi_bitmap_setN(arena.slices_purge, slice_index, slice_count, 0);
+    }
+}
+
+struct mi_purge_visit_info_s {
+    now: mi_msecs_t,
+    delay: mi_msecs_t,
+    all_purged: bool,
+    any_purged: bool,
+}
+
+fn mi_arena_try_purge_range(arena: *mut mi_arena_t, slice_index: u64, slice_count: u64) -> bool {
+    (if (slice_count < (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("slice_count < MI_BCHUNK_BITS", "mimalloc\\src\\arena.c", 2346, "mi_arena_try_purge_range") });
+    if mi_bbitmap_try_clearNC(arena.slices_free, slice_index, slice_count) {
+        let mut decommitted: bool = mi_arena_purge(arena, slice_index, slice_count);
+        (decommitted) as void;
+        (if (!decommitted || mi_bitmap_is_clearN(arena.slices_committed, slice_index, slice_count)) { 0 as void } else { _mi_assert_fail("!decommitted || mi_bitmap_is_clearN(arena->slices_committed, slice_index, slice_count)", "mimalloc\\src\\arena.c", 2350, "mi_arena_try_purge_range") });
+        mi_bbitmap_setN(arena.slices_free, slice_index, slice_count);
+        return true;
+    } else {
+        return false;
+    }
+}
+
+fn mi_arena_try_purge_visitor(slice_index: u64, slice_count: u64, arena: *mut mi_arena_t, arg: *mut void) -> bool {
+    let mut vinfo: *mut mi_purge_visit_info_t = arg as *mut mi_purge_visit_info_t;
+    if mi_arena_try_purge_range(arena, slice_index, slice_count) {
+        vinfo.any_purged = true;
+        vinfo.all_purged = true;
+    } else if slice_count > 1 {
+        for let mut i: u64 = 0; i < slice_count; i += 1 {
+            let mut purged: bool = mi_arena_try_purge_range(arena, slice_index + i, 1);
+            vinfo.any_purged = vinfo.any_purged || purged;
+            vinfo.all_purged = vinfo.all_purged && purged;
+        }
+    }
+    return true;
+}
+
+fn mi_arena_try_purge(arena: *mut mi_arena_t, now: mi_msecs_t, force: bool) -> i32 {
+    if arena.memid.is_pinned {
+        return -1;
+    }
+    let mut expire: mi_msecs_t = atomic_load_explicit(&mut arena.purge_expire, memory_order_relaxed);
+    if expire == 0 {
+        return -1;
+    }
+    if !force && expire > now {
+        return 0;
+    }
+    atomic_store_explicit(&mut arena.purge_expire, 0 as mi_msecs_t, memory_order_release);
+    __mi_stat_counter_increase_mt(&mut (arena.subproc).stats.arena_purges, 1);
+    let mut vinfo: mi_purge_visit_info_t = mi_purge_visit_info_t { now, mi_arena_purge_delay(), true, false };
+    let mut minslices: u64 = mi_slice_count_of_size(_mi_os_minimal_purge_size());
+    _mi_bitmap_forall_setc_rangesn(arena.slices_purge, minslices, &mut mi_arena_try_purge_visitor, arena, &mut vinfo);
+    return (if vinfo.any_purged { 1 } else { -1 });
+}
+
+fn mi_arenas_try_purge(force: bool, visit_all: bool, subproc: *mut mi_subproc_t, tseq: u64) {
+    let mut delay: i64 = mi_arena_purge_delay();
+    if _mi_preloading() || delay <= 0 {
+        return;
+    }
+    let mut now: mi_msecs_t = _mi_clock_now();
+    let mut arenas_expire: mi_msecs_t = atomic_load_explicit(&mut subproc.purge_expire, memory_order_acquire);
+    if !visit_all && !force && (arenas_expire == 0 || arenas_expire > now) {
+        return;
+    }
+    let mut max_arena: u64 = mi_arenas_get_count(subproc);
+    if max_arena == 0 {
+        return;
+    }
+    let mut purge_guard: mi_atomic_guard_t = mi_atomic_guard_t {};
+    let mut _mi_guard_expected: u64 = 0;
+    for let mut _mi_guard_once: bool = true; _mi_guard_once && atomic_compare_exchange_strong_explicit(&mut purge_guard, &mut _mi_guard_expected, 1 as u64, memory_order_acq_rel, memory_order_acquire); (atomic_store_explicit(&mut purge_guard, 0 as u64, memory_order_release) , _mi_guard_once = false) {
+        if arenas_expire > now {
+            atomic_store_explicit(&mut subproc.purge_expire, now + (delay / 10), memory_order_release);
+        }
+        let mut arena_start: u64 = tseq % max_arena;
+        let mut max_purge_count: u64 = (if visit_all { max_arena } else { (max_arena / 4) + 1 });
+        let mut all_visited: bool = true;
+        let mut any_purged: bool = false;
+        for let mut _i: u64 = 0; _i < max_arena; _i += 1 {
+            let mut i: u64 = _i + arena_start;
+            if i >= max_arena {
+                i -= max_arena;
+            }
+            let mut arena: *mut mi_arena_t = mi_arena_from_index(subproc, i);
+            if arena != 0 {
+                let mut purged: i32 = mi_arena_try_purge(arena, now, force);
+                if purged >= 0 {
+                    any_purged = true;
+                    if purged >= 1 {
+                        if max_purge_count <= 1 {
+                            all_visited = false;
+                            break;
+                        }
+                        max_purge_count -= 1;
+                    }
+                }
+            }
+        }
+        if all_visited && !any_purged {
+            atomic_store_explicit(&mut subproc.purge_expire, 0 as mi_msecs_t, memory_order_release);
+        }
+    }
+}
+
+struct mi_heap_visit_info_s {
+    heap: *mut mi_heap_t,
+    visitor: *mut mi_block_visit_fun,
+    arg: *mut void,
+    visit_blocks: bool,
+}
+
+fn mi_heap_visit_page(page: *mut mi_page_t, vinfo: *mut mi_heap_visit_info_t) -> bool {
+    let mut area: mi_heap_area_t = mi_heap_area_t {};
+    _mi_heap_area_init(&mut area, page);
+    (if (vinfo.heap == mi_page_heap(page)) { 0 as void } else { _mi_assert_fail("vinfo->heap == mi_page_heap(page)", "mimalloc\\src\\arena.c", 2476, "mi_heap_visit_page") });
+    if !vinfo.visitor(vinfo.heap, &mut area, 0, area.block_size, vinfo.arg) {
+        return false;
+    }
+    if vinfo.visit_blocks {
+        return _mi_theap_area_visit_blocks(&mut area, page, vinfo.visitor, vinfo.arg);
+    } else {
+        return true;
+    }
+}
+
+fn mi_heap_visit_page_at(slice_index: u64, slice_count: u64, arena: *mut mi_arena_t, arg: *mut void) -> bool {
+    (slice_count) as void;
+    let mut vinfo: *mut mi_heap_visit_info_t = arg as *mut mi_heap_visit_info_t;
+    let mut page: *mut mi_page_t = mi_arena_page_at_slice(arena, slice_index);
+    return mi_heap_visit_page(page, vinfo);
+}
+
+fn mi_heap_visit_blocks(heap: *mut mi_heap_t, visit_blocks: bool, visitor: *mut mi_block_visit_fun, arg: *mut void) -> bool {
+    return _mi_heap_visit_blocks(heap, false, visit_blocks, visitor, arg);
+}
+
+fn mi_heap_visit_abandoned_blocks(heap: *mut mi_heap_t, visit_blocks: bool, visitor: *mut mi_block_visit_fun, arg: *mut void) -> bool {
+    return _mi_heap_visit_blocks(heap, true, visit_blocks, visitor, arg);
+}
+
+struct mi_heap_delete_visit_info_s {
+    heap_target: *mut mi_heap_t,
+    theap_target: *mut mi_theap_t,
+    theap: *mut mi_theap_t,
+}
+
+fn mi_heap_delete_page(heap: *mi_heap_t, area: *mi_heap_area_t, block: *mut void, block_size: u64, arg: *mut void) -> bool {
+    (block) as void;
+    (block_size) as void;
+    (heap) as void;
+    let mut info: *mut mi_heap_delete_visit_info_t = arg as *mut mi_heap_delete_visit_info_t;
+    let mut heap_target: *mut mi_heap_t = info.heap_target;
+    let mut theap: mi_theap_t *const = 0;
+    let mut page: mi_page_t *const = area.reserved1 as *mut mi_page_t;
+    mi_page_claim_ownership(page);
+    if mi_page_is_abandoned(page) {
+        _mi_arenas_page_unabandon(page, theap);
+    } else {
+        page.next = page.prev = 0;
+        mi_page_set_theap(page, 0);
+    }
+    (if (mi_page_is_abandoned(page)) { 0 as void } else { _mi_assert_fail("mi_page_is_abandoned(page)", "mimalloc\\src\\arena.c", 2568, "mi_heap_delete_page") });
+    (if (mi_page_is_owned(page)) { 0 as void } else { _mi_assert_fail("mi_page_is_owned(page)", "mimalloc\\src\\arena.c", 2569, "mi_heap_delete_page") });
+    if mi_page_used(page) == 0 {
+        _mi_arenas_page_free(page, theap);
+    } else if heap_target == 0 {
+        _mi_page_unguard_all(page);
+        mi_page_used_reset(page);
+        _mi_arenas_page_free(page, theap);
+    } else {
+        let mut sbin: u64 = _mi_page_stats_bin(page);
+        let mut arena: *mut mi_arena_t = 0;
+        let mut slice_index: u64 = 0;
+        if page.memid.memkind == MI_MEM_ARENA {
+            let mut slice_count: u64 = 0;
+            let mut arena_pages: *mut mi_arena_pages_t = 0;
+            arena = mi_page_arena_pages(page, &mut slice_index, &mut slice_count, &mut arena_pages);
+            (if (mi_bitmap_is_set(arena_pages.pages, slice_index)) { 0 as void } else { _mi_assert_fail("mi_bitmap_is_set(arena_pages->pages, slice_index)", "mimalloc\\src\\arena.c", 2593, "mi_heap_delete_page") });
+            mi_bitmap_clear(arena_pages.pages, slice_index);
+        } else {
+            (if (mi_memid_is_os(page.memid) && page.next == 0) { 0 as void } else { _mi_assert_fail("mi_memid_is_os(page->memid) && page->next == NULL", "mimalloc\\src\\arena.c", 2598, "mi_heap_delete_page") });
+        }
+        if theap != 0 {
+            __mi_stat_decrease(&mut (theap).stats.page_bins[sbin], 1);
+            __mi_stat_decrease(&mut (theap).stats.pages, 1);
+        } else {
+            __mi_stat_decrease_mt(&mut (heap as *mut mi_heap_t).stats.page_bins[_mi_page_stats_bin(page)], 1);
+            __mi_stat_decrease_mt(&mut (heap as *mut mi_heap_t).stats.pages, 1);
+        }
+        let mut theap_target: *mut mi_theap_t = info.theap_target;
+        if arena != 0 {
+            let mut arena_pages_target: *mut mi_arena_pages_t = mi_heap_ensure_arena_pages(heap_target, arena);
+            if __builtin_expect(!!(arena_pages_target == 0), false) {
+                heap_target = mi_arena_heap_main(arena);
+                theap_target = mi_heap_theap(heap_target);
+                arena_pages_target = mi_heap_ensure_arena_pages(heap_target, arena);
+                (if (arena_pages_target != 0) { 0 as void } else { _mi_assert_fail("arena_pages_target!=NULL", "mimalloc\\src\\arena.c", 2618, "mi_heap_delete_page") });
+            }
+            (if (mi_bitmap_is_clear(arena_pages_target.pages, slice_index)) { 0 as void } else { _mi_assert_fail("mi_bitmap_is_clear(arena_pages_target->pages, slice_index)", "mimalloc\\src\\arena.c", 2620, "mi_heap_delete_page") });
+            mi_bitmap_set(arena_pages_target.pages, slice_index);
+        }
+        page.heap = heap_target;
+        __mi_stat_increase(&mut (theap_target).stats.page_bins[sbin], 1);
+        __mi_stat_increase(&mut (theap_target).stats.pages, 1);
+        _mi_arenas_page_abandon(page, theap_target);
+    }
+    return true;
+}
+
+fn mi_heap_delete_pages(heap: *mut mi_heap_t, heap_target: *mut mi_heap_t) {
+    let mut theap_target: mi_theap_t *const = (if heap_target != 0 { _mi_heap_theap(heap_target) } else { 0 });
+    let mut info: mi_heap_delete_visit_info_t = mi_heap_delete_visit_info_t { heap_target, theap_target, 0 };
+    _mi_heap_visit_blocks(heap, false, false, &mut mi_heap_delete_page, &mut info);
+    for let mut i: u64 = 0; i < (160); i += 1 {
+        let mut arena_pages: mi_arena_pages_t *const = atomic_load_explicit(&mut heap.arena_pages[i], memory_order_relaxed);
+        if arena_pages != 0 {
+            (if (mi_bitmap_is_all_clear(arena_pages.pages)) { 0 as void } else { _mi_assert_fail("mi_bitmap_is_all_clear(arena_pages->pages)", "mimalloc\\src\\arena.c", 2643, "mi_heap_delete_pages") });
+        }
+    }
+    for let mut _mi_go: bool = (mi_lock_acquire(&mut heap.os_abandoned_pages_lock) , true); _mi_go; (mi_lock_release(&mut heap.os_abandoned_pages_lock) , _mi_go = false) {
+        (if (heap.os_abandoned_pages == 0) { 0 as void } else { _mi_assert_fail("heap->os_abandoned_pages == NULL", "mimalloc\\src\\arena.c", 2649, "mi_heap_delete_pages") });
+    }
+    for let mut i: u64 = 0; i < ((60) + 1); i += 1 {
+        (if (atomic_load_explicit(&mut heap.abandoned_count[i], memory_order_relaxed) == 0) { 0 as void } else { _mi_assert_fail("mi_atomic_load_relaxed(&heap->abandoned_count[i])==0", "mimalloc\\src\\arena.c", 2653, "mi_heap_delete_pages") });
+    }
+}

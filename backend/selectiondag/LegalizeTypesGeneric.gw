@@ -1,0 +1,415 @@
+fn DAGTypeLegalizer::ExpandRes_MERGE_VALUES(self, N: *mut SDNode, ResNo: u32, Lo: *mut SDValue, Hi: *mut SDValue) {
+    let mut Op: SDValue = self.DisintegrateMERGE_VALUES(N, ResNo);
+    self.GetExpandedOp(Op, Lo, Hi);
+}
+
+fn DAGTypeLegalizer::ExpandRes_BITCAST(self, N: *mut SDNode, Lo: *mut SDValue, Hi: *mut SDValue) {
+    let mut OutVT: EVT = N.getValueType(0);
+    let mut NOutVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), OutVT);
+    let mut InOp: SDValue = N.getOperand(0);
+    let mut InVT: EVT = InOp.getValueType();
+    let mut dl: SDLoc = SDLoc { N };
+    match self.getTypeAction(InVT) {
+        TypeLegal => {
+            TypePromoteInteger;
+        },
+        TypeSoftPromoteHalf => {
+            llvm_unreachable_internal("Bitcast of a promotion-needing float should never needexpansion", "llvm\\lib\\CodeGen\\SelectionDAG\\LegalizeTypesGeneric.cpp", 54);
+        },
+        TypeSoftenFloat => {
+            self.SplitInteger(self.GetSoftenedFloat(InOp), Lo, Hi);
+        },
+        TypeExpandInteger => {
+            TypeExpandFloat;
+        },
+        TypeSplitVector => {
+            self.GetSplitVector(InOp, Lo, Hi);
+        },
+        TypeScalarizeVector => {
+            self.SplitInteger(self.BitConvertToInteger(self.GetScalarizedVector(InOp)), Lo, Hi);
+        },
+        TypeScalarizeScalableVector => {
+            report_fatal_error("Scalarization of scalable vectors is not supported.", true);
+        },
+        TypeWidenVector => {
+            assert!(!(InVT.getVectorNumElements() & 1), "Unsupported BITCAST");
+            InOp = self.GetWidenedVector(InOp);
+            let mut LoVT: EVT = EVT {};
+            let mut HiVT: EVT = EVT {};
+            tie(LoVT, HiVT) = self.DAG.GetSplitDestVTs(InVT);
+            tie(Lo, Hi) = self.DAG.SplitVector(InOp, dl, LoVT, HiVT);
+            if self.TLI.hasBigEndianPartOrdering(OutVT, self.DAG.getDataLayout()) {
+                swap(Lo, Hi);
+            }
+            Lo = self.DAG.getNode(BITCAST, dl, NOutVT, Lo);
+            Hi = self.DAG.getNode(BITCAST, dl, NOutVT, Hi);
+            return;
+        },
+    }
+    if InVT.isVector() && OutVT.isInteger() {
+        let mut NumElems: u32 = 2;
+        let mut ElemVT: EVT = NOutVT;
+        let mut NVT: EVT = getVectorVT(*self.DAG.getContext(), ElemVT, NumElems, false);
+        while !self.isTypeLegal(NVT) {
+            let mut NewSizeInBits: u32 = ElemVT.getSizeInBits().operator unsigned long long() / 2;
+            if NewSizeInBits < 8 {
+                break;
+            }
+            NumElems *= 2;
+            ElemVT = getIntegerVT(*self.DAG.getContext(), NewSizeInBits);
+            NVT = getVectorVT(*self.DAG.getContext(), ElemVT, NumElems, false);
+        }
+        if self.isTypeLegal(NVT) {
+            let mut CastInOp: SDValue = self.DAG.getNode(BITCAST, dl, NVT, InOp);
+            let mut Vals: SmallVector<SDValue, 8> = SmallVector<SDValue, 8> {};
+            for let mut i: u32 = 0; i < NumElems; i += 1 {
+                Vals.push(self.DAG.getNode(EXTRACT_VECTOR_ELT, dl, ElemVT, CastInOp, self.DAG.getVectorIdxConstant(i, dl, false)));
+            }
+            let mut Slot: u32 = 0;
+            for let mut e: u32 = Vals.len; e - Slot > 2; Slot += 2 , e += 1 {
+                let mut LHS: SDValue = Vals[Slot];
+                let mut RHS: SDValue = Vals[Slot + 1];
+                if self.DAG.getDataLayout().isBigEndian() {
+                    swap(LHS, RHS);
+                }
+                Vals.push(self.DAG.getNode(BUILD_PAIR, dl, getIntegerVT(*self.DAG.getContext(), LHS.getValueSizeInBits().operator unsigned long long() << 1), LHS, RHS));
+            }
+            Lo = Vals[Slot += 1];
+            Hi = Vals[Slot += 1];
+            if self.DAG.getDataLayout().isBigEndian() {
+                swap(Lo, Hi);
+            }
+            return;
+        }
+    }
+    assert!(NOutVT.isByteSized(), "Expanded type not byte sized!");
+    let mut InAlign: Align = self.DAG.getReducedAlign(InVT, false);
+    let mut NOutAlign: Align = self.DAG.getReducedAlign(NOutVT, false);
+    let mut Align: Align = if InAlign > NOutAlign { InAlign } else { NOutAlign };
+    let mut StackPtr: SDValue = self.DAG.CreateStackTemporary(InVT.getStoreSize(), Align);
+    let mut SPFI: i32 = cast(StackPtr.getNode()).getIndex();
+    let mut PtrInfo: MachinePointerInfo = getFixedStack(self.DAG.getMachineFunction(), SPFI, 0);
+    let mut Store: SDValue = self.DAG.getStore(self.DAG.getEntryNode(), dl, InOp, StackPtr, PtrInfo, MaybeAlign {}, MONone, MMOMetadata {});
+    Lo = self.DAG.getLoad(NOutVT, dl, Store, StackPtr, PtrInfo, MaybeAlign { NOutAlign }, MONone, MMOMetadata {});
+    let mut IncrementSize: u32 = NOutVT.getSizeInBits().operator unsigned long long() / 8;
+    StackPtr = self.DAG.getMemBasePlusOffset(StackPtr, getFixed(IncrementSize), dl, SDNodeFlags { Flags: None });
+    Hi = self.DAG.getLoad(NOutVT, dl, Store, StackPtr, PtrInfo.getWithOffset(IncrementSize), MaybeAlign { NOutAlign }, MONone, MMOMetadata {});
+    if self.TLI.hasBigEndianPartOrdering(OutVT, self.DAG.getDataLayout()) {
+        swap(Lo, Hi);
+    }
+}
+
+fn DAGTypeLegalizer::ExpandRes_BUILD_PAIR(self, N: *mut SDNode, Lo: *mut SDValue, Hi: *mut SDValue) {
+    Lo = N.getOperand(0);
+    Hi = N.getOperand(1);
+}
+
+fn DAGTypeLegalizer::ExpandRes_EXTRACT_ELEMENT(self, N: *mut SDNode, Lo: *mut SDValue, Hi: *mut SDValue) {
+    self.GetExpandedOp(N.getOperand(0), Lo, Hi);
+    let mut Part: SDValue = if N.getConstantOperandVal(1) { Hi } else { Lo };
+    assert!(Part.getValueType() == N.getValueType(0), "Type twice as big as expanded type not itself expanded!");
+    self.GetPairElements(Part, Lo, Hi);
+}
+
+fn DAGTypeLegalizer::ExpandRes_EXTRACT_VECTOR_ELT(self, N: *mut SDNode, Lo: *mut SDValue, Hi: *mut SDValue) {
+    let mut OldVec: SDValue = N.getOperand(0);
+    let mut OldEltCount: ElementCount = OldVec.getValueType().getVectorElementCount();
+    let mut OldEltVT: EVT = OldVec.getValueType().getVectorElementType();
+    let mut dl: SDLoc = SDLoc { N };
+    let mut OldVT: EVT = N.getValueType(0);
+    let mut NewVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), OldVT);
+    if OldVT != OldEltVT {
+        assert!(OldEltVT.bitsLT(OldVT), "Result type smaller then element type!");
+        let mut NVecVT: EVT = getVectorVT(*self.DAG.getContext(), OldVT, OldEltCount);
+        OldVec = self.DAG.getNode(ANY_EXTEND, dl, NVecVT, N.getOperand(0));
+    }
+    let mut NewVec: SDValue = self.DAG.getNode(BITCAST, dl, getVectorVT(*self.DAG.getContext(), NewVT, OldEltCount * 2), OldVec);
+    let mut Idx: SDValue = N.getOperand(1);
+    Idx = self.DAG.getNode(SHL, dl, Idx.getValueType(), Idx, self.DAG.getShiftAmountConstant(1, Idx.getValueType(), dl));
+    Lo = self.DAG.getNode(EXTRACT_VECTOR_ELT, dl, NewVT, NewVec, Idx);
+    Idx = self.DAG.getNode(ADD, dl, Idx.getValueType(), Idx, self.DAG.getConstant(1, dl, Idx.getValueType(), false, false));
+    Hi = self.DAG.getNode(EXTRACT_VECTOR_ELT, dl, NewVT, NewVec, Idx);
+    if self.DAG.getDataLayout().isBigEndian() {
+        swap(Lo, Hi);
+    }
+}
+
+fn DAGTypeLegalizer::ExpandRes_NormalLoad(self, N: *mut SDNode, Lo: *mut SDValue, Hi: *mut SDValue) {
+    assert!(isNormalLoad(N), "This routine only for normal loads!");
+    let mut dl: SDLoc = SDLoc { N };
+    let mut LD: *mut LoadSDNode = cast(N);
+    assert!(!LD.isAtomic(), "Atomics can not be split");
+    let mut ValueVT: EVT = LD.getValueType(0);
+    let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), ValueVT);
+    let mut Chain: SDValue = LD.getChain();
+    let mut Ptr: SDValue = LD.getBasePtr();
+    let mut AAInfo: AAMDNodes = LD.getAAInfo();
+    assert!(NVT.isByteSized(), "Expanded type not byte sized!");
+    Lo = self.DAG.getLoad(NVT, dl, Chain, Ptr, LD.getPointerInfo(), MaybeAlign { LD.getBaseAlign() }, LD.getMemOperand().getFlags(), MMOMetadata { AAInfo: AAInfo, Ranges: null, MemCacheHint: null });
+    let mut IncrementSize: u32 = NVT.getSizeInBits().operator unsigned long long() / 8;
+    Ptr = self.DAG.getObjectPtrOffset(dl, Ptr, getFixed(IncrementSize));
+    Hi = self.DAG.getLoad(NVT, dl, Chain, Ptr, LD.getPointerInfo().getWithOffset(IncrementSize), MaybeAlign { LD.getBaseAlign() }, LD.getMemOperand().getFlags(), MMOMetadata { AAInfo: AAInfo, Ranges: null, MemCacheHint: null });
+    Chain = self.DAG.getNode(TokenFactor, dl, EVT { Other }, Lo.getValue(1), Hi.getValue(1));
+    if self.TLI.hasBigEndianPartOrdering(ValueVT, self.DAG.getDataLayout()) {
+        swap(Lo, Hi);
+    }
+    self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Chain);
+}
+
+fn DAGTypeLegalizer::ExpandRes_VAARG(self, N: *mut SDNode, Lo: *mut SDValue, Hi: *mut SDValue) {
+    let mut OVT: EVT = N.getValueType(0);
+    let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), OVT);
+    let mut Chain: SDValue = N.getOperand(0);
+    let mut Ptr: SDValue = N.getOperand(1);
+    let mut dl: SDLoc = SDLoc { N };
+    let mut Align: u32 = N.getConstantOperandVal(3);
+    Lo = self.DAG.getVAArg(NVT, dl, Chain, Ptr, N.getOperand(2), Align);
+    Hi = self.DAG.getVAArg(NVT, dl, Lo.getValue(1), Ptr, N.getOperand(2), 0);
+    Chain = Hi.getValue(1);
+    if self.TLI.hasBigEndianPartOrdering(OVT, self.DAG.getDataLayout()) {
+        swap(Lo, Hi);
+    }
+    self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Chain);
+}
+
+fn DAGTypeLegalizer::IntegerToVector(self, Op: SDValue, NumElements: u32, Ops: *mut SmallVectorImpl<SDValue>, EltVT: EVT) {
+    assert!(Op.getValueType().isInteger());
+    let mut DL: SDLoc = SDLoc { Op };
+    let mut Parts: [2]SDValue = [2]SDValue {};
+    if NumElements > 1 {
+        NumElements >>= 1;
+        self.SplitInteger(Op, Parts[0], Parts[1]);
+        if self.DAG.getDataLayout().isBigEndian() {
+            swap(Parts[0], Parts[1]);
+        }
+        self.IntegerToVector(Parts[0], NumElements, Ops, EltVT);
+        self.IntegerToVector(Parts[1], NumElements, Ops, EltVT);
+    } else {
+        Ops.push(self.DAG.getNode(BITCAST, DL, EltVT, Op));
+    }
+}
+
+fn DAGTypeLegalizer::ExpandOp_BITCAST(self, N: *mut SDNode) -> SDValue {
+    let mut dl: SDLoc = SDLoc { N };
+    if N.getValueType(0).isVector() && N.getOperand(0).getValueType().isInteger() {
+        let mut NumElts: u32 = 2;
+        let mut OVT: EVT = N.getOperand(0).getValueType();
+        let mut NVT: EVT = getVectorVT(*self.DAG.getContext(), self.TLI.getTypeToTransformTo(*self.DAG.getContext(), OVT), NumElts, false);
+        if !self.isTypeLegal(NVT) {
+            NumElts = N.getValueType(0).getVectorNumElements();
+            NVT = N.getValueType(0);
+        }
+        let mut Ops: SmallVector<SDValue, 8> = SmallVector<SDValue, 8> {};
+        self.IntegerToVector(N.getOperand(0), NumElts, Ops, NVT.getVectorElementType());
+        let mut Vec: SDValue = self.DAG.getBuildVector(NVT, dl, SDValue> { Ops.ptr, NumElts });
+        return self.DAG.getNode(BITCAST, dl, N.getValueType(0), Vec);
+    }
+    return self.CreateStackStoreLoad(N.getOperand(0), N.getValueType(0));
+}
+
+fn DAGTypeLegalizer::ExpandOp_BUILD_VECTOR(self, N: *mut SDNode) -> SDValue {
+    let mut VecVT: EVT = N.getValueType(0);
+    let mut NumElts: u32 = VecVT.getVectorNumElements();
+    let mut OldVT: EVT = N.getOperand(0).getValueType();
+    let mut NewVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), OldVT);
+    let mut dl: SDLoc = SDLoc { N };
+    assert!(OldVT == VecVT.getVectorElementType(), "BUILD_VECTOR operand type doesn't match vector element type!");
+    if VecVT.isInteger() && self.TLI.isOperationLegal(SPLAT_VECTOR, VecVT) && self.TLI.isOperationLegalOrCustom(SPLAT_VECTOR_PARTS, VecVT, false) {
+        if cast(N).getSplatValue(null) {
+            V;
+        } else {
+            let mut Lo: SDValue = SDValue {};
+            let mut Hi: SDValue = SDValue {};
+            self.GetExpandedOp(V, Lo, Hi);
+            return self.DAG.getNode(SPLAT_VECTOR_PARTS, dl, VecVT, Lo, Hi);
+        }
+    }
+    let mut NewElts: SmallVector<SDValue, 16> = SmallVector<SDValue, 16> {};
+    NewElts.reserve(NumElts * 2);
+    for let mut i: u32 = 0; i < NumElts; i += 1 {
+        let mut Lo: SDValue = SDValue {};
+        let mut Hi: SDValue = SDValue {};
+        self.GetExpandedOp(N.getOperand(i), Lo, Hi);
+        if self.DAG.getDataLayout().isBigEndian() {
+            swap(Lo, Hi);
+        }
+        NewElts.push(ValueParamT { Lo });
+        NewElts.push(ValueParamT { Hi });
+    }
+    let mut NewVecVT: EVT = getVectorVT(*self.DAG.getContext(), NewVT, NewElts.len, false);
+    let mut NewVec: SDValue = self.DAG.getBuildVector(NewVecVT, dl, ArrayRef<SDValue> { NewElts });
+    return self.DAG.getNode(BITCAST, dl, VecVT, NewVec);
+}
+
+fn DAGTypeLegalizer::ExpandOp_EXTRACT_ELEMENT(self, N: *mut SDNode) -> SDValue {
+    let mut Lo: SDValue = SDValue {};
+    let mut Hi: SDValue = SDValue {};
+    self.GetExpandedOp(N.getOperand(0), Lo, Hi);
+    return if N.getConstantOperandVal(1) { Hi } else { Lo };
+}
+
+fn DAGTypeLegalizer::ExpandOp_FAKE_USE(self, N: *mut SDNode) -> SDValue {
+    let mut Lo: SDValue = SDValue {};
+    let mut Hi: SDValue = SDValue {};
+    let mut Chain: SDValue = N.getOperand(0);
+    self.GetExpandedOp(N.getOperand(1), Lo, Hi);
+    let mut LoUse: SDValue = self.DAG.getNode(FAKE_USE, SDLoc {}, EVT { Other }, Chain, Lo);
+    self.DAG.UpdateNodeOperands(N, LoUse, Hi);
+    return SDValue { Node: N, ResNo: 0 };
+}
+
+fn DAGTypeLegalizer::ExpandOp_INSERT_VECTOR_ELT(self, N: *mut SDNode) -> SDValue {
+    let mut VecVT: EVT = N.getValueType(0);
+    let mut NumElts: u32 = VecVT.getVectorNumElements();
+    let mut dl: SDLoc = SDLoc { N };
+    let mut Val: SDValue = N.getOperand(1);
+    let mut OldEVT: EVT = Val.getValueType();
+    let mut NewEVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), OldEVT);
+    assert!(OldEVT == VecVT.getVectorElementType(), "Inserted element type doesn't match vector element type!");
+    let mut NewVecVT: EVT = getVectorVT(*self.DAG.getContext(), NewEVT, NumElts * 2, false);
+    let mut NewVec: SDValue = self.DAG.getNode(BITCAST, dl, NewVecVT, N.getOperand(0));
+    let mut Lo: SDValue = SDValue {};
+    let mut Hi: SDValue = SDValue {};
+    self.GetExpandedOp(Val, Lo, Hi);
+    if self.DAG.getDataLayout().isBigEndian() {
+        swap(Lo, Hi);
+    }
+    let mut Idx: SDValue = N.getOperand(2);
+    Idx = self.DAG.getNode(SHL, dl, Idx.getValueType(), Idx, self.DAG.getShiftAmountConstant(1, Idx.getValueType(), dl));
+    NewVec = self.DAG.getNode(INSERT_VECTOR_ELT, dl, NewVecVT, NewVec, Lo, Idx);
+    Idx = self.DAG.getNode(ADD, dl, Idx.getValueType(), Idx, self.DAG.getConstant(1, dl, Idx.getValueType(), false, false));
+    NewVec = self.DAG.getNode(INSERT_VECTOR_ELT, dl, NewVecVT, NewVec, Hi, Idx);
+    return self.DAG.getNode(BITCAST, dl, VecVT, NewVec);
+}
+
+fn DAGTypeLegalizer::ExpandOp_SCALAR_TO_VECTOR(self, N: *mut SDNode) -> SDValue {
+    let mut dl: SDLoc = SDLoc { N };
+    let mut VT: EVT = N.getValueType(0);
+    assert!(VT.getVectorElementType() == N.getOperand(0).getValueType(), "SCALAR_TO_VECTOR operand type doesn't match vector element type!");
+    let mut NumElts: u32 = VT.getVectorNumElements();
+    let mut Ops: SmallVector<SDValue, 16> = SmallVector<SDValue, 16> { NumElts };
+    Ops[0] = N.getOperand(0);
+    let mut UndefVal: SDValue = self.DAG.getUNDEF(Ops[0].getValueType());
+    for let mut i: u32 = 1; i < NumElts; i += 1 {
+        Ops[i] = UndefVal;
+    }
+    return self.DAG.getBuildVector(VT, dl, ArrayRef<SDValue> { Ops });
+}
+
+fn DAGTypeLegalizer::ExpandOp_NormalStore(self, N: *mut SDNode, OpNo: u32) -> SDValue {
+    assert!(isNormalStore(N), "This routine only for normal stores!");
+    assert!(OpNo == 1, "Can only expand the stored value so far");
+    let mut dl: SDLoc = SDLoc { N };
+    let mut St: *mut StoreSDNode = cast(N);
+    assert!(!St.isAtomic(), "Atomics can not be split");
+    let mut ValueVT: EVT = St.getValue().getValueType();
+    let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), ValueVT);
+    let mut Chain: SDValue = St.getChain();
+    let mut Ptr: SDValue = St.getBasePtr();
+    let mut AAInfo: AAMDNodes = St.getAAInfo();
+    assert!(NVT.isByteSized(), "Expanded type not byte sized!");
+    let mut IncrementSize: u32 = NVT.getSizeInBits().operator unsigned long long() / 8;
+    let mut Lo: SDValue = SDValue {};
+    let mut Hi: SDValue = SDValue {};
+    self.GetExpandedOp(St.getValue(), Lo, Hi);
+    if self.TLI.hasBigEndianPartOrdering(ValueVT, self.DAG.getDataLayout()) {
+        swap(Lo, Hi);
+    }
+    Lo = self.DAG.getStore(Chain, dl, Lo, Ptr, St.getPointerInfo(), St.getBaseAlign(), St.getMemOperand().getFlags(), MMOMetadata { AAInfo: AAInfo, Ranges: null, MemCacheHint: null });
+    Ptr = self.DAG.getObjectPtrOffset(dl, Ptr, getFixed(IncrementSize));
+    Hi = self.DAG.getStore(Chain, dl, Hi, Ptr, St.getPointerInfo().getWithOffset(IncrementSize), St.getBaseAlign(), St.getMemOperand().getFlags(), MMOMetadata { AAInfo: AAInfo, Ranges: null, MemCacheHint: null });
+    return self.DAG.getNode(TokenFactor, dl, EVT { Other }, Lo, Hi);
+}
+
+fn DAGTypeLegalizer::SplitRes_MERGE_VALUES(self, N: *mut SDNode, ResNo: u32, Lo: *mut SDValue, Hi: *mut SDValue) {
+    let mut Op: SDValue = self.DisintegrateMERGE_VALUES(N, ResNo);
+    self.GetSplitOp(Op, Lo, Hi);
+}
+
+fn DAGTypeLegalizer::SplitRes_Select(self, N: *mut SDNode, Lo: *mut SDValue, Hi: *mut SDValue) {
+    let mut LL: SDValue = SDValue {};
+    let mut LH: SDValue = SDValue {};
+    let mut RL: SDValue = SDValue {};
+    let mut RH: SDValue = SDValue {};
+    let mut CL: SDValue = SDValue {};
+    let mut CH: SDValue = SDValue {};
+    let mut dl: SDLoc = SDLoc { N };
+    let mut Opcode: u32 = N.getOpcode();
+    self.GetSplitOp(N.getOperand(1), LL, LH);
+    self.GetSplitOp(N.getOperand(2), RL, RH);
+    let mut Cond: SDValue = N.getOperand(0);
+    CL = CH = Cond;
+    if Cond.getValueType().isVector() {
+        if self.WidenVSELECTMask(N) {
+            Res;
+        } else {
+            tie(CL, CH) = self.DAG.SplitVector(Res, dl);
+        }
+    }
+    if Opcode != VP_MERGE {
+        Lo = self.DAG.getNode(Opcode, dl, LL.getValueType(), CL, LL, RL);
+        Hi = self.DAG.getNode(Opcode, dl, LH.getValueType(), CH, LH, RH);
+        return;
+    }
+    let mut EVLLo: SDValue = SDValue {};
+    let mut EVLHi: SDValue = SDValue {};
+    tie(EVLLo, EVLHi) = self.DAG.SplitEVL(N.getOperand(3), N.getValueType(0), dl);
+    Lo = self.DAG.getNode(Opcode, dl, LL.getValueType(), CL, LL, RL, EVLLo);
+    Hi = self.DAG.getNode(Opcode, dl, LH.getValueType(), CH, LH, RH, EVLHi);
+}
+
+fn DAGTypeLegalizer::SplitRes_SELECT_CC(self, N: *mut SDNode, Lo: *mut SDValue, Hi: *mut SDValue) {
+    let mut LL: SDValue = SDValue {};
+    let mut LH: SDValue = SDValue {};
+    let mut RL: SDValue = SDValue {};
+    let mut RH: SDValue = SDValue {};
+    let mut dl: SDLoc = SDLoc { N };
+    self.GetSplitOp(N.getOperand(2), LL, LH);
+    self.GetSplitOp(N.getOperand(3), RL, RH);
+    Lo = self.DAG.getNode(SELECT_CC, dl, LL.getValueType(), N.getOperand(0), N.getOperand(1), LL, RL, N.getOperand(4));
+    Hi = self.DAG.getNode(SELECT_CC, dl, LH.getValueType(), N.getOperand(0), N.getOperand(1), LH, RH, N.getOperand(4));
+}
+
+fn DAGTypeLegalizer::SplitRes_UNDEF(self, N: *mut SDNode, Lo: *mut SDValue, Hi: *mut SDValue) {
+    let mut LoVT: EVT = EVT {};
+    let mut HiVT: EVT = EVT {};
+    tie(LoVT, HiVT) = self.DAG.GetSplitDestVTs(N.getValueType(0));
+    Lo = self.DAG.getUNDEF(LoVT);
+    Hi = self.DAG.getUNDEF(HiVT);
+}
+
+fn DAGTypeLegalizer::SplitVecRes_AssertZext(self, N: *mut SDNode, Lo: *mut SDValue, Hi: *mut SDValue) {
+    let mut L: SDValue = SDValue {};
+    let mut H: SDValue = SDValue {};
+    let mut dl: SDLoc = SDLoc { N };
+    self.GetSplitOp(N.getOperand(0), L, H);
+    Lo = self.DAG.getNode(AssertZext, dl, L.getValueType(), L, N.getOperand(1));
+    Hi = self.DAG.getNode(AssertZext, dl, H.getValueType(), H, N.getOperand(1));
+}
+
+fn DAGTypeLegalizer::SplitVecRes_AssertSext(self, N: *mut SDNode, Lo: *mut SDValue, Hi: *mut SDValue) {
+    let mut L: SDValue = SDValue {};
+    let mut H: SDValue = SDValue {};
+    let mut dl: SDLoc = SDLoc { N };
+    self.GetSplitOp(N.getOperand(0), L, H);
+    Lo = self.DAG.getNode(AssertSext, dl, L.getValueType(), L, N.getOperand(1));
+    Hi = self.DAG.getNode(AssertSext, dl, H.getValueType(), H, N.getOperand(1));
+}
+
+fn DAGTypeLegalizer::SplitRes_FREEZE(self, N: *mut SDNode, Lo: *mut SDValue, Hi: *mut SDValue) {
+    let mut L: SDValue = SDValue {};
+    let mut H: SDValue = SDValue {};
+    let mut dl: SDLoc = SDLoc { N };
+    self.GetSplitOp(N.getOperand(0), L, H);
+    Lo = self.DAG.getNode(FREEZE, dl, L.getValueType(), L);
+    Hi = self.DAG.getNode(FREEZE, dl, H.getValueType(), H);
+}
+
+fn DAGTypeLegalizer::SplitRes_ARITH_FENCE(self, N: *mut SDNode, Lo: *mut SDValue, Hi: *mut SDValue) {
+    let mut L: SDValue = SDValue {};
+    let mut H: SDValue = SDValue {};
+    let mut DL: SDLoc = SDLoc { N };
+    self.GetSplitOp(N.getOperand(0), L, H);
+    Lo = self.DAG.getNode(ARITH_FENCE, DL, L.getValueType(), L);
+    Hi = self.DAG.getNode(ARITH_FENCE, DL, H.getValueType(), H);
+}

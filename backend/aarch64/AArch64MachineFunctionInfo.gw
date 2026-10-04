@@ -1,0 +1,163 @@
+fn getSVEStackSize(MFI: *AArch64FunctionInfo, GetStackSize: *)() const) -> optional<uint64_t> {
+    if !MFI.hasCalculatedStackSizeSVE() {
+        return nullopt;
+    }
+    return MFI .* GetStackSize;
+}
+
+fn AArch64FunctionInfo::mappingImpl(self, YamlIO: *mut IO) {
+    mapping(YamlIO, *self);
+}
+
+fn AArch64FunctionInfo::initializeBaseYamlFields(self, YamlMFI: *AArch64FunctionInfo) {
+    if YamlMFI.HasRedZone {
+        self.HasRedZone = YamlMFI.HasRedZone;
+    }
+    if YamlMFI.StackSizeZPR || YamlMFI.StackSizePPR {
+        self.setStackSizeSVE(YamlMFI.StackSizeZPR, YamlMFI.StackSizePPR);
+    }
+    if YamlMFI.HasStackFrame {
+        self.setHasStackFrame(operator(YamlMFI.HasStackFrame));
+    }
+    if YamlMFI.HasStreamingModeChanges {
+        self.setHasStreamingModeChanges(operator(YamlMFI.HasStreamingModeChanges));
+    }
+}
+
+fn GetSignReturnAddress(F: *Function) -> SignReturnAddress {
+    if F.hasFnAttribute("ptrauth-returns") {
+        return NonLeaf;
+    }
+    if !F.hasFnAttribute("sign-return-address") {
+        return None;
+    }
+    let mut Scope: str = F.getFnAttribute("sign-return-address").getValueAsString();
+}
+
+fn ShouldSignWithBKey(F: *Function, STI: *AArch64Subtarget) -> bool {
+    if F.hasFnAttribute("ptrauth-returns") {
+        return true;
+    }
+    if !F.hasFnAttribute("sign-return-address-key") {
+        if STI.getTargetTriple().isOSWindows() {
+            return true;
+        }
+        return false;
+    }
+    let mut Key: str = F.getFnAttribute("sign-return-address-key").getValueAsString();
+    assert!(Key == "a_key" || Key == "b_key");
+    if STI.getTargetTriple().isOSWindows() && Key == "a_key" && GetSignReturnAddress(F) != None {
+        F.getContext().diagnose(DiagnosticInfoUnsupported { F, "A-key return address signing is unsupported on AArch64 Windows", DiagnosticLocation {}, DS_Error });
+        return true;
+    }
+    return Key == "b_key";
+}
+
+fn hasELFSignedGOTHelper(F: *Function, STI: *AArch64Subtarget) -> bool {
+    if !STI.getTargetTriple().isOSBinFormatELF() {
+        return false;
+    }
+    let mut M: *Module = F.getParent();
+    let mut Flag: *auto = extract_or_null(M.getModuleFlag("ptrauth-elf-got"));
+    if Flag() && () == 1 {
+        return true;
+    }
+    return false;
+}
+
+fn AArch64FunctionInfo::AArch64FunctionInfo(self, F: *Function, STI: *AArch64Subtarget) {
+    if F.hasFnAttribute(NoRedZone) {
+        self.HasRedZone;
+    }
+    self.SignCondition = GetSignReturnAddress(F);
+    self.SignWithBKey = ShouldSignWithBKey(F, *STI);
+    self.HasELFSignedGOT = hasELFSignedGOTHelper(F, STI);
+    self.IsMTETagged = F.hasFnAttribute(SanitizeMemTag);
+    self.BranchTargetEnforcement = F.hasFnAttribute("branch-target-enforcement");
+    self.BranchProtectionPAuthLR = F.hasFnAttribute("branch-protection-pauth-lr");
+    self.SMEFnAttrs = SMEAttrs { F, null };
+    let mut ProbeSize: u64 = 4096;
+    if F.hasFnAttribute("stack-probe-size") {
+        ProbeSize = F.getFnAttributeAsParsedInteger("stack-probe-size", 0);
+    } else if  {
+        ProbeSize = ();
+    }
+    assert!(ProbeSize > 0, "Invalid stack probe size");
+    if STI.isTargetWindows() {
+        if !F.hasFnAttribute("no-stack-arg-probe") {
+            self.StackProbeSize = ProbeSize;
+        }
+    } else {
+        let mut StackAlign: u64 = STI.getFrameLowering().getTransientStackAlign().value();
+        ProbeSize = max(StackAlign, ProbeSize & ~(StackAlign - 1));
+        let mut ProbeKind: str = "";
+        if F.hasFnAttribute("probe-stack") {
+            ProbeKind = F.getFnAttribute("probe-stack").getValueAsString();
+        } else if  {
+            ProbeKind = ();
+        }
+        if ProbeKind.len {
+            if ProbeKind != "inline-asm" {
+                report_fatal_error("Unsupported stack probing method", true);
+            }
+            self.StackProbeSize = ProbeSize;
+        }
+    }
+}
+
+fn AArch64FunctionInfo::clone(self: *AArch64FunctionInfo, Allocator: *mut BumpPtrAllocator, DestMF: *mut MachineFunction, Src2DstMBB: i32) -> *mut MachineFunctionInfo {
+    return DestMF;
+}
+
+fn isLRSpilled(MF: *MachineFunction) -> bool {
+    return any_of(MF.getFrameInfo()(), Closure_1 {});
+}
+
+fn AArch64FunctionInfo::shouldSignReturnAddress(self, Condition: SignReturnAddress, IsLRSpilled: bool) -> bool {
+    match Condition {
+        None => {
+            return false;
+        },
+        NonLeaf => {
+            return IsLRSpilled;
+        },
+        All => {
+            return true;
+        },
+    }
+    llvm_unreachable_internal("Unknown SignReturnAddress enum", "llvm\\lib\\Target\\AArch64\\AArch64MachineFunctionInfo.cpp", 193);
+}
+
+fn AArch64FunctionInfo::shouldSignReturnAddress(self: *AArch64FunctionInfo, MF: *MachineFunction) -> bool {
+    return shouldSignReturnAddress(self.SignCondition, isLRSpilled(MF));
+}
+
+fn AArch64FunctionInfo::needsShadowCallStackPrologueEpilogue(self: *AArch64FunctionInfo, MF: *mut MachineFunction) -> bool {
+    if !(isLRSpilled(MF) && MF.getFunction().hasFnAttribute(ShadowCallStack)) {
+        return false;
+    }
+    if operator!(MF(18)) {
+        report_fatal_error("Must reserve x18 to use shadow call stack", true);
+    }
+    return true;
+}
+
+fn AArch64FunctionInfo::needsDwarfUnwindInfo(self: *AArch64FunctionInfo, MF: *MachineFunction) -> bool {
+    if !self.NeedsDwarfUnwindInfo {
+        self.NeedsDwarfUnwindInfo;
+    }
+    return operator(self.NeedsDwarfUnwindInfo);
+}
+
+fn AArch64FunctionInfo::needsAsyncDwarfUnwindInfo(self: *AArch64FunctionInfo, MF: *MachineFunction) -> bool {
+    if !self.NeedsAsyncDwarfUnwindInfo {
+        let mut F: *Function = MF.getFunction();
+        let mut AFI: *AArch64FunctionInfo = MF;
+        self.NeedsAsyncDwarfUnwindInfo;
+    }
+    return operator(self.NeedsAsyncDwarfUnwindInfo);
+}
+
+struct Closure_1 {}
+
+fn Closure_1::call(self: *Closure_1) {}

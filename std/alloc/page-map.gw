@@ -1,0 +1,203 @@
+fn mi_page_map_cannot_commit() {
+    _mi_warning_message("unable to commit the allocation page-map on-demand\n");
+}
+
+static mut mi_page_map_empty: mi_page_map_t = mi_page_map_t { 1, mi_memid_t { union (unnamed at p:\Goraw\mimalloc\include\mimalloc\types.h:349:3) { mi_memid_os_info_t { 0, 0 } }, MI_MEM_STATIC, true, true, false }, mi_lock_t { SRWLOCK { 0 } }, [0] };
+
+fn mi_page_map_count_of_size(size: u64) -> u64 {
+    return (if size <  { 0 } else { 1 + (size - ) /  });
+}
+
+fn mi_page_map_commit_entries(pmap: *mut mi_page_map_t, required_idx: u64) -> bool {
+    let mut reserved_count: u64 = mi_page_map_count_of_size(pmap.reserved_size);
+    if __builtin_expect(!!(required_idx >= reserved_count), false) {
+        mi_page_map_cannot_commit();
+        return false;
+    }
+    let mut commit_size: u64 = _mi_align_up( + (required_idx * ), (1 << (13 + (3))));
+    if pmap.reserved_size < commit_size {
+        commit_size = pmap.reserved_size;
+    }
+    let mut commit_count: u64 = mi_page_map_count_of_size(commit_size);
+    (if (commit_count > required_idx) { 0 as void } else { _mi_assert_fail("commit_count > required_idx", "mimalloc\\src\\page-map.c", 245, "mi_page_map_commit_entries") });
+    (if (commit_count <= reserved_count) { 0 as void } else { _mi_assert_fail("commit_count <= reserved_count", "mimalloc\\src\\page-map.c", 246, "mi_page_map_commit_entries") });
+    let mut is_zero: bool = false;
+    if __builtin_expect(!!(!_mi_os_commit(_mi_subproc_main(), pmap, commit_size, &mut is_zero)), false) {
+        mi_page_map_cannot_commit();
+        return false;
+    }
+    (if (is_zero || pmap.memid.initially_zero) { 0 as void } else { _mi_assert_fail("is_zero || pmap->memid.initially_zero", "mimalloc\\src\\page-map.c", 253, "mi_page_map_commit_entries") });
+    atomic_store_explicit(&mut pmap.committed_count, commit_count, memory_order_release);
+    return true;
+}
+
+fn mi_page_map_ensure_committed(pmap: *mut mi_page_map_t, idx: u64, submap: *mut mi_submap_t) -> bool {
+    (if (submap != 0 && *submap == 0) { 0 as void } else { _mi_assert_fail("submap!=NULL && *submap==NULL", "mimalloc\\src\\page-map.c", 260, "mi_page_map_ensure_committed") });
+    if __builtin_expect(!!(idx >= atomic_load_explicit(&mut pmap.committed_count, memory_order_relaxed)), false) {
+        if idx >= atomic_load_explicit(&mut pmap.committed_count, memory_order_acquire) {
+            if !mi_page_map_commit_entries(pmap, idx) {
+                return false;
+            }
+            (if (idx < atomic_load_explicit(&mut pmap.committed_count, memory_order_relaxed)) { 0 as void } else { _mi_assert_fail("idx < mi_atomic_load_relaxed(&pmap->committed_count)", "mimalloc\\src\\page-map.c", 264, "mi_page_map_ensure_committed") });
+        }
+    }
+    *submap = atomic_load_explicit(&mut pmap.submaps[idx], memory_order_acquire);
+    return true;
+}
+
+fn mi_page_map_init_once() -> bool {
+    let mut vbits: u64 = mi_option_get_clamp(mi_option_max_vabits, 0, (47)) as u64;
+    if vbits == 0 {
+        vbits = _mi_os_virtual_address_bits();
+        if vbits >= 48 {
+            vbits = 47;
+        }
+    }
+    if vbits < (13) + (13 + (3)) {
+        vbits = (13) + (13 + (3));
+    }
+    if vbits < (43) {
+        vbits = (43);
+    }
+    if vbits > (47) {
+        vbits = (47);
+    }
+    (if ((47) >= vbits) { 0 as void } else { _mi_assert_fail("MI_MAX_VABITS >= vbits", "mimalloc\\src\\page-map.c", 291, "mi_page_map_init_once") });
+    (if ((43) <= vbits) { 0 as void } else { _mi_assert_fail("MI_MIN_VABITS <= vbits", "mimalloc\\src\\page-map.c", 292, "mi_page_map_init_once") });
+    let mut reserve_count: u64 = (1 << (vbits - (13) - (13 + (3))));
+    let mut os_page_size: u64 = _mi_os_page_size();
+    let mut reserve_size: u64 = _mi_align_up( + ((reserve_count - 1) * ), os_page_size);
+    let mut submap_size: u64 = ((1 << (13)) * );
+    let mut extra_reserve_size: u64 = reserve_size + submap_size;
+    let mut commit: bool = (vbits == (43)) || (reserve_size <= 64 * (1024)) || mi_option_is_enabled(mi_option_pagemap_commit) || _mi_os_has_overcommit();
+    let mut subproc: mi_subproc_t *const = _mi_subproc_main();
+    let mut memid: mi_memid_t = mi_memid_t {};
+    let mut pmap: mi_page_map_t *const = _mi_os_alloc_aligned(subproc, extra_reserve_size, 1, commit, true, &mut memid) as *mut mi_page_map_t;
+    if __builtin_expect(!!(pmap == 0), false) {
+        _mi_error_message(12, "unable to reserve virtual memory for the page map (%zu KiB)\n", extra_reserve_size / (1024));
+        return false;
+    }
+    let mut commit_count: u64 = 0;
+    if memid.initially_committed {
+        if !memid.initially_zero {
+            _mi_warning_message("internal: the page map was committed but not zero initialized!\n");
+            _mi_memzero_aligned(pmap, extra_reserve_size);
+            memid.initially_zero = true;
+        }
+        commit_count = mi_page_map_count_of_size(reserve_size);
+    } else {
+        let mut min_commit_count: u64 = (1 << ((43) - (13) - (13 + (3))));
+        let mut min_commit_size: u64 = _mi_align_up( + ((min_commit_count - 1) * ), os_page_size);
+        (if (min_commit_size <= reserve_size) { 0 as void } else { _mi_assert_fail("min_commit_size <= reserve_size", "mimalloc\\src\\page-map.c", 322, "mi_page_map_init_once") });
+        let mut is_zero: bool = false;
+        if !_mi_os_commit(subproc, pmap, min_commit_size, &mut is_zero) {
+            mi_page_map_cannot_commit();
+            _mi_os_free(subproc, pmap, extra_reserve_size, memid);
+            return false;
+        }
+        (if (is_zero || memid.initially_zero) { 0 as void } else { _mi_assert_fail("is_zero || memid.initially_zero", "mimalloc\\src\\page-map.c", 329, "mi_page_map_init_once") });
+        commit_count = mi_page_map_count_of_size(min_commit_size);
+        (if (commit_count >= min_commit_count) { 0 as void } else { _mi_assert_fail("commit_count >= min_commit_count", "mimalloc\\src\\page-map.c", 331, "mi_page_map_init_once") });
+    }
+    let mut sub0: mi_page_t **const = (pmap as *mut u8 + reserve_size) as mi_submap_t;
+    if !memid.initially_committed {
+        if !_mi_os_commit(subproc, sub0, submap_size, 0) {
+            mi_page_map_cannot_commit();
+            _mi_os_free(subproc, pmap, extra_reserve_size, memid);
+            return false;
+        }
+    }
+    if !memid.initially_zero {
+        _mi_memzero_aligned(sub0, submap_size);
+    }
+    pmap.memid = memid;
+    pmap.reserved_size = reserve_size;
+    mi_lock_init(&mut pmap.lock);
+    atomic_store_explicit(&mut pmap.committed_count, commit_count, memory_order_release);
+    atomic_store_explicit(&mut pmap.submaps[0], sub0 as *mut *mut mi_page_t, memory_order_release);
+    atomic_store_explicit(&mut __mi_page_map, pmap as *mut mi_page_map_t, memory_order_release);
+    (if (_mi_ptr_page(0) == 0) { 0 as void } else { _mi_assert_fail("_mi_ptr_page(NULL)==NULL", "mimalloc\\src\\page-map.c", 355, "mi_page_map_init_once") });
+    return true;
+}
+
+fn mi_page_map_alloc_submap_at(pmap: *mut mi_page_map_t, idx: u64) -> mi_submap_t {
+    let mut sub: mi_submap_t = 0;
+    for let mut _mi_go: bool = (mi_lock_acquire(&mut pmap.lock) , true); _mi_go; (mi_lock_release(&mut pmap.lock) , _mi_go = false) {
+        sub = atomic_load_explicit(&mut pmap.submaps[idx], memory_order_acquire);
+        if sub == 0 {
+            let mut subproc: mi_subproc_t *const = _mi_subproc_main();
+            let mut memid: mi_memid_t = mi_memid_t {};
+            let mut submap_size: u64 = ((1 << (13)) * );
+            sub = _mi_os_zalloc(subproc, submap_size, &mut memid) as mi_submap_t;
+            if sub == 0 {
+                _mi_warning_message("internal error: unable to extend the page map\n");
+            } else {
+                let mut expect: mi_submap_t = 0;
+                if !atomic_compare_exchange_strong_explicit(&mut pmap.submaps[idx], &mut expect, sub as *mut *mut mi_page_t, memory_order_acq_rel, memory_order_acquire) {
+                    _mi_os_free(subproc, sub, submap_size, memid);
+                    sub = expect;
+                }
+            }
+        }
+    }
+    return sub;
+}
+
+fn mi_page_map_ensure_submap_at(pmap: *mut mi_page_map_t, idx: u64, submap: *mut mi_submap_t) -> bool {
+    (if (submap != 0 && *submap == 0) { 0 as void } else { _mi_assert_fail("submap!=NULL && *submap==NULL", "mimalloc\\src\\page-map.c", 415, "mi_page_map_ensure_submap_at") });
+    let mut sub: mi_submap_t = 0;
+    if !mi_page_map_ensure_committed(pmap, idx, &mut sub) {
+        return false;
+    }
+    if __builtin_expect(!!(sub == 0), false) {
+        sub = mi_page_map_alloc_submap_at(pmap, idx);
+        if sub == 0 {
+            return false;
+        }
+    }
+    (if (sub != 0) { 0 as void } else { _mi_assert_fail("sub!=NULL", "mimalloc\\src\\page-map.c", 424, "mi_page_map_ensure_submap_at") });
+    *submap = sub;
+    return true;
+}
+
+fn mi_page_map_set_range_prim(pmap: *mut mi_page_map_t, page: *mut mi_page_t, idx: u64, sub_idx: u64, slice_count: u64) -> bool {
+    while slice_count > 0 {
+        let mut sub: mi_submap_t = 0;
+        if !mi_page_map_ensure_submap_at(pmap, idx, &mut sub) {
+            return false;
+        }
+        (if (sub != 0) { 0 as void } else { _mi_assert_fail("sub!=NULL", "mimalloc\\src\\page-map.c", 436, "mi_page_map_set_range_prim") });
+        while slice_count > 0 && sub_idx < (1 << (13)) {
+            sub[sub_idx] = page;
+            slice_count -= 1;
+            sub_idx += 1;
+        }
+        idx += 1;
+        sub_idx = 0;
+    }
+    return true;
+}
+
+fn mi_page_map_set_range(pmap: *mut mi_page_map_t, page: *mut mi_page_t, idx: u64, sub_idx: u64, slice_count: u64) -> bool {
+    if __builtin_expect(!!(!mi_page_map_set_range_prim(pmap, page, idx, sub_idx, slice_count)), false) {
+        if page != 0 {
+            mi_page_map_set_range_prim(pmap, 0, idx, sub_idx, slice_count);
+        }
+        return false;
+    }
+    return true;
+}
+
+fn mi_page_map_get_idx(page: *mut mi_page_t, sub_idx: *mut u64, slice_count: *mut u64) -> u64 {
+    let mut page_size: u64 = 0;
+    let mut page_start: *mut u8 = mi_page_area(page, &mut page_size);
+    if page_size > ((1 << (3)) * (8 * ((1) * (1 << (13 + (3)))))) {
+        page_size = ((1 << (3)) * (8 * ((1) * (1 << (13 + (3)))))) - (1 << (13 + (3)));
+    }
+    *slice_count = mi_slice_count_of_size(page_size) + ((page_start - mi_page_slice_start(page)) / (1 << (13 + (3))));
+    return _mi_page_map_index(page_start, sub_idx);
+}
+
+fn mi_is_in_heap_region(p: *void) -> bool {
+    return (_mi_safe_ptr_page(p) != 0);
+}

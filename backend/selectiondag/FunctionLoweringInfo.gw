@@ -1,0 +1,404 @@
+fn isUsedOutsideOfDefiningBlock(I: *Instruction) -> bool {
+    if I.use_empty() {
+        return false;
+    }
+    if isa(I) {
+        return true;
+    }
+    let mut BB: *BasicBlock = I.getParent();
+    for U in I.users() {
+        if cast(U).getParent() != BB || isa(U) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn getPreferredExtendForValue(I: *Instruction) -> NodeType {
+    let mut ExtendKind: NodeType = ANY_EXTEND;
+    let mut NumOfSigned: u32 = 0;
+    let mut NumOfUnsigned: u32 = 0;
+    for U in I.uses() {
+        if dyn_cast(U.getUser()) {
+            CI;
+        } else {
+            NumOfSigned += CI.isSigned();
+            NumOfUnsigned += CI.isUnsigned();
+        }
+        if dyn_cast(U.getUser()) {
+            CallI;
+        } else {
+            if !CallI.isArgOperand(&mut U) {
+                continue;
+            }
+            let mut ArgNo: u32 = CallI.getArgOperandNo(&mut U);
+            NumOfUnsigned += CallI.paramHasAttr(ArgNo, ZExt);
+            NumOfSigned += CallI.paramHasAttr(ArgNo, SExt);
+        }
+    }
+    if NumOfSigned > NumOfUnsigned {
+        ExtendKind = SIGN_EXTEND;
+    }
+    return ExtendKind;
+}
+
+fn FunctionLoweringInfo::set(self, fn: *Function, mf: *mut MachineFunction, DAG: *mut SelectionDAG) {
+    self.Fn = &mut fn;
+    self.MF = &mut mf;
+    self.TLI = self.MF.getSubtarget().getTargetLowering();
+    self.RegInfo = &mut self.MF.getRegInfo();
+    let mut TFI: *TargetFrameLowering = self.MF.getSubtarget().getFrameLowering();
+    self.UA = DAG.getUniformityInfo();
+    self.ExceptionModel = self.Fn.getParent().getExceptionModel();
+    if self.ExceptionModel == Default {
+        self.ExceptionModel = self.MF.getTarget().getExceptionModel();
+    }
+    let mut Outs: OutputArg, 4> = OutputArg, 4> {};
+    let mut CC: ID = self.Fn.getCallingConv();
+    GetReturnInfo(CC, self.Fn.getReturnType(), self.Fn.getAttributes(), Outs, *self.TLI, mf.getDataLayout());
+    self.CanLowerReturn = self.TLI.CanLowerReturn(CC, *self.MF, self.Fn.isVarArg(), Outs, self.Fn.getContext(), self.Fn.getReturnType());
+    let mut CatchObjects: DenseMap<const AllocaInst *, TinyPtrVector<int *>> = DenseMap<const AllocaInst *, TinyPtrVector<int *>> {};
+    let mut Personality: EHPersonality = classifyEHPersonality(if self.Fn.hasPersonalityFn() { self.Fn.getPersonalityFn() } else { null });
+    if isFuncletEHPersonality(Personality) {
+        let mut EHInfo: *mut WinEHFuncInfo = *self.MF.getWinEHFuncInfo();
+        if Personality == MSVC_CXX {
+            calculateWinCXXEHStateNumbers(&mut fn, EHInfo);
+        } else if isAsynchronousEHPersonality(Personality) {
+            calculateSEHStateNumbers(&mut fn, EHInfo);
+        } else if Personality == CoreCLR {
+            calculateClrEHStateNumbers(&mut fn, EHInfo);
+        }
+        for TBME in EHInfo.TryBlockMap {
+            for H in TBME.HandlerArray {
+                if H.CatchObj.Alloca {
+                    AI;
+                } else {
+                    CatchObjects[AI].push(&mut H.CatchObj.FrameIndex);
+                }
+            }
+        }
+    }
+    let mut StackAlign: Align = TFI.getStackAlign();
+    for BB in *self.Fn {
+        for I in BB {
+            if dyn_cast(&mut I) {
+                AI;
+            } else {
+                let mut Alignment: Align = AI.getAlign();
+                if AI.isStaticAlloca() && (TFI.isStackRealignable() || (Alignment <= StackAlign)) {
+                    let mut AllocaSize: TypeSize = AI.getAllocationSize(self.MF.getDataLayout()).value_or(getZero());
+                    let mut TySize: u64 = AllocaSize.getKnownMinValue();
+                    if TySize == 0 {
+                        TySize = 1;
+                    }
+                    let mut FrameIndex: i32 = 2147483647;
+                    let mut Iter: iterator = CatchObjects.find(AI);
+                    if Iter != CatchObjects.end() && self.TLI.needsFixedCatchObjects() {
+                        FrameIndex = self.MF.getFrameInfo().CreateFixedObject(TySize, 0, false, true);
+                        self.MF.getFrameInfo().setObjectAlignment(FrameIndex, Alignment);
+                    } else {
+                        FrameIndex = self.MF.getFrameInfo().CreateStackObject(TySize, Alignment, false, AI, 0);
+                    }
+                    if AllocaSize.isScalable() {
+                        self.MF.getFrameInfo().setStackID(FrameIndex, TFI.getStackIDForScalableVectors());
+                    }
+                    self.StaticAllocaMap[AI] = FrameIndex;
+                    if Iter != CatchObjects.end() {
+                        for CatchObjPtr in operator(Iter).second {
+                            *CatchObjPtr = FrameIndex;
+                        }
+                    }
+                } else {
+                    self.MF.getFrameInfo().CreateVariableSizedObject(if Alignment <= StackAlign { Align { ShiftValue: 1 } } else { Alignment }, AI);
+                }
+            }
+            if isUsedOutsideOfDefiningBlock(&mut I) {
+                if !isa(I) || !self.StaticAllocaMap.count(cast(&mut I)) {
+                    self.InitializeRegForValue(&mut I);
+                }
+            }
+            if DAG.getOptLevel() != None {
+                self.PreferredExtendType[&mut I] = getPreferredExtendForValue(&mut I);
+            }
+        }
+    }
+    self.MBBMap.resize(self.Fn.getMaxBlockNumber());
+    for BB in *self.Fn {
+        if BB.isEHPad() {
+            let mut PadInst: const_iterator = BB.getFirstNonPHIIt();
+            if !isa(PadInst) {
+                self.MF.setHasEHScopes(true);
+                self.MF.setHasEHFunclets(true);
+                self.MF.getFrameInfo().setHasOpaqueSPAdjustment(true);
+            }
+            if isa(PadInst) {
+                assert!(BB.begin() == PadInst, "WinEHPrepare failed to remove PHIs from imaginary BBs");
+                continue;
+            }
+            if isa(PadInst) && Personality != Wasm_CXX && Personality != Wasm_D {
+                assert!(BB.begin() == PadInst, "WinEHPrepare failed to demote PHIs");
+            }
+        }
+        let mut MBB: *mut MachineBasicBlock = mf.CreateMachineBasicBlock(&mut BB, optional<UniqueBBID> { nullopt });
+        self.MBBMap[BB.getNumber()] = MBB;
+        self.MF.push(MBB);
+        if BB.hasAddressTaken() {
+            if lookup(&mut BB) {
+                BA;
+            } else if !BA.hasZeroLiveUses() {
+                MBB.setAddressTakenIRBlock(&mut BB);
+            }
+        }
+        if BB.isEHPad() {
+            MBB.setIsEHPad(true);
+        }
+        for PN in BB.phis() {
+            if PN.use_empty() {
+                continue;
+            }
+            if PN.getType().isEmptyTy() {
+                continue;
+            }
+            let mut DL: DebugLoc = PN.getDebugLoc();
+            let mut PHIReg: Register = self.ValueMap[&mut PN];
+            assert!(PHIReg.operator unsigned int(), "PHI node does not have an assigned virtual register!");
+            let mut ValueVTs: SmallVector<EVT, 4> = SmallVector<EVT, 4> {};
+            ComputeValueVTs(*self.TLI, self.MF.getDataLayout(), PN.getType(), ValueVTs, null, null, getZero());
+            for VT in ValueVTs {
+                let mut NumRegisters: u32 = self.TLI.getNumRegisters(self.Fn.getContext(), VT, optional<MVT> { nullopt });
+                let mut TII: *TargetInstrInfo = self.MF.getSubtarget().getInstrInfo();
+                for let mut i: u32 = 0; i != NumRegisters; i += 1 {
+                    BuildMI(MBB, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(PHI), Register { Reg: PHIReg.operator unsigned int() + i });
+                }
+                operator(PHIReg, NumRegisters);
+            }
+        }
+    }
+    if isFuncletEHPersonality(Personality) {
+        let mut EHInfo: *mut WinEHFuncInfo = *self.MF.getWinEHFuncInfo();
+        for TBME in EHInfo.TryBlockMap {
+            for H in TBME.HandlerArray {
+                if H.Handler {
+                    H.Handler = self.getMBB(cast(H.Handler));
+                }
+            }
+        }
+        for UME in EHInfo.CxxUnwindMap {
+            if UME.Cleanup {
+                UME.Cleanup = self.getMBB(cast(UME.Cleanup));
+            }
+        }
+        for UME in EHInfo.SEHUnwindMap {
+            UME.Handler = self.getMBB(cast(UME.Handler));
+        }
+        for CME in EHInfo.ClrEHUnwindMap {
+            CME.Handler = self.getMBB(cast(CME.Handler));
+        }
+    }
+}
+
+fn FunctionLoweringInfo::clear(self) {
+    self.MBBMap.clear();
+    self.ValueMap.clear();
+    self.VirtReg2Value.clear();
+    self.StaticAllocaMap.clear();
+    self.LiveOutRegInfo.clear();
+    self.VisitedBBs.clear();
+    self.ArgDbgValues.clear();
+    self.DescribedArgs.clear();
+    self.ByValArgFrameIndexMap.clear();
+    self.RegFixups.clear();
+    self.RegsWithFixups.clear();
+    self.StatepointStackSlots.clear();
+    self.StatepointRelocationMaps.clear();
+    self.PreferredExtendType.clear();
+    self.PreprocessedDVRDeclares.clear();
+}
+
+fn FunctionLoweringInfo::CreateReg(self, VT: MVT, isDivergent: bool) -> Register {
+    return self.RegInfo.createVirtualRegister(self.TLI.getRegClassFor(VT, isDivergent), "");
+}
+
+fn FunctionLoweringInfo::CreateRegs(self, Ty: *mut Type, isDivergent: bool) -> Register {
+    let mut ValueVTs: SmallVector<EVT, 4> = SmallVector<EVT, 4> {};
+    ComputeValueVTs(*self.TLI, self.MF.getDataLayout(), Ty, ValueVTs, null, null, getZero());
+    let mut FirstReg: Register = Register { Reg: 0 };
+    for ValueVT in ValueVTs {
+        let mut RegisterVT: MVT = self.TLI.getRegisterType(Ty.getContext(), ValueVT);
+        let mut NumRegs: u32 = self.TLI.getNumRegisters(Ty.getContext(), ValueVT, optional<MVT> { nullopt });
+        for let mut i: u32 = 0; i != NumRegs; i += 1 {
+            let mut R: Register = self.CreateReg(RegisterVT, isDivergent);
+            if !FirstReg.operator unsigned int() {
+                FirstReg = R;
+            }
+        }
+    }
+    return FirstReg;
+}
+
+fn FunctionLoweringInfo::CreateRegs(self, V: *Value) -> Register {
+    return self.CreateRegs(V.getType(), self.UA && self.UA.isDivergentAtDef(V) && !self.TLI.requiresUniformRegister(*self.MF, V));
+}
+
+fn FunctionLoweringInfo::InitializeRegForValue(self, V: *Value) -> Register {
+    if V.getType().isTokenTy() && !isa(V) {
+        return Register { Reg: 0 };
+    }
+    let mut R: *mut Register = self.ValueMap[V];
+    assert!(R == Register { Reg: 0 }, "Already initialized this value register!");
+    assert!(self.VirtReg2Value.is_empty());
+    return R = self.CreateRegs(V);
+}
+
+fn FunctionLoweringInfo::GetLiveOutRegInfo(self, Reg: Register, BitWidth: u32) -> *LiveOutInfo {
+    if !self.LiveOutRegInfo.inBounds(IndexT { Reg }) {
+        return null;
+    }
+    let mut LOI: *mut LiveOutInfo = &mut self.LiveOutRegInfo[IndexT { Reg }];
+    if !LOI.IsValid {
+        return null;
+    }
+    if BitWidth > LOI.Known.getBitWidth() {
+        LOI.NumSignBits = 1;
+        LOI.Known = LOI.Known.anyext(BitWidth);
+    }
+    return LOI;
+}
+
+fn FunctionLoweringInfo::ComputePHILiveOutRegInfo(self, PN: *PHINode) {
+    let mut Ty: *mut Type = PN.getType();
+    if !Ty.isIntegerTy() {
+        return;
+    }
+    let mut ValueVTs: SmallVector<EVT, 1> = SmallVector<EVT, 1> {};
+    ComputeValueVTs(*self.TLI, self.MF.getDataLayout(), Ty, ValueVTs, null, null, getZero());
+    assert!(ValueVTs.len == 1, "PHIs with non-vector integer types should have a single VT.");
+    let mut IntVT: EVT = ValueVTs[0];
+    let mut NumRegisters: u32 = self.TLI.getNumRegisters(PN.getContext(), IntVT, optional<MVT> { nullopt });
+    if NumRegisters != 1 && self.MF.getDataLayout().isBigEndian() {
+        return;
+    }
+    IntVT = EVT { self.TLI.getRegisterType(PN.getContext(), IntVT) };
+    let mut BitWidth: u32 = IntVT.getSizeInBits().operator unsigned long long();
+    let mut It: iterator = self.ValueMap.find(PN);
+    if It == self.ValueMap.end() {
+        return;
+    }
+    let mut BaseReg: Register = operator(It).second;
+    if !BaseReg.operator unsigned int() {
+        return;
+    }
+    assert!(BaseReg.isVirtual(), "Expected a virtual reg");
+    for let mut RegIdx: u32 = 0; RegIdx < NumRegisters; RegIdx += 1 {
+        let mut DestReg: Register = Register { Reg: BaseReg.id() + RegIdx };
+        self.LiveOutRegInfo.grow(IndexT { DestReg });
+        let mut DestLOI: *mut LiveOutInfo = self.LiveOutRegInfo[IndexT { DestReg }];
+        let mut V: *mut Value = PN.getIncomingValue(0);
+        if isa(V) || isa(V) {
+            DestLOI.NumSignBits = 1;
+            DestLOI.Known = KnownBits { BitWidth };
+            continue;
+        }
+        if dyn_cast(V) {
+            CI;
+        } else {
+            let mut Val: APInt = APInt {};
+            if self.TLI.signExtendConstant(CI) {
+                Val = CI.getValue().sext(BitWidth * NumRegisters);
+            } else {
+                Val = CI.getValue().zext(BitWidth * NumRegisters);
+            }
+            let mut Extracted: APInt = Val.extractBits(BitWidth, BitWidth * RegIdx);
+            DestLOI.NumSignBits = Extracted.getNumSignBits();
+            DestLOI.Known = makeConstant(Extracted);
+        }
+        assert!(DestLOI.Known.Zero.getBitWidth() == BitWidth && DestLOI.Known.One.getBitWidth() == BitWidth, "Masks should have the same bit width as the type.");
+        for let mut i: u32 = 1;
+let mut e: u32 = PN.getNumIncomingValues(); i != e; i += 1 {
+            let mut V: *mut Value = PN.getIncomingValue(i);
+            if isa(V) || isa(V) {
+                DestLOI.NumSignBits = 1;
+                DestLOI.Known = KnownBits { BitWidth };
+                break;
+            }
+            if dyn_cast(V) {
+                CI;
+            } else {
+                let mut Val: APInt = APInt {};
+                if self.TLI.signExtendConstant(CI) {
+                    Val = CI.getValue().sext(BitWidth * NumRegisters);
+                } else {
+                    Val = CI.getValue().zext(BitWidth * NumRegisters);
+                }
+                let mut Extracted: APInt = Val.extractBits(BitWidth, BitWidth * RegIdx);
+                DestLOI.NumSignBits = if DestLOI.NumSignBits < Extracted.getNumSignBits() { DestLOI.NumSignBits } else { Extracted.getNumSignBits() };
+                DestLOI.Known = DestLOI.Known.intersectWith(makeConstant(Extracted));
+                continue;
+            }
+            assert!(self.ValueMap.count(V), "V should have been placed in ValueMap when its CopyToReg node was created.");
+            let mut SrcReg: Register = self.ValueMap[V];
+            if !SrcReg.isVirtual() {
+                DestLOI.IsValid = false;
+                break;
+            }
+            SrcReg = Register { Reg: SrcReg.id() + RegIdx };
+            let mut SrcLOI: *LiveOutInfo = self.GetLiveOutRegInfo(SrcReg, BitWidth);
+            if !SrcLOI {
+                DestLOI.IsValid = false;
+                break;
+            }
+            DestLOI.NumSignBits = if DestLOI.NumSignBits < SrcLOI.NumSignBits { DestLOI.NumSignBits } else { SrcLOI.NumSignBits };
+            DestLOI.Known = DestLOI.Known.intersectWith(SrcLOI.Known);
+        }
+    }
+}
+
+fn FunctionLoweringInfo::setArgumentFrameIndex(self, A: *Argument, FI: i32) {
+    self.ByValArgFrameIndexMap[A] = FI;
+}
+
+fn FunctionLoweringInfo::getArgumentFrameIndex(self, A: *Argument) -> i32 {
+    let mut I: iterator = self.ByValArgFrameIndexMap.find(A);
+    if I != self.ByValArgFrameIndexMap.end() {
+        return operator(I).second;
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("function-lowering-info", 1) {
+            dbgs() << "Argument does not have assigned frame index!\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    return 2147483647;
+}
+
+fn FunctionLoweringInfo::getCatchPadExceptionPointerVReg(self, CPI: *Value, RC: *TargetRegisterClass) -> Register {
+    let mut MRI: *mut MachineRegisterInfo = self.MF.getRegInfo();
+    let mut I: pair<iterator, bool> = self.CatchPadExceptionPointers.insert(Register> { CPI, 0 });
+    let mut VReg: *mut Register = operator(I.first).second;
+    if I.second {
+        VReg = MRI.createVirtualRegister(RC, "");
+    }
+    assert!(VReg.operator unsigned int(), "null vreg in exception pointer table!");
+    return VReg;
+}
+
+fn FunctionLoweringInfo::getValueFromVirtualReg(self, Vreg: Register) -> *Value {
+    if self.VirtReg2Value.len == 0 {
+        let mut ValueVTs: SmallVector<EVT, 4> = SmallVector<EVT, 4> {};
+        for P in self.ValueMap {
+            ValueVTs.clear();
+            ComputeValueVTs(*self.TLI, self.Fn.getDataLayout(), P.first.getType(), ValueVTs, null, null, getZero());
+            let mut Reg: Register = P.second;
+            for VT in ValueVTs {
+                let mut NumRegisters: u32 = self.TLI.getNumRegisters(self.Fn.getContext(), VT, optional<MVT> { nullopt });
+                for let mut i: u32 = 0;
+let mut e: u32 = NumRegisters; i != e; i += 1 {
+                    self.VirtReg2Value[operator(Reg, 0)] = P.first;
+                }
+            }
+        }
+    }
+    return self.VirtReg2Value.lookup(Vreg);
+}

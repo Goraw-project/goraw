@@ -1,0 +1,1134 @@
+fn stringErr(T: str) -> Error {
+    return make_error(T, inconvertibleErrorCode());
+}
+
+struct TypeMapTy {
+    MappedTypes: DenseMap<Type *, Type *>,
+    DstStructTypesSet: *mut IdentifiedStructTypeSet,
+}
+
+fn TypeMapTy::get(self, T: *mut FunctionType) -> *mut FunctionType {
+    return cast(self.get(T as *mut Type));
+}
+
+fn TypeMapTy::remapType(self, SrcTy: *mut Type) -> *mut Type {
+    return self.get(SrcTy);
+}
+
+fn TypeMapTy::addTypeMapping(self, DstTy: *mut Type, SrcTy: *mut Type) {
+    self.recursivelyAddMappingIfTypesAreIsomorphic(DstTy, SrcTy);
+}
+
+fn TypeMapTy::recursivelyAddMappingIfTypesAreIsomorphic(self, DstTy: *mut Type, SrcTy: *mut Type) -> bool {
+    if DstTy.getTypeID() != SrcTy.getTypeID() {
+        return false;
+    }
+    let mut Entry: *mut *mut Type = self.MappedTypes[SrcTy];
+    if Entry {
+        return Entry == DstTy;
+    }
+    if DstTy == SrcTy {
+        Entry = DstTy;
+        return true;
+    }
+    if dyn_cast(SrcTy) {
+        SSTy;
+    } else {
+        if SSTy.isOpaque() || cast(DstTy).isOpaque() {
+            return false;
+        }
+    }
+    if SrcTy.getNumContainedTypes() != DstTy.getNumContainedTypes() {
+        return false;
+    }
+    if isa(DstTy) {
+        return false;
+    }
+    if dyn_cast(DstTy) {
+        PT;
+    } else {
+        if PT.getAddressSpace() != cast(SrcTy).getAddressSpace() {
+            return false;
+        }
+    }
+    for let mut I: u32 = 0;
+let mut E: u32 = SrcTy.getNumContainedTypes(); I != E; I += 1 {
+        if !self.recursivelyAddMappingIfTypesAreIsomorphic(DstTy.getContainedType(I), SrcTy.getContainedType(I)) {
+            return false;
+        }
+    }
+    let mut Res: pair<iterator, bool> = self.MappedTypes.insert(Type *> { SrcTy, DstTy });
+    assert!(!Res.second, "Recursive type?");
+    if dyn_cast(SrcTy) {
+        STy;
+    } else {
+        if STy.hasName() {
+            STy.setName("");
+        }
+    }
+    return true;
+}
+
+fn TypeMapTy::get(self, Ty: *mut Type) -> *mut Type {
+    let mut Entry: *mut *mut Type = &mut self.MappedTypes[Ty];
+    if *Entry {
+        return *Entry;
+    }
+    let mut IsUniqued: bool = !isa(Ty) || cast(Ty).isLiteral();
+    if !IsUniqued {
+        for Pair in self.MappedTypes {
+            assert!(!(Pair.first != Ty && Pair.second == Ty), "mapping to a source type");
+        }
+    }
+    let mut ElementTypes: SmallVector<Type *, 4> = SmallVector<Type *, 4> {};
+    if Ty.getNumContainedTypes() == 0 && IsUniqued {
+        return *Entry = Ty;
+    }
+    let mut AnyChange: bool = false;
+    ElementTypes.resize(Ty.getNumContainedTypes());
+    for let mut I: u32 = 0;
+let mut E: u32 = Ty.getNumContainedTypes(); I != E; I += 1 {
+        ElementTypes[I] = self.get(Ty.getContainedType(I));
+        AnyChange |= ElementTypes[I] != Ty.getContainedType(I);
+    }
+    Entry = &mut self.MappedTypes[Ty];
+    assert!(!*Entry, "Recursive type!");
+    if !AnyChange && IsUniqued {
+        return *Entry = Ty;
+    }
+    match Ty.getTypeID() {
+        _ => {
+            llvm_unreachable_internal("unknown derived type to remap", "llvm\\lib\\Linker\\IRMover.cpp", 204);
+        },
+        ArrayTyID => {
+            return *Entry = get(ElementTypes[0], cast(Ty).getNumElements());
+        },
+        ScalableVectorTyID => {
+            FixedVectorTyID;
+        },
+        FunctionTyID => {
+            return *Entry = get(ElementTypes[0], Type *> { ElementTypes }.slice(1), cast(Ty).isVarArg());
+        },
+        StructTyID => {
+            let mut STy: *mut StructType = cast(Ty);
+            let mut IsPacked: bool = STy.isPacked();
+            if IsUniqued {
+                return *Entry = get(Ty.getContext(), ArrayRef<Type *> { ElementTypes }, IsPacked);
+            }
+            if STy.isOpaque() {
+                self.DstStructTypesSet.addOpaque(STy);
+                return *Entry = Ty;
+            }
+            if self.DstStructTypesSet.findNonOpaque(ArrayRef<Type *> { ElementTypes }, IsPacked) {
+                OldT;
+            } else {
+                STy.setName("");
+                return *Entry = OldT;
+            }
+            if !AnyChange {
+                self.DstStructTypesSet.addNonOpaque(STy);
+                return *Entry = Ty;
+            }
+            let mut DTy: *mut StructType = create(Ty.getContext(), ArrayRef<Type *> { ElementTypes }, "", STy.isPacked());
+            if STy.hasName() {
+                let mut TmpName: str = STy.getName();
+                STy.setName("");
+                DTy.setName(TmpName.operator StringRef());
+            }
+            self.DstStructTypesSet.addNonOpaque(DTy);
+            return *Entry = DTy;
+        },
+    }
+}
+
+fn LinkDiagnosticInfo::print(self: *LinkDiagnosticInfo, DP: *mut DiagnosticPrinter) {
+    DP << self.Msg;
+}
+
+struct GlobalValueMaterializer {
+    TheIRLinker: *mut IRLinker,
+}
+
+struct LocalValueMaterializer {
+    TheIRLinker: *mut IRLinker,
+}
+
+struct IRLinker {
+    DstM: *mut Module,
+    SrcM: unique_ptr<Module>,
+    NamedMDNodes: *mut NamedMDNodesT,
+    AddLazyFor: LazyCallback,
+    TypeMap: TypeMapTy,
+    GValMaterializer: GlobalValueMaterializer,
+    LValMaterializer: LocalValueMaterializer,
+    SharedMDs: *mut MDMapT,
+    ValueMap: ValueToValueMapTy,
+    IndirectSymbolValueMap: ValueToValueMapTy,
+    ValuesToLink: DenseSet<GlobalValue *>,
+    Worklist: []*mut GlobalValue,
+    RAUWWorklist: []pair<GlobalValue *, Value *>,
+    UnmappedMetadata: DenseSet<GlobalObject *>,
+    IsPerformingImport: bool,
+    DoneLinkingBodies: bool,
+    FoundError: optional<Error>,
+    Mapper: ValueMapper,
+    IndirectSymbolMCID: u32,
+}
+
+fn IRLinker::maybeAdd(self, GV: *mut GlobalValue) {
+    if self.ValuesToLink.insert(GV).second {
+        self.Worklist.push(GV);
+    }
+}
+
+fn IRLinker::setError(self, E: Error) {
+    if E {
+        self.FoundError = move(E);
+    }
+}
+
+fn IRLinker::emitWarning(self, Message: str) {
+    operator(self.SrcM).getContext().diagnose(LinkDiagnosticInfo { DS_Warning, Message });
+}
+
+fn IRLinker::getLinkedToGlobal(self, SrcGV: *GlobalValue) -> *mut GlobalValue {
+    if !SrcGV.hasName() || SrcGV.hasLocalLinkage() {
+        return null;
+    }
+    let mut DGV: *mut GlobalValue = self.DstM.getNamedValue(SrcGV.getName());
+    if !DGV {
+        return null;
+    }
+    if DGV.hasLocalLinkage() {
+        return null;
+    }
+    if dyn_cast(DGV) {
+        FDGV;
+    } else if FDGV.isIntrinsic() {
+        if dyn_cast(SrcGV) {
+            FSrcGV;
+        } else if FDGV.getFunctionType() != self.TypeMap.get(FSrcGV.getFunctionType()) {
+            return null;
+        }
+    }
+    return DGV;
+}
+
+fn IRLinker::IRLinker(self, DstM: *mut Module, SharedMDs: *mut MDMapT, Set: *mut IdentifiedStructTypeSet, SrcM: unique_ptr<Module>, ValuesToLink: ArrayRef<GlobalValue *>, AddLazyFor: LazyCallback, IsPerformingImport: bool, NamedMDNodes: *mut NamedMDNodesT) {
+    self.ValueMap.getMDMap() = move(SharedMDs);
+    for GV in ValuesToLink {
+        self.maybeAdd(GV);
+    }
+    if IsPerformingImport {
+        self.prepareCompileUnitsForImport();
+    }
+}
+
+fn IRLinker::~IRLinker(self) {
+    self.SharedMDs = move(operator(self.ValueMap.getMDMap()));
+}
+
+fn forceRenaming(GV: *mut GlobalValue, Name: str) {
+    if GV.hasLocalLinkage() || GV.getName() == Name {
+        return;
+    }
+    let mut M: *mut Module = GV.getParent();
+    if M.getNamedValue(Name) {
+        ConflictGV;
+    } else {
+        GV.takeName(ConflictGV);
+        ConflictGV.setName(Name);
+        assert!(ConflictGV.getName() != Name, "forceRenaming didn't work");
+    }
+}
+
+fn GlobalValueMaterializer::materialize(self, SGV: *mut Value) -> *mut Value {
+    return self.TheIRLinker.materialize(SGV, false);
+}
+
+fn LocalValueMaterializer::materialize(self, SGV: *mut Value) -> *mut Value {
+    return self.TheIRLinker.materialize(SGV, true);
+}
+
+fn IRLinker::materialize(self, V: *mut Value, ForIndirectSymbol: bool) -> *mut Value {
+    let mut SGV: *mut GlobalValue = dyn_cast(V);
+    if !SGV {
+        return null;
+    }
+    if SGV.getParent() == &mut self.DstM {
+        return null;
+    }
+    if SGV.getParent() != self.SrcM.get() {
+        return null;
+    }
+    let mut NewProto: Expected<Constant *> = self.linkGlobalValueProto(SGV, ForIndirectSymbol);
+    if !NewProto {
+        self.setError(NewProto.takeError());
+        return null;
+    }
+    if !operator(NewProto) {
+        return null;
+    }
+    let mut New: *mut GlobalValue = dyn_cast(operator(NewProto));
+    if !New {
+        return operator(NewProto);
+    }
+    if dyn_cast(New) {
+        F;
+    } else {
+        if !F.isDeclaration() {
+            return New;
+        }
+    }
+    if (ForIndirectSymbol && self.ValueMap.lookup(SGV).operator llvm::Value *() == New) || (!ForIndirectSymbol && self.IndirectSymbolValueMap.lookup(SGV).operator llvm::Value *() == New) {
+        return New;
+    }
+    if ForIndirectSymbol || self.shouldLink(New, *SGV) {
+        self.setError(self.linkGlobalValueBody(*New, *SGV));
+    }
+    self.updateAttributes(*New);
+    return New;
+}
+
+fn IRLinker::copyGlobalVariableProto(self, SGVar: *GlobalVariable) -> *mut GlobalVariable {
+    let mut NewDGV: *mut GlobalVariable = GlobalVariable { self.DstM, self.TypeMap.get(SGVar.getValueType()), SGVar.isConstant(), ExternalLinkage, null, SGVar.getName(), null, SGVar.getThreadLocalMode(), optional<unsigned int> { SGVar.getAddressSpace() }, false };
+    NewDGV.setAlignment(SGVar.getAlign());
+    NewDGV.copyAttributesFrom(SGVar);
+    return NewDGV;
+}
+
+fn IRLinker::mapAttributeTypes(self, C: *mut LLVMContext, Attrs: AttributeList) -> AttributeList {
+    for let mut i: u32 = 0; i < Attrs.getNumAttrSets(); i += 1 {
+        for let mut AttrIdx: i32 = FirstTypeAttr; AttrIdx <= LastTypeAttr; AttrIdx += 1 {
+            let mut TypedAttr: AttrKind = AttrIdx as AttrKind;
+            if Attrs.hasAttributeAtIndex(i, TypedAttr) {
+                if Attrs.getAttributeAtIndex(i, TypedAttr).getValueAsType() {
+                    Ty;
+                } else {
+                    Attrs = Attrs.replaceAttributeTypeAtIndex(C, i, TypedAttr, self.TypeMap.get(Ty));
+                    break;
+                }
+            }
+        }
+    }
+    return Attrs;
+}
+
+fn IRLinker::copyFunctionProto(self, SF: *Function) -> *mut Function {
+    let mut F: *mut Function = Create(self.TypeMap.get(SF.getFunctionType()), ExternalLinkage, SF.getAddressSpace(), SF.getName(), &mut self.DstM);
+    F.copyAttributesFrom(SF);
+    F.setAttributes(self.mapAttributeTypes(F.getContext(), F.getAttributes()));
+    return F;
+}
+
+fn IRLinker::copyIndirectSymbolProto(self, SGV: *GlobalValue) -> *mut GlobalValue {
+    let mut Ty: *mut Type = self.TypeMap.get(SGV.getValueType());
+    if dyn_cast(SGV) {
+        GA;
+    } else {
+        let mut DGA: *mut GlobalAlias = create(Ty, SGV.getAddressSpace(), ExternalLinkage, SGV.getName(), &mut self.DstM);
+        DGA.copyAttributesFrom(GA);
+        return DGA;
+    }
+    if dyn_cast(SGV) {
+        GI;
+    } else {
+        let mut DGI: *mut GlobalIFunc = create(Ty, SGV.getAddressSpace(), ExternalLinkage, SGV.getName(), null, &mut self.DstM);
+        DGI.copyAttributesFrom(GI);
+        return DGI;
+    }
+    llvm_unreachable_internal("Invalid source global value type", "llvm\\lib\\Linker\\IRMover.cpp", 632);
+}
+
+fn IRLinker::copyGlobalValueProto(self, SGV: *GlobalValue, ForDefinition: bool) -> *mut GlobalValue {
+    let mut NewGV: *mut GlobalValue = null;
+    if dyn_cast(SGV) {
+        SGVar;
+    } else {
+        NewGV = self.copyGlobalVariableProto(SGVar);
+    }
+    if ForDefinition {
+        NewGV.setLinkage(SGV.getLinkage());
+    } else if SGV.hasExternalWeakLinkage() {
+        NewGV.setLinkage(ExternalWeakLinkage);
+    }
+    if dyn_cast(NewGV) {
+        NewGO;
+    } else {
+        if isa(SGV) || SGV.isDeclaration() {
+            NewGO.copyMetadata(cast(SGV), 0);
+            if SGV.isDeclaration() && NewGO.hasMetadata() {
+                self.UnmappedMetadata.insert(NewGO);
+            }
+        }
+    }
+    if dyn_cast(NewGV) {
+        NewF;
+    } else {
+        NewF.setPersonalityFn(null);
+        NewF.setPrefixData(null);
+        NewF.setPrologueData(null);
+    }
+    return NewGV;
+}
+
+fn getTypeNamePrefix(Name: str) -> str {
+    let mut DotPos: u64 = Name.rfind('.', npos);
+    return if (DotPos == 0 || DotPos == npos || Name.back() == '.' || !isdigit(Name[DotPos + 1] as u8)) { Name } else { Name[0..0 + DotPos] };
+}
+
+fn IRLinker::computeTypeMapping(self) {
+    for SGV in operator(self.SrcM).globals() {
+        let mut DGV: *mut GlobalValue = self.getLinkedToGlobal(&mut SGV);
+        if !DGV {
+            continue;
+        }
+        if !DGV.hasAppendingLinkage() || !SGV.hasAppendingLinkage() {
+            self.TypeMap.addTypeMapping(DGV.getType(), SGV.getType());
+            continue;
+        }
+        let mut DAT: *mut ArrayType = cast(DGV.getValueType());
+        let mut SAT: *mut ArrayType = cast(SGV.getValueType());
+        self.TypeMap.addTypeMapping(DAT.getElementType(), SAT.getElementType());
+    }
+    for SGV in operator(self.SrcM) {
+        if self.getLinkedToGlobal(&mut SGV) {
+            DGV;
+        } else {
+            if DGV.getType() == SGV.getType() {
+                continue;
+            }
+            self.TypeMap.addTypeMapping(DGV.getType(), SGV.getType());
+        }
+    }
+    for SGV in operator(self.SrcM).aliases() {
+        if self.getLinkedToGlobal(&mut SGV) {
+            DGV;
+        } else {
+            self.TypeMap.addTypeMapping(DGV.getType(), SGV.getType());
+        }
+    }
+    let mut Types: []*mut StructType = operator(self.SrcM).getIdentifiedStructTypes();
+    for ST in Types {
+        if !ST.hasName() {
+            continue;
+        }
+        if self.TypeMap.DstStructTypesSet.hasType(ST) {
+            continue;
+        }
+        let mut STTypePrefix: str = getTypeNamePrefix(ST.getName());
+        if STTypePrefix.len == ST.getName().len {
+            continue;
+        }
+        let mut DST: *mut StructType = getTypeByName(ST.getContext(), STTypePrefix);
+        if !DST {
+            continue;
+        }
+        if self.TypeMap.DstStructTypesSet.hasType(DST) {
+            self.TypeMap.addTypeMapping(DST, ST);
+        }
+    }
+}
+
+fn getArrayElements(C: *Constant, Dest: *mut SmallVectorImpl<Constant *>) {
+    let mut NumElements: u32 = cast(C.getType()).getNumElements();
+    for let mut i: u32 = 0; i != NumElements; i += 1 {
+        Dest.push(C.getAggregateElement(i));
+    }
+}
+
+fn IRLinker::linkAppendingVarProto(self, DstGV: *mut GlobalVariable, SrcGV: *GlobalVariable) -> Expected<Constant *> {
+    if DstGV && !DstGV.isDeclaration() && !SrcGV.isDeclaration() {
+        if !SrcGV.hasAppendingLinkage() || !DstGV.hasAppendingLinkage() {
+            return Expected<Constant *> { stringErr("Linking globals named '" + SrcGV.getName() + "': can only link appending global with another appending global!") };
+        }
+        if DstGV.isConstant() != SrcGV.isConstant() {
+            return Expected<Constant *> { stringErr("Appending variables linked with different const'ness!") };
+        }
+        if DstGV.getAlign() != SrcGV.getAlign() {
+            return Expected<Constant *> { stringErr("Appending variables with different alignment need to be linked!") };
+        }
+        if DstGV.getVisibility() != SrcGV.getVisibility() {
+            return Expected<Constant *> { stringErr("Appending variables with different visibility need to be linked!") };
+        }
+        if DstGV.hasGlobalUnnamedAddr() != SrcGV.hasGlobalUnnamedAddr() {
+            return Expected<Constant *> { stringErr("Appending variables with different unnamed_addr need to be linked!") };
+        }
+        if DstGV.getSection() != SrcGV.getSection() {
+            return Expected<Constant *> { stringErr("Appending variables with different section name need to be linked!") };
+        }
+        if DstGV.getAddressSpace() != SrcGV.getAddressSpace() {
+            return Expected<Constant *> { stringErr("Appending variables with different address spaces need to be linked!") };
+        }
+    }
+    if SrcGV.isDeclaration() {
+        return Expected<Constant *> { DstGV, null };
+    }
+    let mut EltTy: *mut Type = cast(self.TypeMap.get(SrcGV.getValueType())).getElementType();
+    let mut Name: str = SrcGV.getName();
+    let mut IsNewStructor: bool = false;
+    let mut IsOldStructor: bool = false;
+    if Name == "llvm.global_ctors" || Name == "llvm.global_dtors" {
+        if cast(EltTy).getNumElements() == 3 {
+            IsNewStructor = true;
+        } else {
+            IsOldStructor = true;
+        }
+    }
+    let mut VoidPtrTy: *mut PointerType = get(SrcGV.getContext(), 0);
+    if IsOldStructor {
+        let mut ST: *mut StructType = *cast(EltTy);
+        let mut Tys: [3]*mut Type = [ST.getElementType(0), ST.getElementType(1), VoidPtrTy];
+        EltTy = get(SrcGV.getContext(), ArrayRef<Type *> { Tys }, false);
+    }
+    let mut DstNumElements: u64 = 0;
+    if DstGV && !DstGV.isDeclaration() {
+        let mut DstTy: *mut ArrayType = cast(DstGV.getValueType());
+        DstNumElements = DstTy.getNumElements();
+        if EltTy != DstTy.getElementType() {
+            return Expected<Constant *> { stringErr("Appending variables with different element types!") };
+        }
+    }
+    let mut SrcElements: SmallVector<Constant *, 16> = SmallVector<Constant *, 16> {};
+    getArrayElements(SrcGV.getInitializer(), SrcElements);
+    if IsNewStructor {
+        erase_if(SrcElements, Closure_1 { cap_0: self });
+    }
+    let mut NewSize: u64 = DstNumElements + SrcElements.len;
+    let mut NewType: *mut ArrayType = get(EltTy, NewSize);
+    let mut NG: *mut GlobalVariable = GlobalVariable { self.DstM, NewType, SrcGV.isConstant(), SrcGV.getLinkage(), null, "", DstGV, SrcGV.getThreadLocalMode(), optional<unsigned int> { SrcGV.getAddressSpace() }, false };
+    NG.copyAttributesFrom(SrcGV);
+    forceRenaming(NG, SrcGV.getName());
+    self.Mapper.scheduleMapAppendingVariable(*NG, DstGV, IsOldStructor, ArrayRef<Constant *> { SrcElements }, 0);
+    if DstGV {
+        self.RAUWWorklist.push(Value *> { make_pair(DstGV, NG) });
+    }
+    return Expected<Constant *> { NG, null };
+}
+
+fn IRLinker::shouldLink(self, DGV: *mut GlobalValue, SGV: *mut GlobalValue) -> bool {
+    if self.ValuesToLink.count(&mut SGV) || SGV.hasLocalLinkage() {
+        return true;
+    }
+    if DGV && !DGV.isDeclarationForLinker() {
+        return false;
+    }
+    if SGV.isDeclaration() || self.DoneLinkingBodies {
+        return false;
+    }
+    let mut LazilyAdded: bool = false;
+    if self.AddLazyFor {
+        self.AddLazyFor.call(SGV, GlobalValue &)> { Closure_2 { cap_0: self, LazilyAdded: &mut LazilyAdded } });
+    }
+    return LazilyAdded;
+}
+
+fn IRLinker::linkGlobalValueProto(self, SGV: *mut GlobalValue, ForIndirectSymbol: bool) -> Expected<Constant *> {
+    let mut DGV: *mut GlobalValue = self.getLinkedToGlobal(SGV);
+    let mut ShouldLink: bool = self.shouldLink(DGV, *SGV);
+    if ShouldLink {
+        let mut I: iterator = self.ValueMap.find(SGV);
+        if I != self.ValueMap.end() {
+            return Expected<Constant *> { cast(operator(operator(I)).second), null };
+        }
+        I = self.IndirectSymbolValueMap.find(SGV);
+        if I != self.IndirectSymbolValueMap.end() {
+            return Expected<Constant *> { cast(operator(operator(I)).second), null };
+        }
+    }
+    if !ShouldLink && ForIndirectSymbol {
+        DGV = null;
+    }
+    if SGV.hasAppendingLinkage() || (DGV && DGV.hasAppendingLinkage()) {
+        return self.linkAppendingVarProto(cast_or_null(DGV), cast(SGV));
+    }
+    let mut NeedsRenaming: bool = false;
+    let mut NewGV: *mut GlobalValue = null;
+    if DGV && !ShouldLink {
+        NewGV = DGV;
+        if isa(SGV) && DGV.isDeclaration() && SGV.hasExactDefinition() && !self.DoneLinkingBodies {
+            NewGV = self.copyGlobalValueProto(SGV, false);
+            NeedsRenaming = true;
+        }
+    } else {
+        if self.DoneLinkingBodies {
+            return Expected<Constant *> { null, null };
+        }
+        NewGV = self.copyGlobalValueProto(SGV, ShouldLink || ForIndirectSymbol);
+        if ShouldLink || !ForIndirectSymbol {
+            NeedsRenaming = true;
+        }
+    }
+    if dyn_cast(NewGV) {
+        F;
+    } else if remangleIntrinsicFunction(F) {
+        Remangled;
+    } else {
+        assert!(!self.UnmappedMetadata.count(F), "intrinsic has unmapped metadata");
+        NewGV.eraseFromParent();
+        NewGV = operator(Remangled);
+        NeedsRenaming = false;
+    }
+    if NeedsRenaming {
+        forceRenaming(NewGV, SGV.getName());
+    }
+    if ShouldLink || ForIndirectSymbol {
+        if SGV.getComdat() {
+            SC;
+        } else {
+            if dyn_cast(NewGV) {
+                GO;
+            } else {
+                let mut DC: *mut Comdat = self.DstM.getOrInsertComdat(SC.getName());
+                DC.setSelectionKind(SC.getSelectionKind());
+                GO.setComdat(DC);
+            }
+        }
+    }
+    if !ShouldLink && ForIndirectSymbol {
+        NewGV.setLinkage(InternalLinkage);
+    }
+    let mut C: *mut Constant = NewGV;
+    if DGV && NewGV != SGV {
+        C = getPointerBitCastOrAddrSpaceCast(NewGV, self.TypeMap.get(SGV.getType()));
+    }
+    if DGV && NewGV != DGV {
+        self.RAUWWorklist.push(Value *> { make_pair(DGV, getPointerBitCastOrAddrSpaceCast(NewGV, DGV.getType())) });
+    }
+    return Expected<Constant *> { C, null };
+}
+
+fn IRLinker::linkGlobalVariable(self, Dst: *mut GlobalVariable, Src: *mut GlobalVariable) {
+    self.Mapper.scheduleMapGlobalInitializer(Dst, *Src.getInitializer(), 0);
+}
+
+fn IRLinker::linkFunctionBody(self, Dst: *mut Function, Src: *mut Function) -> Error {
+    assert!(Dst.isDeclaration() && !Src.isDeclaration();
+    if Src.materialize() {
+        Err;
+    } else {
+        return Err;
+    }
+    if Src.hasPrefixData() {
+        Dst.setPrefixData(Src.getPrefixData());
+    }
+    if Src.hasPrologueData() {
+        Dst.setPrologueData(Src.getPrologueData());
+    }
+    if Src.hasPersonalityFn() {
+        Dst.setPersonalityFn(Src.getPersonalityFn());
+    }
+    Dst.copyMetadata(&mut Src, 0);
+    Dst.stealArgumentListFrom(Src);
+    Dst.splice(Dst.end(), &mut Src);
+    self.Mapper.scheduleRemapFunction(Dst, 0);
+    return success();
+}
+
+fn IRLinker::linkAliasAliasee(self, Dst: *mut GlobalAlias, Src: *mut GlobalAlias) {
+    self.Mapper.scheduleMapGlobalAlias(Dst, *Src.getAliasee(), self.IndirectSymbolMCID);
+}
+
+fn IRLinker::linkIFuncResolver(self, Dst: *mut GlobalIFunc, Src: *mut GlobalIFunc) {
+    self.Mapper.scheduleMapGlobalIFunc(Dst, *Src.getResolver(), self.IndirectSymbolMCID);
+}
+
+fn IRLinker::linkGlobalValueBody(self, Dst: *mut GlobalValue, Src: *mut GlobalValue) -> Error {
+    if dyn_cast(&mut Src) {
+        F;
+    } else {
+        return self.linkFunctionBody(cast(Dst), *F);
+    }
+    if dyn_cast(&mut Src) {
+        GVar;
+    } else {
+        self.linkGlobalVariable(cast(Dst), *GVar);
+        return success();
+    }
+    if dyn_cast(&mut Src) {
+        GA;
+    } else {
+        self.linkAliasAliasee(cast(Dst), *GA);
+        return success();
+    }
+    self.linkIFuncResolver(cast(Dst), cast(Src));
+    return success();
+}
+
+fn IRLinker::flushRAUWWorklist(self) {
+    for Elem in self.RAUWWorklist {
+        let mut Old: *mut GlobalValue = null;
+        let mut New: *mut Value = null;
+        tie(Old, New) = Elem;
+        Old.replaceAllUsesWith(New);
+        Old.eraseFromParent();
+    }
+    self.RAUWWorklist.clear();
+}
+
+fn IRLinker::prepareCompileUnitsForImport(self) {
+    let mut SrcCompileUnits: *mut NamedMDNode = operator(self.SrcM).getNamedMetadata("llvm.dbg.cu");
+    if !SrcCompileUnits {
+        return;
+    }
+    for N in SrcCompileUnits.operands() {
+        let mut CU: *mut DICompileUnit = cast(N);
+        assert!(CU, "Expected valid compile unit");
+        CU.replaceEnumTypes(DICompositeTypeArray { null });
+        CU.replaceMacros(DIMacroNodeArray { null });
+        CU.replaceRetainedTypes(DITypeArray { null });
+        CU.replaceGlobalVariables(DIGlobalVariableExpressionArray { null });
+        CU.replaceImportedEntities(DIImportedEntityArray { null });
+    }
+}
+
+fn IRLinker::linkNamedMDNodes(self) {
+    let mut SrcModFlags: *NamedMDNode = operator(self.SrcM).getModuleFlagsMetadata();
+    for NMD in operator(self.SrcM).named_metadata() {
+        if &mut NMD == SrcModFlags {
+            continue;
+        }
+        if self.IsPerformingImport && NMD.getName() == PseudoProbeDescMetadataName {
+            if !self.DstM.getNamedMetadata(NMD.getName()) {
+                self.emitWarning("Pseudo-probe ignored: source module '" + operator(self.SrcM).getModuleIdentifier() + "' is compiled with -fpseudo-probe-for-profiling while destination module '" + self.DstM.getModuleIdentifier() + "' is not\n");
+            }
+            continue;
+        }
+        if self.IsPerformingImport && NMD.getName() == "llvm.stats" {
+            continue;
+        }
+        let mut DestNMD: *mut NamedMDNode = self.DstM.getOrInsertNamedMetadata(NMD.getName());
+        let mut Inserted: *MDNode *, 8> = self.NamedMDNodes[DestNMD];
+        if Inserted.len == 0 {
+            Inserted.insert(DestNMD.operands().begin(), DestNMD.operands().end());
+        }
+        for Op in NMD.operands() {
+            let mut MD: *mut MDNode = self.Mapper.mapMDNode(*Op);
+            if Inserted.insert(MD).second {
+                DestNMD.addOperand(MD);
+            }
+        }
+    }
+}
+
+fn IRLinker::linkModuleFlagsMetadata(self) -> Error {
+    let mut SrcModFlags: *NamedMDNode = operator(self.SrcM).getModuleFlagsMetadata();
+    if !SrcModFlags {
+        return success();
+    }
+    UpgradeModuleFlags(operator(self.SrcM));
+    UpgradeNVVMAnnotations(operator(self.SrcM));
+    let mut DstModFlags: *mut NamedMDNode = self.DstM.getOrInsertModuleFlagsMetadata();
+    if DstModFlags.getNumOperands() == 0 {
+        for let mut I: u32 = 0;
+let mut E: u32 = SrcModFlags.getNumOperands(); I != E; I += 1 {
+            DstModFlags.addOperand(SrcModFlags.getOperand(I));
+        }
+        return success();
+    }
+    let mut Flags: pair<MDNode *, unsigned int>> = pair<MDNode *, unsigned int>> {};
+    let mut Requirements: SmallSetVector<MDNode *, 16> = SmallSetVector<MDNode *, 16> {};
+    let mut Mins: SmallVector<unsigned int, 0> = SmallVector<unsigned int, 0> {};
+    let mut SeenMin: DenseSet<MDString *> = DenseSet<MDString *> {};
+    for let mut I: u32 = 0;
+let mut E: u32 = DstModFlags.getNumOperands(); I != E; I += 1 {
+        let mut Op: *mut MDNode = DstModFlags.getOperand(I);
+        let mut Behavior: u64 = extract(Op.getOperand(0)).getZExtValue();
+        let mut ID: *mut MDString = cast(Op.getOperand(1));
+        if Behavior == Require {
+            Requirements.insert(cast(Op.getOperand(2)));
+        } else {
+            if Behavior == Min {
+                Mins.push(I);
+            }
+            Flags[ID] = make_pair(Op, I);
+        }
+    }
+    for let mut I: u32 = 0;
+let mut E: u32 = SrcModFlags.getNumOperands(); I != E; I += 1 {
+        let mut SrcOp: *mut MDNode = SrcModFlags.getOperand(I);
+        let mut SrcBehavior: *mut ConstantInt = extract(SrcOp.getOperand(0));
+        let mut ID: *mut MDString = cast(SrcOp.getOperand(1));
+        let mut DstOp: *mut MDNode = null;
+        let mut DstIndex: u32 = 0;
+        tie(DstOp, DstIndex) = Flags.lookup(ID);
+        let mut SrcBehaviorValue: u32 = SrcBehavior.getZExtValue();
+        SeenMin.insert(ID);
+        if SrcBehaviorValue == Require {
+            if Requirements.insert(cast(SrcOp.getOperand(2))) {
+                DstModFlags.addOperand(SrcOp);
+            }
+            continue;
+        }
+        if !DstOp {
+            if SrcBehaviorValue == Min {
+                Mins.push(DstModFlags.getNumOperands());
+                SeenMin.erase(ID);
+            }
+            Flags[ID] = make_pair(SrcOp, DstModFlags.getNumOperands());
+            DstModFlags.addOperand(SrcOp);
+            continue;
+        }
+        let mut DstBehavior: *mut ConstantInt = extract(DstOp.getOperand(0));
+        let mut DstBehaviorValue: u32 = DstBehavior.getZExtValue();
+        let mut overrideDstValue: Closure_3 = Closure_3 { DstModFlags: &mut DstModFlags, DstIndex: &mut DstIndex, SrcOp: &mut SrcOp, Flags: &mut Flags, ID: &mut ID };
+        if DstBehaviorValue == Override {
+            if SrcBehaviorValue == Override && SrcOp.getOperand(2).operator llvm::Metadata *() != DstOp.getOperand(2).operator llvm::Metadata *() {
+                return stringErr("linking module flags '" + ID.getString() + "': IDs have conflicting override values in '" + operator(self.SrcM).getModuleIdentifier() + "' and '" + self.DstM.getModuleIdentifier() + "'");
+            }
+            continue;
+        } else if SrcBehaviorValue == Override {
+            overrideDstValue.call();
+            continue;
+        }
+        if SrcBehaviorValue != DstBehaviorValue {
+            let mut MinAndWarn: bool = (SrcBehaviorValue == Min && DstBehaviorValue == Warning) || (DstBehaviorValue == Min && SrcBehaviorValue == Warning);
+            let mut MaxAndWarn: bool = (SrcBehaviorValue == Max && DstBehaviorValue == Warning) || (DstBehaviorValue == Max && SrcBehaviorValue == Warning);
+            if !(MaxAndWarn || MinAndWarn) {
+                return stringErr("linking module flags '" + ID.getString() + "': IDs have conflicting behaviors in '" + operator(self.SrcM).getModuleIdentifier() + "' and '" + self.DstM.getModuleIdentifier() + "'");
+            }
+        }
+        let mut ensureDistinctOp: Closure_4 = Closure_4 { cap_0: self, DstOp: &mut DstOp, ID: &mut ID, DstModFlags: &mut DstModFlags, DstIndex: &mut DstIndex, Flags: &mut Flags };
+        if (DstBehaviorValue == Warning || SrcBehaviorValue == Warning) && SrcOp.getOperand(2).operator llvm::Metadata *() != DstOp.getOperand(2).operator llvm::Metadata *() {
+            let mut Str: str = "";
+            raw_string_ostream { Str } << "linking module flags '" << ID.getString() << "': IDs have conflicting values ('" << operator(SrcOp.getOperand(2)) << "' from " << operator(self.SrcM).getModuleIdentifier() << " with '" << operator(DstOp.getOperand(2)) << "' from " << self.DstM.getModuleIdentifier() << ')';
+            self.emitWarning(Str);
+        }
+        if DstBehaviorValue == Min || SrcBehaviorValue == Min {
+            let mut DstValue: *mut ConstantInt = extract(DstOp.getOperand(2));
+            let mut SrcValue: *mut ConstantInt = extract(SrcOp.getOperand(2));
+            let mut FlagOps: [3]*mut Metadata = [(if DstBehaviorValue != Min { SrcOp } else { DstOp }).getOperand(0).operator llvm::Metadata *(), ID, (if SrcValue.getZExtValue() < DstValue.getZExtValue() { SrcOp } else { DstOp }).getOperand(2).operator llvm::Metadata *()];
+            let mut Flag: *mut MDNode = get(self.DstM.getContext(), ArrayRef<Metadata *> { FlagOps });
+            DstModFlags.setOperand(DstIndex, Flag);
+            Flags[ID].first = Flag;
+            continue;
+        }
+        if DstBehaviorValue == Max || SrcBehaviorValue == Max {
+            let mut DstValue: *mut ConstantInt = extract(DstOp.getOperand(2));
+            let mut SrcValue: *mut ConstantInt = extract(SrcOp.getOperand(2));
+            let mut FlagOps: [3]*mut Metadata = [(if DstBehaviorValue != Max { SrcOp } else { DstOp }).getOperand(0).operator llvm::Metadata *(), ID, (if SrcValue.getZExtValue() > DstValue.getZExtValue() { SrcOp } else { DstOp }).getOperand(2).operator llvm::Metadata *()];
+            let mut Flag: *mut MDNode = get(self.DstM.getContext(), ArrayRef<Metadata *> { FlagOps });
+            DstModFlags.setOperand(DstIndex, Flag);
+            Flags[ID].first = Flag;
+            continue;
+        }
+        match SrcBehaviorValue {
+            Require => {
+                Override;
+            },
+            Error => {
+                if SrcOp.getOperand(2).operator llvm::Metadata *() != DstOp.getOperand(2).operator llvm::Metadata *() {
+                    let mut Str: str = "";
+                    raw_string_ostream { Str } << "linking module flags '" << ID.getString() << "': IDs have conflicting values: '" << operator(SrcOp.getOperand(2)) << "' from " << operator(self.SrcM).getModuleIdentifier() << ", and '" << operator(DstOp.getOperand(2)) << "' from " + self.DstM.getModuleIdentifier();
+                    return stringErr(Str);
+                }
+                continue;
+            },
+            Warning => {
+                break;
+            },
+            Max => {
+                break;
+            },
+            Append => {
+                let mut DstValue: *mut MDTuple = ensureDistinctOp.call(cast(DstOp.getOperand(2)));
+                let mut SrcValue: *mut MDNode = cast(SrcOp.getOperand(2));
+                for O in SrcValue.operands() {
+                    DstValue.push(O.operator llvm::Metadata *());
+                }
+                break;
+            },
+            AppendUnique => {
+                let mut Elts: SmallSetVector<Metadata *, 16> = SmallSetVector<Metadata *, 16> {};
+                let mut DstValue: *mut MDTuple = ensureDistinctOp.call(cast(DstOp.getOperand(2)));
+                let mut SrcValue: *mut MDNode = cast(SrcOp.getOperand(2));
+                Elts.insert(DstValue.op_begin(), DstValue.op_end());
+                Elts.insert(SrcValue.op_begin(), SrcValue.op_end());
+                for let mut I: u32 = DstValue.getNumOperands(); I < Elts.len; I += 1 {
+                    DstValue.push(Elts[I]);
+                }
+                break;
+            },
+        }
+    }
+    for Idx in Mins {
+        let mut Op: *mut MDNode = DstModFlags.getOperand(Idx);
+        let mut ID: *mut MDString = cast(Op.getOperand(1));
+        if !SeenMin.count(ID) {
+            let mut V: *mut ConstantInt = extract(Op.getOperand(2));
+            let mut FlagOps: [3]*mut Metadata = [Op.getOperand(0).operator llvm::Metadata *(), ID, get(get(V.getType(), 0, false, false))];
+            DstModFlags.setOperand(Idx, get(self.DstM.getContext(), ArrayRef<Metadata *> { FlagOps }));
+        }
+    }
+    for Requirement in Requirements {
+        let mut Flag: *mut MDString = cast(Requirement.getOperand(0));
+        let mut ReqValue: *mut Metadata = Requirement.getOperand(1).operator llvm::Metadata *();
+        let mut Op: *mut MDNode = Flags[Flag].first;
+        if !Op || Op.getOperand(2).operator llvm::Metadata *() != ReqValue {
+            return stringErr("linking module flags '" + Flag.getString() + "': does not have the required value");
+        }
+    }
+    return success();
+}
+
+fn adjustInlineAsm(InlineAsm: str, Triple: *Triple) -> str {
+    if Triple.getArch() == thumb || Triple.getArch() == thumbeb {
+        return ".text\n.balign 2\n.thumb\n" + InlineAsm;
+    }
+    if Triple.getArch() == arm || Triple.getArch() == armeb {
+        return ".text\n.balign 4\n.arm\n" + InlineAsm;
+    }
+    return InlineAsm;
+}
+
+fn IRLinker::updateAttributes(self, GV: *mut GlobalValue) {
+    if dyn_cast(&mut GV) {
+        F;
+    } else {
+        if !F.isIntrinsic() {
+            F.removeFnAttr(NoCallback);
+        }
+        for BB in *F {
+            for I in BB {
+                if dyn_cast(&mut I) {
+                    CI;
+                } else {
+                    CI.removeFnAttr(NoCallback);
+                }
+            }
+        }
+    }
+}
+
+fn IRLinker::run(self) -> Error {
+    if operator(self.SrcM).getMaterializer() {
+        if operator(self.SrcM).getMaterializer().materializeMetadata() {
+            Err;
+        } else {
+            return Err;
+        }
+    }
+    if self.DstM.getDataLayout().isDefault() {
+        self.DstM.setDataLayout(operator(self.SrcM).getDataLayout());
+    }
+    if self.DstM.getTargetTriple().len == 0 && !operator(self.SrcM).getTargetTriple().is_empty() {
+        self.DstM.setTargetTriple(operator(self.SrcM).getTargetTriple());
+    }
+    let mut SrcTriple: Triple = operator(self.SrcM).getTargetTriple();
+    let mut DstTriple: Triple = self.DstM.getTargetTriple();
+    let mut EnableDLWarning: bool = true;
+    let mut EnableTripleWarning: bool = true;
+    if SrcTriple.isNVPTX() && DstTriple.isNVPTX() {
+        let mut SrcHasLibDeviceDL: bool = (operator(self.SrcM).getDataLayoutStr().len == 0 || operator(self.SrcM).getDataLayoutStr() == "e-i64:64-v16:16-v32:32-n16:32:64");
+        let mut SrcHasLibDeviceTriple: bool = (SrcTriple.getVendor() == NVIDIA && SrcTriple.getOSName() == "gpulibs") || (SrcTriple.getVendorName() == "unknown" && SrcTriple.getOSName() == "unknown");
+        EnableTripleWarning = !SrcHasLibDeviceTriple;
+        EnableDLWarning = !(SrcHasLibDeviceTriple && SrcHasLibDeviceDL);
+    }
+    if EnableDLWarning && (operator(self.SrcM).getDataLayout() != self.DstM.getDataLayout()) {
+        self.emitWarning("Linking two modules of different data layouts: '" + operator(self.SrcM).getModuleIdentifier() + "' is '" + operator(self.SrcM).getDataLayoutStr() + "' whereas '" + self.DstM.getModuleIdentifier() + "' is '" + self.DstM.getDataLayoutStr() + "'\n");
+    }
+    if EnableTripleWarning && !operator(self.SrcM).getTargetTriple().is_empty() && !SrcTriple.isCompatibleWith(DstTriple) {
+        self.emitWarning("Linking two modules of different target triples: '" + operator(self.SrcM).getModuleIdentifier() + "' is '" + operator(self.SrcM).getTargetTriple() + "' whereas '" + self.DstM.getModuleIdentifier() + "' is '" + self.DstM.getTargetTriple() + "'\n");
+    }
+    self.DstM.setTargetTriple(Triple { SrcTriple.merge(DstTriple) });
+    self.computeTypeMapping();
+    copyModuleAttrToFunctions(operator(self.SrcM));
+    reverse(self.Worklist.begin(), self.Worklist.end());
+    while !self.Worklist.is_empty() {
+        let mut GV: *mut GlobalValue = self.Worklist.back();
+        self.Worklist.pop();
+        if self.ValueMap.find(GV) != self.ValueMap.end() || self.IndirectSymbolValueMap.find(GV) != self.IndirectSymbolValueMap.end() {
+            continue;
+        }
+        assert!(!GV.isDeclaration();
+        self.Mapper.mapValue(*GV);
+        if self.FoundError {
+            return Error { Payload: move(operator(self.FoundError)) };
+        }
+        self.flushRAUWWorklist();
+    }
+    self.DoneLinkingBodies = true;
+    self.Mapper.addFlags(RF_NullMapMissingGlobalValues);
+    self.linkNamedMDNodes();
+    for NGO in self.UnmappedMetadata {
+        if NGO.isDeclaration() {
+            self.Mapper.remapGlobalObjectMetadata(*NGO);
+        }
+    }
+    if !self.IsPerformingImport && !operator(self.SrcM).getModuleInlineAsm().is_empty() {
+        for Frag in operator(self.SrcM).getModuleInlineAsm() {
+            let mut NewFrag: GlobalAsmFragment = Frag;
+            NewFrag.Asm = adjustInlineAsm(NewFrag.Asm, SrcTriple);
+            self.DstM.appendModuleInlineAsm(GlobalAsmFragment { move(NewFrag) });
+        }
+    } else if self.IsPerformingImport {
+        CollectAsmSymvers(operator(self.SrcM), function_ref<void (StringRef, StringRef)> { Closure_5 { cap_0: self }, null, null });
+    }
+    for GV in operator(self.SrcM).globals() {
+        if GV.hasAppendingLinkage() {
+            continue;
+        }
+        let mut NewValue: *mut Value = self.Mapper.mapValue(GV);
+        if self.FoundError {
+            return Error { Payload: move(operator(self.FoundError)) };
+        }
+        if NewValue {
+            let mut NewGV: *mut GlobalVariable = dyn_cast(NewValue.stripPointerCasts());
+            if NewGV {
+                NewGV.removeFromParent();
+                self.DstM.insertGlobalVariable(NewGV);
+            }
+        }
+    }
+    return self.linkModuleFlagsMetadata();
+}
+
+fn StructTypeKeyInfo@IRMover@llvm::operator==(self: *StructTypeKeyInfo@IRMover@llvm, That: *KeyTy) -> bool {
+    return self.IsPacked == That.IsPacked && Type *> { self.ETypes } == Type *> { That.ETypes };
+}
+
+fn StructTypeKeyInfo@IRMover@llvm::operator!=(self: *StructTypeKeyInfo@IRMover@llvm, That: *KeyTy) -> bool {
+    return !self.operator==(That);
+}
+
+fn StructTypeKeyInfo@IRMover@llvm::getHashValue(self, Key: *KeyTy) -> u32 {
+    return hash_combine(hash_combine_range(Key.ETypes), Key.IsPacked).operator unsigned long long();
+}
+
+fn StructTypeKeyInfo@IRMover@llvm::getHashValue(self, ST: *StructType) -> u32 {
+    return getHashValue(KeyTy { ST });
+}
+
+fn StructTypeKeyInfo@IRMover@llvm::isEqual(self, LHS: *KeyTy, RHS: *StructType) -> bool {
+    return LHS == KeyTy { RHS };
+}
+
+fn StructTypeKeyInfo@IRMover@llvm::isEqual(self, LHS: *StructType, RHS: *StructType) -> bool {
+    return KeyTy { LHS } == KeyTy { RHS };
+}
+
+fn IdentifiedStructTypeSet@IRMover@llvm::addNonOpaque(self, Ty: *mut StructType) {
+    assert!(!Ty.isOpaque();
+    self.NonOpaqueStructTypes.insert(Ty);
+}
+
+fn IdentifiedStructTypeSet@IRMover@llvm::switchToNonOpaque(self, Ty: *mut StructType) {
+    assert!(!Ty.isOpaque();
+    self.NonOpaqueStructTypes.insert(Ty);
+    let mut Removed: bool = self.OpaqueStructTypes.erase(Ty);
+    Removed as void;
+    assert!(Removed);
+}
+
+fn IdentifiedStructTypeSet@IRMover@llvm::addOpaque(self, Ty: *mut StructType) {
+    assert!(Ty.isOpaque();
+    self.OpaqueStructTypes.insert(Ty);
+}
+
+fn IdentifiedStructTypeSet@IRMover@llvm::findNonOpaque(self, ETypes: ArrayRef<Type *>, IsPacked: bool) -> *mut StructType {
+    let mut Key: KeyTy = KeyTy { ArrayRef<Type *> { ETypes }, IsPacked };
+    let mut I: iterator = self.NonOpaqueStructTypes.find_as(Key);
+    return if I == self.NonOpaqueStructTypes.end() { null } else { operator(I) };
+}
+
+fn IdentifiedStructTypeSet@IRMover@llvm::hasType(self, Ty: *mut StructType) -> bool {
+    if Ty.isOpaque() {
+        return self.OpaqueStructTypes.count(Ty);
+    }
+    let mut I: iterator = self.NonOpaqueStructTypes.find(Ty);
+    return if I == self.NonOpaqueStructTypes.end() { false } else { operator(I) == Ty };
+}
+
+fn IRMover::IRMover(self, M: *mut Module) {
+    let mut StructTypes: TypeFinder = TypeFinder {};
+    StructTypes.run(M, false);
+    for Ty in StructTypes {
+        if Ty.isOpaque() {
+            self.IdentifiedStructTypes.addOpaque(Ty);
+        } else {
+            self.IdentifiedStructTypes.addNonOpaque(Ty);
+        }
+    }
+    for MD in StructTypes.getVisitedMetadata() {
+        self.SharedMDs[MD].reset(MD);
+    }
+    copyModuleAttrToFunctions(M);
+}
+
+fn IRMover::move(self, Src: unique_ptr<Module>, ValuesToLink: ArrayRef<GlobalValue *>, AddLazyFor: LazyCallback, IsPerformingImport: bool) -> Error {
+    let mut TheIRLinker: IRLinker = IRLinker { self.Composite, self.SharedMDs, self.IdentifiedStructTypes, unique_ptr<Module> { move(Src) }, ArrayRef<GlobalValue *> { ValuesToLink }, LazyCallback { move(AddLazyFor) }, IsPerformingImport, self.NamedMDNodes };
+    return TheIRLinker.run();
+}
+
+struct Closure_1 {
+    cap_0: *mut IRLinker,
+}
+
+fn Closure_1::call(self: *Closure_1, E: *mut Constant) -> bool {
+            let mut Key: *mut GlobalValue = dyn_cast(E.getAggregateElement(2).stripPointerCasts());
+            if !Key {
+                return false;
+            }
+            let mut DGV: *mut GlobalValue = self.getLinkedToGlobal(Key);
+            return !self.shouldLink(DGV, *Key);
+        }
+
+struct Closure_2 {
+    cap_0: *mut IRLinker,
+    LazilyAdded: *mut bool,
+}
+
+unsafe fn Closure_2::call(self: *mut Closure_2, GV: *mut GlobalValue) {
+            self.maybeAdd(&mut GV);
+            (*self.LazilyAdded) = true;
+        }
+
+struct Closure_3 {
+    DstModFlags: *mut *mut NamedMDNode,
+    DstIndex: *mut u32,
+    SrcOp: *mut *mut MDNode,
+    Flags: *mut pair<MDNode *, unsigned int>>,
+    ID: *mut *mut MDString,
+}
+
+unsafe fn Closure_3::call(self: *mut Closure_3) {
+            (*self.DstModFlags).setOperand((*self.DstIndex), (*self.SrcOp));
+            (*self.Flags)[(*self.ID)].first = (*self.SrcOp);
+        }
+
+struct Closure_4 {
+    cap_0: *mut IRLinker,
+    DstOp: *mut *mut MDNode,
+    ID: *mut *mut MDString,
+    DstModFlags: *mut *mut NamedMDNode,
+    DstIndex: *mut u32,
+    Flags: *mut pair<MDNode *, unsigned int>>,
+}
+
+unsafe fn Closure_4::call(self: *mut Closure_4, DstValue: *mut MDNode) -> *mut MDTuple {
+            assert!(isa(DstValue), "Expected MDTuple when appending module flags");
+            if DstValue.isDistinct() {
+                return dyn_cast(DstValue);
+            }
+            let mut DstOperands: ArrayRef<MDOperand> = DstValue.operands();
+            let mut New: *mut MDTuple = getDistinct(self.DstM.getContext(), ArrayRef<Metadata *> { SmallVector<Metadata *, 4> { DstOperands } });
+            let mut FlagOps: [3]*mut Metadata = [(*self.DstOp).getOperand(0).operator llvm::Metadata *(), (*self.ID), New];
+            let mut Flag: *mut MDNode = getDistinct(self.DstM.getContext(), ArrayRef<Metadata *> { FlagOps });
+            (*self.DstModFlags).setOperand((*self.DstIndex), Flag);
+            (*self.Flags)[(*self.ID)].first = Flag;
+            return New;
+        }
+
+struct Closure_5 {
+    cap_0: *mut IRLinker,
+}
+
+fn Closure_5::call(self: *Closure_5, Name: str, Alias: str) {
+            if self.DstM.getNamedValue(Name) {
+                let mut S: str = ".symver ";
+                operator(S, Name);
+                operator(S, ", ");
+                operator(S, Alias);
+                self.DstM.appendModuleInlineAsm(GlobalAsmFragment { S.operator basic_string(), operator(self.SrcM).getModuleInlineAsm().back().Props });
+            }
+        }

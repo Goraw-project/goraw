@@ -17,6 +17,7 @@ use std::sync::OnceLock;
 pub struct SdkPaths {
     pub includes: Vec<PathBuf>,
     pub libs: Vec<PathBuf>,
+    pub link_exe: Option<PathBuf>,
 }
 
 static SDK_CACHE: OnceLock<SdkPaths> = OnceLock::new();
@@ -26,14 +27,17 @@ pub fn get_sdk_paths() -> &'static SdkPaths {
     SDK_CACHE.get_or_init(|| {
         let mut paths = SdkPaths::default();
 
-        // 1. Поиск MSVC через стандартные каталоги Visual Studio
+        let pf = std::env::var("ProgramFiles").unwrap_or_else(|_| "C:\\Program Files".into());
+        let pf86 = std::env::var("ProgramFiles(x86)").unwrap_or_else(|_| "C:\\Program Files (x86)".into());
+
+        // 1. Поиск MSVC через каталоги Visual Studio
         let vs_roots = [
-            r"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC",
-            r"C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Tools\MSVC",
-            r"C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC",
-            r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Tools\MSVC",
-            r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\VC\Tools\MSVC",
-            r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Tools\MSVC",
+            format!(r"{pf}\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC"),
+            format!(r"{pf}\Microsoft Visual Studio\2022\Professional\VC\Tools\MSVC"),
+            format!(r"{pf}\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC"),
+            format!(r"{pf86}\Microsoft Visual Studio\2019\Community\VC\Tools\MSVC"),
+            format!(r"{pf86}\Microsoft Visual Studio\2019\Professional\VC\Tools\MSVC"),
+            format!(r"{pf86}\Microsoft Visual Studio\2019\Enterprise\VC\Tools\MSVC"),
         ];
 
         for root in &vs_roots {
@@ -54,6 +58,15 @@ pub fn get_sdk_paths() -> &'static SdkPaths {
                         if lib.exists() {
                             paths.libs.push(lib);
                         }
+                        let link = latest.join("bin").join("Hostx64").join("x64").join("link.exe");
+                        if link.exists() {
+                            paths.link_exe = Some(link);
+                        } else {
+                            let link86 = latest.join("bin").join("Hostx86").join("x64").join("link.exe");
+                            if link86.exists() {
+                                paths.link_exe = Some(link86);
+                            }
+                        }
                         break;
                     }
                 }
@@ -61,7 +74,7 @@ pub fn get_sdk_paths() -> &'static SdkPaths {
         }
 
         // 2. Поиск Windows SDK (Include и Lib)
-        let sdk_root = Path::new(r"C:\Program Files (x86)\Windows Kits\10");
+        let sdk_root = PathBuf::from(&pf86).join(r"Windows Kits\10");
         let inc_root = sdk_root.join("Include");
         let lib_root = sdk_root.join("Lib");
 
@@ -105,6 +118,175 @@ pub fn get_sdk_paths() -> &'static SdkPaths {
 
         paths
     })
+}
+
+/// Автоматический поиск исполняемого файла Clang / Clang++ в системе и стандартных каталогах
+pub fn find_clang(is_cpp: bool) -> String {
+    let name = if is_cpp { "clang++" } else { "clang" };
+    let exe = if is_cpp { "clang++.exe" } else { "clang.exe" };
+
+    // 1. Проверяем PATH
+    if let Ok(out) = Command::new(name).arg("--version").output() {
+        if out.status.success() {
+            return name.to_string();
+        }
+    }
+
+    // 2. Стандартные пути установки LLVM на Windows
+    let pf = std::env::var("ProgramFiles").unwrap_or_else(|_| "C:\\Program Files".into());
+    let pf86 = std::env::var("ProgramFiles(x86)").unwrap_or_else(|_| "C:\\Program Files (x86)".into());
+    let sys_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+    let program_data = std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".into());
+
+    let candidates = [
+        format!(r"{pf}\LLVM\bin\{exe}"),
+        format!(r"{pf86}\LLVM\bin\{exe}"),
+        format!(r"{sys_drive}\LLVM\bin\{exe}"),
+    ];
+    for c in &candidates {
+        if Path::new(c).exists() {
+            return c.clone();
+        }
+    }
+
+    // 3. Каталог рядом с текущим goraw
+    if let Ok(cur) = std::env::current_exe() {
+        if let Some(dir) = cur.parent() {
+            for sub in &["", "bin", "llvm/bin", "../llvm/bin"] {
+                let p = if sub.is_empty() { dir.join(exe) } else { dir.join(sub).join(exe) };
+                if p.exists() {
+                    return p.to_string_lossy().to_string();
+                }
+            }
+        }
+    }
+
+    // 4. Scoop / Chocolatey
+    if let Ok(up) = std::env::var("USERPROFILE") {
+        let scoop = PathBuf::from(&up).join("scoop").join("apps").join("llvm").join("current").join("bin").join(exe);
+        if scoop.exists() {
+            return scoop.to_string_lossy().to_string();
+        }
+    }
+    let choco = format!(r"{program_data}\chocolatey\bin\{exe}");
+    if Path::new(&choco).exists() {
+        return choco;
+    }
+
+    name.to_string()
+}
+
+/// Автоматический поиск lld-link.exe в системе
+pub fn find_lld_link() -> Option<PathBuf> {
+    if let Ok(out) = Command::new("lld-link.exe").arg("/?").output() {
+        if out.status.success() || !out.stdout.is_empty() {
+            return Some(PathBuf::from("lld-link.exe"));
+        }
+    }
+
+    let pf = std::env::var("ProgramFiles").unwrap_or_else(|_| "C:\\Program Files".into());
+    let pf86 = std::env::var("ProgramFiles(x86)").unwrap_or_else(|_| "C:\\Program Files (x86)".into());
+    let sys_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+
+    let candidates = [
+        format!(r"{pf}\LLVM\bin\lld-link.exe"),
+        format!(r"{pf86}\LLVM\bin\lld-link.exe"),
+        format!(r"{sys_drive}\LLVM\bin\lld-link.exe"),
+    ];
+    for c in &candidates {
+        let p = PathBuf::from(c);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
+    if let Ok(cur) = std::env::current_exe() {
+        if let Some(dir) = cur.parent() {
+            for sub in &["", "bin", "llvm/bin"] {
+                let p = if sub.is_empty() { dir.join("lld-link.exe") } else { dir.join(sub).join("lld-link.exe") };
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+
+    if let Ok(up) = std::env::var("USERPROFILE") {
+        let scoop = PathBuf::from(&up).join("scoop").join("apps").join("llvm").join("current").join("bin").join("lld-link.exe");
+        if scoop.exists() {
+            return Some(scoop);
+        }
+    }
+
+    None
+}
+
+/// Автономная линковка объектных файлов (.obj) в .exe через системный MSVC link.exe или lld-link.exe без Clang
+pub fn link_coff_objects(
+    obj_files: &[&Path],
+    out_exe: &Path,
+    is_release: bool,
+    extra_libs: &[&str],
+) -> Result<(), String> {
+    let sdk = get_sdk_paths();
+    let link_path = sdk.link_exe.clone()
+        .or_else(find_lld_link)
+        .or_else(|| {
+            if let Ok(p) = std::process::Command::new("link.exe").arg("/?").output() {
+                if p.status.success() || !p.stdout.is_empty() {
+                    return Some(PathBuf::from("link.exe"));
+                }
+            }
+            if let Ok(p) = std::process::Command::new("lld-link.exe").arg("/?").output() {
+                if p.status.success() || !p.stdout.is_empty() {
+                    return Some(PathBuf::from("lld-link.exe"));
+                }
+            }
+            None
+        }).ok_or_else(|| {
+            "Линковщик (link.exe или lld-link.exe) не найден в каталогах LLVM, Visual Studio или PATH.".to_string()
+        })?;
+
+
+    let mut cmd = std::process::Command::new(link_path);
+    cmd.arg("/NOLOGO");
+    cmd.arg("/SUBSYSTEM:CONSOLE");
+    cmd.arg(format!("/OUT:{}", out_exe.display()));
+
+    for lib_dir in &sdk.libs {
+        cmd.arg(format!("/LIBPATH:{}", lib_dir.display()));
+    }
+
+    // Системные библиотеки CRT и Windows API
+    cmd.arg("libcmt.lib");
+    cmd.arg("libucrt.lib");
+    cmd.arg("legacy_stdio_definitions.lib");
+    cmd.arg("kernel32.lib");
+    cmd.arg("ws2_32.lib");
+    cmd.arg("user32.lib");
+
+    for lib in extra_libs {
+        cmd.arg(lib);
+    }
+
+    if is_release {
+        cmd.arg("/OPT:REF");
+        cmd.arg("/OPT:ICF");
+    } else {
+        cmd.arg("/DEBUG:FULL");
+    }
+
+    for obj in obj_files {
+        cmd.arg(obj);
+    }
+
+    let output = cmd.output().map_err(|e| format!("ошибка запуска link.exe: {e}"))?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        let out = String::from_utf8_lossy(&output.stdout);
+        return Err(format!("ошибка линковщика MSVC link.exe:\n{out}\n{err}"));
+    }
+    Ok(())
 }
 
 /// Компиляция инлайн C/C++ блока в LLVM Bitcode (.bc).

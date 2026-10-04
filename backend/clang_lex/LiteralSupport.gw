@@ -1,0 +1,1541 @@
+// Внешние системные функции libc
+extern fn memcpy(dest: *mut u8, src: *u8, n: u64) -> *mut u8;
+
+fn getCharWidth(kind: TokenKind, Target: *TargetInfo) -> u32 {
+    match kind {
+        _ => {
+            llvm_unreachable_internal("Unknown token type!", "clang\\lib\\Lex\\LiteralSupport.cpp", 43);
+        },
+        char_constant => {
+            string_literal;
+        },
+        wide_char_constant => {
+            wide_string_literal;
+        },
+        utf16_char_constant => {
+            utf16_string_literal;
+        },
+        utf32_char_constant => {
+            utf32_string_literal;
+        },
+    }
+}
+
+fn getEncodingPrefixLen(kind: TokenKind) -> u32 {
+    match kind {
+        _ => {
+            llvm_unreachable_internal("Unknown token type!", "clang\\lib\\Lex\\LiteralSupport.cpp", 64);
+        },
+        char_constant => {
+            string_literal;
+        },
+        utf8_char_constant => {
+            utf8_string_literal;
+        },
+        wide_char_constant => {
+            wide_string_literal;
+        },
+    }
+}
+
+fn MakeCharSourceRange(Features: *LangOptions, TokLoc: FullSourceLoc, TokBegin: *u8, TokRangeBegin: *u8, TokRangeEnd: *u8) -> CharSourceRange {
+    let mut Begin: SourceLocation = AdvanceToTokenCharacter(TokLoc, TokRangeBegin - TokBegin, TokLoc.getManager(), Features);
+    let mut End: SourceLocation = AdvanceToTokenCharacter(Begin, TokRangeEnd - TokRangeBegin, TokLoc.getManager(), Features);
+    return getCharRange(Begin, End);
+}
+
+fn Diag(Diags: *mut DiagnosticsEngine, Features: *LangOptions, TokLoc: FullSourceLoc, TokBegin: *u8, TokRangeBegin: *u8, TokRangeEnd: *u8, DiagID: u32) -> DiagnosticBuilder {
+    let mut Begin: SourceLocation = AdvanceToTokenCharacter(TokLoc, TokRangeBegin - TokBegin, TokLoc.getManager(), Features);
+    return Diags.Report(Begin, DiagID) << MakeCharSourceRange(Features, TokLoc, TokBegin, TokRangeBegin, TokRangeEnd);
+}
+
+fn IsEscapeValidInUnevaluatedStringLiteral(Escape: i8) -> bool {
+    match Escape {
+        '\'' => {
+            '"';
+        },
+    }
+    return false;
+}
+
+fn convertCharacter(Char: str, Converter: *TextEncodingConverter) -> ErrorOr<char> {
+    let mut ResultCharConv: str = zeroed();
+    let mut EC: error_code = Converter.convert(Char);
+    if EC {
+        return EC();
+    } else if ResultCharConv()() > 1 {
+        return error_code { 7, generic_category() };
+    }
+    return [0];
+}
+
+fn ProcessCharEscape(ThisTokBegin: *u8, ThisTokBuf: **mut u8, ThisTokEnd: *u8, HadError: *mut bool, Loc: FullSourceLoc, CharWidth: u32, Diags: *mut DiagnosticsEngine, Features: *LangOptions, EvalMethod: StringLiteralEvalMethod, Converter: *mut TextEncodingConverter) -> u32 {
+    let mut EscapeBegin: *u8 = ThisTokBuf;
+    let mut Delimited: bool = false;
+    let mut EndDelimiterFound: bool = false;
+    ThisTokBuf += 1;
+    let mut ResultChar: u32 = *ThisTokBuf += 1;
+    let mut Escape: i8 = ResultChar;
+    let mut Transcode: bool = true;
+    let mut Invalid: bool = false;
+    match ResultChar {
+        '\' => {
+            '\'';
+        },
+        'a' => {
+            ResultChar = 7;
+        },
+        'b' => {
+            ResultChar = 8;
+        },
+        'e' => {
+            if Diags {
+                Diag(Diags, Features, Loc, ThisTokBegin, EscapeBegin, ThisTokBuf) << "e";
+            }
+        },
+        'E' => {
+            if Diags {
+                Diag(Diags, Features, Loc, ThisTokBegin, EscapeBegin, ThisTokBuf) << "E";
+            }
+        },
+        'f' => {
+            ResultChar = 12;
+        },
+        'n' => {
+            ResultChar = 10;
+        },
+        'r' => {
+            ResultChar = 13;
+        },
+        't' => {
+            ResultChar = 9;
+        },
+        'v' => {
+            ResultChar = 11;
+        },
+        'x' => {
+            Transcode = false;
+            ResultChar = 0;
+            if ThisTokBuf != ThisTokEnd && *ThisTokBuf == '{' {
+                Delimited = true;
+                ThisTokBuf += 1;
+                if *ThisTokBuf == '}' {
+                    HadError = true;
+                    if Diags {
+                        Diag(Diags, Features, Loc, ThisTokBegin, EscapeBegin, ThisTokBuf);
+                    }
+                }
+            } else if ThisTokBuf == ThisTokEnd || !isHexDigit(*ThisTokBuf) {
+                if Diags {
+                    Diag(Diags, Features, Loc, ThisTokBegin, EscapeBegin, ThisTokBuf) << "x";
+                }
+                return ResultChar;
+            }
+            let mut Overflow: bool = false;
+            for ; ThisTokBuf != ThisTokEnd; ThisTokBuf += 1 {
+                if Delimited && *ThisTokBuf == '}' {
+                    ThisTokBuf += 1;
+                    EndDelimiterFound = true;
+                    break;
+                }
+                let mut CharVal: i32 = hexDigitValue(*ThisTokBuf);
+                if CharVal == -1 {
+                    if !Delimited {
+                        break;
+                    }
+                    HadError = true;
+                    if Diags {
+                        Diag(Diags, Features, Loc, ThisTokBegin, EscapeBegin, ThisTokBuf) << ThisTokBuf[0..1];
+                    }
+                    continue;
+                }
+                if ResultChar & 4026531840 {
+                    Overflow = true;
+                }
+                ResultChar <<= 4;
+                ResultChar |= CharVal;
+            }
+            if CharWidth != 32 && (ResultChar >> CharWidth) != 0 {
+                Overflow = true;
+                ResultChar &= ~0 >> (32 - CharWidth);
+            }
+            if !HadError && Overflow {
+                HadError = true;
+                if Diags {
+                    Diag(Diags, Features, Loc, ThisTokBegin, EscapeBegin, ThisTokBuf) << 0;
+                }
+            }
+            break;
+        },
+        '0' => {
+            '1';
+        },
+        'o' => {
+            let mut Overflow: bool = false;
+            Transcode = false;
+            if ThisTokBuf == ThisTokEnd || *ThisTokBuf != '{' {
+                HadError = true;
+                if Diags {
+                    Diag(Diags, Features, Loc, ThisTokBegin, EscapeBegin, ThisTokBuf) << "o";
+                }
+                break;
+            }
+            ResultChar = 0;
+            Delimited = true;
+            ThisTokBuf += 1;
+            if *ThisTokBuf == '}' {
+                HadError = true;
+                if Diags {
+                    Diag(Diags, Features, Loc, ThisTokBegin, EscapeBegin, ThisTokBuf);
+                }
+            }
+            while ThisTokBuf != ThisTokEnd {
+                if *ThisTokBuf == '}' {
+                    EndDelimiterFound = true;
+                    ThisTokBuf += 1;
+                    break;
+                }
+                if *ThisTokBuf < '0' || *ThisTokBuf > '7' {
+                    HadError = true;
+                    if Diags {
+                        Diag(Diags, Features, Loc, ThisTokBegin, EscapeBegin, ThisTokBuf) << ThisTokBuf[0..1];
+                    }
+                    ThisTokBuf += 1;
+                    continue;
+                }
+                if ResultChar & 3758096384 {
+                    Overflow = true;
+                }
+                ResultChar <<= 3;
+                ResultChar |= *ThisTokBuf += 1 - '0';
+            }
+            if !HadError && (Overflow || (CharWidth != 32 && (ResultChar >> CharWidth) != 0)) {
+                HadError = true;
+                if Diags {
+                    Diag(Diags, Features, Loc, ThisTokBegin, EscapeBegin, ThisTokBuf) << 1;
+                }
+                ResultChar &= ~0 >> (32 - CharWidth);
+            }
+            break;
+        },
+        '(' => {
+            '{';
+        },
+        _ => {
+            Invalid = true;
+        },
+    }
+    if Delimited && Diags {
+        if !EndDelimiterFound {
+            Diag(Diags, Features, Loc, ThisTokBegin, EscapeBegin, ThisTokBuf) << r_brace;
+        } else if !HadError {
+            DiagnoseDelimitedOrNamedEscapeSequence(Loc, false, Features, *Diags);
+        }
+    }
+    if EvalMethod == Unevaluated && !IsEscapeValidInUnevaluatedStringLiteral(Escape) {
+        Diag(Diags, Features, Loc, ThisTokBegin, EscapeBegin, ThisTokBuf) << EscapeBegin[0..ThisTokBuf - EscapeBegin];
+        HadError = true;
+    }
+    if !HadError && EvalMethod != Unevaluated && Transcode && Converter {
+        assert!(ResultChar <= max() as u32);
+        let mut ByteChar: i8 = if Invalid { '?' } else { ResultChar };
+        let mut ErrorOrChar: auto = zeroed();
+        if ErrorOrChar() {
+            ResultChar = *;
+        } else {
+            Diag(Diags, Features, Loc, ThisTokBegin, EscapeBegin, ThisTokBuf) << ()();
+            HadError = true;
+        }
+    }
+    return ResultChar;
+}
+
+fn appendCodePoint(Codepoint: u32, Str: *mut SmallVectorImpl<char>) {
+    let mut ResultBuf: [4]i8 = zeroed();
+    let mut ResultPtr: *mut u8 = ResultBuf;
+    if ConvertCodePointToUTF8(Codepoint, ResultPtr) {
+        Str()(ResultBuf, ResultPtr);
+    }
+}
+
+fn expandUCNs(Buf: *mut SmallVectorImpl<char>, Input: str) {
+    for let mut I: iterator = Input.begin();
+let mut E: iterator = Input.end(); I != E; I += 1 {
+        if *I != '\' {
+            Buf()(*I);
+            continue;
+        }
+        I += 1;
+        let mut Kind: i8 = *I;
+        I += 1;
+        assert!(Kind == 'u' || Kind == 'U' || Kind == 'N');
+        let mut CodePoint: u32 = 0;
+        if Kind == 'u' && *I == '{' {
+            for I += 1; *I != '}'; I += 1 {
+                let mut Value: u32 = hexDigitValue(*I);
+                assert!(Value != -1);
+                CodePoint <<= 4;
+                CodePoint += Value;
+            }
+            appendCodePoint(CodePoint, Buf);
+            continue;
+        }
+        if Kind == 'N' {
+            assert!(*I == '{');
+            I += 1;
+            let mut Delim: auto = find(I, Input.end(), '}');
+            (((operator!(operator!((Delim() != Input.end())))) || (_wassert(L"Delim != Input.end()", L"clang\\lib\\Lex\\LiteralSupport.cpp", (444) as u32) , 0)) as void);
+            let mut Name: str = I;
+            let mut Res: LooseMatchingResult> = zeroed();
+            (((operator!(operator!((Res() && "could not find a codepoint that was previously found")))) || (_wassert(L"Res && \"could not find a codepoint that was previously found\"", L"clang\\lib\\Lex\\LiteralSupport.cpp", (448) as u32) , 0)) as void);
+            CodePoint = ;
+            assert!(CodePoint != 4294967295);
+            appendCodePoint(CodePoint, Buf);
+            I = ;
+            continue;
+        }
+        let mut NumHexDigits: u32 = 0;
+        if Kind == 'u' {
+            NumHexDigits = 4;
+        } else {
+            NumHexDigits = 8;
+        }
+        assert!(I + NumHexDigits <= E);
+        for ; NumHexDigits != 0; I += 1 , NumHexDigits -= 1 {
+            let mut Value: u32 = hexDigitValue(*I);
+            assert!(Value != -1);
+            CodePoint <<= 4;
+            CodePoint += Value;
+        }
+        appendCodePoint(CodePoint, Buf);
+        I -= 1;
+    }
+}
+
+fn isFunctionLocalStringLiteralMacro(K: TokenKind, LO: *LangOptions) -> bool {
+    return LO() && (K == kw___FUNCTION__ || K == kw_L__FUNCTION__ || K == kw___FUNCSIG__ || K == kw_L__FUNCSIG__ || K == kw___FUNCDNAME__);
+}
+
+fn tokenIsLikeStringLiteral(Tok: *Token, LO: *LangOptions) -> bool {
+    return isStringLiteral(Tok.getKind()) || isFunctionLocalStringLiteralMacro(Tok.getKind(), LO);
+}
+
+fn ProcessNumericUCNEscape(ThisTokBegin: *u8, ThisTokBuf: **mut u8, ThisTokEnd: *u8, UcnVal: *mut u32, UcnLen: *mut u16, Delimited: *mut bool, Loc: FullSourceLoc, Diags: *mut DiagnosticsEngine, Features: *LangOptions, in_char_string_literal: bool) -> bool {
+    let mut UcnBegin: *u8 = ThisTokBuf;
+    let mut HasError: bool = false;
+    let mut EndDelimiterFound: bool = false;
+    ThisTokBuf += 2;
+    Delimited = false;
+    if UcnBegin[1] == 'u' && in_char_string_literal && ThisTokBuf != ThisTokEnd && *ThisTokBuf == '{' {
+        Delimited = true;
+        ThisTokBuf += 1;
+    } else if ThisTokBuf == ThisTokEnd || !isHexDigit(*ThisTokBuf) {
+        if Diags {
+            Diag(Diags, Features, Loc, ThisTokBegin, UcnBegin, ThisTokBuf) << &mut ThisTokBuf[-1][0..1];
+        }
+        return false;
+    }
+    UcnLen = (if ThisTokBuf[-1] == 'u' { 4 } else { 8 });
+    let mut Overflow: bool = false;
+    let mut Count: u16 = 0;
+    for ; ThisTokBuf != ThisTokEnd && (Delimited || Count != UcnLen); ThisTokBuf += 1 {
+        if Delimited && *ThisTokBuf == '}' {
+            ThisTokBuf += 1;
+            EndDelimiterFound = true;
+            break;
+        }
+        let mut CharVal: i32 = hexDigitValue(*ThisTokBuf);
+        if CharVal == -1 {
+            HasError = true;
+            if !Delimited {
+                break;
+            }
+            if Diags {
+                Diag(Diags, Features, Loc, ThisTokBegin, UcnBegin, ThisTokBuf) << ThisTokBuf[0..1];
+            }
+            Count += 1;
+            continue;
+        }
+        if UcnVal & 4026531840 {
+            Overflow = true;
+            continue;
+        }
+        UcnVal <<= 4;
+        UcnVal |= CharVal;
+        Count += 1;
+    }
+    if Overflow {
+        if Diags {
+            Diag(Diags, Features, Loc, ThisTokBegin, UcnBegin, ThisTokBuf) << 0;
+        }
+        return false;
+    }
+    if Delimited && !EndDelimiterFound {
+        if Diags {
+            Diag(Diags, Features, Loc, ThisTokBegin, UcnBegin, ThisTokBuf) << r_brace;
+        }
+        return false;
+    }
+    if Count == 0 || (!Delimited && Count != UcnLen) {
+        if Diags {
+            Diag(Diags, Features, Loc, ThisTokBegin, UcnBegin, ThisTokBuf);
+        }
+        return false;
+    }
+    return !HasError;
+}
+
+fn allowedInCharacterName(C: i8) -> bool {
+    return (C >= 'A' && C <= 'Z') || (C >= '0' && C <= '9') || C == '-' || C == ' ';
+}
+
+fn DiagnoseInvalidUnicodeCharacterName(Diags: *mut DiagnosticsEngine, Features: *LangOptions, Loc: FullSourceLoc, TokBegin: *u8, TokRangeBegin: *u8, TokRangeEnd: *u8, Name: str) {
+    Diag(Diags, Features, Loc, TokBegin, TokRangeBegin, TokRangeEnd) << Name;
+    let mut HasIllegalCharacter: bool = false;
+    for let mut P: *u8 = Name.begin();
+let mut E: *u8 = Name.end(); P != E;  {
+        if allowedInCharacterName(*P) {
+            P += 1;
+            continue;
+        }
+        let mut CharLoc: SourceLocation = AdvanceToTokenCharacter(Loc, (TokRangeBegin - TokBegin) + (P - Name.begin()), Loc.getManager(), Features);
+        Diags << EscapeSingleCodepointForDiagnostic(P);
+        HasIllegalCharacter = true;
+        break;
+    }
+    let mut Res: LooseMatchingResult> = zeroed();
+    if Res() {
+        Diag(Diags, Features, Loc, TokBegin, TokRangeBegin, TokRangeEnd) << CreateReplacement(MakeCharSourceRange(Features, Loc, TokBegin, TokRangeBegin, TokRangeEnd));
+        return;
+    }
+    if HasIllegalCharacter {
+        return;
+    }
+    let mut Distance: u32 = 0;
+    let mut Matches: i32 = (Name, 5);
+    (((operator!(operator!((operator!() && "No unicode characters found")))) || (_wassert(L"!Matches.empty() && \"No unicode characters found\"", L"clang\\lib\\Lex\\LiteralSupport.cpp", (629) as u32) , 0)) as void);
+}
+
+fn ProcessNamedUCNEscape(ThisTokBegin: *u8, ThisTokBuf: **mut u8, ThisTokEnd: *u8, UcnVal: *mut u32, UcnLen: *mut u16, Loc: FullSourceLoc, Diags: *mut DiagnosticsEngine, Features: *LangOptions) -> bool {
+    let mut UcnBegin: *u8 = ThisTokBuf;
+    assert!(UcnBegin[0] == '\' && UcnBegin[1] == 'N');
+    ThisTokBuf += 2;
+    if ThisTokBuf == ThisTokEnd || *ThisTokBuf != '{' {
+        if Diags {
+            Diag(Diags, Features, Loc, ThisTokBegin, UcnBegin, ThisTokBuf) << &mut ThisTokBuf[-1][0..1];
+        }
+        return false;
+    }
+    ThisTokBuf += 1;
+    let mut ClosingBrace: *u8 = find_if(ThisTokBuf, ThisTokEnd, Closure_1 {});
+    let mut Incomplete: bool = ClosingBrace == ThisTokEnd;
+    let mut Empty: bool = ClosingBrace == ThisTokBuf;
+    if Incomplete || Empty {
+        if Diags {
+            Diag(Diags, Features, Loc, ThisTokBegin, UcnBegin, ThisTokBuf) << &mut UcnBegin[1][0..1];
+        }
+        ThisTokBuf = if ClosingBrace == ThisTokEnd { ClosingBrace } else { ClosingBrace + 1 };
+        return false;
+    }
+    let mut Name: str = ThisTokBuf[0..ClosingBrace - ThisTokBuf];
+    ThisTokBuf = ClosingBrace + 1;
+    let mut Res: optional<char32_t> = zeroed();
+    if operator!() {
+        if Diags {
+            DiagnoseInvalidUnicodeCharacterName(Diags, Features, Loc, ThisTokBegin, &mut UcnBegin[3], ClosingBrace, Name);
+        }
+        return false;
+    }
+    UcnVal = *;
+    UcnLen = if UcnVal > 65535 { 8 } else { 4 };
+    return true;
+}
+
+fn ProcessUCNEscape(ThisTokBegin: *u8, ThisTokBuf: **mut u8, ThisTokEnd: *u8, UcnVal: *mut u32, UcnLen: *mut u16, Loc: FullSourceLoc, Diags: *mut DiagnosticsEngine, Features: *LangOptions, in_char_string_literal: bool) -> bool {
+    let mut HasError: bool = false;
+    let mut UcnBegin: *u8 = ThisTokBuf;
+    let mut IsDelimitedEscapeSequence: bool = false;
+    let mut IsNamedEscapeSequence: bool = false;
+    if ThisTokBuf[1] == 'N' {
+        IsNamedEscapeSequence = true;
+        HasError = !ProcessNamedUCNEscape(ThisTokBegin, ThisTokBuf, ThisTokEnd, UcnVal, UcnLen, Loc, Diags, Features);
+    } else {
+        HasError = !ProcessNumericUCNEscape(ThisTokBegin, ThisTokBuf, ThisTokEnd, UcnVal, UcnLen, IsDelimitedEscapeSequence, Loc, Diags, Features, in_char_string_literal);
+    }
+    if HasError {
+        return false;
+    }
+    if (55296 <= UcnVal && UcnVal <= 57343) || UcnVal > 1114111 {
+        if Diags {
+            Diag(Diags, Features, Loc, ThisTokBegin, UcnBegin, ThisTokBuf);
+        }
+        return false;
+    }
+    if UcnVal < 160 && (UcnVal != 36 && UcnVal != 64 && UcnVal != 96) {
+        let mut IsError: bool = (operator!((Features() || Features())) || !in_char_string_literal);
+        if Diags {
+            let mut BasicSCSChar: i8 = UcnVal;
+            if UcnVal >= 32 && UcnVal < 127 {
+                Diag(Diags, Features, Loc, ThisTokBegin, UcnBegin, ThisTokBuf) << &mut BasicSCSChar[0..1];
+            } else {
+                Diag(Diags, Features, Loc, ThisTokBegin, UcnBegin, ThisTokBuf);
+            }
+        }
+        if IsError {
+            return false;
+        }
+    }
+    if operator!(Features()) && operator!(Features()) && Diags {
+        Diag(Diags, Features, Loc, ThisTokBegin, UcnBegin, ThisTokBuf);
+    }
+    if (IsDelimitedEscapeSequence || IsNamedEscapeSequence) && Diags {
+        DiagnoseDelimitedOrNamedEscapeSequence(Loc, IsNamedEscapeSequence, Features, *Diags);
+    }
+    return true;
+}
+
+fn MeasureUCNEscape(ThisTokBegin: *u8, ThisTokBuf: **mut u8, ThisTokEnd: *u8, CharByteWidth: u32, Features: *LangOptions, HadError: *mut bool) -> i32 {
+    if CharByteWidth == 4 {
+        return 4;
+    }
+    let mut UcnVal: u32 = 0;
+    let mut UcnLen: u16 = 0;
+    let mut Loc: FullSourceLoc = FullSourceLoc {};
+    if !ProcessUCNEscape(ThisTokBegin, ThisTokBuf, ThisTokEnd, UcnVal, UcnLen, Loc, null, Features, true) {
+        HadError = true;
+        return 0;
+    }
+    if CharByteWidth == 2 {
+        return if UcnVal <= 65535 { 2 } else { 4 };
+    }
+    if UcnVal < 128 {
+        return 1;
+    }
+    if UcnVal < 2048 {
+        return 2;
+    }
+    if UcnVal < 65536 {
+        return 3;
+    }
+    return 4;
+}
+
+fn EncodeUCNEscape(ThisTokBegin: *u8, ThisTokBuf: **mut u8, ThisTokEnd: *u8, ResultBuf: *mut *mut u8, HadError: *mut bool, Loc: FullSourceLoc, CharByteWidth: u32, Diags: *mut DiagnosticsEngine, Features: *LangOptions, Converter: *mut TextEncodingConverter) {
+    let mut UcnVal: UTF32 = 0;
+    let mut UcnLen: u16 = 0;
+    if !ProcessUCNEscape(ThisTokBegin, ThisTokBuf, ThisTokEnd, UcnVal, UcnLen, Loc, Diags, Features, true) {
+        HadError = true;
+        return;
+    }
+    assert!((CharByteWidth == 1 || CharByteWidth == 2 || CharByteWidth == 4), "only character widths of 1, 2, or 4 bytes supported");
+    UcnLen as void;
+    assert!((UcnLen == 4 || UcnLen == 8), "only ucn length of 4 or 8 supported");
+    if CharByteWidth == 4 {
+        let mut ResultPtr: *mut UTF32 = ResultBuf as *mut UTF32;
+        *ResultPtr = UcnVal;
+        ResultBuf += 4;
+        return;
+    }
+    if CharByteWidth == 2 {
+        let mut ResultPtr: *mut UTF16 = ResultBuf as *mut UTF16;
+        if UcnVal <= 65535 as UTF32 {
+            *ResultPtr = UcnVal;
+            ResultBuf += 2;
+            return;
+        }
+        UcnVal -= 65536;
+        *ResultPtr = 55296 + (UcnVal >> 10);
+        *(ResultPtr + 1) = 56320 + (UcnVal & 1023);
+        ResultBuf += 4;
+        return;
+    }
+    assert!(CharByteWidth == 1, "UTF-8 encoding is only for 1 byte characters");
+    let mut bytesToWrite: u16 = 0;
+    if UcnVal < 128 as UTF32 {
+        bytesToWrite = 1;
+    } else if UcnVal < 2048 as UTF32 {
+        bytesToWrite = 2;
+    } else if UcnVal < 65536 as UTF32 {
+        bytesToWrite = 3;
+    } else {
+        bytesToWrite = 4;
+    }
+    let mut byteMask: u32 = 191;
+    let mut byteMark: u32 = 128;
+    let mut firstByteMark: [5]UTF8 = [0, 0, 192, 224, 240];
+    ResultBuf += bytesToWrite;
+    match bytesToWrite {
+        4 => {
+            *ResultBuf -= 1 = ((UcnVal | byteMark) & byteMask) as UTF8;
+        },
+        3 => {
+            *ResultBuf -= 1 = ((UcnVal | byteMark) & byteMask) as UTF8;
+        },
+        2 => {
+            *ResultBuf -= 1 = ((UcnVal | byteMark) & byteMask) as UTF8;
+        },
+        1 => {
+            *ResultBuf -= 1 = (UcnVal | firstByteMark[bytesToWrite]) as UTF8;
+        },
+    }
+    ResultBuf += bytesToWrite;
+    if Converter {
+        let mut CpConv: str = zeroed();
+        let mut Cp: *mut u8 = ResultBuf - bytesToWrite;
+        let mut EC: auto = Converter.convert(Cp[0..bytesToWrite]);
+        if operator!() {
+            memcpy(Cp);
+            ResultBuf = Cp + ();
+        } else {
+            Diags << ();
+            HadError = true;
+        }
+    }
+}
+
+fn NumericLiteralParser::NumericLiteralParser(self, TokSpelling: str, TokLoc: SourceLocation, SM: *SourceManager, LangOpts: *LangOptions, Target: *TargetInfo, Diags: *mut DiagnosticsEngine) {
+    self.s = self.DigitsBegin = self.ThisTokBegin;
+    self.saw_exponent = false;
+    self.saw_period = false;
+    self.saw_ud_suffix = false;
+    self.saw_fixed_point_suffix = false;
+    self.isLong = false;
+    self.isUnsigned = false;
+    self.isLongLong = false;
+    self.isSizeT = false;
+    self.isHalf = false;
+    self.isFloat = false;
+    self.isImaginary = false;
+    self.isFloat16 = false;
+    self.isFloat128 = false;
+    self.MicrosoftInteger = 0;
+    self.isFract = false;
+    self.isAccum = false;
+    self.hadError = false;
+    self.isBitInt = false;
+    if isPreprocessingNumberBody(*self.ThisTokEnd) && operator!((LangOpts() && *self.ThisTokEnd == '.')) {
+        Diags;
+        self.hadError = true;
+        return;
+    }
+    if *self.s == '0' {
+        self.ParseNumberStartingWithZero(TokLoc);
+        if self.hadError {
+            return;
+        }
+    } else {
+        self.radix = 10;
+        self.s = self.SkipDigits(self.s);
+        if self.s == self.ThisTokEnd {} else {
+            self.ParseDecimalOrOctalCommon(TokLoc);
+            if self.hadError {
+                return;
+            }
+        }
+    }
+    self.SuffixBegin = self.s;
+    self.checkSeparator(TokLoc, self.s, CSK_AfterDigits);
+    if LangOpts() {
+        for let mut c: *u8 = self.s; c != self.ThisTokEnd; c += 1 {
+            if *c == 'r' || *c == 'k' || *c == 'R' || *c == 'K' {
+                self.saw_fixed_point_suffix = true;
+                break;
+            }
+        }
+    }
+    let mut isFixedPointConstant: bool = self.isFixedPointLiteral();
+    let mut isFPConstant: bool = self.isFloatingLiteral();
+    let mut HasSize: bool = false;
+    let mut DoubleUnderscore: bool = false;
+    for ; self.s != self.ThisTokEnd; self.s += 1 {
+        match *self.s {
+            'R' => {
+                'r';
+            },
+            'K' => {
+                'k';
+            },
+            'h' => {
+                'H';
+            },
+            'f' => {
+                'F';
+            },
+            'q' => {
+                'Q';
+            },
+            'u' => {
+                'U';
+            },
+            'l' => {
+                'L';
+            },
+            'z' => {
+                'Z';
+            },
+            'i' => {
+                'I';
+            },
+            'j' => {
+                'J';
+            },
+            '_' => {
+                if isFPConstant {
+                    break;
+                }
+            },
+            'w' => {
+                'W';
+            },
+        }
+        break;
+    }
+    if self.s != self.ThisTokEnd || self.isImaginary {
+        expandUCNs(self.SuffixBegin[0..self.ThisTokEnd - self.SuffixBegin]);
+        if isValidUDSuffix(LangOpts) {
+            if !self.isImaginary {
+                self.isLong = false;
+                self.isUnsigned = false;
+                self.isLongLong = false;
+                self.isSizeT = false;
+                self.isFloat = false;
+                self.isFloat16 = false;
+                self.isHalf = false;
+                self.isImaginary = false;
+                self.isBitInt = false;
+                self.MicrosoftInteger = 0;
+                self.saw_fixed_point_suffix = false;
+                self.isFract = false;
+                self.isAccum = false;
+            }
+            self.saw_ud_suffix = true;
+            return;
+        }
+        if self.s != self.ThisTokEnd {
+            Diags << self.SuffixBegin[0..self.ThisTokEnd - self.SuffixBegin] << (if isFixedPointConstant { 2 } else { isFPConstant });
+            self.hadError = true;
+        }
+    }
+    if !self.hadError && self.saw_fixed_point_suffix {
+        assert!(self.isFract || self.isAccum);
+    }
+}
+
+fn NumericLiteralParser::ParseDecimalOrOctalCommon(self, TokLoc: SourceLocation) {
+    assert!((self.radix == 8 || self.radix == 10), "Unexpected radix");
+    if isHexDigit(*self.s) && *self.s != 'e' && *self.s != 'E' && !isValidUDSuffix(self.LangOpts, self.s[0..self.ThisTokEnd - self.s]) {
+        self.Diags << self.s[0..1] << (if self.radix == 8 { 1 } else { 0 });
+        self.hadError = true;
+        return;
+    }
+    if *self.s == '.' {
+        self.checkSeparator(TokLoc, self.s, CSK_AfterDigits);
+        self.s += 1;
+        self.radix = 10;
+        self.saw_period = true;
+        self.checkSeparator(TokLoc, self.s, CSK_BeforeDigits);
+        self.s = self.SkipDigits(self.s);
+    }
+    if *self.s == 'e' || *self.s == 'E' {
+        self.checkSeparator(TokLoc, self.s, CSK_AfterDigits);
+        let mut Exponent: *u8 = self.s;
+        self.s += 1;
+        self.radix = 10;
+        self.saw_exponent = true;
+        if self.s != self.ThisTokEnd && (*self.s == '+' || *self.s == '-') {
+            self.s += 1;
+        }
+        let mut first_non_digit: *u8 = self.SkipDigits(self.s);
+        if self.containsDigits(self.s, first_non_digit) {
+            self.checkSeparator(TokLoc, self.s, CSK_BeforeDigits);
+            self.s = first_non_digit;
+        } else {
+            if !self.hadError {
+                self.Diags;
+                self.hadError = true;
+            }
+            return;
+        }
+    }
+}
+
+fn NumericLiteralParser::isValidUDSuffix(self, LangOpts: *LangOptions, Suffix: str) -> bool {
+    if operator!(LangOpts()) || Suffix.is_empty() {
+        return false;
+    }
+    if Suffix.starts_with("_") && !Suffix.starts_with("__") {
+        return true;
+    }
+    if operator!(LangOpts()) {
+        return false;
+    }
+}
+
+fn NumericLiteralParser::checkSeparator(self, TokLoc: SourceLocation, Pos: *u8, IsAfterDigits: CheckSeparatorKind) {
+    if IsAfterDigits == CSK_AfterDigits {
+        if Pos == self.ThisTokBegin {
+            return;
+        }
+        Pos -= 1;
+    } else if Pos == self.ThisTokEnd {
+        return;
+    }
+    if isDigitSeparator(*Pos) {
+        self.Diags << IsAfterDigits;
+        self.hadError = true;
+    }
+}
+
+fn NumericLiteralParser::ParseNumberStartingWithZero(self, TokLoc: SourceLocation) {
+    assert!(self.s[0] == '0', "Invalid method call");
+    self.s += 1;
+    let mut c1: i32 = self.s[0];
+    if (c1 == 'x' || c1 == 'X') && (isHexDigit(self.s[1]) || self.s[1] == '.') {
+        self.s += 1;
+        assert!(self.s < self.ThisTokEnd, "didn't maximally munch?");
+        self.radix = 16;
+        self.DigitsBegin = self.s;
+        self.s = self.SkipHexDigits(self.s);
+        let mut HasSignificandDigits: bool = self.containsDigits(self.DigitsBegin, self.s);
+        if self.s == self.ThisTokEnd {} else if *self.s == '.' {
+            self.s += 1;
+            self.saw_period = true;
+            let mut floatDigitsBegin: *u8 = self.s;
+            self.s = self.SkipHexDigits(self.s);
+            if self.containsDigits(floatDigitsBegin, self.s) {
+                HasSignificandDigits = true;
+            }
+            if HasSignificandDigits {
+                self.checkSeparator(TokLoc, floatDigitsBegin, CSK_BeforeDigits);
+            }
+        }
+        if !HasSignificandDigits {
+            self.Diags << self.LangOpts << 1;
+            self.hadError = true;
+            return;
+        }
+        if *self.s == 'p' || *self.s == 'P' {
+            self.checkSeparator(TokLoc, self.s, CSK_AfterDigits);
+            let mut Exponent: *u8 = self.s;
+            self.s += 1;
+            self.saw_exponent = true;
+            if self.s != self.ThisTokEnd && (*self.s == '+' || *self.s == '-') {
+                self.s += 1;
+            }
+            let mut first_non_digit: *u8 = self.SkipDigits(self.s);
+            if !self.containsDigits(self.s, first_non_digit) {
+                if !self.hadError {
+                    self.Diags;
+                    self.hadError = true;
+                }
+                return;
+            }
+            self.checkSeparator(TokLoc, self.s, CSK_BeforeDigits);
+            self.s = first_non_digit;
+            if operator!(self.LangOpts) {
+                self.Diags;
+            } else if self.LangOpts {
+                self.Diags;
+            }
+        } else if self.saw_period {
+            self.Diags << self.LangOpts << 0;
+            self.hadError = true;
+        }
+        return;
+    }
+    if (c1 == 'b' || c1 == 'B') && (self.s[1] == '0' || self.s[1] == '1') {
+        let mut DiagId: u32 = 0;
+        self.Diags.Report(TokLoc, DiagId);
+        self.s += 1;
+        assert!(self.s < self.ThisTokEnd, "didn't maximally munch?");
+        self.radix = 2;
+        self.DigitsBegin = self.s;
+        self.s = self.SkipBinaryDigits(self.s);
+        if self.s == self.ThisTokEnd {} else if isHexDigit(*self.s) && !isValidUDSuffix(self.LangOpts, self.s[0..self.ThisTokEnd - self.s]) {
+            self.Diags << self.s[0..1] << 2;
+            self.hadError = true;
+        }
+        return;
+    }
+    let mut IsSingleZero: bool = false;
+    if (c1 == 'O' || c1 == 'o') && (self.s[1] >= '0' && self.s[1] <= '7') {
+        let mut DiagId: u32 = 0;
+        self.Diags.Report(TokLoc, DiagId);
+        self.s += 1;
+        self.DigitsBegin = self.s;
+        self.radix = 8;
+        self.s = self.SkipOctalDigits(self.s);
+        if self.s == self.ThisTokEnd {} else if (isHexDigit(*self.s) && *self.s != 'e' && *self.s != 'E' && *self.s != '.') && !isValidUDSuffix(self.LangOpts, self.s[0..self.ThisTokEnd - self.s]) {
+            let mut InvalidDigitLoc: SourceLocation = AdvanceToTokenCharacter(TokLoc, self.s - self.ThisTokBegin, self.SM, self.LangOpts);
+            self.Diags << self.s[0..1] << 1;
+            self.hadError = true;
+        }
+        return;
+    }
+    let mut _: scope_exit = Closure_2 { cap_0: self, IsSingleZero: &mut IsSingleZero, TokLoc: &mut TokLoc };
+    self.radix = 8;
+    let mut PossibleNewDigitStart: *u8 = self.s;
+    self.s = self.SkipOctalDigits(self.s);
+    if self.s != PossibleNewDigitStart {
+        self.DigitsBegin = PossibleNewDigitStart;
+    } else {
+        IsSingleZero = (self.s == self.ThisTokBegin + 1);
+    }
+    if self.s == self.ThisTokEnd {
+        return;
+    }
+    if isDigit(*self.s) {
+        let mut EndDecimal: *u8 = self.SkipDigits(self.s);
+        if EndDecimal[0] == '.' || EndDecimal[0] == 'e' || EndDecimal[0] == 'E' {
+            self.s = EndDecimal;
+            self.radix = 10;
+        }
+    }
+    self.ParseDecimalOrOctalCommon(TokLoc);
+}
+
+fn alwaysFitsInto64Bits(Radix: u32, NumDigits: u32) -> bool {
+    match Radix {
+        2 => {
+            return NumDigits <= 64;
+        },
+        8 => {
+            return NumDigits <= 64 / 3;
+        },
+        10 => {
+            return NumDigits <= 19;
+        },
+        16 => {
+            return NumDigits <= 64 / 4;
+        },
+        _ => {
+            llvm_unreachable_internal("impossible Radix", "clang\\lib\\Lex\\LiteralSupport.cpp", 1566);
+        },
+    }
+}
+
+fn NumericLiteralParser::GetIntegerValue(self, Val: *mut APInt) -> bool {
+    let mut NumDigits: u32 = self.SuffixBegin - self.DigitsBegin;
+    if alwaysFitsInto64Bits(self.radix, NumDigits) {
+        let mut N: u64 = 0;
+        for let mut Ptr: *u8 = self.DigitsBegin; Ptr != self.SuffixBegin; Ptr += 1 {
+            if !isDigitSeparator(*Ptr) {
+                N = N * self.radix + hexDigitValue(*Ptr);
+            }
+        }
+        Val = N;
+        return Val.getZExtValue() != N;
+    }
+    Val = 0;
+    let mut Ptr: *u8 = self.DigitsBegin;
+    let mut RadixVal: APInt = APInt { Val.getBitWidth(), self.radix, false, false };
+    let mut CharVal: APInt = APInt { Val.getBitWidth(), 0, false, false };
+    let mut OldVal: APInt = Val;
+    let mut OverflowOccurred: bool = false;
+    while Ptr < self.SuffixBegin {
+        if isDigitSeparator(*Ptr) {
+            Ptr += 1;
+            continue;
+        }
+        let mut C: u32 = hexDigitValue(*Ptr += 1);
+        assert!(C < self.radix, "NumericLiteralParser ctor should have rejected this");
+        CharVal = C;
+        OldVal = Val;
+        operator(Val, RadixVal);
+        OverflowOccurred |= Val.udiv(RadixVal) != OldVal;
+        operator(Val, CharVal);
+        OverflowOccurred |= Val.ult(CharVal);
+    }
+    return OverflowOccurred;
+}
+
+fn NumericLiteralParser::GetFloatValue(self, Result: *mut APFloat, RM: RoundingMode) -> opStatus {
+    let mut n: u32 = min(self.SuffixBegin - self.ThisTokBegin, self.ThisTokEnd - self.ThisTokBegin);
+    let mut Buffer: str = zeroed();
+    let mut Str: str = self.ThisTokBegin[0..n];
+    if Str.contains('\'') {
+        Buffer()(n);
+        remove_copy_if(Str.begin(), Str.end(), back_inserter(), &mut isDigitSeparator);
+        Str = ;
+    }
+    let mut StatusOrErr: auto = Result.convertFromString;
+    (((operator!(operator!((StatusOrErr() && "Invalid floating point representation")))) || (_wassert(L"StatusOrErr && \"Invalid floating point representation\"", L"clang\\lib\\Lex\\LiteralSupport.cpp", (1647) as u32) , 0)) as void);
+    return if operator!(errorToBool()) { * } else { opInvalidOp };
+}
+
+fn IsExponentPart(c: i8, isHex: bool) -> bool {
+    if isHex {
+        return c == 'p' || c == 'P';
+    }
+    return c == 'e' || c == 'E';
+}
+
+fn NumericLiteralParser::GetFixedPointValue(self, StoreVal: *mut APInt, Scale: u32) -> bool {
+    assert!(self.radix == 16 || self.radix == 10);
+    let mut NumDigits: u32 = self.SuffixBegin - self.DigitsBegin;
+    if self.saw_period {
+        NumDigits -= 1;
+    }
+    let mut ExpOverflowOccurred: bool = false;
+    let mut NegativeExponent: bool = false;
+    let mut ExponentBegin: *u8 = null;
+    let mut Exponent: u64 = 0;
+    let mut BaseShift: i64 = 0;
+    if self.saw_exponent {
+        let mut Ptr: *u8 = self.DigitsBegin;
+        while !IsExponentPart(*Ptr, self.radix == 16) {
+            Ptr += 1;
+        }
+        ExponentBegin = Ptr;
+        Ptr += 1;
+        NegativeExponent = *Ptr == '-';
+        if NegativeExponent {
+            Ptr += 1;
+        }
+        let mut NumExpDigits: u32 = self.SuffixBegin - Ptr;
+        if alwaysFitsInto64Bits(self.radix, NumExpDigits) {
+            let mut ExpStr: str = Ptr[0..NumExpDigits];
+            let mut ExpInt: APInt = APInt { 64, ExpStr, 10 };
+            Exponent = ExpInt.getZExtValue();
+        } else {
+            ExpOverflowOccurred = true;
+        }
+        if NegativeExponent {
+            BaseShift -= Exponent;
+        } else {
+            BaseShift += Exponent;
+        }
+    }
+    let mut NumBitsNeeded: u64 = 0;
+    if self.radix == 10 {
+        NumBitsNeeded = 4 * (NumDigits + Exponent) + Scale;
+    } else {
+        NumBitsNeeded = 4 * NumDigits + Exponent + Scale;
+    }
+    if NumBitsNeeded > max() {
+        ExpOverflowOccurred = true;
+    }
+    let mut Val: APInt = APInt { NumBitsNeeded as u32, 0, false, false };
+    let mut FoundDecimal: bool = false;
+    let mut FractBaseShift: i64 = 0;
+    let mut End: *u8 = if self.saw_exponent { ExponentBegin } else { self.SuffixBegin };
+    for let mut Ptr: *u8 = self.DigitsBegin; Ptr < End; Ptr += 1 {
+        if *Ptr == '.' {
+            FoundDecimal = true;
+            continue;
+        }
+        let mut C: u32 = hexDigitValue(*Ptr);
+        assert!(C < self.radix, "NumericLiteralParser ctor should have rejected this");
+        operator(Val, self.radix);
+        operator(Val, C);
+        if FoundDecimal {
+            FractBaseShift -= 1;
+        }
+    }
+    if self.radix == 16 {
+        FractBaseShift *= 4;
+    }
+    BaseShift += FractBaseShift;
+    operator(Val, Scale);
+    let mut Base: u64 = if (self.radix == 16) { 2 } else { 10 };
+    if BaseShift > 0 {
+        for let mut i: i64 = 0; i < BaseShift; i += 1 {
+            operator(Val, Base);
+        }
+    } else if BaseShift < 0 {
+        for let mut i: i64 = BaseShift; i < 0 && !Val.isZero(); i += 1 {
+            Val = Val.udiv(Base);
+        }
+    }
+    let mut IntOverflowOccurred: bool = false;
+    let mut MaxVal: APInt = getMaxValue(StoreVal.getBitWidth());
+    if Val.getBitWidth() > StoreVal.getBitWidth() {
+        IntOverflowOccurred |= Val.ugt(MaxVal.zext(Val.getBitWidth()));
+        StoreVal = Val.trunc(StoreVal.getBitWidth());
+    } else if Val.getBitWidth() < StoreVal.getBitWidth() {
+        IntOverflowOccurred |= Val.zext(MaxVal.getBitWidth()).ugt(MaxVal);
+        StoreVal = Val.zext(StoreVal.getBitWidth());
+    } else {
+        StoreVal = move(Val);
+    }
+    return IntOverflowOccurred || ExpOverflowOccurred;
+}
+
+fn CharLiteralParser::CharLiteralParser(self, begin: *u8, end: *u8, Loc: SourceLocation, PP: *mut Preprocessor, kind: TokenKind) {
+    self.HadError = false;
+    self.Kind = kind;
+    let mut TokBegin: *u8 = begin;
+    if self.Kind != char_constant {
+        begin += 1;
+    }
+    if self.Kind == utf8_char_constant {
+        begin += 1;
+    }
+    if begin[0] != '\'' {
+        PP;
+        self.HadError = true;
+        return;
+    }
+    begin += 1;
+    if end[-1] != '\'' {
+        let mut UDSuffixEnd: *u8 = end;
+        while true {
+            {
+            end -= 1;
+        }
+            if !(end[-1] != '\'') { break; }
+        }
+        expandUCNs(end[0..UDSuffixEnd - end]);
+        self.UDSuffixOffset = end - TokBegin;
+    }
+    assert!(end != begin, "Invalid token lexed");
+    end -= 1;
+    assert!(PP.getTargetInfo().getCharWidth() == 8, "Assumes char is 8 bits");
+    assert!(PP.getTargetInfo().getIntWidth() <= 64 && (PP.getTargetInfo().getIntWidth() & 7) == 0, "Assumes sizeof(int) on target is <= 64 and a multiple of char");
+    assert!(PP.getTargetInfo().getWCharWidth() <= 64, "Assumes sizeof(wchar) on target is <= 64");
+    let mut codepoint_buffer: SmallVector<uint32_t, 4> = zeroed();
+    codepoint_buffer()(end - begin);
+    let mut buffer_begin: *mut u32 = operator&();
+    let mut buffer_end: *mut u32 = buffer_begin + ();
+    let mut TE: *TextEncoding = PP.getTextEncoding();
+    let mut Converter: *mut TextEncodingConverter = null;
+    if self.isOrdinary() {
+        Converter = TE.getConverter(CA_ToLiteralEncoding);
+    }
+    let mut largest_character_for_kind: u32 = 0;
+    if wide_char_constant == self.Kind {
+        largest_character_for_kind = 4294967295 >> (32 - PP.getTargetInfo().getWCharWidth());
+    } else if utf8_char_constant == self.Kind {
+        largest_character_for_kind = 127;
+    } else if utf16_char_constant == self.Kind {
+        largest_character_for_kind = 65535;
+    } else if utf32_char_constant == self.Kind {
+        largest_character_for_kind = 1114111;
+    } else {
+        largest_character_for_kind = if (Converter == null) { 127 } else { 255 };
+    }
+    while begin != end {
+        if begin[0] != '\' {
+            let mut start: *u8 = begin;
+            while true {
+                {
+                begin += 1;
+            }
+                if !(begin != end && *begin != '\') { break; }
+            }
+            let mut tmp_in_start: *u8 = start;
+            let mut tmp_out_start: *mut u32 = buffer_begin;
+            let mut UTF8String: str = start(begin);
+            let mut res: ConversionResult = ConvertUTF8toUTF32(&mut start as **mut UTF8, begin as *UTF8, &mut buffer_begin, buffer_end, strictConversion);
+            if res != conversionOK {
+                let mut NoErrorOnBadEncoding: bool = self.isOrdinary();
+                let mut Msg: u32 = 0;
+                PP.Diag(Loc, Msg);
+                if NoErrorOnBadEncoding {
+                    start = tmp_in_start;
+                    buffer_begin = tmp_out_start;
+                    for ; start != begin; start += 1 , buffer_begin += 1 {
+                        *buffer_begin = *start as u8;
+                    }
+                } else {
+                    self.HadError = true;
+                }
+            } else {
+                let mut validation_ptr: *mut u32 = tmp_out_start;
+                for ; validation_ptr < buffer_begin; validation_ptr += 1 {
+                    if *validation_ptr > largest_character_for_kind {
+                        self.HadError = true;
+                        PP;
+                    }
+                }
+                if !self.HadError && Converter {
+                    assert!(self.isOrdinary(), "Only ordinary characters are supported");
+                    let mut Converted: str = zeroed();
+                    let mut ErrorOrChar: auto = Converter.convert(UTF8String);
+                    if operator!() {
+                        for let mut i: i32 = 0; tmp_out_start < buffer_begin; tmp_out_start += 1 , i += 1 {
+                            *tmp_out_start = [i];
+                        }
+                    } else {
+                        self.HadError = true;
+                        PP << ();
+                    }
+                }
+            }
+            continue;
+        }
+        if begin[1] == 'u' || begin[1] == 'U' || begin[1] == 'N' {
+            if Converter == null {
+                let mut UcnLen: u16 = 0;
+                if !ProcessUCNEscape(TokBegin, begin, end, *buffer_begin, UcnLen, FullSourceLoc { ID: Loc, SrcMgr: PP.getSourceManager() }, &mut PP.getDiagnostics(), PP.getLangOpts(), true) {
+                    self.HadError = true;
+                } else if *buffer_begin > largest_character_for_kind {
+                    self.HadError = true;
+                    PP;
+                }
+            } else {
+                let mut Cp: [5]i8 = zeroed();
+                let mut ResultPtr: *mut u8 = Cp;
+                EncodeUCNEscape(TokBegin, begin, end, ResultPtr, self.HadError, FullSourceLoc { ID: Loc, SrcMgr: PP.getSourceManager() }, 1, &mut PP.getDiagnostics(), PP.getLangOpts(), Converter);
+                if !self.HadError {
+                    *buffer_begin = *Cp;
+                }
+            }
+            buffer_begin += 1;
+            continue;
+        }
+        let mut CharWidth: u32 = getCharWidth(self.Kind, PP.getTargetInfo());
+        let mut result: u64 = ProcessCharEscape(TokBegin, begin, end, self.HadError, FullSourceLoc { ID: Loc, SrcMgr: PP.getSourceManager() }, CharWidth, &mut PP.getDiagnostics(), PP.getLangOpts(), Evaluated, null);
+        *buffer_begin += 1 = result;
+    }
+    let mut NumCharsSoFar: u32 = buffer_begin - operator&();
+    if NumCharsSoFar > 1 {
+        if self.isOrdinary() && NumCharsSoFar == 4 {
+            PP;
+        } else if self.isOrdinary() {
+            PP;
+        } else {
+            PP << (if self.isWide() { 0 } else { 1 });
+            self.HadError = true;
+        }
+        self.IsMultiChar = true;
+    } else {
+        self.IsMultiChar = false;
+    }
+    let mut LitVal: APInt = APInt { PP.getTargetInfo().getIntWidth(), 0, false, false };
+    let mut multi_char_too_long: bool = false;
+    if self.isOrdinary() && self.isMultiChar() {
+        LitVal = 0;
+        for let mut i: u64 = 0; i < NumCharsSoFar; i += 1 {
+            multi_char_too_long |= (LitVal.countl_zero() < 8);
+            operator(LitVal, 8);
+            LitVal = LitVal + (codepoint_buffer()[i] & 255);
+        }
+    } else if NumCharsSoFar > 0 {
+        LitVal = buffer_begin[-1];
+    }
+    if !self.HadError && multi_char_too_long {
+        PP;
+    }
+    self.Value = LitVal.getZExtValue();
+    if self.isOrdinary() && NumCharsSoFar == 1 && (self.Value & 128) && PP.getLangOpts() {
+        self.Value = self.Value as i8;
+    }
+}
+
+fn StringLiteralParser::StringLiteralParser(self, StringToks: ArrayRef<Token>, PP: *mut Preprocessor, EvalMethod: StringLiteralEvalMethod, Action: ConversionAction) {
+    self.init(Action);
+}
+
+fn StringLiteralParser::init(self, StringToks: ArrayRef<Token>, Action: ConversionAction) {
+    if StringToks()() || [0]() < 2 {
+        return self.DiagnoseLexingError(SourceLocation {});
+    }
+    (((operator!(operator!((operator!() && "expected at least one token")))) || (_wassert(L"!StringToks.empty() && \"expected at least one token\"", L"clang\\lib\\Lex\\LiteralSupport.cpp", (2114) as u32) , 0)) as void);
+    self.MaxTokenLength = [0]();
+    (((operator!(operator!((StringToks()[0]() >= 2 && "literal token is invalid!")))) || (_wassert(L"StringToks[0].getLength() >= 2 && \"literal token is invalid!\"", L"clang\\lib\\Lex\\LiteralSupport.cpp", (2116) as u32) , 0)) as void);
+    self.SizeBound = [0]() - 2;
+    self.hadError = false;
+    self.Kind = string_literal;
+    self.SizeBound += 1;
+    self.CharByteWidth = getCharWidth(self.Kind, self.Target);
+    assert!((self.CharByteWidth & 7) == 0, "Assumes character size is byte multiple");
+    self.CharByteWidth /= 8;
+    self.SizeBound *= self.CharByteWidth;
+    let mut TokenBuf: str = zeroed();
+    TokenBuf()(self.MaxTokenLength);
+    self.Pascal = false;
+    let mut UDSuffixTokLoc: SourceLocation = SourceLocation {};
+    let mut Converter: *mut TextEncodingConverter = null;
+    if self.isOrdinary() && self.TE {
+        Converter = self.TE.getConverter(Action);
+    }
+    for let mut i: u32 = 0;
+let mut e: u32 = (); i != e; i += 1 {
+        let mut ThisTokBuf: *u8 = operator&([0]);
+        let mut StringInvalid: bool = false;
+        let mut ThisTokLen: u32 = getSpelling([i], ThisTokBuf, self.SM, self.Features, &mut StringInvalid);
+        if StringInvalid {
+            return self.DiagnoseLexingError([i]());
+        }
+        let mut ThisTokBegin: *u8 = ThisTokBuf;
+        let mut ThisTokEnd: *u8 = ThisTokBuf + ThisTokLen;
+        if ThisTokEnd[-1] != '"' {
+            let mut UDSuffixEnd: *u8 = ThisTokEnd;
+            while true {
+                {
+                ThisTokEnd -= 1;
+            }
+                if !(ThisTokEnd[-1] != '"') { break; }
+            }
+            let mut UDSuffix: str = ThisTokEnd[0..UDSuffixEnd - ThisTokEnd];
+            if  {
+                if StringToks()[i]() {
+                    expandUCNs(UDSuffix);
+                } else {
+                    
+                }
+                self.UDSuffixToken = i;
+                self.UDSuffixOffset = ThisTokEnd - ThisTokBuf;
+                UDSuffixTokLoc = [i]();
+            } else {
+                let mut ExpandedUDSuffix: str = zeroed();
+                if StringToks()[i]() {
+                    expandUCNs(UDSuffix);
+                    UDSuffix = ;
+                }
+                let mut UnevaluatedStringHasUDL: bool = self.isUnevaluated() && !UDSuffix.is_empty();
+                if  {
+                    if self.Diags {
+                        let mut TokLoc: SourceLocation = [i]();
+                        if UnevaluatedStringHasUDL {
+                            self.Diags << SourceRange { B: TokLoc, E: TokLoc };
+                        } else {}
+                    }
+                    self.hadError = true;
+                }
+            }
+        }
+        ThisTokEnd -= 1;
+        if ThisTokBuf[0] == 'L' || ThisTokBuf[0] == 'u' || ThisTokBuf[0] == 'U' {
+            ThisTokBuf += 1;
+            if ThisTokBuf[0] == '8' {
+                ThisTokBuf += 1;
+            }
+        }
+        if ThisTokBuf[0] == 'R' {
+            if ThisTokBuf[1] != '"' {
+                return self.DiagnoseLexingError([i]());
+            }
+            ThisTokBuf += 2;
+            let mut MaxRawStrDelimLen: u32 = 16;
+            let mut Prefix: *u8 = ThisTokBuf;
+            while ThisTokBuf - Prefix as u32 < MaxRawStrDelimLen && ThisTokBuf[0] != '(' {
+                ThisTokBuf += 1;
+            }
+            if ThisTokBuf[0] != '(' {
+                return self.DiagnoseLexingError([i]());
+            }
+            ThisTokBuf += 1;
+            ThisTokEnd -= ThisTokBuf - Prefix;
+            if ThisTokEnd < ThisTokBuf {
+                return self.DiagnoseLexingError([i]());
+            }
+            let mut RemainingTokenSpan: str = ThisTokBuf[0..ThisTokEnd - ThisTokBuf];
+            while !RemainingTokenSpan.is_empty() {
+                let mut CRLFPos: u64 = RemainingTokenSpan.find("\r\n", 0);
+                let mut BeforeCRLF: str = RemainingTokenSpan[0..0 + CRLFPos];
+                let mut AfterCRLF: str = RemainingTokenSpan[CRLFPos..CRLFPos + npos];
+                if self.CopyStringFragment([i], ThisTokBegin, BeforeCRLF, Converter) {
+                    self.hadError = true;
+                }
+                RemainingTokenSpan = AfterCRLF[1..1 + npos];
+            }
+        } else {
+            if ThisTokBuf[0] != '"' {
+                return self.DiagnoseLexingError([i]());
+            }
+            ThisTokBuf += 1;
+            if !self.isUnevaluated() && self.Features && ThisTokBuf + 1 != ThisTokEnd && ThisTokBuf[0] == '\' && ThisTokBuf[1] == 'p' {
+                if i == 0 {
+                    ThisTokBuf += 1;
+                    self.Pascal = true;
+                } else if self.Pascal {
+                    ThisTokBuf += 2;
+                }
+            }
+            while ThisTokBuf != ThisTokEnd {
+                if ThisTokBuf[0] != '\' {
+                    let mut InStart: *u8 = ThisTokBuf;
+                    while true {
+                        {
+                        ThisTokBuf += 1;
+                    }
+                        if !(ThisTokBuf != ThisTokEnd && ThisTokBuf[0] != '\') { break; }
+                    }
+                    if self.CopyStringFragment([i], ThisTokBegin, InStart[0..ThisTokBuf - InStart], Converter) {
+                        self.hadError = true;
+                    }
+                    continue;
+                }
+                if ThisTokBuf[1] == 'u' || ThisTokBuf[1] == 'U' || ThisTokBuf[1] == 'N' {
+                    EncodeUCNEscape(ThisTokBegin, ThisTokBuf, ThisTokEnd, self.ResultPtr, self.hadError, [i](), self.CharByteWidth, self.Diags, self.Features, Converter);
+                    continue;
+                }
+                let mut ResultChar: u32 = ProcessCharEscape(ThisTokBegin, ThisTokBuf, ThisTokEnd, self.hadError, [i](), self.CharByteWidth * 8, self.Diags, self.Features, self.EvalMethod, Converter);
+                if self.CharByteWidth == 4 {
+                    let mut ResultWidePtr: *mut UTF32 = self.ResultPtr as *mut UTF32;
+                    *ResultWidePtr = ResultChar;
+                    self.ResultPtr += 4;
+                } else if self.CharByteWidth == 2 {
+                    let mut ResultWidePtr: *mut UTF16 = self.ResultPtr as *mut UTF16;
+                    *ResultWidePtr = ResultChar & 65535;
+                    self.ResultPtr += 2;
+                } else {
+                    assert!(self.CharByteWidth == 1, "Unexpected char width");
+                    *self.ResultPtr += 1 = ResultChar & 255;
+                }
+            }
+        }
+    }
+    assert!((!self.Pascal || !self.isUnevaluated()), "Pascal string in unevaluated context");
+    if self.Pascal {
+        if self.CharByteWidth == 4 {
+            let mut ResultWidePtr: *mut UTF32 = null;
+            ResultWidePtr[0] = self.GetNumStringChars() - 1;
+        } else if self.CharByteWidth == 2 {
+            let mut ResultWidePtr: *mut UTF16 = null;
+            ResultWidePtr[0] = self.GetNumStringChars() - 1;
+        } else {
+            assert!(self.CharByteWidth == 1, "Unexpected char width");
+        }
+        if self.GetStringLength() > 256 {
+            if self.Diags {
+                self.Diags << ()();
+            }
+            self.hadError = true;
+            return;
+        }
+    } else if self.Diags {
+        let mut MaxChars: u32 = if self.Features { 65536 } else { if self.Features { 4095 } else { 509 } };
+        if self.GetNumStringChars() > MaxChars {
+            self.Diags << self.GetNumStringChars() << MaxChars << (if self.Features { 2 } else { if self.Features { 1 } else { 0 } }) << ()();
+        }
+    }
+}
+
+fn resyncUTF8(Err: *u8, End: *u8) -> *u8 {
+    if Err == End {
+        return End;
+    }
+    End = Err + min(getNumBytesForUTF8(*Err), End - Err);
+    while Err += 1 != End && (*Err & 192) == 128 {
+        
+    }
+    return Err;
+}
+
+fn StringLiteralParser::CopyStringFragment(self, Tok: *Token, TokBegin: *u8, Fragment: str, Converter: *mut TextEncodingConverter) -> bool {
+    let mut ErrorPtrTmp: *UTF8 = null;
+    if ConvertUTF8toWide(self.CharByteWidth, Fragment, self.ResultPtr, ErrorPtrTmp) {
+        if Converter {
+            assert!(self.isOrdinary(), "Only ordinary literals are supported");
+            let mut CpConv: str = zeroed();
+            let mut Cp: *mut u8 = self.ResultPtr - Fragment.len;
+            let mut EC: auto = Converter.convert(Fragment);
+            if operator!() {
+                memcpy(Cp);
+                self.ResultPtr = Cp + ();
+            } else {
+                if self.Diags {
+                    self.Diags << ();
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+    let mut NoErrorOnBadEncoding: bool = self.isOrdinary();
+    if NoErrorOnBadEncoding {
+        memcpy(self.ResultPtr, Fragment.ptr, Fragment.len);
+        self.ResultPtr += Fragment.len;
+    }
+    if self.Diags {
+        let mut ErrorPtr: *u8 = ErrorPtrTmp as *u8;
+        let mut SourceLoc: FullSourceLoc = FullSourceLoc { ID: Tok.getLocation(), SrcMgr: self.SM };
+        let mut Builder: *DiagnosticBuilder = Diag(self.Diags, self.Features, SourceLoc, TokBegin, ErrorPtr, resyncUTF8(ErrorPtr, Fragment.end()));
+        let mut NextStart: *u8 = resyncUTF8(ErrorPtr, Fragment.end());
+        let mut NextFragment: str = NextStart[0..Fragment.end() - NextStart];
+        let mut Dummy: str = zeroed();
+        Dummy()(Fragment.len * self.CharByteWidth);
+        let mut Ptr: *mut u8 = ();
+        while !ConvertUTF8toWide(self.CharByteWidth, NextFragment, Ptr, ErrorPtrTmp) {
+            let mut ErrorPtr: *u8 = ErrorPtrTmp as *u8;
+            NextStart = resyncUTF8(ErrorPtr, Fragment.end());
+            Builder << MakeCharSourceRange(self.Features, SourceLoc, TokBegin, ErrorPtr, NextStart);
+            NextFragment = NextStart[0..Fragment.end() - NextStart];
+        }
+    }
+    return !NoErrorOnBadEncoding;
+}
+
+fn StringLiteralParser::DiagnoseLexingError(self, Loc: SourceLocation) {
+    self.hadError = true;
+    if self.Diags {
+        self.Diags;
+    }
+}
+
+fn StringLiteralParser::getOffsetOfStringByte(self: *StringLiteralParser, Tok: *Token, ByteNo: u32) -> u32 {
+    let mut SpellingBuffer: str = zeroed();
+    SpellingBuffer()(Tok.getLength());
+    let mut StringInvalid: bool = false;
+    let mut SpellingPtr: *u8 = operator&([0]);
+    let mut TokLen: u32 = getSpelling(Tok, SpellingPtr, self.SM, self.Features, &mut StringInvalid);
+    if StringInvalid {
+        return 0;
+    }
+    let mut SpellingStart: *u8 = SpellingPtr;
+    let mut SpellingEnd: *u8 = SpellingPtr + TokLen;
+    if SpellingPtr[0] == 'u' && SpellingPtr[1] == '8' {
+        SpellingPtr += 2;
+    }
+    assert!(SpellingPtr[0] != 'L' && SpellingPtr[0] != 'u' && SpellingPtr[0] != 'U', "Doesn't handle wide or utf strings yet");
+    if SpellingPtr[0] == 'R' {
+        assert!(SpellingPtr[1] == '"', "Should be a raw string literal!");
+        SpellingPtr += 2;
+        while *SpellingPtr != '(' {
+            SpellingPtr += 1;
+            assert!(SpellingPtr < SpellingEnd, "Missing ( for raw string literal");
+        }
+        SpellingPtr += 1;
+        return SpellingPtr - SpellingStart + ByteNo;
+    }
+    assert!(SpellingPtr[0] == '"', "Should be a string literal!");
+    SpellingPtr += 1;
+    while ByteNo {
+        assert!(SpellingPtr < SpellingEnd, "Didn't find byte offset!");
+        if *SpellingPtr != '\' {
+            SpellingPtr += 1;
+            ByteNo -= 1;
+            continue;
+        }
+        let mut HadError: bool = false;
+        if SpellingPtr[1] == 'u' || SpellingPtr[1] == 'U' || SpellingPtr[1] == 'N' {
+            let mut EscapePtr: *u8 = SpellingPtr;
+            let mut Len: u32 = MeasureUCNEscape(SpellingStart, SpellingPtr, SpellingEnd, 1, self.Features, HadError);
+            if Len > ByteNo {
+                SpellingPtr = EscapePtr;
+                break;
+            }
+            ByteNo -= Len;
+        } else {
+            ProcessCharEscape(SpellingStart, SpellingPtr, SpellingEnd, HadError, FullSourceLoc { ID: Tok.getLocation(), SrcMgr: self.SM }, self.CharByteWidth * 8, self.Diags, self.Features, Evaluated, null);
+            ByteNo -= 1;
+        }
+        assert!(!HadError, "This method isn't valid on erroneous strings");
+    }
+    return SpellingPtr - SpellingStart;
+}
+
+fn StringLiteralParser::isValidUDSuffix(self, LangOpts: *LangOptions, Suffix: str) -> bool {
+    return isValidUDSuffix(LangOpts, Suffix) || Suffix == "sv";
+}
+
+struct Closure_1 {}
+
+fn Closure_1::call(self: *Closure_1, C: i8) -> bool {
+        return C == '}' || isVerticalWhitespace(C);
+    }
+
+struct Closure_2 {
+    cap_0: *mut NumericLiteralParser,
+    IsSingleZero: *mut bool,
+    TokLoc: *mut SourceLocation,
+}
+
+unsafe fn Closure_2::call(self: *mut Closure_2) -> auto {
+        if self.radix == 8 && self.LangOpts && !self.hadError && !(*self.IsSingleZero) {
+            self.Diags;
+        }
+    }

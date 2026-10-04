@@ -29,6 +29,8 @@ struct Options {
     output: Option<PathBuf>,
     emit_llvm: bool,   // остановиться на .ll
     emit_cpp: bool,    // транслировать в C++23 (.cpp)
+    emit_opcodes: bool, // извлечь массив опкодов x86-64
+    opcode_format: gorawc::opcodes::OpcodeFormat, // формат опкодов
     json: bool,        // диагностика в JSON
     run: bool,         // запустить после сборки
     opt: Option<String>, // уровень оптимизации, напр. "2"
@@ -42,12 +44,18 @@ struct Options {
     silent: bool,    // авто-байпас предупреждений безопасности песочницы
     profile: Profile, // профиль сборки (Debug / Release)
     target: String,  // целевой triple платформы (напр. x86_64-w64-windows-gnu)
+    from_cpp: Option<PathBuf>, // транслировать C++23 код (.cpp) обратно в Goraw (.gw)
+    from_llvm: Option<PathBuf>, // транслировать LLVM IR (.ll) в Goraw (.gw)
 }
 
 pub fn main() {
     let mut args: Vec<String> = std::env::args().collect();
     if args.len() > 1 {
         match args[1].as_str() {
+            "transpile" | "xlat" => exit(handle_transpile_subcommand(&args[2..])),
+            "from-cpp" | "c++" | "port-cpp" | "cpp-to-gw" => exit(handle_from_cpp_subcommand(&args[2..])),
+            "from-llvm" | "llvm" | "port-llvm" | "llvm-to-gw" => exit(handle_from_llvm_subcommand(&args[2..])),
+            "opcodes" | "to-opcodes" | "emit-opcodes" => exit(handle_opcodes_subcommand(&args[2..])),
             "proto" | "pb" => exit(handle_proto_subcommand(&args[2..])),
             "lsp" | "--lsp" => {
                 if let Err(e) = gorawc::lsp::run_lsp_server() {
@@ -164,7 +172,465 @@ pub fn main() {
         }
     }
 
+    if let Some(cpp_file) = &opts.from_cpp {
+        let cpp_opts = gorawc::cpp_to_goraw::CppToGorawOptions {
+            clang_path: Some(opts.clang.clone()),
+            cpp_std: Some(opts.cpp_std.clone()),
+            target_triple: Some(opts.target.clone()),
+            extra_includes: Vec::new(),
+        };
+        match gorawc::cpp_to_goraw::transpile_cpp_file(cpp_file, &cpp_opts) {
+            Ok(code) => {
+                if let Some(out) = &opts.output {
+                    if out.to_str() == Some("-") {
+                        print!("{code}");
+                        exit(0);
+                    }
+                }
+                let out = opts.output.clone().unwrap_or_else(|| cpp_file.with_extension("gw"));
+                if let Err(e) = std::fs::write(&out, &code) {
+                    eprintln!("не удалось записать `{}`: {e}", out.display());
+                    exit(2);
+                }
+                eprintln!("сгенерирован исходный код Goraw: `{}`", out.display());
+                exit(0);
+            }
+            Err(e) => {
+                eprintln!("ошибка трансляции C++ в Goraw:\n{e}");
+                exit(1);
+            }
+        }
+    }
+
+    if let Some(llvm_file) = &opts.from_llvm {
+        let llvm_opts = gorawc::llvm_to_goraw::LlvmToGorawOptions::default();
+        match gorawc::llvm_to_goraw::transpile_llvm_file(llvm_file, &llvm_opts) {
+            Ok(code) => {
+                if let Some(out) = &opts.output {
+                    if out.to_str() == Some("-") {
+                        print!("{code}");
+                        exit(0);
+                    }
+                }
+                let out = opts.output.clone().unwrap_or_else(|| llvm_file.with_extension("gw"));
+                if let Err(e) = std::fs::write(&out, &code) {
+                    eprintln!("не удалось записать `{}`: {e}", out.display());
+                    exit(2);
+                }
+                eprintln!("сгенерирован исходный код Goraw: `{}`", out.display());
+                exit(0);
+            }
+            Err(e) => {
+                eprintln!("ошибка трансляции LLVM IR в Goraw:\n{e}");
+                exit(1);
+            }
+        }
+    }
+
     exit(run(opts));
+}
+
+fn handle_transpile_subcommand(args: &[String]) -> i32 {
+    let mut input: Option<PathBuf> = None;
+    let mut output: Option<PathBuf> = None;
+    let mut clang: Option<String> = None;
+    let mut cpp_std: Option<String> = None;
+    let mut target: Option<String> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-h" | "--help" => {
+                println!(
+                    "goraw transpile — универсальный транспилятор между C++, Goraw и LLVM IR (.cpp <-> .gw <-> .ll)\n\n\
+                     ИСПОЛЬЗОВАНИЕ:\n    goraw transpile <входной_файл> [-o выходной_файл]\n\n\
+                     ПОДДЕРЖИВАЕМЫЕ НАПРАВЛЕНИЯ:\n\
+                         .cpp -> .gw (C++23 в Goraw)\n\
+                         .cpp -> .ll (C++23 в LLVM IR)\n\
+                         .gw  -> .cpp (Goraw в C++23)\n\
+                         .gw  -> .ll (Goraw в LLVM IR)\n\
+                         .ll  -> .gw (LLVM IR в Goraw)\n\
+                         .ll  -> .cpp (LLVM IR в C++23)\n\n\
+                     ОПЦИИ:\n    -o <путь>      имя выходного файла ('-' для stdout)\n    -h, --help     показать справку"
+                );
+                return 0;
+            }
+            "-o" => {
+                i += 1;
+                output = Some(PathBuf::from(match args.get(i) {
+                    Some(o) => o,
+                    None => {
+                        eprintln!("-o требует аргумент");
+                        return 2;
+                    }
+                }));
+            }
+            "--clang" => {
+                i += 1;
+                clang = args.get(i).cloned();
+            }
+            "--std" => {
+                i += 1;
+                cpp_std = args.get(i).cloned();
+            }
+            "--target" => {
+                i += 1;
+                target = args.get(i).cloned();
+            }
+            s if s.starts_with('-') => {
+                eprintln!("неизвестная опция `{s}` (см. goraw transpile --help)");
+                return 2;
+            }
+            s => {
+                if input.is_none() {
+                    input = Some(PathBuf::from(s));
+                } else {
+                    eprintln!("лишний аргумент `{s}`");
+                    return 2;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    let input = match input {
+        Some(p) => p,
+        None => {
+            eprintln!("не указан входной файл (см. goraw transpile --help)");
+            return 2;
+        }
+    };
+
+    let in_ext = input.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let out_ext = output.as_ref().and_then(|o| o.extension()).and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+
+    match in_ext.as_str() {
+        "cpp" | "cc" | "cxx" => {
+            let cpp_opts = gorawc::cpp_to_goraw::CppToGorawOptions {
+                clang_path: clang,
+                cpp_std: cpp_std.or_else(|| Some("c++23".into())),
+                target_triple: target,
+                extra_includes: Vec::new(),
+            };
+            let gw_code = match gorawc::cpp_to_goraw::transpile_cpp_file(&input, &cpp_opts) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("ошибка трансляции C++:\n{e}");
+                    return 1;
+                }
+            };
+            if out_ext == "ll" {
+                let mut diags = gorawc::diag::Diags::new(input.display().to_string(), gw_code.clone());
+                let mut lx = gorawc::lexer::Lexer::new(&gw_code);
+                let toks = lx.tokenize(&mut diags);
+                let mut p = gorawc::parser::Parser::new(toks, &gw_code, &mut diags);
+                let mut prog = p.parse_program();
+                gorawc::mono::monomorphize(&mut prog);
+                let mut collected = Vec::new();
+                let ctx = gorawc::types::collect(&prog.structs, &prog.enums, &prog.fns, &mut collected);
+                diags.items.extend(collected);
+                let cg = gorawc::codegen::Codegen::new(&ctx, &mut diags);
+                let ir = cg.emit_module(&prog);
+                return write_or_print(output.as_ref(), &ir, &input.with_extension("ll"));
+            } else {
+                return write_or_print(output.as_ref(), &gw_code, &input.with_extension("gw"));
+            }
+        }
+        "ll" => {
+            let llvm_opts = gorawc::llvm_to_goraw::LlvmToGorawOptions::default();
+            let gw_code = match gorawc::llvm_to_goraw::transpile_llvm_file(&input, &llvm_opts) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("ошибка трансляции LLVM IR:\n{e}");
+                    return 1;
+                }
+            };
+            if out_ext == "cpp" {
+                let mut diags = gorawc::diag::Diags::new(input.display().to_string(), gw_code.clone());
+                let mut lx = gorawc::lexer::Lexer::new(&gw_code);
+                let toks = lx.tokenize(&mut diags);
+                let mut p = gorawc::parser::Parser::new(toks, &gw_code, &mut diags);
+                let mut prog = p.parse_program();
+                gorawc::mono::monomorphize(&mut prog);
+                let cpp_code = match gorawc::cpp_transpiler::transpile(&prog, false, &[]) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("ошибка трансляции в C++: {e}");
+                        return 1;
+                    }
+                };
+                return write_or_print(output.as_ref(), &cpp_code, &input.with_extension("cpp"));
+            } else {
+                return write_or_print(output.as_ref(), &gw_code, &input.with_extension("gw"));
+            }
+        }
+        "gw" => {
+            let src = match std::fs::read_to_string(&input) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("не удалось прочитать `{}`: {e}", input.display());
+                    return 2;
+                }
+            };
+            let mut diags = gorawc::diag::Diags::new(input.display().to_string(), src.clone());
+            let mut lx = gorawc::lexer::Lexer::new(&src);
+            let toks = lx.tokenize(&mut diags);
+            let mut p = gorawc::parser::Parser::new(toks, &src, &mut diags);
+            let mut prog = p.parse_program();
+            gorawc::mono::monomorphize(&mut prog);
+
+            if out_ext == "cpp" {
+                let cpp_code = match gorawc::cpp_transpiler::transpile(&prog, false, &[]) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("ошибка трансляции в C++: {e}");
+                        return 1;
+                    }
+                };
+                return write_or_print(output.as_ref(), &cpp_code, &input.with_extension("cpp"));
+            } else {
+                let mut collected = Vec::new();
+                let ctx = gorawc::types::collect(&prog.structs, &prog.enums, &prog.fns, &mut collected);
+                diags.items.extend(collected);
+                let cg = gorawc::codegen::Codegen::new(&ctx, &mut diags);
+                let ir = cg.emit_module(&prog);
+                return write_or_print(output.as_ref(), &ir, &input.with_extension("ll"));
+            }
+        }
+        other => {
+            eprintln!("нераспознанное расширение файла `.{other}`. Ожидается .cpp, .gw или .ll");
+            return 2;
+        }
+    }
+}
+
+fn write_or_print(output: Option<&PathBuf>, content: &str, default_path: &Path) -> i32 {
+    if let Some(out) = output {
+        if out.to_str() == Some("-") {
+            print!("{content}");
+            return 0;
+        }
+    }
+    let target = output.cloned().unwrap_or_else(|| default_path.to_path_buf());
+    if let Err(e) = std::fs::write(&target, content) {
+        eprintln!("не удалось записать `{}`: {e}", target.display());
+        return 2;
+    }
+    eprintln!("результат сохранен в `{}`", target.display());
+    0
+}
+
+fn handle_from_cpp_subcommand(args: &[String]) -> i32 {
+    let mut input: Option<PathBuf> = None;
+    let mut output: Option<PathBuf> = None;
+    let mut clang: Option<String> = None;
+    let mut cpp_std: Option<String> = None;
+    let mut target: Option<String> = None;
+
+    let mut extra_includes: Vec<PathBuf> = Vec::new();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-h" | "--help" => {
+                println!(
+                    "goraw from-cpp — транслятор C++23 исходного кода обратно в Goraw (.gw)\n\n\
+                     ИСПОЛЬЗОВАНИЕ:\n    goraw from-cpp <файл.cpp> [-o out.gw] [--std c++23] [-I <include_path>] [--clang <путь>]\n\n\
+                     ОПЦИИ:\n    -o <путь>      имя выходного файла (по умолчанию <файл>.gw, '-' для stdout)\n    -I <путь>      дополнительный путь поиска заголовков\n    --std <версия> стандарт C++ (по умолчанию c++23)\n    --clang <путь> путь к компилятору clang++\n    --target <trp> целевой target triple\n    -h, --help     показать справку"
+                );
+                return 0;
+            }
+            "-o" => {
+                i += 1;
+                match args.get(i) {
+                    Some(o) => output = Some(PathBuf::from(o)),
+                    None => {
+                        eprintln!("-o требует аргумент");
+                        return 2;
+                    }
+                }
+            }
+            "-I" => {
+                i += 1;
+                match args.get(i) {
+                    Some(inc) => extra_includes.push(PathBuf::from(inc)),
+                    None => {
+                        eprintln!("-I требует аргумент");
+                        return 2;
+                    }
+                }
+            }
+            "--std" | "--cpp-std" => {
+                i += 1;
+                match args.get(i) {
+                    Some(s) => cpp_std = Some(s.clone()),
+                    None => {
+                        eprintln!("--std требует аргумент (напр. c++23)");
+                        return 2;
+                    }
+                }
+            }
+            "--clang" => {
+                i += 1;
+                match args.get(i) {
+                    Some(c) => clang = Some(c.clone()),
+                    None => {
+                        eprintln!("--clang требует аргумент");
+                        return 2;
+                    }
+                }
+            }
+            "--target" => {
+                i += 1;
+                match args.get(i) {
+                    Some(t) => target = Some(t.clone()),
+                    None => {
+                        eprintln!("--target требует аргумент");
+                        return 2;
+                    }
+                }
+            }
+            s if s.starts_with("-I") => {
+                extra_includes.push(PathBuf::from(&s[2..]));
+            }
+            s if s.starts_with('-') => {
+                eprintln!("неизвестная опция `{s}` (см. goraw from-cpp --help)");
+                return 2;
+            }
+            s => {
+                if input.is_none() {
+                    input = Some(PathBuf::from(s));
+                } else {
+                    eprintln!("лишний аргумент `{s}`");
+                    return 2;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    let input = match input {
+        Some(p) => p,
+        None => {
+            eprintln!("не указан входной файл .cpp (см. goraw from-cpp --help)");
+            return 2;
+        }
+    };
+
+    let opts = gorawc::cpp_to_goraw::CppToGorawOptions {
+        clang_path: clang.or_else(|| Some(gorawc::c_interop::find_clang(true))),
+        cpp_std,
+        target_triple: target,
+        extra_includes,
+    };
+
+    match gorawc::cpp_to_goraw::transpile_cpp_file(&input, &opts) {
+        Ok(code) => {
+            if let Some(out) = &output {
+                if out.to_str() == Some("-") {
+                    print!("{code}");
+                    return 0;
+                }
+            }
+            let out = output.unwrap_or_else(|| input.with_extension("gw"));
+            if let Err(e) = std::fs::write(&out, &code) {
+                eprintln!("не удалось записать `{}`: {e}", out.display());
+                return 2;
+            }
+            eprintln!("сгенерирован исходный код Goraw: `{}`", out.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("ошибка трансляции C++ в Goraw:\n{e}");
+            1
+        }
+    }
+}
+
+fn handle_from_llvm_subcommand(args: &[String]) -> i32 {
+    let mut input: Option<PathBuf> = None;
+    let mut output: Option<PathBuf> = None;
+    let mut verbose = false;
+    let mut structured = true;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-h" | "--help" => {
+                println!(
+                    "goraw from-llvm — транслятор LLVM IR (.ll) обратно в Goraw (.gw)\n\n\
+                     ИСПОЛЬЗОВАНИЕ:\n    goraw from-llvm <файл.ll> [-o out.gw] [--raw-cfg] [-v, --verbose]\n\n\
+                     ОПЦИИ:\n    -o <путь>      имя выходного файла (по умолчанию <файл>.gw, '-' для stdout)\n    --raw-cfg      отключить структурный лифтинг (только basic block dispatch loop)\n    -v, --verbose  подробный вывод транслятора\n    -h, --help     показать справку"
+                );
+                return 0;
+            }
+            "-o" => {
+                i += 1;
+                match args.get(i) {
+                    Some(o) => output = Some(PathBuf::from(o)),
+                    None => {
+                        eprintln!("-o требует аргумент");
+                        return 2;
+                    }
+                }
+            }
+            "--raw-cfg" => {
+                structured = false;
+            }
+            "-v" | "--verbose" => {
+                verbose = true;
+            }
+            s if s.starts_with('-') => {
+                eprintln!("неизвестная опция `{s}` (см. goraw from-llvm --help)");
+                return 2;
+            }
+            s => {
+                if input.is_none() {
+                    input = Some(PathBuf::from(s));
+                } else {
+                    eprintln!("лишний аргумент `{s}`");
+                    return 2;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    let input = match input {
+        Some(p) => p,
+        None => {
+            eprintln!("не указан входной файл .ll (см. goraw from-llvm --help)");
+            return 2;
+        }
+    };
+
+    let opts = gorawc::llvm_to_goraw::LlvmToGorawOptions {
+        verbose,
+        emit_comments: true,
+        structured_cfg: structured,
+    };
+
+    match gorawc::llvm_to_goraw::transpile_llvm_file(&input, &opts) {
+        Ok(code) => {
+            if let Some(out) = &output {
+                if out.to_str() == Some("-") {
+                    print!("{code}");
+                    return 0;
+                }
+            }
+            let out = output.unwrap_or_else(|| input.with_extension("gw"));
+            if let Err(e) = std::fs::write(&out, &code) {
+                eprintln!("не удалось записать `{}`: {e}", out.display());
+                return 2;
+            }
+            eprintln!("сгенерирован исходный код Goraw: `{}`", out.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("ошибка трансляции LLVM IR в Goraw:\n{e}");
+            1
+        }
+    }
 }
 
 fn handle_proto_subcommand(args: &[String]) -> i32 {
@@ -257,9 +723,170 @@ fn handle_proto_subcommand(args: &[String]) -> i32 {
     0
 }
 
+fn handle_opcodes_subcommand(args: &[String]) -> i32 {
+    use std::io::Write;
+    let mut input: Option<PathBuf> = None;
+    let mut output: Option<PathBuf> = None;
+    let mut format = gorawc::opcodes::OpcodeFormat::Goraw;
+    let mut func_filter: Option<String> = None;
+    let mut opt_level = "2".to_string();
+    let mut target = "x86_64-w64-windows-gnu".to_string();
+    let mut clang: Option<String> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-h" | "--help" => {
+                println!(
+                    "goraw opcodes — извлечение массива опкодов (x86-64 machine code) из .gw, .ll или .asm\n\n\
+                     ИСПОЛЬЗОВАНИЕ:\n    goraw opcodes <файл.gw|файл.ll|файл.asm> [опции]\n\n\
+                     ОПЦИИ:\n    -o <путь>         имя выходного файла ('-' для вывода в stdout, по умолчанию stdout)\n    --format <формат> формат представления опкодов:\n                      goraw (массив const NAME_OPCODES: [u8; N] = [0x...], по умолчанию)\n                      c     (массив C/C++ const unsigned char name_opcodes[] = {{ ... }})\n                      rust  (массив Rust pub const NAME_OPCODES: &[u8] = &[ ... ])\n                      hex   (шеллакод-строка \\x48\\x89...)\n                      asm   (дизассемблер с опкодами через iced-x86)\n                      bin   (сырой бинарный файл опкодов)\n    --func <имя>      извлечь опкоды только для указанной функции\n    -O<n>             уровень оптимизации (0, 1, 2, 3; по умолчанию 2)\n    --target <triple> целевой target triple\n    --clang <путь>    путь к компилятору clang\n    -h, --help        показать эту справку"
+                );
+                return 0;
+            }
+            "-o" => {
+                i += 1;
+                match args.get(i) {
+                    Some(o) => output = Some(PathBuf::from(o)),
+                    None => {
+                        eprintln!("-o требует аргумент");
+                        return 2;
+                    }
+                }
+            }
+            "--format" => {
+                i += 1;
+                match args.get(i) {
+                    Some(f) => {
+                        match gorawc::opcodes::OpcodeFormat::from_str(f) {
+                            Some(fmt) => format = fmt,
+                            None => {
+                                eprintln!("неизвестный формат `{f}` (доступны: goraw, c, rust, hex, asm, bin)");
+                                return 2;
+                            }
+                        }
+                    }
+                    None => {
+                        eprintln!("--format требует аргумент");
+                        return 2;
+                    }
+                }
+            }
+            "--func" => {
+                i += 1;
+                match args.get(i) {
+                    Some(f) => func_filter = Some(f.clone()),
+                    None => {
+                        eprintln!("--func требует аргумент");
+                        return 2;
+                    }
+                }
+            }
+            "-r" | "--release" => {
+                opt_level = "3".to_string();
+            }
+            "--debug" => {
+                opt_level = "0".to_string();
+            }
+            s if s.starts_with("-O") => {
+                opt_level = s.trim_start_matches("-O").to_string();
+            }
+            "--target" => {
+                i += 1;
+                match args.get(i) {
+                    Some(t) => target = t.clone(),
+                    None => {
+                        eprintln!("--target требует аргумент");
+                        return 2;
+                    }
+                }
+            }
+            "--clang" => {
+                i += 1;
+                match args.get(i) {
+                    Some(c) => clang = Some(c.clone()),
+                    None => {
+                        eprintln!("--clang требует аргумент");
+                        return 2;
+                    }
+                }
+            }
+            s if s.starts_with('-') => {
+                eprintln!("неизвестная опция `{s}` (см. goraw opcodes --help)");
+                return 2;
+            }
+            s => {
+                if input.is_none() {
+                    input = Some(PathBuf::from(s));
+                } else {
+                    eprintln!("лишний аргумент `{s}`");
+                    return 2;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    let input = match input {
+        Some(p) => p,
+        None => {
+            eprintln!("не указан входной файл (см. goraw opcodes --help)");
+            return 2;
+        }
+    };
+
+    let clang = clang.unwrap_or_else(|| gorawc::c_interop::find_clang(false));
+
+    let report_res = match input.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "gw" => gorawc::opcodes::extract_opcodes_from_gw(&input, &clang, &opt_level, &target),
+        "ll" => gorawc::opcodes::extract_opcodes_from_ll(&input, &clang, &opt_level, &target),
+        "asm" => gorawc::opcodes::extract_opcodes_from_asm(&input),
+        "obj" | "o" => {
+            let bytes = std::fs::read(&input).map_err(|e| format!("ошибка чтения `{}`: {e}", input.display()));
+            bytes.and_then(|b| gorawc::opcodes::extract_opcodes_from_obj(&b))
+        }
+        ext => {
+            eprintln!("неподдерживаемое расширение файла `.{ext}` (ожидалось .gw, .ll, .asm или .obj)");
+            return 2;
+        }
+    };
+
+    let report = match report_res {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+
+    let rendered = match report.render(format, func_filter.as_deref()) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("ошибка форматирования опкодов: {e}");
+            return 1;
+        }
+    };
+
+    if let Some(out) = &output {
+        if out.to_str() == Some("-") {
+            let _ = std::io::stdout().write_all(&rendered);
+            return 0;
+        }
+        if let Err(e) = std::fs::write(out, &rendered) {
+            eprintln!("не удалось записать `{}`: {e}", out.display());
+            return 2;
+        }
+        eprintln!("опкоды успешно сохранены в `{}`", out.display());
+    } else {
+        let _ = std::io::stdout().write_all(&rendered);
+    }
+
+    0
+}
+
 fn check_manifest_entry(args: &mut Vec<String>) {
     let has_file = args.iter().skip(1).any(|a| {
-        !a.starts_with('-') && (a.ends_with(".gw") || a.ends_with(".proto") || a.ends_with(".obj") || a.ends_with(".asm"))
+        !a.starts_with('-') && (a.ends_with(".gw") || a.ends_with(".proto") || a.ends_with(".obj") || a.ends_with(".asm") || a.ends_with(".cpp") || a.ends_with(".cc") || a.ends_with(".cxx"))
     });
     if !has_file {
         if let Ok(cwd) = std::env::current_dir() {
@@ -297,6 +924,10 @@ fn print_help() {
     run              собрать и запустить проект из goraw.toml\n\
     test             собрать и запустить shadow-тесты проекта\n\
     to-cpp, cpp      транслировать Goraw проект/файл в C++23 код (.cpp)\n\
+    from-cpp, c++    транслировать C++23 код (.cpp) обратно в Goraw (.gw)\n\
+    from-llvm, llvm  транслировать LLVM IR (.ll) обратно в Goraw (.gw)\n\
+    transpile, xlat  универсальный кросс-транспилятор (.cpp <-> .gw <-> .ll)\n\
+    opcodes, to-opcodes извлечь массив опкодов (x86-64 machine code) из .gw, .ll или .asm\n\
     proto, pb        скомпилировать .proto схему в Goraw-код\n\
     lsp              запустить Goraw Language Server Protocol (LSP) сервер для IDE\n\
 \n\
@@ -306,6 +937,10 @@ fn print_help() {
     --debug          собрать в отладочном профиле (-O0, -g отладочные символы, по умолчанию)\n\
     --emit-llvm      остановиться на LLVM IR (.ll), не звать clang\n\
     --emit-cpp       транслировать исходный код Goraw в C++23 (.cpp)\n\
+    --emit-opcodes   извлечь массив опкодов x86-64 machine code\n\
+    --opcode-format <fmt> формат опкодов (goraw, c, rust, hex, asm, bin)\n\
+    --from-cpp <f.cpp> транслировать C++23 код (.cpp) обратно в Goraw (.gw)\n\
+    --from-llvm <f.ll> транслировать LLVM IR (.ll) обратно в Goraw (.gw)\n\
     --json           печатать диагностику в LLM-формате (JSON + XML-нотки)\n\
     --run            запустить программу после успешной сборки\n\
     --test           собрать и прогнать shadow-тесты (test-блоки)\n\
@@ -325,6 +960,8 @@ fn print_help() {
 
 fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut input: Option<PathBuf> = None;
+    let mut from_cpp: Option<PathBuf> = None;
+    let mut from_llvm: Option<PathBuf> = None;
     let mut bind_c: Option<PathBuf> = None;
     let mut extra_objects: Vec<PathBuf> = Vec::new();
     let mut extra_asms: Vec<PathBuf> = Vec::new();
@@ -332,10 +969,12 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut output = None;
     let mut emit_llvm = false;
     let mut emit_cpp = false;
+    let mut emit_opcodes = false;
+    let mut opcode_format = gorawc::opcodes::OpcodeFormat::Goraw;
     let mut json = false;
     let mut run = false;
     let mut opt = None;
-    let mut clang = "clang".to_string();
+    let mut clang: Option<String> = None;
     let mut keep_ll = false;
     let mut test = false;
     let mut shadow_strict = false;
@@ -364,6 +1003,14 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                 i += 1;
                 bind_c = Some(PathBuf::from(args.get(i).ok_or("--bind-c требует аргумент")?));
             }
+            "--from-cpp" => {
+                i += 1;
+                from_cpp = Some(PathBuf::from(args.get(i).ok_or("--from-cpp требует аргумент")?));
+            }
+            "--from-llvm" => {
+                i += 1;
+                from_llvm = Some(PathBuf::from(args.get(i).ok_or("--from-llvm требует аргумент")?));
+            }
             "--release" | "-r" => profile = Profile::Release,
             "--debug" => profile = Profile::Debug,
             "--target" => {
@@ -388,7 +1035,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--keep-ll" => keep_ll = true,
             "--clang" => {
                 i += 1;
-                clang = args.get(i).ok_or("--clang требует аргумент")?.clone();
+                clang = Some(args.get(i).ok_or("--clang требует аргумент")?.clone());
             }
             "--cpp-std" => {
                 i += 1;
@@ -398,6 +1045,13 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                 i += 1;
                 c_std = args.get(i).ok_or("--c-std требует аргумент")?.clone();
             }
+            "--emit-opcodes" | "--opcodes" => emit_opcodes = true,
+            "--opcode-format" => {
+                i += 1;
+                let f = args.get(i).ok_or("--opcode-format требует аргумент")?;
+                opcode_format = gorawc::opcodes::OpcodeFormat::from_str(f)
+                    .ok_or_else(|| format!("неизвестный формат опкодов `{f}` (доступны: goraw, c, rust, hex, asm, bin)"))?;
+            }
             s if s.starts_with("-O") => opt = Some(s[2..].to_string()),
             s if s.starts_with('-') => return Err(format!("неизвестная опция `{s}` (см. --help)")),
             s => {
@@ -405,10 +1059,14 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                 let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
                 if ext == "asm" {
                     extra_asms.push(p);
-                } else if ext == "obj" || ext == "o" || ext == "lib" || ext == "a" || ext == "ll" || ext == "bc" {
-                    extra_objects.push(p);
                 } else if ext == "proto" {
                     extra_protos.push(p);
+                } else if (ext == "cpp" || ext == "cc" || ext == "cxx") && input.is_none() && from_cpp.is_none() {
+                    input = Some(p);
+                } else if ext == "ll" && input.is_none() && from_llvm.is_none() {
+                    input = Some(p);
+                } else if ext == "obj" || ext == "o" || ext == "lib" || ext == "a" || ext == "ll" || ext == "bc" {
+                    extra_objects.push(p);
                 } else if input.is_none() {
                     input = Some(p);
                 } else {
@@ -419,7 +1077,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         i += 1;
     }
 
-    if input.is_none() && bind_c.is_none() {
+    if input.is_none() && bind_c.is_none() && from_cpp.is_none() && from_llvm.is_none() {
         if !extra_protos.is_empty() && !run && !test {
             // Прямой запуск компилятора: goraw schema.proto -> компиляция proto в .gw
             let proto_file = extra_protos.remove(0);
@@ -445,10 +1103,12 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         output,
         emit_llvm,
         emit_cpp,
+        emit_opcodes,
+        opcode_format,
         json,
         run,
         opt,
-        clang,
+        clang: clang.unwrap_or_else(|| gorawc::c_interop::find_clang(false)),
         keep_ll,
         test,
         shadow_strict,
@@ -458,6 +1118,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         silent,
         profile,
         target,
+        from_cpp,
+        from_llvm,
     })
 }
 
@@ -525,12 +1187,36 @@ fn run(opts: Options) -> i32 {
     }
 
     let input_path = opts.input.as_ref().expect("входной файл");
-    // Собираем главный файл, внешние .proto и все, что подтягивается через `import "..."`.
-    let (src, line_map) = match gather_sources(input_path, &opts.extra_protos) {
-        Ok(x) => x,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
+    let (src, line_map) = if input_path.extension().map_or(false, |e| e == "ll") {
+        let llvm_opts = gorawc::llvm_to_goraw::LlvmToGorawOptions::default();
+        match gorawc::llvm_to_goraw::transpile_llvm_file(input_path, &llvm_opts) {
+            Ok(code) => (code, Vec::new()),
+            Err(e) => {
+                eprintln!("ошибка обработки LLVM IR `{}`: {e}", input_path.display());
+                return 1;
+            }
+        }
+    } else if input_path.extension().map_or(false, |e| e == "cpp" || e == "cc" || e == "cxx") {
+        let cpp_opts = gorawc::cpp_to_goraw::CppToGorawOptions {
+            clang_path: Some(opts.clang.clone()),
+            cpp_std: Some(opts.cpp_std.clone()),
+            target_triple: Some(opts.target.clone()),
+            extra_includes: Vec::new(),
+        };
+        match gorawc::cpp_to_goraw::transpile_cpp_file(input_path, &cpp_opts) {
+            Ok(code) => (code, Vec::new()),
+            Err(e) => {
+                eprintln!("ошибка обработки C++ `{}`: {e}", input_path.display());
+                return 1;
+            }
+        }
+    } else {
+        match gather_sources(input_path, &opts.extra_protos) {
+            Ok(x) => x,
+            Err(e) => {
+                eprintln!("{e}");
+                return 2;
+            }
         }
     };
     let file = input_path.display().to_string();
@@ -749,6 +1435,47 @@ fn run(opts: Options) -> i32 {
     if let Err(e) = std::fs::write(&ll_path, &ir) {
         eprintln!("не удалось записать `{}`: {e}", ll_path.display());
         return 2;
+    }
+
+    if opts.emit_opcodes {
+        use std::io::Write;
+        let opt_lvl = opts.opt.clone().unwrap_or_else(|| match opts.profile {
+            Profile::Debug => "0".to_string(),
+            Profile::Release => "3".to_string(),
+        });
+        match gorawc::opcodes::extract_opcodes_from_ll(&ll_path, &opts.clang, &opt_lvl, &opts.target) {
+            Ok(report) => {
+                match report.render(opts.opcode_format, None) {
+                    Ok(rendered) => {
+                        if let Some(out) = &opts.output {
+                            if out.to_str() == Some("-") {
+                                let _ = std::io::stdout().write_all(&rendered);
+                            } else {
+                                if let Err(e) = std::fs::write(out, &rendered) {
+                                    eprintln!("не удалось записать `{}`: {e}", out.display());
+                                    return 2;
+                                }
+                                eprintln!("опкоды успешно сохранены в `{}`", out.display());
+                            }
+                        } else {
+                            let _ = std::io::stdout().write_all(&rendered);
+                        }
+                        if !opts.keep_ll {
+                            let _ = std::fs::remove_file(&ll_path);
+                        }
+                        return 0;
+                    }
+                    Err(e) => {
+                        eprintln!("ошибка форматирования опкодов: {e}");
+                        return 1;
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                return 1;
+            }
+        }
     }
 
     if opts.emit_llvm && !opts.run && !opts.test {
@@ -1137,10 +1864,15 @@ fn output_paths(opts: &Options) -> (PathBuf, PathBuf) {
             }
         }
         None => {
-            if opts.emit_llvm && !opts.run && !opts.test {
-                (dir.join(format!("{stem}.ll")), dir.join(format!("{stem}.ll")))
+            let ll_name = if inp.extension().map_or(false, |e| e == "ll") {
+                format!("{stem}.goraw_gen.ll")
             } else {
-                (dir.join(format!("{stem}.ll")), dir.join(format!("{stem}.exe")))
+                format!("{stem}.ll")
+            };
+            if opts.emit_llvm && !opts.run && !opts.test {
+                (dir.join(&ll_name), dir.join(&ll_name))
+            } else {
+                (dir.join(&ll_name), dir.join(format!("{stem}.exe")))
             }
         }
     }

@@ -1,0 +1,2672 @@
+static mut NumFrameLoopProbe: Statistic = Statistic { "x86-fl", "NumFrameLoopProbe", "Number of loop stack probes used in prologue" };
+
+static mut NumFrameExtraProbe: Statistic = Statistic { "x86-fl", "NumFrameExtraProbe", "Number of extra stack probes generated in prologue" };
+
+static mut NumFunctionUsingPush2Pop2: Statistic = Statistic { "x86-fl", "NumFunctionUsingPush2Pop2", "Number of functions using push2/pop2" };
+
+fn requireWinX64UnwindV3(MF: *MachineFunction) -> bool {
+    let mut Fn: *Function = MF.getFunction();
+    if Fn.getParent().getWinX64EHUnwindMode() == V3 {
+        return true;
+    }
+    return Fn.needsUnwindTableEntry() && MF();
+}
+
+fn getCalleeSavedSpillRC(Reg: MCRegister, STI: *X86Subtarget, TRI: *TargetRegisterInfo) -> *TargetRegisterClass {
+    return TRI.getMinimalPhysRegClass(Reg);
+}
+
+fn X86FrameLowering::X86FrameLowering(self, STI: *X86Subtarget, StackAlignOverride: MaybeAlign) {
+    self.SlotSize = self.TRI.getSlotSize();
+    assert!(self.SlotSize == 4 || self.SlotSize == 8);
+    self.Is64Bit = STI()();
+    self.IsLP64 = STI.isTarget64BitLP64();
+    self.Uses64BitFramePtr = STI.isTarget64BitLP64();
+    self.StackPtr = self.TRI.getStackRegister();
+}
+
+fn X86FrameLowering::hasReservedCallFrame(self: *X86FrameLowering, MF: *MachineFunction) -> bool {
+    return !MF.getFrameInfo().hasVarSizedObjects() && operator!(MF()) && operator!(MF());
+}
+
+fn X86FrameLowering::canSimplifyCallFramePseudos(self: *X86FrameLowering, MF: *MachineFunction) -> bool {
+    return self.hasReservedCallFrame(MF) || MF() || (self.hasFP(MF) && operator!(self.TRI(MF))) || self.TRI.hasBasePointer(MF);
+}
+
+fn X86FrameLowering::needsFrameIndexResolution(self: *X86FrameLowering, MF: *MachineFunction) -> bool {
+    return MF.getFrameInfo().hasStackObjects() || MF();
+}
+
+fn X86FrameLowering::hasFPImpl(self: *X86FrameLowering, MF: *MachineFunction) -> bool {
+    let mut MFI: *MachineFrameInfo = MF.getFrameInfo();
+    return (MF.disableFramePointerElim() || self.TRI(MF) || MFI.hasVarSizedObjects() || MFI.isFrameAddressTaken() || MFI.hasOpaqueSPAdjustment() || MF() || MF() || MF.callsUnwindInit() || MF.hasEHFunclets() || MF.callsEHReturn() || MFI.hasStackMap() || MFI.hasPatchPoint() || (self.isWin64Prologue(MF) && MFI.hasCopyImplyingStackAdjustment()));
+}
+
+fn getSUBriOpcode(IsLP64: bool) -> u32 {}
+
+fn getADDriOpcode(IsLP64: bool) -> u32 {}
+
+fn getSUBrrOpcode(IsLP64: bool) -> u32 {}
+
+fn getADDrrOpcode(IsLP64: bool) -> u32 {}
+
+fn getANDriOpcode(IsLP64: bool, Imm: i64) -> u32 {}
+
+fn getLEArOpcode(IsLP64: bool) -> u32 {}
+
+fn getPUSHOpcode(ST: *X86Subtarget) -> u32 {}
+
+fn getPOPOpcode(ST: *X86Subtarget) -> u32 {}
+
+fn getPUSH2Opcode(ST: *X86Subtarget) -> u32 {}
+
+fn getPOP2Opcode(ST: *X86Subtarget) -> u32 {}
+
+fn isEAXLiveIn(MBB: *mut MachineBasicBlock) -> bool {
+    for RegMask in MBB.liveins() {
+        let mut Reg: MCRegister = RegMask.PhysReg;
+        if  {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn flagsNeedToBePreservedBeforeTheTerminators(MBB: *MachineBasicBlock) -> bool {
+    for MI in MBB.terminators() {
+        let mut BreakNext: bool = false;
+        for MO in MI.operands() {
+            if !MO.isReg() {
+                continue;
+            }
+            let mut Reg: Register = MO.getReg();
+            if  {
+                continue;
+            }
+            if !MO.isDef() {
+                return true;
+            }
+            BreakNext = true;
+        }
+        if BreakNext {
+            return false;
+        }
+    }
+    for Succ in MBB.successors() {
+        if Succ.isLiveIn {
+            return true;
+        }
+    }
+    return false;
+}
+
+const MaxSPChunk: u64 = (1 << 31) - 1;
+
+fn X86FrameLowering::emitSPUpdate(self: *X86FrameLowering, MBB: *mut MachineBasicBlock, MBBI: *mut iterator, DL: *DebugLoc, NumBytes: i64, InEpilogue: bool) {
+    let mut isSub: bool = NumBytes < 0;
+    let mut Offset: u64 = if isSub { -NumBytes } else { NumBytes };
+    let mut Flag: MIFlag = if isSub { FrameSetup } else { FrameDestroy };
+    if !self.Uses64BitFramePtr && !isUInt(Offset) {
+        BuildMI(MBB, MBBI, DL, self.TII);
+        return;
+    }
+    let mut MF: *mut MachineFunction = *MBB.getParent();
+    let mut STI: *X86Subtarget = MF;
+    let mut TLI: *X86TargetLowering = *STI.getTargetLowering();
+    let mut EmitInlineStackProbe: bool = TLI.hasInlineStackProbe(MF);
+    if EmitInlineStackProbe && !InEpilogue {
+        BuildMI(MBB, MBBI, DL, self.TII)(Offset);
+        return;
+    } else if Offset > MaxSPChunk {
+        let mut Reg: u32 = 0;
+        let mut Rax: u32 = 0;
+        if isSub && !isEAXLiveIn(MBB) {
+            Reg = Rax;
+        } else {
+            Reg = getX86SubSuperRegister(MCRegister { Reg: self.TRI.findDeadCallerSavedReg(MBB, MBBI) }, if self.Uses64BitFramePtr { 64 } else { 32 }, false).operator unsigned int();
+        }
+        let mut AddSubRROpc: u32 = if isSub { getSUBrrOpcode(self.Uses64BitFramePtr) } else { getADDrrOpcode(self.Uses64BitFramePtr) };
+        if Reg {
+            BuildMI(MBB, MBBI, DL, self.TII(getMOVriOpcode(self.Uses64BitFramePtr, Offset)), Reg)(Offset)(Flag);
+            let mut MI: *mut MachineInstr = BuildMI(MBB, MBBI, DL, self.TII(AddSubRROpc), self.StackPtr)(self.StackPtr)(Reg);
+            MI.getOperand(3).setIsDead(true);
+            return;
+        } else if Offset > 8 * MaxSPChunk {
+            assert!(self.Uses64BitFramePtr, "can't have 32-bit 16GB stack frame");
+            BuildMI(MBB, MBBI, DL, self.TII)(Rax, Kill)(Flag);
+            if isSub {
+                Offset = -(Offset - self.SlotSize);
+            } else {
+                Offset = Offset + self.SlotSize;
+            }
+            BuildMI(MBB, MBBI, DL, self.TII(getMOVriOpcode(self.Uses64BitFramePtr, Offset)), Rax)(Offset)(Flag);
+            let mut MI: *mut MachineInstr = BuildMI(MBB, MBBI, DL, self.TII, Rax)(Rax)(self.StackPtr);
+            MI.getOperand(3).setIsDead(true);
+            addRegOffset(BuildMI(MBB, MBBI, DL, self.TII, Rax)(Rax), self.StackPtr, false, 0);
+            addRegOffset(BuildMI(MBB, MBBI, DL, self.TII, self.StackPtr), self.StackPtr, false, 0);
+            return;
+        }
+    }
+    while Offset {
+        if Offset == self.SlotSize {
+            let mut Reg: u32 = 0;
+            if Reg {
+                let mut Opc: u32 = 0;
+                BuildMI(MBB, MBBI, DL, self.TII(Opc))(Reg, getDefRegState(!isSub))(Flag);
+                return;
+            }
+        }
+        let mut ThisVal: u64 = min(Offset, MaxSPChunk);
+        self.BuildStackAdjustment(MBB, iterator { MBBI }, DL, if isSub { -ThisVal } else { ThisVal }, InEpilogue).setMIFlag(Flag);
+        Offset -= ThisVal;
+    }
+}
+
+fn X86FrameLowering::BuildStackAdjustment(self: *X86FrameLowering, MBB: *mut MachineBasicBlock, MBBI: iterator, DL: *DebugLoc, Offset: i64, InEpilogue: bool) -> MachineInstrBuilder {
+    assert!(Offset != 0, "zero offset stack adjustment requested");
+    let mut UseLEA: bool = false;
+    if !InEpilogue {
+        UseLEA = self.STI() || MBB.isLiveIn;
+    } else {
+        UseLEA = self.canUseLEAForSPInEpilogue(*MBB.getParent());
+        if UseLEA && operator!(self.STI()) {
+            UseLEA = flagsNeedToBePreservedBeforeTheTerminators(MBB);
+        }
+        assert!((UseLEA || !flagsNeedToBePreservedBeforeTheTerminators(MBB)), "We shouldn't have allowed this insertion point");
+    }
+    let mut MI: MachineInstrBuilder = MachineInstrBuilder {};
+    let mut UseNF: bool = UseLEA && self.STI() && self.Uses64BitFramePtr;
+    let mut IsSub: bool = Offset < 0;
+    let mut AbsOffset: u64 = if IsSub { -Offset } else { Offset };
+    if UseNF {
+        let mut Opc: u32 = 0;
+        MI = BuildMI(MBB, MBBI, DL, self.TII(Opc), self.StackPtr)(self.StackPtr)(AbsOffset);
+    } else if UseLEA {
+        MI = addRegOffset(BuildMI(MBB, MBBI, DL, self.TII(getLEArOpcode(self.Uses64BitFramePtr)), self.StackPtr), self.StackPtr, false, Offset);
+    } else {
+        let mut Opc: u32 = if IsSub { getSUBriOpcode(self.Uses64BitFramePtr) } else { getADDriOpcode(self.Uses64BitFramePtr) };
+        let mut Imm: i64 = AbsOffset;
+        if AbsOffset == 128 && !(InEpilogue && MBB.getParent().getTarget().getMCAsmInfo().usesWindowsCFI()) {
+            Opc = if IsSub { getADDriOpcode(self.Uses64BitFramePtr) } else { getSUBriOpcode(self.Uses64BitFramePtr) };
+            Imm = -128;
+        }
+        MI = BuildMI(MBB, MBBI, DL, self.TII(Opc), self.StackPtr)(self.StackPtr)(Imm);
+        operator(MI).getOperand(3).setIsDead(true);
+    }
+    return MI;
+}
+
+fn X86FrameLowering::mergeSPAdd(self: *X86FrameLowering, MBB: *mut MachineBasicBlock, MBBI: *mut iterator, AddOffset: i64, doMergeWithPrevious: bool) -> i64 {
+    return ;
+}
+
+fn X86FrameLowering::BuildCFI(self: *X86FrameLowering, MBB: *mut MachineBasicBlock, MBBI: iterator, DL: *DebugLoc, CFIInst: *MCCFIInstruction, Flag: MIFlag) {
+    let mut MF: *mut MachineFunction = *MBB.getParent();
+    let mut CFIIndex: u32 = MF.addFrameInst(CFIInst);
+    if CFIInst.getOperation() == OpAdjustCfaOffset {
+        MF(true);
+    }
+    BuildMI(MBB, MBBI, DL, self.TII(CFI_INSTRUCTION))(CFIIndex)(Flag);
+}
+
+fn X86FrameLowering::emitCalleeSavedFrameMovesFullCFA(self: *X86FrameLowering, MBB: *mut MachineBasicBlock, MBBI: iterator) {
+    let mut MF: *mut MachineFunction = *MBB.getParent();
+    if !self.hasFP(MF) {
+        self.emitCalleeSavedFrameMoves(MBB, iterator { MBBI }, DebugLoc { Loc: null }, true);
+        return;
+    }
+    let mut MRI: *MCRegisterInfo = MF.getContext().getRegisterInfo();
+    let mut FramePtr: Register = self.TRI.getFrameRegister(MF);
+    let mut MachineFramePtr: Register = if self.STI.isTarget64BitILP32() { Register { Reg: getX86SubSuperRegister(FramePtr.operator MCRegister(), 64, false) } } else { FramePtr };
+    let mut DwarfReg: u32 = MRI.getDwarfRegNum(MachineFramePtr.operator MCRegister(), true);
+    let mut Offset: i64 = (if self.Is64Bit { 8 } else { 4 }) + (if self.Uses64BitFramePtr { 8 } else { 4 });
+    self.BuildCFI(MBB, iterator { MBBI }, DebugLoc { Loc: null }, createOffset(null, DwarfReg, -Offset, SMLoc {}), NoFlags);
+    self.emitCalleeSavedFrameMoves(MBB, iterator { MBBI }, DebugLoc { Loc: null }, true);
+}
+
+fn X86FrameLowering::emitCalleeSavedFrameMoves(self: *X86FrameLowering, MBB: *mut MachineBasicBlock, MBBI: iterator, DL: *DebugLoc, IsPrologue: bool) {
+    let mut MF: *mut MachineFunction = *MBB.getParent();
+    let mut MFI: *mut MachineFrameInfo = MF.getFrameInfo();
+    let mut MRI: *MCRegisterInfo = MF.getContext().getRegisterInfo();
+    let mut X86FI: *mut X86MachineFunctionInfo = MF;
+    let mut CSI: i32 = MFI()();
+    if  {
+        let mut FI: i32 = (1)();
+        let mut Offset: i64 = MFI.getObjectOffset(FI) + 2 * self.SlotSize;
+        let mut CfaExpr: str = zeroed();
+        let mut FramePtr: Register = self.TRI.getFrameRegister(MF);
+        let mut MachineFramePtr: Register = if self.STI.isTarget64BitILP32() { Register { Reg: getX86SubSuperRegister(FramePtr.operator MCRegister(), 64, false) } } else { FramePtr };
+        let mut DwarfFramePtr: u32 = MRI.getDwarfRegNum(MachineFramePtr.operator MCRegister(), true);
+        CfaExpr()((DW_OP_breg0 + DwarfFramePtr) as u8);
+        let mut buffer: [16]u8 = zeroed();
+        CfaExpr()(buffer, buffer + encodeSLEB128(Offset, buffer, 0));
+        CfaExpr()(DW_OP_deref);
+        let mut DefCfaExpr: str = zeroed();
+        DefCfaExpr()(DW_CFA_def_cfa_expression);
+        DefCfaExpr()(buffer, buffer + encodeSLEB128(buffer));
+        DefCfaExpr()();
+        self.BuildCFI(MBB, MBBI, DL, createEscape(null), FrameSetup);
+    }
+}
+
+fn X86FrameLowering::emitZeroCallUsedRegs(self: *X86FrameLowering, RegsToZero: BitVector, MBB: *mut MachineBasicBlock, arg: *mut RegScavenger) {
+    let mut MF: *MachineFunction = *MBB.getParent();
+    let mut MBBI: iterator = MBB.getFirstTerminator();
+    let mut DL: DebugLoc = DebugLoc { Loc: null };
+    if MBBI != MBB.end() {
+        DL = operator(MBBI).getDebugLoc();
+    }
+    for Reg in RegsToZero.set_bits() {
+        if  {
+            continue;
+        }
+        let mut NumFPRegs: u32 = 8;
+        if operator(MBBI).hasRegisterImplicitUseOperand {
+            NumFPRegs -= 1;
+        }
+        if operator(MBBI).hasRegisterImplicitUseOperand {
+            NumFPRegs -= 1;
+        }
+        for let mut i: u32 = 0; i != NumFPRegs; i += 1 {
+            BuildMI(MBB, MBBI, DL, self.TII);
+        }
+        for let mut i: u32 = 0; i != NumFPRegs; i += 1 {
+            BuildMI(MBB, MBBI, DL, self.TII);
+        }
+        break;
+    }
+    let mut GPRsToZero: BitVector = self.TRI();
+    for Reg in RegsToZero.set_bits() {
+        if self.TRI(MF, Reg) {
+            GPRsToZero.set(getX86SubSuperRegister(Reg, 32, false).operator unsigned int());
+            RegsToZero.reset(Reg.operator unsigned int());
+        }
+    }
+    let mut getVectorClearReg: Closure_1 = Closure_1 { cap_0: self };
+    let mut VecRegsToZero: BitVector = self.TRI();
+    for Reg in RegsToZero.set_bits() {
+        if getVectorClearReg.call(Reg) {
+            Clear.operator unsigned int();
+        } else {
+            VecRegsToZero.set(Clear.id());
+            RegsToZero.reset(Reg.operator unsigned int());
+        }
+    }
+    for Reg in RegsToZero.set_bits() {
+        self.TII.buildClearRegister(Register { Reg: Reg }, MBB, iterator { MBBI }, DL, true);
+    }
+}
+
+fn X86FrameLowering::emitStackProbe(self: *X86FrameLowering, MF: *mut MachineFunction, MBB: *mut MachineBasicBlock, MBBI: iterator, DL: *DebugLoc, InProlog: bool, InstrNum: DebugInstrOperandPair>) {
+    let mut STI: *X86Subtarget = MF;
+    if STI.isTargetWindowsCoreCLR() {
+        if InProlog {
+            BuildMI(MBB, MBBI, DL, self.TII)(0);
+        } else {
+            self.emitStackProbeInline(MF, MBB, iterator { MBBI }, DL, false);
+        }
+    } else {
+        self.emitStackProbeCall(MF, MBB, iterator { MBBI }, DL, InProlog, DebugInstrOperandPair> { InstrNum });
+    }
+}
+
+fn X86FrameLowering::stackProbeFunctionModifiesSP(self: *X86FrameLowering) -> bool {
+    return self.STI.isOSWindows() && !self.STI.isTargetWin64();
+}
+
+fn X86FrameLowering::inlineStackProbe(self: *X86FrameLowering, MF: *mut MachineFunction, PrologMBB: *mut MachineBasicBlock) {
+    let mut Where: auto = find_if(PrologMBB, Closure_2 {});
+    if Where() != PrologMBB.end() {
+        let mut DL: DebugLoc = PrologMBB();
+        self.emitStackProbeInline(MF, PrologMBB, DL, true);
+        Where()();
+    }
+}
+
+fn X86FrameLowering::emitStackProbeInline(self: *X86FrameLowering, MF: *mut MachineFunction, MBB: *mut MachineBasicBlock, MBBI: iterator, DL: *DebugLoc, InProlog: bool) {
+    let mut STI: *X86Subtarget = MF;
+    if STI.isTargetWindowsCoreCLR() && STI()() {
+        self.emitStackProbeInlineWindowsCoreCLR64(MF, MBB, iterator { MBBI }, DL, InProlog);
+    } else {
+        self.emitStackProbeInlineGeneric(MF, MBB, iterator { MBBI }, DL, InProlog);
+    }
+}
+
+fn X86FrameLowering::emitStackProbeInlineGeneric(self: *X86FrameLowering, MF: *mut MachineFunction, MBB: *mut MachineBasicBlock, MBBI: iterator, DL: *DebugLoc, InProlog: bool) {
+    let mut AllocWithProbe: *mut MachineInstr = operator(MBBI);
+    let mut Offset: u64 = AllocWithProbe.getOperand(0).getImm();
+    let mut STI: *X86Subtarget = MF;
+    let mut TLI: *X86TargetLowering = *STI.getTargetLowering();
+    (((operator!(operator!((operator!((STI()() && STI.isTargetWindowsCoreCLR())) && "different expansion expected for CoreCLR 64 bit")))) || (_wassert(L"!(STI.is64Bit() && STI.isTargetWindowsCoreCLR()) && \"different expansion expected for CoreCLR 64 bit\"", L"llvm\\lib\\Target\\X86\\X86FrameLowering.cpp", (782) as u32) , 0)) as void);
+    let mut StackProbeSize: u64 = TLI.getStackProbeSize(MF);
+    let mut ProbeChunk: u64 = StackProbeSize * 8;
+    let mut MaxAlign: u64 = if self.TRI(MF) { self.calculateMaxStackAlign(MF) } else { 0 };
+    if Offset > ProbeChunk {
+        self.emitStackProbeInlineGenericLoop(MF, MBB, iterator { MBBI }, DL, Offset, MaxAlign % StackProbeSize);
+    } else {
+        self.emitStackProbeInlineGenericBlock(MF, MBB, iterator { MBBI }, DL, Offset, MaxAlign % StackProbeSize);
+    }
+}
+
+fn X86FrameLowering::emitStackProbeInlineGenericBlock(self: *X86FrameLowering, MF: *mut MachineFunction, MBB: *mut MachineBasicBlock, MBBI: iterator, DL: *DebugLoc, Offset: u64, AlignOffset: u64) {
+    let mut NeedsDwarfCFI: bool = self.needsDwarfCFI(MF);
+    let mut HasFP: bool = self.hasFP(MF);
+    let mut STI: *X86Subtarget = MF;
+    let mut TLI: *X86TargetLowering = *STI.getTargetLowering();
+    let mut MovMIOpc: u32 = 0;
+    let mut StackProbeSize: u64 = TLI.getStackProbeSize(MF);
+    let mut CurrentOffset: u64 = 0;
+    assert!(AlignOffset < StackProbeSize);
+    if StackProbeSize < Offset + AlignOffset {
+        let mut StackAdjustment: u64 = StackProbeSize - AlignOffset;
+        self.BuildStackAdjustment(MBB, iterator { MBBI }, DL, -StackAdjustment, false).setMIFlag(FrameSetup);
+        if !HasFP && NeedsDwarfCFI {
+            self.BuildCFI(MBB, iterator { MBBI }, DL, createAdjustCfaOffset(null, StackAdjustment, SMLoc {}), NoFlags);
+        }
+        addRegOffset(BuildMI(MBB, MBBI, DL, self.TII(MovMIOpc))(FrameSetup), self.StackPtr, false, 0)(0)(FrameSetup);
+        operator(NumFrameExtraProbe, 0);
+        CurrentOffset = StackProbeSize - AlignOffset;
+    }
+    while CurrentOffset + StackProbeSize < Offset {
+        self.BuildStackAdjustment(MBB, iterator { MBBI }, DL, -StackProbeSize, false).setMIFlag(FrameSetup);
+        if !HasFP && NeedsDwarfCFI {
+            self.BuildCFI(MBB, iterator { MBBI }, DL, createAdjustCfaOffset(null, StackProbeSize, SMLoc {}), NoFlags);
+        }
+        addRegOffset(BuildMI(MBB, MBBI, DL, self.TII(MovMIOpc))(FrameSetup), self.StackPtr, false, 0)(0)(FrameSetup);
+        operator(NumFrameExtraProbe, 0);
+        CurrentOffset += StackProbeSize;
+    }
+    let mut ChunkSize: u64 = Offset - CurrentOffset;
+    if ChunkSize == self.SlotSize {
+        let mut Reg: u32 = 0;
+        let mut Opc: u32 = 0;
+        BuildMI(MBB, MBBI, DL, self.TII(Opc))(Reg, Undef)(FrameSetup);
+    } else {
+        self.BuildStackAdjustment(MBB, iterator { MBBI }, DL, -ChunkSize, false).setMIFlag(FrameSetup);
+    }
+}
+
+fn X86FrameLowering::emitStackProbeInlineGenericLoop(self: *X86FrameLowering, MF: *mut MachineFunction, MBB: *mut MachineBasicBlock, MBBI: iterator, DL: *DebugLoc, Offset: u64, AlignOffset: u64) {
+    assert!(Offset, "null offset");
+    (((operator!(operator!((MBB.computeRegisterLiveness != LQR_Live && "Inline stack probe loop will clobber live EFLAGS.")))) || (_wassert(L"MBB.computeRegisterLiveness(TRI, X86::EFLAGS, MBBI) != MachineBasicBlock::LQR_Live && \"Inline stack probe loop will clobber live EFLAGS.\"", L"llvm\\lib\\Target\\X86\\X86FrameLowering.cpp", (886) as u32) , 0)) as void);
+    let mut NeedsDwarfCFI: bool = self.needsDwarfCFI(MF);
+    let mut HasFP: bool = self.hasFP(MF);
+    let mut STI: *X86Subtarget = MF;
+    let mut TLI: *X86TargetLowering = *STI.getTargetLowering();
+    let mut MovMIOpc: u32 = 0;
+    let mut StackProbeSize: u64 = TLI.getStackProbeSize(MF);
+    if AlignOffset {
+        if AlignOffset < StackProbeSize {
+            self.BuildStackAdjustment(MBB, iterator { MBBI }, DL, -AlignOffset, false).setMIFlag(FrameSetup);
+            addRegOffset(BuildMI(MBB, MBBI, DL, self.TII(MovMIOpc))(FrameSetup), self.StackPtr, false, 0)(0)(FrameSetup);
+            operator(NumFrameExtraProbe, 0);
+            Offset -= AlignOffset;
+        }
+    }
+    operator(NumFrameLoopProbe, 0);
+    let mut LLVM_BB: *BasicBlock = MBB.getBasicBlock();
+    let mut testMBB: *mut MachineBasicBlock = MF.CreateMachineBasicBlock(LLVM_BB, optional<UniqueBBID> { nullopt });
+    let mut tailMBB: *mut MachineBasicBlock = MF.CreateMachineBasicBlock(LLVM_BB, optional<UniqueBBID> { nullopt });
+    let mut MBBIter: iterator = iterator { operator(MBB.getIterator()) };
+    MF.insert(iterator { MBBIter }, testMBB);
+    MF.insert(iterator { MBBIter }, tailMBB);
+    let mut FinalStackProbed: Register = zeroed();
+    {
+        let mut BoundOffset: u64 = alignDown(Offset, StackProbeSize);
+        let mut canUseSub: bool = if self.Uses64BitFramePtr { isUInt(BoundOffset) } else { isUInt(BoundOffset) };
+        if canUseSub {
+            let mut SUBOpc: u32 = getSUBriOpcode(self.Uses64BitFramePtr);
+            BuildMI(MBB, MBBI, DL, self.TII(COPY), FinalStackProbed)(self.StackPtr)(FrameSetup);
+            BuildMI(MBB, MBBI, DL, self.TII(SUBOpc), FinalStackProbed)(FinalStackProbed)(BoundOffset)(FrameSetup);
+        } else if self.Uses64BitFramePtr {
+            BuildMI(MBB, MBBI, DL, self.TII, FinalStackProbed)(-BoundOffset)(FrameSetup);
+            BuildMI(MBB, MBBI, DL, self.TII, FinalStackProbed)(FinalStackProbed)(self.StackPtr)(FrameSetup);
+        } else {
+            llvm_unreachable_internal("Offset too large for 32-bit stack pointer", "llvm\\lib\\Target\\X86\\X86FrameLowering.cpp", 955);
+        }
+        if !HasFP && NeedsDwarfCFI {
+            let mut DwarfFinalStackProbed: Register = if STI.isTarget64BitILP32() { Register { Reg: getX86SubSuperRegister(FinalStackProbed.operator MCRegister(), 64, false) } } else { FinalStackProbed };
+            self.BuildCFI(MBB, MBBI, DL, createDefCfaRegister(null, self.TRI(DwarfFinalStackProbed, true)));
+            self.BuildCFI(MBB, iterator { MBBI }, DL, createAdjustCfaOffset(null, BoundOffset, SMLoc {}), NoFlags);
+        }
+    }
+    self.BuildStackAdjustment(*testMBB, testMBB.end(), DL, -StackProbeSize, false).setMIFlag(FrameSetup);
+    addRegOffset(BuildMI(testMBB, DL, self.TII(MovMIOpc))(FrameSetup), self.StackPtr, false, 0)(0)(FrameSetup);
+    BuildMI(testMBB, DL, self.TII)(self.StackPtr)(FinalStackProbed)(FrameSetup);
+    BuildMI(testMBB, DL, self.TII)(testMBB)(COND_NE)(FrameSetup);
+    testMBB.addSuccessor(testMBB, getUnknown());
+    testMBB.addSuccessor(tailMBB, getUnknown());
+    tailMBB.splice(tailMBB.end(), &mut MBB, iterator { MBBI }, MBB.end());
+    tailMBB.transferSuccessorsAndUpdatePHIs(&mut MBB);
+    MBB.addSuccessor(testMBB, getUnknown());
+    let mut TailOffset: u64 = Offset % StackProbeSize;
+    let mut TailMBBIter: iterator = tailMBB.begin();
+    if TailOffset {
+        self.BuildStackAdjustment(*tailMBB, iterator { TailMBBIter }, DL, -TailOffset, false).setMIFlag(FrameSetup);
+    }
+    if !HasFP && NeedsDwarfCFI {
+        let mut DwarfStackPtr: Register = if STI.isTarget64BitILP32() { Register { Reg: getX86SubSuperRegister(self.StackPtr.operator MCRegister(), 64, false) } } else { self.StackPtr };
+        self.BuildCFI(*tailMBB, TailMBBIter, DL, createDefCfaRegister(null, self.TRI(DwarfStackPtr, true)));
+    }
+    fullyRecomputeLiveIns(void { tailMBB, testMBB });
+}
+
+fn X86FrameLowering::emitStackProbeInlineWindowsCoreCLR64(self: *X86FrameLowering, MF: *mut MachineFunction, MBB: *mut MachineBasicBlock, MBBI: iterator, DL: *DebugLoc, InProlog: bool) {
+    let mut STI: *X86Subtarget = MF;
+    (((operator!(operator!((STI()() && "different expansion needed for 32 bit")))) || (_wassert(L"STI.is64Bit() && \"different expansion needed for 32 bit\"", L"llvm\\lib\\Target\\X86\\X86FrameLowering.cpp", (1038) as u32) , 0)) as void);
+    assert!(STI.isTargetWindowsCoreCLR(), "custom expansion expects CoreCLR");
+    let mut TII: *TargetInstrInfo = *STI.getInstrInfo();
+    let mut LLVM_BB: *BasicBlock = MBB.getBasicBlock();
+    (((operator!(operator!((MBB.computeRegisterLiveness != LQR_Live && "Inline stack probe loop will clobber live EFLAGS.")))) || (_wassert(L"MBB.computeRegisterLiveness(TRI, X86::EFLAGS, MBBI) != MachineBasicBlock::LQR_Live && \"Inline stack probe loop will clobber live EFLAGS.\"", L"llvm\\lib\\Target\\X86\\X86FrameLowering.cpp", (1045) as u32) , 0)) as void);
+    let mut RoundMBB: *mut MachineBasicBlock = MF.CreateMachineBasicBlock(LLVM_BB, optional<UniqueBBID> { nullopt });
+    let mut LoopMBB: *mut MachineBasicBlock = MF.CreateMachineBasicBlock(LLVM_BB, optional<UniqueBBID> { nullopt });
+    let mut ContinueMBB: *mut MachineBasicBlock = MF.CreateMachineBasicBlock(LLVM_BB, optional<UniqueBBID> { nullopt });
+    let mut MBBIter: iterator = next(MBB.getIterator());
+    MF.insert(iterator { MBBIter }, RoundMBB);
+    MF.insert(iterator { MBBIter }, LoopMBB);
+    MF.insert(iterator { MBBIter }, ContinueMBB);
+    let mut BeforeMBBI: iterator = prev(MBBI);
+    ContinueMBB.splice(ContinueMBB.begin(), &mut MBB, iterator { MBBI }, MBB.end());
+    ContinueMBB.transferSuccessorsAndUpdatePHIs(&mut MBB);
+    let mut ThreadEnvironmentStackLimit: i64 = 16;
+    let mut PageSize: i64 = 4096;
+    let mut PageMask: i64 = ~(PageSize - 1);
+    let mut MRI: *mut MachineRegisterInfo = MF.getRegInfo();
+    let mut RegClass: *TargetRegisterClass = null;
+    let mut SizeReg: Register = zeroed();
+    let mut ZeroReg: Register = zeroed();
+    let mut CopyReg: Register = zeroed();
+    let mut TestReg: Register = zeroed();
+    let mut FinalReg: Register = zeroed();
+    let mut RoundedReg: Register = zeroed();
+    let mut LimitReg: Register = zeroed();
+    let mut JoinReg: Register = zeroed();
+    let mut ProbeReg: Register = zeroed();
+    let mut RCXShadowSlot: i64 = 0;
+    let mut RDXShadowSlot: i64 = 0;
+    if InProlog {
+        let mut X86FI: *mut X86MachineFunctionInfo = MF;
+        let mut CalleeSaveSize: i64 = X86FI.getCalleeSavedFrameSize();
+        let mut HasFP: bool = self.hasFP(MF);
+        let mut IsRCXLiveIn: bool = MBB.isLiveIn;
+        let mut IsRDXLiveIn: bool = MBB.isLiveIn;
+        let mut InitSlot: i64 = 8 + CalleeSaveSize + (if HasFP { 8 } else { 0 });
+        if IsRCXLiveIn {
+            RCXShadowSlot = InitSlot;
+        }
+        if IsRDXLiveIn {
+            RDXShadowSlot = InitSlot;
+        }
+        if IsRDXLiveIn && IsRCXLiveIn {
+            RDXShadowSlot += 8;
+        }
+        if IsRCXLiveIn {
+            addRegOffset(BuildMI(&mut MBB, DL, TII.get), false, RCXShadowSlot);
+        }
+        if IsRDXLiveIn {
+            addRegOffset(BuildMI(&mut MBB, DL, TII.get), false, RDXShadowSlot);
+        }
+    } else {
+        BuildMI(&mut MBB, DL, TII.get, SizeReg);
+    }
+    BuildMI(&mut MBB, DL, TII.get, ZeroReg)(ZeroReg, Undef)(ZeroReg, Undef);
+    BuildMI(&mut MBB, DL, TII.get, CopyReg);
+    BuildMI(&mut MBB, DL, TII.get, TestReg)(CopyReg)(SizeReg);
+    BuildMI(&mut MBB, DL, TII.get, FinalReg)(TestReg)(ZeroReg)(COND_B);
+    BuildMI(&mut MBB, DL, TII.get, LimitReg)(0)(1)(0)(ThreadEnvironmentStackLimit);
+    BuildMI(&mut MBB, DL, TII.get)(FinalReg)(LimitReg);
+    BuildMI(&mut MBB, DL, TII.get)(ContinueMBB)(COND_AE);
+    if InProlog {
+        RoundMBB.addLiveIn(FinalReg.operator MCRegister(), getAll());
+    }
+    BuildMI(RoundMBB, DL, TII.get, RoundedReg)(FinalReg)(PageMask);
+    BuildMI(RoundMBB, DL, TII.get)(LoopMBB);
+    if !InProlog {
+        BuildMI(LoopMBB, DL, TII.get, JoinReg)(LimitReg)(RoundMBB)(ProbeReg)(LoopMBB);
+    }
+    if InProlog {
+        LoopMBB.addLiveIn(JoinReg.operator MCRegister(), getAll());
+    }
+    addRegOffset(BuildMI(LoopMBB, DL, TII.get, ProbeReg), JoinReg, false, -PageSize);
+    BuildMI(LoopMBB, DL, TII.get)(ProbeReg)(1)(0)(0)(0)(0);
+    if InProlog {
+        LoopMBB.addLiveIn(RoundedReg.operator MCRegister(), getAll());
+    }
+    BuildMI(LoopMBB, DL, TII.get)(RoundedReg)(ProbeReg);
+    BuildMI(LoopMBB, DL, TII.get)(LoopMBB)(COND_NE);
+    let mut ContinueMBBI: iterator = ContinueMBB.getFirstNonPHI();
+    if InProlog {
+        if RCXShadowSlot {
+            addRegOffset(BuildMI(*ContinueMBB, ContinueMBBI, DL, TII.get), false, RCXShadowSlot);
+        }
+        if RDXShadowSlot {
+            addRegOffset(BuildMI(*ContinueMBB, ContinueMBBI, DL, TII.get), false, RDXShadowSlot);
+        }
+    }
+    BuildMI(*ContinueMBB, ContinueMBBI, DL, TII.get)(SizeReg);
+    MBB.addSuccessor(ContinueMBB, getUnknown());
+    MBB.addSuccessor(RoundMBB, getUnknown());
+    RoundMBB.addSuccessor(LoopMBB, getUnknown());
+    LoopMBB.addSuccessor(ContinueMBB, getUnknown());
+    LoopMBB.addSuccessor(LoopMBB, getUnknown());
+    if InProlog {
+        let mut LiveRegs: LivePhysRegs = LivePhysRegs {};
+        computeAndAddLiveIns(LiveRegs, *ContinueMBB);
+    }
+    if InProlog {
+        for operator(BeforeMBBI); BeforeMBBI != MBB.end(); operator(BeforeMBBI) {
+            operator(BeforeMBBI).setFlag(FrameSetup);
+        }
+        for MI in *RoundMBB {
+            MI.setFlag(FrameSetup);
+        }
+        for MI in *LoopMBB {
+            MI.setFlag(FrameSetup);
+        }
+    }
+}
+
+fn X86FrameLowering::emitStackProbeCall(self: *X86FrameLowering, MF: *mut MachineFunction, MBB: *mut MachineBasicBlock, MBBI: iterator, DL: *DebugLoc, InProlog: bool, InstrNum: DebugInstrOperandPair>) {
+    let mut IsLargeCodeModel: bool = MF.getTarget().getCodeModel() == Large;
+    if self.Is64Bit && IsLargeCodeModel && self.STI.useIndirectThunkCalls() {
+        report_fatal_error("Emitting stack probe calls on 64-bit with the large code model and indirect thunks not yet implemented.", true);
+    }
+    (((operator!(operator!((MBB.computeRegisterLiveness != LQR_Live && "Stack probe calls will clobber live EFLAGS.")))) || (_wassert(L"MBB.computeRegisterLiveness(TRI, X86::EFLAGS, MBBI) != MachineBasicBlock::LQR_Live && \"Stack probe calls will clobber live EFLAGS.\"", L"llvm\\lib\\Target\\X86\\X86FrameLowering.cpp", (1288) as u32) , 0)) as void);
+    let mut CallOp: u32 = 0;
+    let mut Symbol: str = self.STI.getTargetLowering().getStackProbeSymbolName(MF);
+    let mut CI: MachineInstrBuilder = MachineInstrBuilder {};
+    let mut ExpansionMBBI: iterator = prev(MBBI);
+    if self.Is64Bit && MF.getTarget().getCodeModel() == Large {
+        BuildMI(MBB, MBBI, DL, self.TII)(MF.createExternalSymbolName(Symbol));
+        CI = BuildMI(MBB, MBBI, DL, self.TII(CallOp));
+    } else {
+        CI = BuildMI(MBB, MBBI, DL, self.TII(CallOp))(MF.createExternalSymbolName(Symbol));
+    }
+    let mut AX: u32 = 0;
+    let mut SP: u32 = 0;
+    CI.addReg(Register { Reg: AX }, Implicit, 0).addReg(Register { Reg: SP }, Implicit, 0).addReg(AX, Define(Implicit))(SP, Define(Implicit));
+    let mut ModInst: *mut MachineInstr = CI.operator llvm::MachineInstr *();
+    if self.STI.isTargetWin64() || !self.STI.isOSWindows() {
+        ModInst = BuildMI(MBB, MBBI, DL, self.TII(getSUBrrOpcode(self.Uses64BitFramePtr)), SP)(SP)(AX);
+    }
+    if InstrNum {
+        if self.STI.isTargetWin64() || !self.STI.isOSWindows() {
+            MF.makeDebugValueSubstitution;
+        } else {
+            let mut SPDefOperand: u32 = ModInst.getNumOperands() - 2;
+            MF.makeDebugValueSubstitution;
+        }
+    }
+    if InProlog {
+        for operator(ExpansionMBBI); ExpansionMBBI != MBBI; operator(ExpansionMBBI) {
+            operator(ExpansionMBBI).setFlag(FrameSetup);
+        }
+    }
+}
+
+fn calculateSetFPREG(SPAdjust: u64) -> u32 {
+    let mut Win64MaxSEHOffset: u64 = 128;
+    let mut SEHFrameOffset: u64 = min(SPAdjust, Win64MaxSEHOffset);
+    return SEHFrameOffset & -16;
+}
+
+fn X86FrameLowering::calculateMaxStackAlign(self: *X86FrameLowering, MF: *MachineFunction) -> u64 {
+    let mut MFI: *MachineFrameInfo = MF.getFrameInfo();
+    let mut MaxAlign: Align = MFI.getMaxAlign();
+    let mut StackAlign: Align = self.getStackAlign();
+    let mut HasRealign: bool = MF.getFunction().hasFnAttribute("stackrealign");
+    if HasRealign {
+        if MFI.hasCalls() {
+            MaxAlign = if (StackAlign > MaxAlign) { StackAlign } else { MaxAlign };
+        } else if MaxAlign < self.SlotSize {
+            MaxAlign = Align { ShiftValue: self.SlotSize };
+        }
+    }
+    if !self.Is64Bit && MF.getFunction().getCallingConv() == X86_INTR {
+        if HasRealign {
+            MaxAlign = if (MaxAlign > 16) { MaxAlign } else { Align { ShiftValue: 16 } };
+        } else {
+            MaxAlign = Align { ShiftValue: 16 };
+        }
+    }
+    return MaxAlign.value();
+}
+
+fn X86FrameLowering::BuildStackAlignAND(self: *X86FrameLowering, MBB: *mut MachineBasicBlock, MBBI: iterator, DL: *DebugLoc, Reg: Register, MaxAlign: u64) {
+    let mut Val: u64 = -MaxAlign;
+    let mut AndOp: u32 = getANDriOpcode(self.Uses64BitFramePtr, Val);
+    let mut MF: *mut MachineFunction = *MBB.getParent();
+    let mut STI: *X86Subtarget = MF;
+    let mut TLI: *X86TargetLowering = *STI.getTargetLowering();
+    let mut StackProbeSize: u64 = TLI.getStackProbeSize(MF);
+    let mut EmitInlineStackProbe: bool = TLI.hasInlineStackProbe(MF);
+    if Reg == self.StackPtr && EmitInlineStackProbe && MaxAlign >= StackProbeSize {
+        {
+            operator(NumFrameLoopProbe, 0);
+            let mut entryMBB: *mut MachineBasicBlock = MF.CreateMachineBasicBlock(MBB.getBasicBlock(), optional<UniqueBBID> { nullopt });
+            let mut headMBB: *mut MachineBasicBlock = MF.CreateMachineBasicBlock(MBB.getBasicBlock(), optional<UniqueBBID> { nullopt });
+            let mut bodyMBB: *mut MachineBasicBlock = MF.CreateMachineBasicBlock(MBB.getBasicBlock(), optional<UniqueBBID> { nullopt });
+            let mut footMBB: *mut MachineBasicBlock = MF.CreateMachineBasicBlock(MBB.getBasicBlock(), optional<UniqueBBID> { nullopt });
+            let mut MBBIter: iterator = MBB.getIterator();
+            MF.insert(iterator { MBBIter }, entryMBB);
+            MF.insert(iterator { MBBIter }, headMBB);
+            MF.insert(iterator { MBBIter }, bodyMBB);
+            MF.insert(iterator { MBBIter }, footMBB);
+            let mut MovMIOpc: u32 = 0;
+            let mut FinalStackProbed: Register = zeroed();
+            {
+                entryMBB.splice(entryMBB.end(), &mut MBB, MBB.begin(), iterator { MBBI });
+                BuildMI(entryMBB, DL, self.TII(COPY), FinalStackProbed)(self.StackPtr)(FrameSetup);
+                let mut MI: *mut MachineInstr = BuildMI(entryMBB, DL, self.TII(AndOp), FinalStackProbed)(FinalStackProbed)(Val)(FrameSetup);
+                MI.getOperand(3).setIsDead(true);
+                BuildMI(entryMBB, DL, self.TII)(FinalStackProbed)(self.StackPtr)(FrameSetup);
+                BuildMI(entryMBB, DL, self.TII)(&mut MBB)(COND_E)(FrameSetup);
+                entryMBB.addSuccessor(headMBB, getUnknown());
+                entryMBB.addSuccessor(&mut MBB, getUnknown());
+            }
+            {
+                let mut SUBOpc: u32 = getSUBriOpcode(self.Uses64BitFramePtr);
+                BuildMI(headMBB, DL, self.TII(SUBOpc), self.StackPtr)(self.StackPtr)(StackProbeSize)(FrameSetup);
+                BuildMI(headMBB, DL, self.TII)(self.StackPtr)(FinalStackProbed)(FrameSetup);
+                BuildMI(headMBB, DL, self.TII)(footMBB)(COND_B)(FrameSetup);
+                headMBB.addSuccessor(bodyMBB, getUnknown());
+                headMBB.addSuccessor(footMBB, getUnknown());
+            }
+            {
+                addRegOffset(BuildMI(bodyMBB, DL, self.TII(MovMIOpc))(FrameSetup), self.StackPtr, false, 0)(0)(FrameSetup);
+                let mut SUBOpc: u32 = getSUBriOpcode(self.Uses64BitFramePtr);
+                BuildMI(bodyMBB, DL, self.TII(SUBOpc), self.StackPtr)(self.StackPtr)(StackProbeSize)(FrameSetup);
+                BuildMI(bodyMBB, DL, self.TII)(FinalStackProbed)(self.StackPtr)(FrameSetup);
+                BuildMI(bodyMBB, DL, self.TII)(bodyMBB)(COND_B)(FrameSetup);
+                bodyMBB.addSuccessor(bodyMBB, getUnknown());
+                bodyMBB.addSuccessor(footMBB, getUnknown());
+            }
+            {
+                BuildMI(footMBB, DL, self.TII(COPY), self.StackPtr)(FinalStackProbed)(FrameSetup);
+                addRegOffset(BuildMI(footMBB, DL, self.TII(MovMIOpc))(FrameSetup), self.StackPtr, false, 0)(0)(FrameSetup);
+                footMBB.addSuccessor(&mut MBB, getUnknown());
+            }
+            fullyRecomputeLiveIns(void { footMBB, bodyMBB, headMBB, &mut MBB });
+        }
+    } else {
+        let mut MI: *mut MachineInstr = BuildMI(MBB, MBBI, DL, self.TII(AndOp), Reg)(Reg)(Val)(FrameSetup);
+        MI.getOperand(3).setIsDead(true);
+    }
+}
+
+fn X86FrameLowering::has128ByteRedZone(self: *X86FrameLowering, MF: *MachineFunction) -> bool {
+    (((operator!(operator!((&mut self.STI == operator&(MF) && "MF used frame lowering for wrong subtarget")))) || (_wassert(L"&STI == &MF.getSubtarget<X86Subtarget>() && \"MF used frame lowering for wrong subtarget\"", L"llvm\\lib\\Target\\X86\\X86FrameLowering.cpp", (1547) as u32) , 0)) as void);
+    let mut Fn: *Function = MF.getFunction();
+    let mut IsWin64CC: bool = self.STI.isCallingConvWin64(Fn.getCallingConv());
+    return self.Is64Bit && !IsWin64CC && !Fn.hasFnAttribute(NoRedZone);
+}
+
+fn X86FrameLowering::isWin64Prologue(self: *X86FrameLowering, MF: *MachineFunction) -> bool {
+    return MF.getTarget().getMCAsmInfo().usesWindowsCFI();
+}
+
+fn X86FrameLowering::needsDwarfCFI(self: *X86FrameLowering, MF: *MachineFunction) -> bool {
+    return !self.isWin64Prologue(MF) && MF.needsFrameMoves();
+}
+
+fn isOpcodeRep(Opcode: u32) -> bool {
+    match Opcode {
+        _ => {
+            break;
+        },
+    }
+    return false;
+}
+
+fn getUnusedLocalAreaPadding(MFI: *MachineFrameInfo) -> u64 {
+    let mut FixedEnd: i64 = 0;
+    let mut LocalsTop: i64 = max();
+    if LocalsTop == max() {
+        return 0;
+    }
+    assert!(LocalsTop >= FixedEnd, "Local object overlaps the fixed area");
+    return LocalsTop - FixedEnd;
+}
+
+fn X86FrameLowering::emitPrologue(self: *X86FrameLowering, MF: *mut MachineFunction, MBB: *mut MachineBasicBlock) {
+    (((operator!(operator!((&mut self.STI == operator&(MF) && "MF used frame lowering for wrong subtarget")))) || (_wassert(L"&STI == &MF.getSubtarget<X86Subtarget>() && \"MF used frame lowering for wrong subtarget\"", L"llvm\\lib\\Target\\X86\\X86FrameLowering.cpp", (1706) as u32) , 0)) as void);
+    let mut MBBI: iterator = MBB.begin();
+    let mut MFI: *mut MachineFrameInfo = MF.getFrameInfo();
+    let mut Fn: *Function = MF.getFunction();
+    let mut X86FI: *mut X86MachineFunctionInfo = MF;
+    let mut MaxAlign: u64 = self.calculateMaxStackAlign(MF);
+    let mut StackSize: u64 = MFI.getStackSize();
+    let mut IsFunclet: bool = MBB.isEHFuncletEntry();
+    let mut Personality: EHPersonality = Unknown;
+    if Fn.hasPersonalityFn() {
+        Personality = classifyEHPersonality(Fn.getPersonalityFn());
+    }
+    let mut FnHasClrFunclet: bool = MF.hasEHFunclets() && Personality == CoreCLR;
+    let mut IsClrFunclet: bool = IsFunclet && FnHasClrFunclet;
+    let mut HasFP: bool = self.hasFP(MF);
+    let mut IsWin64Prologue: bool = self.isWin64Prologue(MF);
+    let mut NeedsWin64CFI: bool = IsWin64Prologue && Fn.needsUnwindTableEntry();
+    let mut NeedsWinFPO: bool = !IsFunclet && self.STI.isTargetWin32() && MF.getFunction().getParent().getCodeViewFlag();
+    let mut NeedsWinCFI: bool = NeedsWin64CFI || NeedsWinFPO;
+    let mut NeedsDwarfCFI: bool = self.needsDwarfCFI(MF);
+    let mut IsWin64UnwindV3: bool = NeedsWin64CFI && requireWinX64UnwindV3(MF);
+    let mut FramePtr: Register = self.TRI.getFrameRegister(MF);
+    let mut MachineFramePtr: Register = if self.STI.isTarget64BitILP32() { Register { Reg: getX86SubSuperRegister(FramePtr.operator MCRegister(), 64, false) } } else { FramePtr };
+    let mut BasePtr: Register = self.TRI.getBaseRegister();
+    let mut HasWinCFI: bool = false;
+    let mut EmitSEHBefore: Closure_3 = Closure_3 { NeedsWinCFI: &mut NeedsWinCFI, IsWin64UnwindV3: &mut IsWin64UnwindV3, HasWinCFI: &mut HasWinCFI };
+    let mut EmitSEHAfter: Closure_4 = Closure_4 { NeedsWinCFI: &mut NeedsWinCFI, IsWin64UnwindV3: &mut IsWin64UnwindV3, HasWinCFI: &mut HasWinCFI };
+    let mut DL: DebugLoc = DebugLoc { Loc: null };
+    let mut ArgBaseReg: Register = Register { Reg: 0 };
+    if  {
+        ArgBaseReg = (0)();
+        BuildMI(MBB, MBBI, DL, self.TII, ArgBaseReg)(self.StackPtr)(1)(self.SlotSize)(FrameSetup);
+        if NeedsDwarfCFI {
+            let mut DwarfStackPtr: u32 = self.TRI(ArgBaseReg, true);
+            self.BuildCFI(MBB, iterator { MBBI }, DL, cfiDefCfa(null, DwarfStackPtr, 0, SMLoc {}), FrameSetup);
+        }
+        self.BuildStackAlignAND(MBB, iterator { MBBI }, DL, self.StackPtr, MaxAlign);
+        let mut Offset: i64 = -self.SlotSize as i64;
+        BuildMI(MBB, MBBI, DL, self.TII)(ArgBaseReg)(1)(Offset)(FrameSetup);
+    }
+    let mut TailCallArgReserveSize: u32 = -X86FI.getTCReturnAddrDelta();
+    if TailCallArgReserveSize && IsWin64Prologue {
+        report_fatal_error("Can't handle guaranteed tail call under win64 yet", true);
+    }
+    let mut EmitStackProbeCall: bool = self.STI.getTargetLowering().hasStackProbeSymbol(MF);
+    let mut StackProbeSize: u32 = self.STI.getTargetLowering().getStackProbeSize(MF);
+    if HasFP && X86FI.hasSwiftAsyncContext() {
+        match MF.getTarget().Options.SwiftAsyncFramePointer {
+            DeploymentBased => {
+                if self.STI.swiftAsyncContextIsDynamicallySet() {
+                    BuildMI(MBB, MBBI, DL, self.TII, MachineFramePtr)(MachineFramePtr)(1)("swift_async_extendedFramePointerFlags", MO_GOTPCREL);
+                    break;
+                }
+            },
+            Always => {
+                assert!(!IsWin64Prologue, "win64 prologue does not set the bit 60 in the saved frame pointer");
+            },
+            Never => {
+                break;
+            },
+        }
+    }
+    if Fn.getCallingConv() == X86_INTR && self.Is64Bit && Fn.arg_size() == 2 {
+        BuildMI(MBB, MBBI, DL, self.TII)(FrameSetup);
+    }
+    if self.has128ByteRedZone(MF) && operator!(self.TRI(MF)) && !MFI.hasVarSizedObjects() && !MFI.adjustsStack() && !EmitStackProbeCall && !MFI.hasCopyImplyingStackAdjustment() && !MF.shouldSplitStack() {
+        let mut MinSize: u64 = X86FI.getCalleeSavedFrameSize() - X86FI.getTCReturnAddrDelta();
+        if HasFP {
+            MinSize += self.SlotSize;
+        }
+        X86FI.setUsesRedZone(MinSize > 0 || StackSize > 0);
+        StackSize = max(MinSize, if StackSize > 128 { StackSize - 128 } else { 0 });
+        MFI.setStackSize(StackSize);
+    }
+    if TailCallArgReserveSize != 0 {
+        self.BuildStackAdjustment(MBB, iterator { MBBI }, DL, -TailCallArgReserveSize as i32, false).setMIFlag(FrameSetup);
+    }
+    let mut NumBytes: u64 = 0;
+    let mut stackGrowth: i32 = -self.SlotSize;
+    let mut Establisher: MCRegister = MCRegister { Reg: 0 };
+    if IsWin64Prologue && IsFunclet && !IsClrFunclet {
+        let mut MOVmr: u32 = 0;
+        addRegOffset(BuildMI(MBB, MBBI, DL, self.TII(MOVmr)), self.StackPtr, true, 16)(Establisher)(FrameSetup);
+        MBB.addLiveIn(Establisher, getAll());
+    }
+    if HasFP {
+        assert!(MF.getRegInfo().isReserved(MachineFramePtr.operator MCRegister()), "FP reserved");
+        let mut FrameSize: u64 = StackSize - self.SlotSize;
+        NumBytes = FrameSize - (X86FI.getCalleeSavedFrameSize() + TailCallArgReserveSize);
+        if self.TRI(MF) && !IsWin64Prologue {
+            let mut Padding: u64 = getUnusedLocalAreaPadding(MFI);
+            assert!(Padding <= NumBytes, "Padding exceeds the local area");
+            NumBytes = alignTo(NumBytes - Padding, MaxAlign);
+        }
+        let mut EmitSEHPushFramePtr: Closure_5 = Closure_5 { MBB: &mut MBB, MBBI: &mut MBBI, DL: &mut DL, cap_3: self, FramePtr: &mut FramePtr };
+        EmitSEHBefore(EmitSEHPushFramePtr);
+        BuildMI(MBB, MBBI, DL, self.TII(getPUSHOpcode(MF)))(MachineFramePtr, Kill)(FrameSetup);
+        EmitSEHAfter(EmitSEHPushFramePtr);
+        if NeedsDwarfCFI && !ArgBaseReg.isValid() {
+            assert!(StackSize);
+            self.BuildCFI(MBB, iterator { MBBI }, DL, cfiDefCfaOffset(null, -2 * stackGrowth + TailCallArgReserveSize as i32, SMLoc {}), FrameSetup);
+            let mut DwarfFramePtr: u32 = self.TRI(MachineFramePtr, true);
+            self.BuildCFI(MBB, iterator { MBBI }, DL, createOffset(null, DwarfFramePtr, 2 * stackGrowth - TailCallArgReserveSize as i32, SMLoc {}), FrameSetup);
+        }
+        if !IsFunclet {
+            if X86FI.hasSwiftAsyncContext() {
+                assert!(!IsWin64Prologue, "win64 prologue does not store async context right below rbp");
+                let mut Attrs: *AttributeList = MF.getFunction().getAttributes();
+                let mut EmitSEHPushR14: Closure_6 = Closure_6 { MBB: &mut MBB, MBBI: &mut MBBI, DL: &mut DL, cap_3: self };
+                EmitSEHBefore(EmitSEHPushR14);
+                if Attrs.hasAttrSomewhere(SwiftAsync, null) {
+                    MBB;
+                    BuildMI(MBB, MBBI, DL, self.TII)(FrameSetup);
+                } else {
+                    BuildMI(MBB, MBBI, DL, self.TII)(0)(FrameSetup);
+                }
+                if NeedsDwarfCFI && !ArgBaseReg.isValid() {
+                    self.BuildCFI(MBB, iterator { MBBI }, DL, createAdjustCfaOffset(null, -stackGrowth, SMLoc {}), FrameSetup);
+                }
+                EmitSEHAfter(EmitSEHPushR14);
+                BuildMI(MBB, MBBI, DL, self.TII, FramePtr)(1)(8)(FrameSetup);
+                if NeedsDwarfCFI && !ArgBaseReg.isValid() {
+                    let mut DwarfFramePtr: u32 = self.TRI(MachineFramePtr, true);
+                    self.BuildCFI(MBB, iterator { MBBI }, DL, cfiDefCfa(null, DwarfFramePtr, -2 * stackGrowth + TailCallArgReserveSize as i32, SMLoc {}), FrameSetup);
+                }
+                BuildMI(MBB, MBBI, DL, self.TII)(8)(FrameSetup);
+            }
+            if !IsWin64Prologue && !IsFunclet {
+                if !X86FI.hasSwiftAsyncContext() {
+                    BuildMI(MBB, MBBI, DL, self.TII, FramePtr)(self.StackPtr)(FrameSetup);
+                }
+                if NeedsDwarfCFI {
+                    if ArgBaseReg.isValid() {
+                        let mut CfaExpr: str = zeroed();
+                        CfaExpr()(DW_CFA_expression);
+                        let mut buffer: [16]u8 = zeroed();
+                        let mut DwarfReg: u32 = self.TRI(MachineFramePtr, true);
+                        CfaExpr()(buffer, buffer + encodeULEB128(DwarfReg, buffer, 0));
+                        CfaExpr()(2);
+                        CfaExpr()((DW_OP_breg0 + DwarfReg) as u8);
+                        CfaExpr()(0);
+                        self.BuildCFI(MBB, MBBI, DL, createEscape(null), FrameSetup);
+                    } else if !X86FI.hasSwiftAsyncContext() {
+                        let mut DwarfFramePtr: u32 = self.TRI(MachineFramePtr, true);
+                        self.BuildCFI(MBB, iterator { MBBI }, DL, createDefCfaRegister(null, DwarfFramePtr, SMLoc {}), FrameSetup);
+                    }
+                }
+                if NeedsWinFPO {
+                    assert!(!IsWin64UnwindV3);
+                    HasWinCFI = true;
+                    BuildMI(MBB, MBBI, DL, self.TII)(FramePtr)(0)(FrameSetup);
+                }
+            }
+        }
+    } else {
+        assert!(!IsFunclet, "funclets without FPs not yet implemented");
+        NumBytes = StackSize - (X86FI.getCalleeSavedFrameSize() + TailCallArgReserveSize);
+    }
+    if !IsFunclet {
+        if HasFP && self.TRI(MF) {
+            MFI.setOffsetAdjustment(-NumBytes);
+        } else {
+            MFI.setOffsetAdjustment(-StackSize);
+        }
+    }
+    let mut ParentFrameNumBytes: u32 = NumBytes;
+    if IsFunclet {
+        NumBytes = self.getWinEHFuncletFrameSize(MF);
+    }
+    let mut PushedRegs: bool = false;
+    let mut StackOffset: i32 = 2 * stackGrowth;
+    let mut LastCSPush: const_iterator = MBBI();
+    let mut IsCSPush: Closure_7 = Closure_7 { MBB: &mut MBB };
+    while IsCSPush.call(MBBI) {
+        PushedRegs = true;
+        let mut Reg: Register = operator(MBBI).getOperand(0).getReg();
+        LastCSPush(MBBI);
+        let mut Opc: u32 = operator(LastCSPush).getOpcode();
+        let mut IsPush2: bool = false;
+        EmitSEHBefore(Closure_8 { IsPush2: &mut IsPush2, MBB: &mut MBB, MBBI: &mut MBBI, DL: &mut DL, cap_4: self, Reg: &mut Reg, LastCSPush: &mut LastCSPush });
+        operator(MBBI);
+        if !HasFP && NeedsDwarfCFI {
+            assert!(StackSize);
+            if IsPush2 {
+                StackOffset += stackGrowth;
+            }
+            self.BuildCFI(MBB, iterator { MBBI }, DL, cfiDefCfaOffset(null, -StackOffset, SMLoc {}), FrameSetup);
+            StackOffset += stackGrowth;
+        }
+        EmitSEHAfter(Closure_9 { MBB: &mut MBB, MBBI: &mut MBBI, DL: &mut DL, cap_3: self, Reg: &mut Reg, IsPush2: &mut IsPush2, LastCSPush: &mut LastCSPush });
+    }
+    if !IsWin64Prologue && !IsFunclet && self.TRI(MF) && !ArgBaseReg.isValid() {
+        assert!(HasFP, "There should be a frame pointer if stack is realigned.");
+        let mut EmitSEHStackAlign: Closure_10 = Closure_10 { MBB: &mut MBB, MBBI: &mut MBBI, DL: &mut DL, cap_3: self, MaxAlign: &mut MaxAlign };
+        EmitSEHBefore(EmitSEHStackAlign);
+        self.BuildStackAlignAND(MBB, iterator { MBBI }, DL, self.StackPtr, MaxAlign);
+        EmitSEHAfter(EmitSEHStackAlign);
+    }
+    NumBytes = ;
+    let mut AlignedNumBytes: u64 = NumBytes;
+    if IsWin64Prologue && !IsFunclet && self.TRI(MF) {
+        AlignedNumBytes = alignTo(AlignedNumBytes, MaxAlign);
+    }
+    let mut EmitSEHStackAlloc: Closure_11 = Closure_11 { MBB: &mut MBB, MBBI: &mut MBBI, DL: &mut DL, cap_3: self, NumBytes: &mut NumBytes };
+    if NumBytes {
+        EmitSEHBefore(EmitSEHStackAlloc);
+    }
+    if AlignedNumBytes >= StackProbeSize && EmitStackProbeCall {
+        assert!(!X86FI.getUsesRedZone(), "The Red Zone is not accounted for in stack probes");
+        let mut isEAXAlive: bool = isEAXLiveIn(MBB);
+        if isEAXAlive {
+            if self.Is64Bit {
+                BuildMI(MBB, MBBI, DL, self.TII)(FrameSetup);
+            } else {
+                BuildMI(MBB, MBBI, DL, self.TII)(FrameSetup);
+            }
+        }
+        if self.Is64Bit {
+            let mut Alloc: i64 = if isEAXAlive { NumBytes - 8 } else { NumBytes };
+            BuildMI(MBB, MBBI, DL, self.TII(getMOVriOpcode(self.Is64Bit, Alloc)))(Alloc)(FrameSetup);
+        } else {
+            BuildMI(MBB, MBBI, DL, self.TII)(if isEAXAlive { NumBytes - 4 } else { NumBytes })(FrameSetup);
+        }
+        self.emitStackProbe(MF, MBB, iterator { MBBI }, DL, true, DebugInstrOperandPair> { nullopt });
+        if isEAXAlive {
+            let mut MI: *mut MachineInstr = null;
+            if self.Is64Bit {
+                MI = addRegOffset(BuildMI(MF, DL, self.TII), self.StackPtr, false, NumBytes - 8);
+            } else {
+                MI = addRegOffset(BuildMI(MF, DL, self.TII), self.StackPtr, false, NumBytes - 4);
+            }
+            MI.setFlag(FrameSetup);
+            MBB.insert(iterator { MBBI }, MI);
+        }
+    } else if NumBytes {
+        self.emitSPUpdate(MBB, MBBI, DL, -NumBytes as i64, false);
+    }
+    if NumBytes {
+        EmitSEHAfter(EmitSEHStackAlloc);
+    }
+    let mut SEHFrameOffset: i32 = 0;
+    let mut SPOrEstablisher: Register = Register { Reg: 0 };
+    if IsFunclet {
+        if IsClrFunclet {
+            let mut PSPSlotOffset: u32 = self.getPSPSlotOffsetFromSP(MF);
+            let mut NoInfo: MachinePointerInfo = MachinePointerInfo { 0, 0 };
+            MBB.addLiveIn(Establisher, getAll());
+            addRegOffset(BuildMI(MBB, MBBI, DL, self.TII, Establisher), Establisher, false, PSPSlotOffset)(MF.getMachineMemOperand(NoInfo, MOLoad, self.SlotSize, Align { ShiftValue: self.SlotSize }, MMOMetadata {}, System, NotAtomic, NotAtomic));
+            addRegOffset(BuildMI(MBB, MBBI, DL, self.TII), self.StackPtr, false, PSPSlotOffset)(Establisher)(MF);
+        }
+        SPOrEstablisher = Register { Reg: Establisher };
+    } else {
+        SPOrEstablisher = self.StackPtr;
+    }
+    if IsWin64Prologue && HasFP {
+        SEHFrameOffset = calculateSetFPREG(ParentFrameNumBytes);
+        if NeedsWinCFI && !IsFunclet {
+            assert!(!NeedsWinFPO, "this setframe incompatible with FPO data");
+            HasWinCFI = true;
+            if isAsynchronousEHPersonality(Personality) || MF.hasEHFunclets() {
+                if self.TRI.hasBasePointer(MF) {
+                    MF.getWinEHFuncInfo().SEHSetFrameOffset = self.getWinEHParentFrameOffset(MF);
+                } else {
+                    MF.getWinEHFuncInfo().SEHSetFrameOffset = SEHFrameOffset;
+                }
+            }
+        }
+        let mut EmitSEHSetFrame: Closure_12 = Closure_12 { MBB: &mut MBB, MBBI: &mut MBBI, DL: &mut DL, cap_3: self, FramePtr: &mut FramePtr, SEHFrameOffset: &mut SEHFrameOffset };
+        if !IsFunclet {
+            EmitSEHBefore(EmitSEHSetFrame);
+        }
+        if SEHFrameOffset {
+            addRegOffset(BuildMI(MBB, MBBI, DL, self.TII, FramePtr), SPOrEstablisher, false, SEHFrameOffset);
+        } else {
+            BuildMI(MBB, MBBI, DL, self.TII, FramePtr)(SPOrEstablisher);
+        }
+        if !IsFunclet {
+            EmitSEHAfter(EmitSEHSetFrame);
+        }
+    } else if IsFunclet && self.STI() {
+        MBBI = self.restoreWin32EHStackPointers(MBB, iterator { MBBI }, DL, false);
+        if !MBB.isCleanupFuncletEntry() {
+            assert!(Personality == MSVC_CXX);
+            let mut FrameReg: Register = Register { Reg: 0 };
+            let mut FI: i32 = MF.getWinEHFuncInfo().EHRegNodeFrameIndex;
+            let mut EHRegOffset: i64 = self.getFrameIndexReference(MF, FI, FrameReg).getFixed();
+            addRegOffset(BuildMI(MBB, MBBI, DL, self.TII), FrameReg, false, EHRegOffset);
+        }
+    }
+    while MBBI != MBB.end() && operator(MBBI).getFlag(FrameSetup) {
+        let mut FrameInstr: *MachineInstr = operator(MBBI);
+        if NeedsWinCFI {
+            let mut FI: i32 = 0;
+            if self.TII.isStoreToStackSlot(FrameInstr, FI) {
+                Reg.operator unsigned int();
+            } else {
+                if  {
+                    let mut Offset: i32 = 0;
+                    let mut IgnoredFrameReg: Register = Register { Reg: 0 };
+                    if IsWin64Prologue && IsFunclet {
+                        Offset = self.getWin64EHFrameIndexRef(MF, FI, IgnoredFrameReg);
+                    } else {
+                        Offset = self.getFrameIndexReference(MF, FI, IgnoredFrameReg).getFixed() + SEHFrameOffset;
+                    }
+                    assert!(!NeedsWinFPO, "SEH_SaveXMM incompatible with FPO data");
+                    let mut EmitSEHSaveXMM: Closure_13 = Closure_13 { MBB: &mut MBB, MBBI: &mut MBBI, DL: &mut DL, cap_3: self, Reg: &mut Reg, Offset: &mut Offset };
+                    EmitSEHBefore(EmitSEHSaveXMM);
+                    operator(MBBI);
+                    EmitSEHAfter(EmitSEHSaveXMM);
+                    continue;
+                }
+            }
+        }
+        operator(MBBI);
+    }
+    if NeedsWinCFI && HasWinCFI {
+        BuildMI(MBB, MBBI, DL, self.TII)(FrameSetup);
+    }
+    if FnHasClrFunclet && !IsFunclet {
+        let mut PSPSlotOffset: u32 = self.getPSPSlotOffsetFromSP(MF);
+        let mut PSPInfo: MachinePointerInfo = getFixedStack(MF, MF.getWinEHFuncInfo().PSPSymFrameIdx, 0);
+        addRegOffset(BuildMI(MBB, MBBI, DL, self.TII), self.StackPtr, false, PSPSlotOffset)(self.StackPtr)(MF);
+    }
+    if IsWin64Prologue && self.TRI(MF) {
+        assert!(HasFP, "There should be a frame pointer if stack is realigned.");
+        self.BuildStackAlignAND(MBB, iterator { MBBI }, DL, SPOrEstablisher, MaxAlign);
+    }
+    if IsFunclet && self.STI() {
+        return;
+    }
+    if self.TRI.hasBasePointer(MF) {
+        let mut Opc: u32 = 0;
+        BuildMI(MBB, MBBI, DL, self.TII(Opc), BasePtr)(SPOrEstablisher)(FrameSetup);
+        if X86FI.getRestoreBasePointer() {
+            let mut Opm: u32 = 0;
+            addRegOffset(BuildMI(MBB, MBBI, DL, self.TII(Opm)), FramePtr, true, X86FI.getRestoreBasePointerOffset())(SPOrEstablisher)(FrameSetup);
+        }
+        if X86FI.getHasSEHFramePtrSave() && !IsFunclet {
+            let mut Opm: u32 = 0;
+            let mut UsedReg: Register = Register { Reg: 0 };
+            let mut Offset: i32 = self.getFrameIndexReference(MF, X86FI.getSEHFramePtrSaveIndex(), UsedReg).getFixed();
+            assert!(UsedReg == BasePtr);
+            addRegOffset(BuildMI(MBB, MBBI, DL, self.TII(Opm)), UsedReg, true, Offset)(FramePtr)(FrameSetup);
+        }
+    }
+    if ArgBaseReg.isValid() {
+        let mut MI: *mut auto = X86FI.getStackPtrSaveMI();
+        let mut FI: i32 = (1)();
+        let mut MOVmr: u32 = 0;
+        addFrameReference(BuildMI(MBB, MBBI, DL, self.TII(MOVmr)), FI)(ArgBaseReg)(FrameSetup);
+    }
+    if ((!HasFP && NumBytes) || PushedRegs) && NeedsDwarfCFI {
+        if !HasFP && NumBytes {
+            assert!(StackSize);
+            self.BuildCFI(MBB, iterator { MBBI }, DL, cfiDefCfaOffset(null, StackSize - stackGrowth, SMLoc {}), FrameSetup);
+        }
+        self.emitCalleeSavedFrameMoves(MBB, iterator { MBBI }, DL, true);
+    }
+    if Fn.getCallingConv() == X86_INTR {
+        let mut NeedsCLD: bool = false;
+        for B in MF {
+            for MI in B {
+                if MI.isCall(AnyInBundle) {
+                    NeedsCLD = true;
+                    break;
+                }
+                if isOpcodeRep(MI.getOpcode()) {
+                    NeedsCLD = true;
+                    break;
+                }
+                if MI.isInlineAsm() {
+                    NeedsCLD = true;
+                    break;
+                }
+            }
+        }
+        if NeedsCLD {
+            BuildMI(MBB, MBBI, DL, self.TII)(FrameSetup);
+        }
+    }
+    MF.setHasWinCFI(HasWinCFI);
+}
+
+fn X86FrameLowering::canUseLEAForSPInEpilogue(self: *X86FrameLowering, MF: *MachineFunction) -> bool {
+    return !MF.getTarget().getMCAsmInfo().usesWindowsCFI() || self.hasFP(MF);
+}
+
+fn isFuncletReturnInstr(MI: *mut MachineInstr) -> bool {
+    match MI.getOpcode() {
+        _ => {
+            return false;
+        },
+    }
+    llvm_unreachable_internal("impossible", "llvm\\lib\\Target\\X86\\X86FrameLowering.cpp", 2545);
+}
+
+fn X86FrameLowering::getPSPSlotOffsetFromSP(self: *X86FrameLowering, MF: *MachineFunction) -> u32 {
+    let mut Info: *WinEHFuncInfo = *MF.getWinEHFuncInfo();
+    let mut SPReg: Register = Register { Reg: 0 };
+    let mut Offset: i32 = self.getFrameIndexReferencePreferSP(MF, Info.PSPSymFrameIdx, SPReg, true).getFixed();
+    assert!(Offset >= 0 && SPReg == self.TRI.getStackRegister();
+    return Offset as u32;
+}
+
+fn X86FrameLowering::getWinEHFuncletFrameSize(self: *X86FrameLowering, MF: *MachineFunction) -> u32 {
+    let mut X86FI: *X86MachineFunctionInfo = MF;
+    let mut CSSize: u32 = X86FI.getCalleeSavedFrameSize();
+    let mut WinEHXMMSlotInfo: *auto = X86FI()();
+    let mut XMMSize: u32 = () * self.TRI;
+    let mut UsedSize: u32 = 0;
+    let mut Personality: EHPersonality = classifyEHPersonality(MF.getFunction().getPersonalityFn());
+    if Personality == CoreCLR {
+        UsedSize = self.getPSPSlotOffsetFromSP(MF) + self.SlotSize;
+    } else {
+        UsedSize = MF.getFrameInfo().getMaxCallFrameSize();
+    }
+    let mut FrameSizeMinusRBP: u32 = alignTo(CSSize + UsedSize, self.getStackAlign());
+    return FrameSizeMinusRBP + XMMSize - CSSize;
+}
+
+fn isTailCallOpcode(Opc: u32) -> bool {}
+
+fn X86FrameLowering::emitEpilogue(self: *X86FrameLowering, MF: *mut MachineFunction, MBB: *mut MachineBasicBlock) {
+    let mut MFI: *MachineFrameInfo = MF.getFrameInfo();
+    let mut X86FI: *mut X86MachineFunctionInfo = MF;
+    let mut Terminator: iterator = MBB.getFirstTerminator();
+    let mut MBBI: iterator = iterator { Terminator };
+    let mut DL: DebugLoc = DebugLoc { Loc: null };
+    if MBBI != MBB.end() {
+        DL = operator(MBBI).getDebugLoc();
+    }
+    let mut Is64BitILP32: bool = self.STI.isTarget64BitILP32();
+    let mut FramePtr: Register = self.TRI.getFrameRegister(MF);
+    let mut MachineFramePtr: Register = if Is64BitILP32 { Register { Reg: getX86SubSuperRegister(FramePtr.operator MCRegister(), 64, false) } } else { FramePtr };
+    let mut IsWin64Prologue: bool = MF.getTarget().getMCAsmInfo().usesWindowsCFI();
+    let mut NeedsWin64CFI: bool = IsWin64Prologue && MF.getFunction().needsUnwindTableEntry();
+    let mut IsWin64UnwindV3: bool = NeedsWin64CFI && MF.hasWinCFI() && requireWinX64UnwindV3(MF);
+    let mut IsFunclet: bool = if MBBI == MBB.end() { false } else { isFuncletReturnInstr(operator(MBBI)) };
+    let mut StackSize: u64 = MFI.getStackSize();
+    let mut MaxAlign: u64 = self.calculateMaxStackAlign(MF);
+    let mut CSSize: u32 = X86FI.getCalleeSavedFrameSize();
+    let mut TailCallArgReserveSize: u32 = -X86FI.getTCReturnAddrDelta();
+    let mut HasFP: bool = self.hasFP(MF);
+    let mut NumBytes: u64 = 0;
+    let mut NeedsDwarfCFI: bool = (!MF.getTarget().getTargetTriple().isOSDarwin() && !MF.getTarget().getTargetTriple().isOSWindows() && !MF.getTarget().getTargetTriple().isUEFI()) && MF.needsFrameMoves();
+    let mut ArgBaseReg: Register = Register { Reg: 0 };
+    if  {
+        let mut Opc: u32 = 0;
+        let mut StackReg: Register = zeroed();
+        ArgBaseReg = (0)();
+        if self.STI() {}
+        BuildMI(MBB, MBBI, DL, self.TII(Opc), StackReg)(ArgBaseReg)(1)(-self.SlotSize as i64)(FrameDestroy);
+        if NeedsDwarfCFI {
+            let mut DwarfStackPtr: u32 = self.TRI(StackReg, true);
+            self.BuildCFI(MBB, iterator { MBBI }, DL, cfiDefCfa(null, DwarfStackPtr, self.SlotSize, SMLoc {}), FrameDestroy);
+            operator(MBBI);
+        }
+        operator(MBBI);
+    }
+    if IsFunclet {
+        assert!(HasFP, "EH funclets without FP not yet implemented");
+        NumBytes = self.getWinEHFuncletFrameSize(MF);
+    } else if HasFP {
+        let mut FrameSize: u64 = StackSize - self.SlotSize;
+        NumBytes = FrameSize - CSSize - TailCallArgReserveSize;
+        if self.TRI(MF) && !IsWin64Prologue {
+            NumBytes = alignTo(FrameSize, MaxAlign);
+        }
+    } else {
+        NumBytes = StackSize - CSSize - TailCallArgReserveSize;
+    }
+    let mut SEHStackAllocAmt: u64 = NumBytes;
+    let mut SEHFrameOffset: u32 = 0;
+    if IsWin64Prologue && HasFP {
+        SEHFrameOffset = calculateSetFPREG(SEHStackAllocAmt);
+    }
+    let mut AfterPop: iterator = iterator { MBBI };
+    if HasFP {
+        if X86FI.hasSwiftAsyncContext() {
+            let mut Offset: i64 = self.mergeSPAdd(MBB, MBBI, 16, true);
+            self.emitSPUpdate(MBB, MBBI, DL, Offset, true);
+        }
+        if IsWin64UnwindV3 {
+            BuildMI(MBB, MBBI, DL, self.TII)(FramePtr)(FrameDestroy);
+        }
+        BuildMI(MBB, MBBI, DL, self.TII(getPOPOpcode(MF)), MachineFramePtr)(FrameDestroy);
+        if X86FI.hasSwiftAsyncContext() {
+            BuildMI(MBB, MBBI, DL, self.TII, MachineFramePtr)(MachineFramePtr)(60)(FrameDestroy);
+        }
+        if NeedsDwarfCFI {
+            if !ArgBaseReg.isValid() {
+                let mut DwarfStackPtr: u32 = self.TRI;
+                self.BuildCFI(MBB, iterator { MBBI }, DL, cfiDefCfa(null, DwarfStackPtr, self.SlotSize, SMLoc {}), FrameDestroy);
+            }
+            if !MBB.succ_empty() && !MBB.isReturnBlock() {
+                let mut DwarfFramePtr: u32 = self.TRI(MachineFramePtr, true);
+                self.BuildCFI(MBB, iterator { AfterPop }, DL, createRestore(null, DwarfFramePtr, SMLoc {}), FrameDestroy);
+                operator(MBBI);
+                operator(AfterPop);
+            }
+            operator(MBBI);
+        }
+    }
+    let mut FirstCSPop: iterator = iterator { MBBI };
+    while MBBI != MBB.begin() {
+        let mut PI: iterator = prev(MBBI);
+        let mut Opc: u32 = operator(PI).getOpcode();
+        if  {
+            if  {
+                break;
+            }
+            FirstCSPop = PI;
+        }
+        operator(MBBI);
+    }
+    if ArgBaseReg.isValid() {
+        let mut MI: *mut auto = X86FI.getStackPtrSaveMI();
+        let mut FI: i32 = (1)();
+        let mut MOVrm: u32 = 0;
+        addFrameReference(BuildMI(MBB, MBBI, DL, self.TII(MOVrm), ArgBaseReg), FI)(FrameDestroy);
+    }
+    MBBI = FirstCSPop;
+    if  {
+        self.emitCatchRetReturnValue(MBB, iterator { FirstCSPop }, &mut operator(Terminator));
+    }
+    if MBBI != MBB.end() {
+        DL = operator(MBBI).getDebugLoc();
+    }
+    if NumBytes || MFI.hasVarSizedObjects() {
+        NumBytes = self.mergeSPAdd(MBB, MBBI, NumBytes, true);
+    }
+    if IsWin64UnwindV3 && NeedsWin64CFI && MF.hasWinCFI() {
+        let mut EpilogStart: iterator = iterator { MBBI };
+        {
+            let mut ScanIt: iterator = iterator { MBBI };
+            while ScanIt != MBB.begin() {
+                let mut PI: auto = prev(ScanIt);
+                let mut FI: i32 = 0;
+                if PI()(FrameDestroy) && self.TII(operator*(), FI) {
+                    let mut Reg: Register = (0)();
+                    if  {
+                        let mut IgnoredFrameReg: Register = Register { Reg: 0 };
+                        let mut Offset: i32 = self.getFrameIndexReference(MF, FI, IgnoredFrameReg).getFixed() + SEHFrameOffset;
+                        BuildMI(MBB, DL, self.TII)(Reg)(Offset)(FrameDestroy);
+                        EpilogStart = prev();
+                        ScanIt = EpilogStart;
+                        continue;
+                    }
+                }
+                break;
+            }
+        }
+        BuildMI(MBB, EpilogStart, DL, self.TII)(FrameDestroy);
+    }
+    if ((self.TRI(MF)) || MFI.hasVarSizedObjects()) && !IsFunclet {
+        if self.TRI(MF) {
+            MBBI = FirstCSPop;
+        }
+        let mut LEAAmount: u64 = if IsWin64Prologue { SEHStackAllocAmt - SEHFrameOffset } else { -CSSize };
+        if X86FI.hasSwiftAsyncContext() {
+            LEAAmount -= 16;
+        }
+        if IsWin64UnwindV3 {
+            BuildMI(MBB, MBBI, DL, self.TII)(FramePtr)(SEHFrameOffset)(FrameDestroy);
+            if SEHStackAllocAmt {
+                BuildMI(MBB, MBBI, DL, self.TII)(SEHStackAllocAmt)(FrameDestroy);
+            }
+        }
+        if LEAAmount != 0 {
+            let mut Opc: u32 = getLEArOpcode(self.Uses64BitFramePtr);
+            addRegOffset(BuildMI(MBB, MBBI, DL, self.TII(Opc), self.StackPtr), FramePtr, false, LEAAmount);
+            operator(MBBI);
+        } else {
+            let mut Opc: u32 = 0;
+            BuildMI(MBB, MBBI, DL, self.TII(Opc), self.StackPtr)(FramePtr);
+            operator(MBBI);
+        }
+    } else if NumBytes {
+        if IsWin64UnwindV3 {
+            BuildMI(MBB, MBBI, DL, self.TII)(NumBytes)(FrameDestroy);
+        }
+        self.emitSPUpdate(MBB, MBBI, DL, NumBytes, true);
+        if !HasFP && NeedsDwarfCFI {
+            self.BuildCFI(MBB, iterator { MBBI }, DL, cfiDefCfaOffset(null, CSSize + TailCallArgReserveSize + self.SlotSize, SMLoc {}), FrameDestroy);
+        }
+        operator(MBBI);
+    }
+    if !IsWin64UnwindV3 && NeedsWin64CFI && MF.hasWinCFI() {
+        BuildMI(MBB, MBBI, DL, self.TII)(FrameDestroy);
+    }
+    if !HasFP && NeedsDwarfCFI {
+        MBBI = FirstCSPop;
+        let mut Offset: i64 = -CSSize as i64 - self.SlotSize;
+        while MBBI != MBB.end() {
+            let mut PI: iterator = iterator { MBBI };
+            let mut Opc: u32 = operator(PI).getOpcode();
+            operator(MBBI);
+            if  {
+                Offset += self.SlotSize;
+                if  {
+                    Offset += self.SlotSize;
+                }
+                self.BuildCFI(MBB, iterator { MBBI }, DL, cfiDefCfaOffset(null, -Offset, SMLoc {}), FrameDestroy);
+            }
+        }
+    }
+    if NeedsDwarfCFI && !MBB.succ_empty() {
+        self.emitCalleeSavedFrameMoves(MBB, iterator { AfterPop }, DL, false);
+    }
+    if Terminator == MBB.end() || !isTailCallOpcode(operator(Terminator).getOpcode()) {
+        let mut Delta: i64 = X86FI.getTCReturnAddrDelta();
+        assert!(Delta <= 0, "TCDelta should never be positive");
+        if Delta {
+            let mut Offset: i64 = self.mergeSPAdd(MBB, Terminator, -Delta, true);
+            self.emitSPUpdate(MBB, Terminator, DL, Offset, true);
+        }
+    }
+    if X86FI.getAMXProgModel() == ManagedRA {
+        BuildMI(MBB, Terminator, DL, self.TII);
+    }
+    if NeedsWin64CFI && MF.hasWinCFI() {
+        BuildMI(MBB, Terminator, DL, self.TII)(FrameDestroy);
+    }
+}
+
+fn X86FrameLowering::getFrameIndexReference(self: *X86FrameLowering, MF: *MachineFunction, FI: i32, FrameReg: *mut Register) -> StackOffset {
+    let mut MFI: *MachineFrameInfo = MF.getFrameInfo();
+    let mut IsFixed: bool = MFI.isFixedObjectIndex(FI);
+    if self.TRI.hasBasePointer(MF) {
+        FrameReg = if IsFixed { self.TRI.getFramePtr() } else { self.TRI.getBaseRegister() };
+    } else if self.TRI(MF) {
+        FrameReg = if IsFixed { self.TRI.getFramePtr() } else { self.TRI.getStackRegister() };
+    } else {
+        FrameReg = self.TRI.getFrameRegister(MF);
+    }
+    let mut Offset: i64 = MFI.getObjectOffset(FI) - self.getOffsetOfLocalArea();
+    let mut X86FI: *X86MachineFunctionInfo = MF;
+    let mut CSSize: u32 = X86FI.getCalleeSavedFrameSize();
+    let mut StackSize: u64 = MFI.getStackSize();
+    let mut IsWin64Prologue: bool = MF.getTarget().getMCAsmInfo().usesWindowsCFI();
+    let mut FPDelta: i64 = 0;
+    if MF.getFunction().getCallingConv() == X86_INTR && Offset >= 0 {
+        Offset += self.getOffsetOfLocalArea();
+    }
+    if IsWin64Prologue {
+        assert!(!MFI.hasCalls() || (StackSize % 16) == 8);
+        let mut FrameSize: u64 = StackSize - self.SlotSize;
+        if X86FI.getRestoreBasePointer() {
+            FrameSize += self.SlotSize;
+        }
+        let mut NumBytes: u64 = FrameSize - CSSize;
+        let mut SEHFrameOffset: u64 = calculateSetFPREG(NumBytes);
+        if FI && FI == X86FI.getFAIndex() {
+            return getFixed(-SEHFrameOffset);
+        }
+        FPDelta = FrameSize - SEHFrameOffset;
+        assert!((!MFI.hasCalls() || (FPDelta % 16) == 0), "FPDelta isn't aligned per the Win64 ABI!");
+    }
+    if FrameReg == self.TRI.getFramePtr() {
+        Offset += self.SlotSize;
+        Offset += FPDelta;
+        let mut TailCallReturnAddrDelta: i32 = X86FI.getTCReturnAddrDelta();
+        if TailCallReturnAddrDelta < 0 {
+            Offset -= TailCallReturnAddrDelta;
+        }
+        return getFixed(Offset);
+    }
+    if self.TRI(MF) || self.TRI.hasBasePointer(MF) {
+        assert!(isAligned(MFI.getObjectAlign(FI), -(Offset + StackSize);
+    }
+    return getFixed(Offset + StackSize);
+}
+
+fn X86FrameLowering::getWin64EHFrameIndexRef(self: *X86FrameLowering, MF: *MachineFunction, FI: i32, FrameReg: *mut Register) -> i32 {
+    let mut MFI: *MachineFrameInfo = MF.getFrameInfo();
+    let mut X86FI: *X86MachineFunctionInfo = MF;
+    let mut WinEHXMMSlotInfo: *auto = X86FI()();
+    let mut it: auto = (FI);
+    if it() == () {
+        return self.getFrameIndexReference(MF, FI, FrameReg).getFixed();
+    }
+    FrameReg = self.TRI.getStackRegister();
+    return alignDown(MFI.getMaxCallFrameSize(), self.getStackAlign().value()) + ;
+}
+
+fn X86FrameLowering::getFrameIndexReferenceSP(self: *X86FrameLowering, MF: *MachineFunction, FI: i32, FrameReg: *mut Register, Adjustment: i32) -> StackOffset {
+    let mut MFI: *MachineFrameInfo = MF.getFrameInfo();
+    FrameReg = self.TRI.getStackRegister();
+    return getFixed(MFI.getObjectOffset(FI) - self.getOffsetOfLocalArea() + Adjustment);
+}
+
+fn X86FrameLowering::getFrameIndexReferencePreferSP(self: *X86FrameLowering, MF: *MachineFunction, FI: i32, FrameReg: *mut Register, IgnoreSPUpdates: bool) -> StackOffset {
+    let mut MFI: *MachineFrameInfo = MF.getFrameInfo();
+    let mut StackSize: u64 = MFI.getStackSize();
+    if MFI.isFixedObjectIndex(FI) && self.TRI(MF) && !self.STI.isTargetWin64() {
+        return self.getFrameIndexReference(MF, FI, FrameReg);
+    }
+    if !IgnoreSPUpdates && !self.hasReservedCallFrame(MF) {
+        return self.getFrameIndexReference(MF, FI, FrameReg);
+    }
+    (((operator!(operator!((MF() >= 0 && "we don't handle this case!")))) || (_wassert(L"MF.getInfo<X86MachineFunctionInfo>()->getTCReturnAddrDelta() >= 0 && \"we don't handle this case!\"", L"llvm\\lib\\Target\\X86\\X86FrameLowering.cpp", (3096) as u32) , 0)) as void);
+    return self.getFrameIndexReferenceSP(MF, FI, FrameReg, StackSize);
+}
+
+fn X86FrameLowering::assignCalleeSavedSpillSlots(self: *X86FrameLowering, MF: *mut MachineFunction, TRI: *TargetRegisterInfo, CSI: *mut i32) -> bool {
+    let mut MFI: *mut MachineFrameInfo = MF.getFrameInfo();
+    let mut X86FI: *mut X86MachineFunctionInfo = MF;
+    let mut CalleeSavedFrameSize: u32 = 0;
+    let mut XMMCalleeSavedFrameSize: u32 = 0;
+    let mut WinEHXMMSlotInfo: *mut auto = X86FI()();
+    let mut SpillSlotOffset: i32 = self.getOffsetOfLocalArea() + X86FI.getTCReturnAddrDelta();
+    let mut TailCallReturnAddrDelta: i64 = X86FI.getTCReturnAddrDelta();
+    if TailCallReturnAddrDelta < 0 {
+        MFI.CreateFixedObject(-TailCallReturnAddrDelta, TailCallReturnAddrDelta - self.SlotSize, true, false);
+    }
+    if self.TRI.hasBasePointer(MF) {
+        if MF.hasEHFunclets() {
+            let mut FI: i32 = MFI.CreateSpillStackObject(self.SlotSize, Align { ShiftValue: self.SlotSize }, Default);
+            X86FI.setHasSEHFramePtrSave(true);
+            X86FI.setSEHFramePtrSaveIndex(FI);
+        }
+    }
+    let mut IsFPRemovedFromCSI: bool = false;
+    if self.hasFP(MF) {
+        SpillSlotOffset -= self.SlotSize;
+        MFI.CreateFixedSpillStackObject(self.SlotSize, SpillSlotOffset, false);
+        if X86FI.hasSwiftAsyncContext() {
+            SpillSlotOffset -= self.SlotSize;
+            MFI.CreateFixedSpillStackObject(self.SlotSize, SpillSlotOffset, false);
+            SpillSlotOffset -= self.SlotSize;
+        }
+        let mut FPReg: Register = TRI.getFrameRegister(MF);
+        for let mut i: u32 = 0; i < CSI()(); i += 1 {
+            if TRI.regsOverlap([i](), FPReg) {
+                CSI()(() + i);
+                IsFPRemovedFromCSI = true;
+                break;
+            }
+        }
+    }
+    let mut NumRegsForPush2: u32 = 0;
+    if self.STI() && self.getStackAlignment() >= 16 {
+        let mut NumCSGPR: u32 = count_if(Closure_14 {});
+        let mut UsePush2Pop2: bool = if !IsFPRemovedFromCSI { NumCSGPR > 2 } else { NumCSGPR > 1 };
+        NumRegsForPush2 = if UsePush2Pop2 { alignDown(if IsFPRemovedFromCSI { NumCSGPR } else { NumCSGPR - 1 }, 2) } else { 0 };
+    }
+    if X86FI.getRestoreBasePointer() {
+        SpillSlotOffset -= self.SlotSize;
+        CalleeSavedFrameSize += self.SlotSize;
+        MFI.CreateFixedSpillStackObject(self.SlotSize, SpillSlotOffset, false);
+        X86FI.setRestoreBasePointer(CalleeSavedFrameSize);
+    }
+    assert!(X86FI.getNumCandidatesForPush2Pop2() % 2 == 0, "Expect even candidates for push2/pop2");
+    if X86FI.getNumCandidatesForPush2Pop2() {
+        operator(NumFunctionUsingPush2Pop2);
+    }
+    X86FI.setCalleeSavedFrameSize(CalleeSavedFrameSize);
+    MFI.setCVBytesOfCalleeSavedRegisters(CalleeSavedFrameSize);
+    return true;
+}
+
+fn X86FrameLowering::spillCalleeSavedRegisters(self: *X86FrameLowering, MBB: *mut MachineBasicBlock, MI: iterator, CSI: ArrayRef<CalleeSavedInfo>, TRI: *TargetRegisterInfo) -> bool {
+    let mut DL: DebugLoc = MBB.findDebugLoc(iterator { MI });
+    if MBB.isEHFuncletEntry() && self.STI() && self.STI.isOSWindows() {
+        return true;
+    }
+    let mut MF: *MachineFunction = *MBB.getParent();
+    let mut X86FI: *X86MachineFunctionInfo = MF;
+    let mut UpdateLiveInCheckCanKill: Closure_15 = Closure_15 { MF: &mut MF, MBB: &mut MBB, TRI: &mut TRI };
+    let mut UpdateLiveInGetKillRegState: Closure_16 = Closure_16 { UpdateLiveInCheckCanKill: &mut UpdateLiveInCheckCanKill };
+    for let mut RI: auto = CSI.rbegin;
+let mut RE: auto = CSI.rend; RI() != ;  += 1 {
+        let mut Reg: MCRegister = ();
+        if  {
+            continue;
+        }
+        if X86FI.isCandidateForPush2Pop2(Register { Reg: Reg }) {
+            let mut Reg2: MCRegister = ( += 1)();
+            BuildMI(MBB, MI, DL, self.TII(getPUSH2Opcode(self.STI)))(Reg, UpdateLiveInGetKillRegState.call(Register { Reg: Reg }))(Reg2, UpdateLiveInGetKillRegState.call(Register { Reg: Reg2 }))(FrameSetup);
+        } else {
+            BuildMI(MBB, MI, DL, self.TII(getPUSHOpcode(self.STI)))(Reg, UpdateLiveInGetKillRegState.call(Register { Reg: Reg }))(FrameSetup);
+        }
+    }
+    if X86FI.getRestoreBasePointer() {
+        let mut Opc: u32 = 0;
+        let mut BaseReg: Register = self.TRI.getBaseRegister();
+        BuildMI(MBB, MI, DL, self.TII(Opc))(BaseReg, getKillRegState(true))(FrameSetup);
+    }
+    return true;
+}
+
+fn X86FrameLowering::emitCatchRetReturnValue(self: *X86FrameLowering, MBB: *mut MachineBasicBlock, MBBI: iterator, CatchRet: *mut MachineInstr) {
+    assert!(!isAsynchronousEHPersonality(classifyEHPersonality(MBB.getParent().getFunction().getPersonalityFn())), "SEH should not use CATCHRET");
+    let mut DL: *DebugLoc = CatchRet.getDebugLoc();
+    let mut CatchRetTarget: *mut MachineBasicBlock = CatchRet.getOperand(0).getMBB();
+    if self.STI() {
+        BuildMI(MBB, MBBI, DL, self.TII)(0)(0)(CatchRetTarget)(0);
+    } else {
+        BuildMI(MBB, MBBI, DL, self.TII)(CatchRetTarget);
+    }
+    CatchRetTarget.setMachineBlockAddressTaken();
+}
+
+fn X86FrameLowering::restoreCalleeSavedRegisters(self: *X86FrameLowering, MBB: *mut MachineBasicBlock, MI: iterator, CSI: MutableArrayRef<CalleeSavedInfo>, TRI: *TargetRegisterInfo) -> bool {
+    if CSI.len == 0 {
+        return false;
+    }
+    if MI != MBB.end() && isFuncletReturnInstr(operator(MI)) && self.STI.isOSWindows() {
+        if self.STI() {
+            return true;
+        }
+        if  {
+            let mut F: *Function = MBB.getParent().getFunction();
+            let mut IsSEH: bool = isAsynchronousEHPersonality(classifyEHPersonality(F.getPersonalityFn()));
+            if IsSEH {
+                return true;
+            }
+        }
+    }
+    let mut DL: DebugLoc = MBB.findDebugLoc(iterator { MI });
+    let mut MF: *mut MachineFunction = *MBB.getParent();
+    let mut X86FI: *X86MachineFunctionInfo = MF;
+    let mut NeedsWin64CFI: bool = self.isWin64Prologue(MF) && MF.getFunction().needsUnwindTableEntry();
+    let mut IsWin64UnwindV3: bool = NeedsWin64CFI && requireWinX64UnwindV3(MF);
+    for I in CSI {
+        let mut Reg: MCRegister = I.getReg();
+        if  {
+            continue;
+        }
+        let mut RC: *TargetRegisterClass = getCalleeSavedSpillRC(Reg, self.STI, *TRI);
+        self.TII.loadRegFromStackSlot(MBB, iterator { MI }, Register { Reg: Reg }, I.getFrameIdx(), RC, Register { Reg: 0 }, 0, FrameDestroy);
+    }
+    if X86FI.getRestoreBasePointer() {
+        if IsWin64UnwindV3 {
+            BuildMI(MBB, MI, DL, self.TII)(self.TRI.getBaseRegister())(FrameDestroy);
+        }
+        let mut Opc: u32 = 0;
+        let mut BaseReg: Register = self.TRI.getBaseRegister();
+        BuildMI(MBB, MI, DL, self.TII(Opc), BaseReg)(FrameDestroy);
+    }
+    for let mut I: iterator = CSI.begin();
+let mut E: iterator = CSI.end(); I != E; I += 1 {
+        let mut Reg: MCRegister = I.getReg();
+        if  {
+            continue;
+        }
+        if X86FI.isCandidateForPush2Pop2(Register { Reg: Reg }) {
+            let mut Reg2: MCRegister = (I += 1).getReg();
+            if IsWin64UnwindV3 {
+                BuildMI(MBB, MI, DL, self.TII)(Reg)(Reg2)(FrameDestroy);
+            }
+            BuildMI(MBB, MI, DL, self.TII(getPOP2Opcode(self.STI)), Reg)(Reg2, Define)(FrameDestroy);
+        } else {
+            if IsWin64UnwindV3 {
+                BuildMI(MBB, MI, DL, self.TII)(Reg)(FrameDestroy);
+            }
+            BuildMI(MBB, MI, DL, self.TII(getPOPOpcode(self.STI)), Reg)(FrameDestroy);
+        }
+    }
+    return true;
+}
+
+fn X86FrameLowering::determineCalleeSaves(self: *X86FrameLowering, MF: *mut MachineFunction, SavedRegs: *mut BitVector, RS: *mut RegScavenger) {
+    self.determineCalleeSaves(MF, SavedRegs, RS);
+    if self.TRI.hasBasePointer(MF) {
+        let mut BasePtr: Register = self.TRI.getBaseRegister();
+        if self.STI.isTarget64BitILP32() {
+            BasePtr = Register { Reg: getX86SubSuperRegister(BasePtr.operator MCRegister(), 64, false) };
+        }
+        SavedRegs.set(BasePtr.operator unsigned int());
+    }
+    if self.STI.hasUserReservedRegisters() {
+        for let mut Reg: i32 = SavedRegs.find_first(); Reg != -1; Reg = SavedRegs.find_next(Reg) {
+            if self.STI.isRegisterReservedByUser(Register { Reg: Reg }) {
+                SavedRegs.reset(Reg);
+            }
+        }
+    }
+}
+
+fn HasNestArgument(MF: *MachineFunction) -> bool {
+    let mut F: *Function = MF.getFunction();
+    for let mut I: const_arg_iterator = F.arg_begin();
+let mut E: const_arg_iterator = F.arg_end(); I != E; I += 1 {
+        if I.hasNestAttr() && !I.use_empty() {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn GetScratchRegister(Is64Bit: bool, IsLP64: bool, MF: *MachineFunction, Primary: bool) -> u32 {
+    let mut CallingConvention: ID = MF.getFunction().getCallingConv();
+    if CallingConvention == HiPE {}
+    if Is64Bit {}
+    let mut IsNested: bool = HasNestArgument(&mut MF);
+    if CallingConvention == X86_FastCall || CallingConvention == Fast || CallingConvention == Tail {
+        if IsNested {
+            report_fatal_error("Segmented stacks does not support fastcall with nested function.", true);
+        }
+    }
+}
+
+const kSplitStackAvailable: u64 = 256;
+
+fn X86FrameLowering::adjustForSegmentedStacks(self: *X86FrameLowering, MF: *mut MachineFunction, PrologueMBB: *mut MachineBasicBlock) {
+    let mut MFI: *mut MachineFrameInfo = MF.getFrameInfo();
+    let mut StackSize: u64 = 0;
+    let mut TlsReg: u32 = 0;
+    let mut TlsOffset: u32 = 0;
+    let mut DL: DebugLoc = DebugLoc { Loc: null };
+    assert!(&mut (operator(MF.begin())) == &mut PrologueMBB, "Shrink-wrapping not supported yet");
+    let mut ScratchReg: u32 = GetScratchRegister(self.Is64Bit, self.IsLP64, MF, true);
+    assert!(!MF.getRegInfo().isLiveIn(Register { Reg: ScratchReg }), "Scratch register is live-in");
+    if MF.getFunction().isVarArg() {
+        report_fatal_error("Segmented stacks do not support vararg functions.", true);
+    }
+    if !self.STI.isTargetLinux() && !self.STI.isTargetDarwin() && !self.STI.isTargetWin32() && !self.STI.isTargetWin64() && !self.STI.isTargetFreeBSD() && !self.STI.isTargetDragonFly() {
+        report_fatal_error("Segmented stacks not supported on this platform.", true);
+    }
+    StackSize = MFI.getStackSize();
+    if !MFI.needsSplitStackProlog() {
+        return;
+    }
+    let mut allocMBB: *mut MachineBasicBlock = MF.CreateMachineBasicBlock(null, optional<UniqueBBID> { nullopt });
+    let mut checkMBB: *mut MachineBasicBlock = MF.CreateMachineBasicBlock(null, optional<UniqueBBID> { nullopt });
+    let mut X86FI: *mut X86MachineFunctionInfo = MF;
+    let mut IsNested: bool = false;
+    if self.Is64Bit {
+        IsNested = HasNestArgument(&mut MF);
+    }
+    for LI in PrologueMBB.liveins() {
+        allocMBB.addLiveIn(LI);
+        checkMBB.addLiveIn(LI);
+    }
+    if IsNested {
+        allocMBB;
+    }
+    MF.push_front(allocMBB);
+    MF.push_front(checkMBB);
+    let mut CompareStackPointer: bool = StackSize < kSplitStackAvailable;
+    if self.Is64Bit {
+        if self.STI.isTargetLinux() {
+            TlsOffset = if self.IsLP64 { 112 } else { 64 };
+        } else if self.STI.isTargetDarwin() {
+            TlsOffset = 96 + 90 * 8;
+        } else if self.STI.isTargetWin64() {
+            TlsOffset = 40;
+        } else if self.STI.isTargetFreeBSD() {
+            TlsOffset = 24;
+        } else if self.STI.isTargetDragonFly() {
+            TlsOffset = 32;
+        } else {
+            report_fatal_error("Segmented stacks not supported on this platform.", true);
+        }
+        if CompareStackPointer {
+            
+        } else {
+            BuildMI(checkMBB, DL, self.TII, ScratchReg)(1)(0)(-StackSize)(0);
+        }
+        BuildMI(checkMBB, DL, self.TII)(ScratchReg)(0)(1)(0)(TlsOffset)(TlsReg);
+    } else {
+        if self.STI.isTargetLinux() {
+            TlsOffset = 48;
+        } else if self.STI.isTargetDarwin() {
+            TlsOffset = 72 + 90 * 4;
+        } else if self.STI.isTargetWin32() {
+            TlsOffset = 20;
+        } else if self.STI.isTargetDragonFly() {
+            TlsOffset = 16;
+        } else if self.STI.isTargetFreeBSD() {
+            report_fatal_error("Segmented stacks not supported on FreeBSD i386.", true);
+        } else {
+            report_fatal_error("Segmented stacks not supported on this platform.", true);
+        }
+        if CompareStackPointer {
+            
+        } else {
+            BuildMI(checkMBB, DL, self.TII, ScratchReg)(1)(0)(-StackSize)(0);
+        }
+        if self.STI.isTargetLinux() || self.STI.isTargetWin32() || self.STI.isTargetWin64() || self.STI.isTargetDragonFly() {
+            BuildMI(checkMBB, DL, self.TII)(ScratchReg)(0)(0)(0)(TlsOffset)(TlsReg);
+        } else if self.STI.isTargetDarwin() {
+            let mut ScratchReg2: u32 = 0;
+            let mut SaveScratch2: bool = false;
+            if CompareStackPointer {
+                ScratchReg2 = GetScratchRegister(self.Is64Bit, self.IsLP64, MF, true);
+                SaveScratch2 = false;
+            } else {
+                ScratchReg2 = GetScratchRegister(self.Is64Bit, self.IsLP64, MF, false);
+                SaveScratch2 = MF.getRegInfo().isLiveIn(Register { Reg: ScratchReg2 });
+            }
+            assert!((!MF.getRegInfo().isLiveIn(Register { Reg: ScratchReg2 }) || SaveScratch2), "Scratch register is live-in and not saved");
+            if SaveScratch2 {
+                BuildMI(checkMBB, DL, self.TII)(ScratchReg2, Kill);
+            }
+            BuildMI(checkMBB, DL, self.TII, ScratchReg2)(TlsOffset);
+            BuildMI(checkMBB, DL, self.TII)(ScratchReg)(ScratchReg2)(1)(0)(0)(TlsReg);
+            if SaveScratch2 {
+                BuildMI(checkMBB, DL, self.TII, ScratchReg2);
+            }
+        }
+    }
+    BuildMI(checkMBB, DL, self.TII)(&mut PrologueMBB)(COND_A);
+    if self.Is64Bit {
+        let mut RegAX: u32 = 0;
+        let mut Reg10: u32 = 0;
+        let mut Reg11: u32 = 0;
+        let mut MOVrr: u32 = 0;
+        if IsNested {
+            BuildMI(allocMBB, DL, self.TII(MOVrr), RegAX)(Reg10);
+        }
+        BuildMI(allocMBB, DL, self.TII(getMOVriOpcode(self.IsLP64, StackSize)), Reg10)(StackSize);
+        BuildMI(allocMBB, DL, self.TII(getMOVriOpcode(self.IsLP64, X86FI.getArgumentStackSize())), Reg11)(X86FI.getArgumentStackSize());
+    } else {
+        BuildMI(allocMBB, DL, self.TII)(X86FI.getArgumentStackSize());
+        BuildMI(allocMBB, DL, self.TII)(StackSize);
+    }
+    if self.Is64Bit && MF.getTarget().getCodeModel() == Large {
+        if self.STI.useIndirectThunkCalls() {
+            report_fatal_error("Emitting morestack calls on 64-bit with the large code model and thunks not yet implemented.", true);
+        }
+        BuildMI(allocMBB, DL, self.TII)(0)(0)("__morestack_addr")(0);
+    } else {
+        if self.Is64Bit {
+            BuildMI(allocMBB, DL, self.TII)("__morestack");
+        } else {
+            BuildMI(allocMBB, DL, self.TII)("__morestack");
+        }
+    }
+    if IsNested {
+        BuildMI(allocMBB, DL, self.TII);
+    } else {
+        BuildMI(allocMBB, DL, self.TII);
+    }
+    allocMBB.addSuccessor(&mut PrologueMBB, getUnknown());
+    checkMBB.addSuccessor(allocMBB, getZero());
+    checkMBB.addSuccessor(&mut PrologueMBB, getOne());
+}
+
+fn getHiPELiteral(HiPELiteralsMD: *mut NamedMDNode, LiteralName: str) -> u32 {
+    for let mut i: i32 = 0;
+let mut e: i32 = HiPELiteralsMD.getNumOperands(); i != e; i += 1 {
+        let mut Node: *mut MDNode = HiPELiteralsMD.getOperand(i);
+        if Node.getNumOperands() != 2 {
+            continue;
+        }
+        let mut NodeName: *mut MDString = dyn_cast(Node.getOperand(0));
+        let mut NodeVal: *mut ValueAsMetadata = dyn_cast(Node.getOperand(1));
+        if !NodeName || !NodeVal {
+            continue;
+        }
+        let mut ValConst: *mut ConstantInt = dyn_cast_or_null(NodeVal.getValue());
+        if ValConst && NodeName.getString() == LiteralName {
+            return ValConst.getZExtValue();
+        }
+    }
+    report_fatal_error("HiPE literal " + LiteralName + " required but not provided", true);
+}
+
+fn blockEndIsUnreachable(MBB: *MachineBasicBlock, MBBI: const_iterator) -> bool {
+    return all_of(MBB.successors(), Closure_17 {}) && all_of(MBBI, MBB.end(), Closure_18 {});
+}
+
+fn X86FrameLowering::adjustForHiPEPrologue(self: *X86FrameLowering, MF: *mut MachineFunction, PrologueMBB: *mut MachineBasicBlock) {
+    let mut MFI: *mut MachineFrameInfo = MF.getFrameInfo();
+    let mut DL: DebugLoc = DebugLoc { Loc: null };
+    assert!(&mut (operator(MF.begin())) == &mut PrologueMBB, "Shrink-wrapping not supported yet");
+    let mut HiPELiteralsMD: *mut NamedMDNode = MF.getFunction().getParent().getNamedMetadata("hipe.literals");
+    if !HiPELiteralsMD {
+        report_fatal_error("Can't generate HiPE prologue without runtime parameters", true);
+    }
+    let mut HipeLeafWords: u32 = getHiPELiteral(HiPELiteralsMD, if self.Is64Bit { "AMD64_LEAF_WORDS" } else { "X86_LEAF_WORDS" });
+    let mut CCRegisteredArgs: u32 = if self.Is64Bit { 6 } else { 5 };
+    let mut Guaranteed: u32 = HipeLeafWords * self.SlotSize;
+    let mut CallerStkArity: u32 = if MF.getFunction().arg_size() > CCRegisteredArgs { MF.getFunction().arg_size() - CCRegisteredArgs } else { 0 };
+    let mut MaxStack: u32 = MFI.getStackSize() + CallerStkArity * self.SlotSize + self.SlotSize;
+    assert!(self.STI.isTargetLinux(), "HiPE prologue is only supported on Linux operating systems.");
+    if MFI.hasCalls() {
+        let mut MoreStackForCalls: u32 = 0;
+        for MBB in MF {
+            for MI in MBB {
+                if !MI.isCall(AnyInBundle) {
+                    continue;
+                }
+                let mut MO: *MachineOperand = MI.getOperand(0);
+                if !MO.isGlobal() {
+                    continue;
+                }
+                let mut F: *Function = dyn_cast(MO.getGlobal());
+                if !F {
+                    continue;
+                }
+                if F.getName().contains("erlang.") || F.getName().contains("bif_") || F.getName().find_first_of("._", 0) == npos {
+                    continue;
+                }
+                let mut CalleeStkArity: u32 = if F.arg_size() > CCRegisteredArgs { F.arg_size() - CCRegisteredArgs } else { 0 };
+                if HipeLeafWords - 1 > CalleeStkArity {
+                    MoreStackForCalls = max(MoreStackForCalls, (HipeLeafWords - 1 - CalleeStkArity) * self.SlotSize);
+                }
+            }
+        }
+        MaxStack += MoreStackForCalls;
+    }
+    if MaxStack > Guaranteed {
+        let mut stackCheckMBB: *mut MachineBasicBlock = MF.CreateMachineBasicBlock(null, optional<UniqueBBID> { nullopt });
+        let mut incStackMBB: *mut MachineBasicBlock = MF.CreateMachineBasicBlock(null, optional<UniqueBBID> { nullopt });
+        for LI in PrologueMBB.liveins() {
+            stackCheckMBB.addLiveIn(LI);
+            incStackMBB.addLiveIn(LI);
+        }
+        MF.push_front(incStackMBB);
+        MF.push_front(stackCheckMBB);
+        let mut ScratchReg: u32 = 0;
+        let mut SPReg: u32 = 0;
+        let mut PReg: u32 = 0;
+        let mut SPLimitOffset: u32 = 0;
+        let mut LEAop: u32 = 0;
+        let mut CMPop: u32 = 0;
+        let mut CALLop: u32 = 0;
+        SPLimitOffset = getHiPELiteral(HiPELiteralsMD, "P_NSP_LIMIT");
+        if self.Is64Bit {} else {}
+        ScratchReg = GetScratchRegister(self.Is64Bit, self.IsLP64, MF, true);
+        assert!(!MF.getRegInfo().isLiveIn(Register { Reg: ScratchReg }), "HiPE prologue scratch register is live-in");
+        addRegOffset(BuildMI(stackCheckMBB, DL, self.TII(LEAop), ScratchReg), SPReg, false, -MaxStack);
+        addRegOffset(BuildMI(stackCheckMBB, DL, self.TII(CMPop))(ScratchReg), PReg, false, SPLimitOffset);
+        BuildMI(stackCheckMBB, DL, self.TII)(&mut PrologueMBB)(COND_AE);
+        BuildMI(incStackMBB, DL, self.TII(CALLop))("inc_stack_0");
+        addRegOffset(BuildMI(incStackMBB, DL, self.TII(LEAop), ScratchReg), SPReg, false, -MaxStack);
+        addRegOffset(BuildMI(incStackMBB, DL, self.TII(CMPop))(ScratchReg), PReg, false, SPLimitOffset);
+        BuildMI(incStackMBB, DL, self.TII)(incStackMBB)(COND_LE);
+        stackCheckMBB.addSuccessor(&mut PrologueMBB, BranchProbability { 99, 100 });
+        stackCheckMBB.addSuccessor(incStackMBB, BranchProbability { 1, 100 });
+        incStackMBB.addSuccessor(&mut PrologueMBB, BranchProbability { 99, 100 });
+        incStackMBB.addSuccessor(incStackMBB, BranchProbability { 1, 100 });
+    }
+}
+
+fn X86FrameLowering::adjustStackWithPops(self: *X86FrameLowering, MBB: *mut MachineBasicBlock, MBBI: iterator, DL: *DebugLoc, Offset: i32) -> bool {
+    if Offset <= 0 {
+        return false;
+    }
+    if Offset % self.SlotSize {
+        return false;
+    }
+    let mut NumPops: i32 = Offset / self.SlotSize;
+    if NumPops != 1 && NumPops != 2 {
+        return false;
+    }
+    if MBBI == MBB.begin() {
+        return false;
+    }
+    let mut Prev: iterator = prev(MBBI);
+    if !operator(Prev).isCall(AnyInBundle) || !operator(Prev).getOperand(1).isRegMask() {
+        return false;
+    }
+    let mut Regs: [2]u32 = zeroed();
+    let mut FoundRegs: u32 = 0;
+    let mut MRI: *MachineRegisterInfo = MBB.getParent().getRegInfo();
+    let mut RegMask: *MachineOperand = operator(Prev).getOperand(1);
+    let mut RegClass: *mut auto = null;
+    if FoundRegs == 0 {
+        return false;
+    }
+    while FoundRegs < NumPops as u32 {
+        Regs[FoundRegs += 1] = Regs[0];
+    }
+    for let mut i: i32 = 0; i < NumPops; i += 1 {
+        BuildMI(MBB, MBBI, DL, self.TII, Regs[i]);
+    }
+    return true;
+}
+
+fn X86FrameLowering::eliminateCallFramePseudoInstr(self: *X86FrameLowering, MF: *mut MachineFunction, MBB: *mut MachineBasicBlock, I: iterator) -> iterator {
+    let mut reserveCallFrame: bool = self.hasReservedCallFrame(MF);
+    let mut Opcode: u32 = operator(I).getOpcode();
+    let mut isDestroy: bool = Opcode == self.TII();
+    let mut DL: DebugLoc = operator(I).getDebugLoc();
+    let mut Amount: u64 = self.TII(operator(I));
+    let mut InternalAmt: u64 = if (isDestroy || Amount) { self.TII.getFrameAdjustment(operator(I)) } else { 0 };
+    I = MBB.erase(iterator { I });
+    let mut InsertPos: auto = skipDebugInstructionsForward(I, MBB.end());
+    if isDestroy && blockEndIsUnreachable(MBB, I) {
+        return I;
+    }
+    if !reserveCallFrame {
+        Amount = alignTo(Amount, self.getStackAlign());
+        let mut F: *Function = MF.getFunction();
+        let mut WindowsCFI: bool = MF.getTarget().getMCAsmInfo().usesWindowsCFI();
+        let mut DwarfCFI: bool = !WindowsCFI && MF.needsFrameMoves();
+        let mut HasDwarfEHHandlers: bool = !WindowsCFI && !MF.getLandingPads().is_empty();
+        if HasDwarfEHHandlers && !isDestroy && MF() {
+            self.BuildCFI(MBB, DL, createGnuArgsSize(null, Amount, SMLoc {}));
+        }
+        if Amount == 0 {
+            return I;
+        }
+        Amount -= InternalAmt;
+        if isDestroy && InternalAmt && DwarfCFI && !self.hasFP(MF) {
+            self.BuildCFI(MBB, DL, createAdjustCfaOffset(null, -InternalAmt, SMLoc {}));
+        }
+        let mut StackAdjustment: i64 = if isDestroy { Amount } else { -Amount };
+        let mut CfaAdjustment: i64 = StackAdjustment;
+        if StackAdjustment {
+            let mut CalcCfaAdjust: Closure_19 = Closure_19 { CfaAdjustment: &mut CfaAdjustment };
+            let mut CalcNewOffset: Closure_20 = Closure_20 { StackAdjustment: &mut StackAdjustment };
+            StackAdjustment = (MBB, CalcCfaAdjust, CalcNewOffset, true);
+            StackAdjustment = (MBB, CalcCfaAdjust, CalcNewOffset, false);
+            if StackAdjustment {
+                if operator!((F.hasMinSize() && self.adjustStackWithPops(MBB, DL, StackAdjustment))) {
+                    self.BuildStackAdjustment(MBB, DL, StackAdjustment, false);
+                }
+            }
+        }
+        if DwarfCFI && !self.hasFP(MF) && CfaAdjustment {
+            self.BuildCFI(MBB, DL, createAdjustCfaOffset(null, -CfaAdjustment, SMLoc {}));
+        }
+        return I;
+    }
+    if InternalAmt {
+        let mut CI: iterator = iterator { I };
+        let mut B: iterator = MBB.begin();
+        while CI != B && operator!(prev(CI)()) {
+            operator(CI);
+        }
+        self.BuildStackAdjustment(MBB, iterator { CI }, DL, -InternalAmt, false);
+    }
+    return I;
+}
+
+fn X86FrameLowering::canUseAsPrologue(self: *X86FrameLowering, MBB: *MachineBasicBlock) -> bool {
+    assert!(MBB.getParent(), "Block is not attached to a function!");
+    let mut MF: *MachineFunction = *MBB.getParent();
+    if operator!(MBB.isLiveIn) {
+        return true;
+    }
+    let mut STI: *X86Subtarget = MF;
+    let mut TLI: *X86TargetLowering = *STI.getTargetLowering();
+    if TLI.hasInlineStackProbe(MF) || TLI.hasStackProbeSymbol(MF) {
+        return false;
+    }
+    let mut X86FI: *X86MachineFunctionInfo = MF;
+    return operator!(self.TRI(MF)) && !X86FI.hasSwiftAsyncContext();
+}
+
+fn X86FrameLowering::canUseAsEpilogue(self: *X86FrameLowering, MBB: *MachineBasicBlock) -> bool {
+    assert!(MBB.getParent(), "Block is not attached to a function!");
+    if self.STI.isTargetWin64() && !MBB.succ_empty() && !MBB.isReturnBlock() {
+        return false;
+    }
+    let mut MF: *MachineFunction = *MBB.getParent();
+    if MF() {
+        return !flagsNeedToBePreservedBeforeTheTerminators(MBB);
+    }
+    if self.canUseLEAForSPInEpilogue(*MBB.getParent()) {
+        return true;
+    }
+    return !flagsNeedToBePreservedBeforeTheTerminators(MBB);
+}
+
+fn X86FrameLowering::enableShrinkWrapping(self: *X86FrameLowering, MF: *MachineFunction) -> bool {
+    let mut CompactUnwind: bool = MF.getContext().getObjectFileInfo().getCompactUnwindSection() != null;
+    return (MF.getFunction().hasFnAttribute(NoUnwind) || self.hasFP(MF) || !CompactUnwind) && MF.getFunction().getCallingConv() != HiPE && !MF.shouldSplitStack();
+}
+
+fn X86FrameLowering::restoreWin32EHStackPointers(self: *X86FrameLowering, MBB: *mut MachineBasicBlock, MBBI: iterator, DL: *DebugLoc, RestoreSP: bool) -> iterator {
+    assert!(self.STI.isTargetWindowsMSVC(), "funclets only supported in MSVC env");
+    assert!(self.STI.isTargetWin32(), "EBP/ESI restoration only required on win32");
+    (((operator!(operator!((self.STI() && !self.Uses64BitFramePtr && "restoring EBP/ESI on non-32-bit target")))) || (_wassert(L"STI.is32Bit() && !Uses64BitFramePtr && \"restoring EBP/ESI on non-32-bit target\"", L"llvm\\lib\\Target\\X86\\X86FrameLowering.cpp", (4251) as u32) , 0)) as void);
+    let mut MF: *mut MachineFunction = *MBB.getParent();
+    let mut FramePtr: Register = self.TRI.getFrameRegister(MF);
+    let mut BasePtr: Register = self.TRI.getBaseRegister();
+    let mut FuncInfo: *mut WinEHFuncInfo = *MF.getWinEHFuncInfo();
+    let mut X86FI: *mut X86MachineFunctionInfo = MF;
+    let mut MFI: *mut MachineFrameInfo = MF.getFrameInfo();
+    let mut FI: i32 = FuncInfo.EHRegNodeFrameIndex;
+    let mut EHRegSize: i32 = MFI.getObjectSize(FI);
+    if RestoreSP {
+        addRegOffset(BuildMI(MBB, MBBI, DL, self.TII), true, -EHRegSize)(FrameSetup);
+    }
+    let mut UsedReg: Register = Register { Reg: 0 };
+    let mut EHRegOffset: i32 = self.getFrameIndexReference(MF, FI, UsedReg).getFixed();
+    let mut EndOffset: i32 = -EHRegOffset - EHRegSize;
+    FuncInfo.EHRegNodeEndOffset = EndOffset;
+    if UsedReg == FramePtr {
+        let mut ADDri: u32 = getADDriOpcode(false);
+        BuildMI(MBB, MBBI, DL, self.TII(ADDri), FramePtr)(FramePtr)(EndOffset)(FrameSetup)(3)();
+        assert!(EndOffset >= 0, "end of registration object above normal EBP position!");
+    } else if UsedReg == BasePtr {
+        addRegOffset(BuildMI(MBB, MBBI, DL, self.TII, BasePtr), FramePtr, false, EndOffset)(FrameSetup);
+        assert!(X86FI.getHasSEHFramePtrSave();
+        let mut Offset: i32 = self.getFrameIndexReference(MF, X86FI.getSEHFramePtrSaveIndex(), UsedReg).getFixed();
+        assert!(UsedReg == BasePtr);
+        addRegOffset(BuildMI(MBB, MBBI, DL, self.TII, FramePtr), UsedReg, true, Offset)(FrameSetup);
+    } else {
+        llvm_unreachable_internal("32-bit frames with WinEH must use FramePtr or BasePtr", "llvm\\lib\\Target\\X86\\X86FrameLowering.cpp", 4303);
+    }
+    return MBBI;
+}
+
+fn X86FrameLowering::getInitialCFAOffset(self: *X86FrameLowering, MF: *MachineFunction) -> i32 {
+    return self.TRI.getSlotSize();
+}
+
+fn X86FrameLowering::getInitialCFARegister(self: *X86FrameLowering, MF: *MachineFunction) -> Register {
+    return self.StackPtr;
+}
+
+fn X86FrameLowering::getDwarfFrameBase(self: *X86FrameLowering, MF: *MachineFunction) -> DwarfFrameBase {
+    let mut RI: *TargetRegisterInfo = MF.getSubtarget().getRegisterInfo();
+    let mut FrameRegister: Register = RI.getFrameRegister(MF);
+    if self.getInitialCFARegister(MF) == FrameRegister && MF() {
+        let mut FrameBase: DwarfFrameBase = DwarfFrameBase {};
+        FrameBase.Kind = CFA;
+        FrameBase.Location.Offset = -MF.getFrameInfo().getStackSize() - self.getInitialCFAOffset(MF);
+        return FrameBase;
+    }
+    return DwarfFrameBase { Register, union (unnamed at p:\Goraw\llvm-project\llvm\include\llvm\CodeGen\TargetFrameLowering.h:70:5) { FrameRegister.operator unsigned int() } };
+}
+
+struct X86FrameSortingObject {
+    IsValid: bool,
+    ObjectIndex: u32,
+    ObjectSize: u32,
+    ObjectAlignment: Align,
+    ObjectNumUses: u32,
+}
+
+struct X86FrameSortingComparator {
+}
+
+fn X86FrameSortingComparator::operator()(self: *X86FrameSortingComparator, A: *X86FrameSortingObject, B: *X86FrameSortingObject) -> bool {
+    let mut DensityAScaled: u64 = 0;
+    let mut DensityBScaled: u64 = 0;
+    if !A.IsValid {
+        return false;
+    }
+    if !B.IsValid {
+        return true;
+    }
+    DensityAScaled = A.ObjectNumUses as u64 * B.ObjectSize as u64;
+    DensityBScaled = B.ObjectNumUses as u64 * A.ObjectSize as u64;
+    if DensityAScaled == DensityBScaled {
+        return A.ObjectAlignment < B.ObjectAlignment;
+    }
+    return DensityAScaled < DensityBScaled;
+}
+
+fn X86FrameLowering::orderFrameObjects(self: *X86FrameLowering, MF: *MachineFunction, ObjectsToAllocate: *mut SmallVectorImpl<int>) {
+    let mut MFI: *MachineFrameInfo = MF.getFrameInfo();
+    if ObjectsToAllocate()() {
+        return;
+    }
+    let mut SortingObjects: i32 = MFI.getObjectIndexEnd();
+    for MBB in MF {
+        for MI in MBB {
+            if MI.isDebugInstr() {
+                continue;
+            }
+            for MO in MI.operands() {
+                if !MO.isFI() {
+                    continue;
+                }
+                let mut Index: i32 = MO.getIndex();
+                if Index >= 0 && Index < MFI.getObjectIndexEnd() && [Index] {
+                    SortingObjects()[Index] += 1;
+                }
+            }
+        }
+    }
+    stable_sort(X86FrameSortingComparator {});
+    let mut i: i32 = 0;
+    if operator!(self.TRI(MF)) && self.hasFP(MF) {
+        reverse(ObjectsToAllocate()(), ObjectsToAllocate()());
+    }
+}
+
+fn X86FrameLowering::getWinEHParentFrameOffset(self: *X86FrameLowering, MF: *MachineFunction) -> u32 {
+    let mut Offset: u32 = 16;
+    Offset += self.SlotSize;
+    operator+=(Offset, MF());
+    Offset += self.getWinEHFuncletFrameSize(MF);
+    return Offset;
+}
+
+fn X86FrameLowering::processFunctionBeforeFrameFinalized(self: *X86FrameLowering, MF: *mut MachineFunction, RS: *mut RegScavenger) {
+    MF.setHasWinCFI(false);
+    let mut MFI: *mut MachineFrameInfo = MF.getFrameInfo();
+    if !isInt(MFI.estimateStackSize(MF)) {
+        let mut FI: i32 = MFI.CreateStackObject(self.SlotSize, Align { ShiftValue: self.SlotSize }, false, null, 0);
+        RS.addScavengingFrameIndex(FI);
+    }
+    if MF.getTarget().getMCAsmInfo().usesWindowsCFI() {
+        MF.getFrameInfo().ensureMaxAlignment(Align { ShiftValue: self.SlotSize });
+    }
+    if self.STI() && MF.hasEHFunclets() && classifyEHPersonality(MF.getFunction().getPersonalityFn()) == MSVC_CXX {
+        self.adjustFrameForMsvcCxxEh(MF);
+    }
+}
+
+fn X86FrameLowering::adjustFrameForMsvcCxxEh(self: *X86FrameLowering, MF: *mut MachineFunction) {
+    let mut MFI: *mut MachineFrameInfo = MF.getFrameInfo();
+    let mut EHInfo: *mut WinEHFuncInfo = *MF.getWinEHFuncInfo();
+    let mut MinFixedObjOffset: i64 = -self.SlotSize;
+    for let mut I: i32 = MFI.getObjectIndexBegin(); I < 0; I += 1 {
+        MinFixedObjOffset = min(MinFixedObjOffset, MFI.getObjectOffset(I));
+    }
+    MinFixedObjOffset -= if MinFixedObjOffset < 0 { -MinFixedObjOffset } else { MinFixedObjOffset } % 8;
+    let mut UnwindHelpOffset: i64 = MinFixedObjOffset - self.SlotSize;
+    let mut UnwindHelpFI: i32 = MFI.CreateFixedObject(self.SlotSize, UnwindHelpOffset, false, false);
+    EHInfo.UnwindHelpFrameIdx = UnwindHelpFI;
+    let mut MBB: *mut MachineBasicBlock = MF.front();
+    let mut MBBI: iterator = MBB.begin();
+    while MBBI != MBB.end() && operator(MBBI).getFlag(FrameSetup) {
+        operator(MBBI);
+    }
+    let mut DL: DebugLoc = MBB.findDebugLoc(iterator { MBBI });
+    addFrameReference(BuildMI(MBB, MBBI, DL, self.TII), UnwindHelpFI)(-2);
+}
+
+fn X86FrameLowering::processFunctionBeforeFrameIndicesReplaced(self: *X86FrameLowering, MF: *mut MachineFunction, RS: *mut RegScavenger) {
+    let mut X86FI: *mut auto = MF;
+    if self.STI() && MF.hasEHFunclets() {
+        self.restoreWinEHStackPointersInParent(MF);
+    }
+    if () {
+        MI;
+    } else {
+        MI.eraseFromParent();
+        X86FI()(null);
+    }
+}
+
+fn X86FrameLowering::restoreWinEHStackPointersInParent(self: *X86FrameLowering, MF: *mut MachineFunction) {
+    let mut IsSEH: bool = isAsynchronousEHPersonality(classifyEHPersonality(MF.getFunction().getPersonalityFn()));
+    for MBB in MF {
+        let mut NeedsRestore: bool = MBB.isEHPad() && !MBB.isEHFuncletEntry();
+        if NeedsRestore {
+            self.restoreWin32EHStackPointers(MBB, MBB.begin(), DebugLoc { Loc: null }, IsSEH);
+        }
+    }
+}
+
+fn computeFPBPAlignmentGap(MF: *mut MachineFunction, RC: *TargetRegisterClass, NumSpilledRegs: u32) -> i32 {
+    let mut TRI: *TargetRegisterInfo = MF.getSubtarget().getRegisterInfo();
+    let mut AllocSize: u32 = TRI.getSpillSize(*RC) * NumSpilledRegs;
+    let mut StackAlign: Align = MF.getSubtarget().getFrameLowering().getStackAlign();
+    let mut AlignedSize: u32 = alignTo(AllocSize, StackAlign);
+    return AlignedSize - AllocSize;
+}
+
+fn X86FrameLowering::spillFPBPUsingSP(self: *X86FrameLowering, MF: *mut MachineFunction, BeforeMI: iterator, FP: Register, BP: Register, SPAdjust: i32) {
+    assert!(FP.isValid() || BP.isValid();
+    let mut MBB: *mut MachineBasicBlock = operator(BeforeMI).getParent();
+    let mut DL: DebugLoc = operator(BeforeMI).getDebugLoc();
+    if FP.isValid() {
+        BuildMI(*MBB, BeforeMI, DL, self.TII(getPUSHOpcode(MF)))(FP);
+    }
+    if BP.isValid() {
+        BuildMI(*MBB, BeforeMI, DL, self.TII(getPUSHOpcode(MF)))(BP);
+    }
+    if SPAdjust {
+        self.emitSPUpdate(*MBB, BeforeMI, DL, -SPAdjust, false);
+    }
+    if FP.isValid() && self.needsDwarfCFI(MF) {
+        let mut CFIIndex: u32 = MF.addFrameInst(createRememberState(null, SMLoc {}));
+        BuildMI(*MBB, BeforeMI, DL, self.TII(CFI_INSTRUCTION))(CFIIndex);
+        let mut CfaExpr: str = zeroed();
+        let mut buffer: [16]u8 = zeroed();
+        let mut Offset: i32 = SPAdjust;
+        if BP.isValid() {
+            operator+=(Offset, self.TRI(operator*(self.TRI(BP))));
+        }
+        if self.TII(operator(BeforeMI)) {
+            operator+=(Offset, alignTo(self.TII(operator(BeforeMI)), self.getStackAlign()));
+            BeforeMI = next(BeforeMI);
+        }
+        let mut StackPtr: Register = self.TRI.getStackRegister();
+        if self.STI.isTarget64BitILP32() {
+            StackPtr = Register { Reg: getX86SubSuperRegister(StackPtr.operator MCRegister(), 64, false) };
+        }
+        let mut DwarfStackPtr: u32 = self.TRI(StackPtr, true);
+        CfaExpr()((DW_OP_breg0 + DwarfStackPtr) as u8);
+        CfaExpr()(buffer, buffer + encodeSLEB128(Offset, buffer, 0));
+        CfaExpr()(DW_OP_deref);
+        CfaExpr()(DW_OP_consts);
+        CfaExpr()(buffer, buffer + encodeSLEB128(self.SlotSize * 2, buffer, 0));
+        CfaExpr()(DW_OP_plus as u8);
+        let mut DefCfaExpr: str = zeroed();
+        DefCfaExpr()(DW_CFA_def_cfa_expression);
+        DefCfaExpr()(buffer, buffer + encodeSLEB128(buffer));
+        DefCfaExpr()();
+        self.BuildCFI(*MBB, BeforeMI, DL, createEscape(null), FrameSetup);
+    }
+}
+
+fn X86FrameLowering::restoreFPBPUsingSP(self: *X86FrameLowering, MF: *mut MachineFunction, AfterMI: iterator, FP: Register, BP: Register, SPAdjust: i32) {
+    assert!(FP.isValid() || BP.isValid();
+    let mut MBB: *mut MachineBasicBlock = operator(AfterMI).getParent();
+    let mut Pos: iterator = next(AfterMI);
+    let mut DL: DebugLoc = operator(AfterMI).getDebugLoc();
+    if SPAdjust {
+        self.emitSPUpdate(*MBB, Pos, DL, SPAdjust, false);
+    }
+    if BP.isValid() {
+        BuildMI(*MBB, Pos, DL, self.TII(getPOPOpcode(MF)), BP);
+    }
+    if FP.isValid() {
+        BuildMI(*MBB, Pos, DL, self.TII(getPOPOpcode(MF)), FP);
+        if self.needsDwarfCFI(MF) {
+            let mut CFIIndex: u32 = MF.addFrameInst(createRestoreState(null, SMLoc {}));
+            BuildMI(*MBB, Pos, DL, self.TII(CFI_INSTRUCTION))(CFIIndex);
+        }
+    }
+}
+
+fn X86FrameLowering::saveAndRestoreFPBPUsingSP(self: *X86FrameLowering, MF: *mut MachineFunction, BeforeMI: iterator, AfterMI: iterator, SpillFP: bool, SpillBP: bool) {
+    assert!(SpillFP || SpillBP);
+    let mut FP: Register = Register { Reg: 0 };
+    let mut BP: Register = Register { Reg: 0 };
+    let mut RC: *TargetRegisterClass = null;
+    let mut NumRegs: u32 = 0;
+    if SpillFP {
+        FP = self.TRI.getFrameRegister(MF);
+        if self.STI.isTarget64BitILP32() {
+            FP = Register { Reg: getX86SubSuperRegister(FP.operator MCRegister(), 64, false) };
+        }
+        RC = self.TRI(FP);
+        NumRegs += 1;
+    }
+    if SpillBP {
+        BP = self.TRI.getBaseRegister();
+        if self.STI.isTarget64BitILP32() {
+            BP = Register { Reg: getX86SubSuperRegister(BP.operator MCRegister(), 64, false) };
+        }
+        RC = self.TRI(BP);
+        NumRegs += 1;
+    }
+    let mut SPAdjust: i32 = computeFPBPAlignmentGap(MF, RC, NumRegs);
+    self.spillFPBPUsingSP(MF, iterator { BeforeMI }, FP, BP, SPAdjust);
+    self.restoreFPBPUsingSP(MF, iterator { AfterMI }, FP, BP, SPAdjust);
+}
+
+fn X86FrameLowering::skipSpillFPBP(self: *X86FrameLowering, MF: *mut MachineFunction, MI: *mut reverse_iterator) -> bool {
+    if  {
+        let mut FI: i32 = 0;
+        let mut Reg: Register = Register { Reg: 0 };
+        while  {
+            operator(MI);
+        }
+        return true;
+    }
+    return false;
+}
+
+fn isFPBPAccess(MI: *MachineInstr, FP: Register, BP: Register, TRI: *TargetRegisterInfo, AccessFP: *mut bool, AccessBP: *mut bool) -> bool {
+    AccessFP = AccessBP = false;
+    if FP.operator unsigned int() {
+        if MI.findRegisterUseOperandIdx(FP, TRI, false) != -1 || MI.findRegisterDefOperandIdx(FP, TRI, false, true) != -1 {
+            AccessFP = true;
+        }
+    }
+    if BP.operator unsigned int() {
+        if MI.findRegisterUseOperandIdx(BP, TRI, false) != -1 || MI.findRegisterDefOperandIdx(BP, TRI, false, true) != -1 {
+            AccessBP = true;
+        }
+    }
+    return AccessFP || AccessBP;
+}
+
+fn isInvoke(MI: *MachineInstr, InsideEHLabels: bool) -> bool {
+    if !MI.isCall(AnyInBundle) {
+        return false;
+    }
+    if InsideEHLabels {
+        return true;
+    }
+    let mut MBB: *MachineBasicBlock = MI.getParent();
+    if !MBB.hasEHPadSuccessor() {
+        return false;
+    }
+    let mut MBBI: const_iterator = const_iterator { MI };
+    let mut ME: const_iterator = MBB.end();
+    for operator(MBBI); MBBI != ME; operator(MBBI) {
+        if operator(MBBI).isCall(AnyInBundle) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn X86FrameLowering::checkInterferedAccess(self: *X86FrameLowering, MF: *mut MachineFunction, DefMI: reverse_iterator, KillMI: reverse_iterator, SpillFP: bool, SpillBP: bool) {
+    if DefMI == KillMI {
+        return;
+    }
+    if self.TRI.hasBasePointer(MF) {
+        if !SpillBP {
+            return;
+        }
+    } else {
+        if !SpillFP {
+            return;
+        }
+    }
+    let mut MI: reverse_iterator = reverse_iterator { KillMI };
+    while MI != DefMI {
+        if any_of(operator(MI).operands(), Closure_21 {}) {
+            MF.getContext().reportError(SMLoc {}, "Interference usage of base pointer/frame pointer.");
+        }
+        operator(MI, 0);
+    }
+}
+
+fn X86FrameLowering::spillFPBP(self: *X86FrameLowering, MF: *mut MachineFunction) {
+    let mut FP: Register = Register { Reg: 0 };
+    let mut BP: Register = Register { Reg: 0 };
+    let mut TFI: *TargetFrameLowering = *MF.getSubtarget().getFrameLowering();
+    if TFI.hasFP(MF) {
+        FP = self.TRI.getFrameRegister(MF);
+    }
+    if self.TRI.hasBasePointer(MF) {
+        BP = self.TRI.getBaseRegister();
+    }
+    if !MF.hasInlineAsm() {
+        let mut X86FI: *mut X86MachineFunctionInfo = MF;
+        if !X86FI.getFPClobberedByCall() {
+            FP = Register { Reg: 0 };
+        }
+        if !X86FI.getBPClobberedByCall() {
+            BP = Register { Reg: 0 };
+        }
+    }
+    if !FP.operator unsigned int() && !BP.operator unsigned int() {
+        return;
+    }
+    for MBB in MF {
+        let mut InsideEHLabels: bool = false;
+        let mut MI: reverse_iterator = MBB.rbegin();
+        let mut ME: reverse_iterator = MBB.rend();
+        let mut TermMI: iterator = MBB.getFirstTerminator();
+        if TermMI == MBB.begin() {
+            continue;
+        }
+        MI = operator*((prev(TermMI)));
+        while MI != ME {
+            if operator(MI).getFlag(FrameSetup) || operator(MI).getFlag(FrameDestroy) || isInvoke(operator(MI), InsideEHLabels) || self.skipSpillFPBP(MF, MI) {
+                operator(MI);
+                continue;
+            }
+            if operator(MI).getOpcode() == EH_LABEL {
+                InsideEHLabels = !InsideEHLabels;
+                operator(MI);
+                continue;
+            }
+            let mut AccessFP: bool = false;
+            let mut AccessBP: bool = false;
+            if !isFPBPAccess(operator(MI), FP, BP, self.TRI, AccessFP, AccessBP) {
+                operator(MI);
+                continue;
+            }
+            let mut FPLive: bool = false;
+            let mut BPLive: bool = false;
+            let mut SpillFP: bool = false;
+            let mut SpillBP: bool = false;
+            let mut DefMI: reverse_iterator = reverse_iterator { MI };
+            let mut KillMI: reverse_iterator = reverse_iterator { MI };
+            while true {
+                {
+                SpillFP |= AccessFP;
+                SpillBP |= AccessBP;
+                if FPLive && operator(MI).findRegisterDefOperandIdx != -1 {
+                    FPLive = false;
+                }
+                if FP.operator unsigned int() && operator(MI).findRegisterUseOperandIdx != -1 {
+                    FPLive = true;
+                }
+                if BPLive && operator(MI).findRegisterDefOperandIdx != -1 {
+                    BPLive = false;
+                }
+                if BP.operator unsigned int() && operator(MI).findRegisterUseOperandIdx != -1 {
+                    BPLive = true;
+                }
+                DefMI = operator(MI, 0);
+            }
+                if !((MI != ME) && (FPLive || BPLive || isFPBPAccess(operator(MI), FP, BP, self.TRI, AccessFP, AccessBP))) { break; }
+            }
+            if FPLive && !SpillBP {
+                continue;
+            }
+            if operator(KillMI).isCall(AnyInBundle) && DefMI != ME {
+                let mut FrameSetup: auto = next(DefMI);
+                while FrameSetup() != ME && operator!(self.TII(operator*())) && operator!() {
+                    += 1;
+                }
+                if FrameSetup() != ME && self.TII(operator*()) && (self.TII(operator*()) || self.TII.getFrameAdjustment(operator*())) {
+                    while operator!(self.TII(operator(KillMI))) {
+                        operator(KillMI);
+                    }
+                    DefMI = ;
+                    MI = DefMI;
+                    operator(MI);
+                }
+            }
+            self.checkInterferedAccess(MF, reverse_iterator { DefMI }, reverse_iterator { KillMI }, SpillFP, SpillBP);
+            self.saveAndRestoreFPBPUsingSP(MF, iterator { &mut (operator(DefMI)) }, iterator { &mut (operator(KillMI)) }, SpillFP, SpillBP);
+        }
+    }
+}
+
+struct Closure_1 {
+    cap_0: *X86FrameLowering,
+}
+
+fn Closure_1::call(self: *mut Closure_1, Reg: MCRegister) -> auto {
+        if  {
+            return MCRegister { Reg: 0 };
+        }
+        let mut Xmm: MCRegister = self.TRI;
+        if !Xmm.operator unsigned int() {
+            Xmm = Reg;
+        }
+        if  {
+            return Xmm;
+        }
+        let mut Zmm: MCRegister = self.TRI;
+        assert!(Zmm.operator unsigned int(), "XMM16-31 must have an enclosing ZMM to clear through");
+        return Zmm;
+    }
+
+struct Closure_2 {}
+
+fn Closure_2::call(self: *Closure_2, MI: *mut MachineInstr) {}
+
+struct Closure_3 {
+    NeedsWinCFI: *mut bool,
+    IsWin64UnwindV3: *mut bool,
+    HasWinCFI: *mut bool,
+}
+
+unsafe fn Closure_3::call(self: *mut Closure_3) {
+        if (*self.NeedsWinCFI) && (*self.IsWin64UnwindV3) {
+            (*self.HasWinCFI) = true;
+            EmitFn();
+        }
+    }
+
+struct Closure_4 {
+    NeedsWinCFI: *mut bool,
+    IsWin64UnwindV3: *mut bool,
+    HasWinCFI: *mut bool,
+}
+
+unsafe fn Closure_4::call(self: *mut Closure_4) {
+        if (*self.NeedsWinCFI) && !(*self.IsWin64UnwindV3) {
+            (*self.HasWinCFI) = true;
+            EmitFn();
+        }
+    }
+
+struct Closure_5 {
+    MBB: *mut MachineBasicBlock,
+    MBBI: *mut iterator,
+    DL: *mut DebugLoc,
+    cap_3: *X86FrameLowering,
+    FramePtr: *mut Register,
+}
+
+unsafe fn Closure_5::call(self: *mut Closure_5) {
+            BuildMI((*self.MBB), (*self.MBBI), (*self.DL), self.TII)((*self.FramePtr))(FrameSetup);
+        }
+
+struct Closure_6 {
+    MBB: *mut MachineBasicBlock,
+    MBBI: *mut iterator,
+    DL: *mut DebugLoc,
+    cap_3: *X86FrameLowering,
+}
+
+unsafe fn Closure_6::call(self: *mut Closure_6) {
+                    BuildMI((*self.MBB), (*self.MBBI), (*self.DL), self.TII)(FrameSetup);
+                }
+
+struct Closure_7 {
+    MBB: *mut MachineBasicBlock,
+}
+
+unsafe fn Closure_7::call(self: *mut Closure_7, MBBI: *iterator) -> bool {
+        if MBBI == (*self.MBB).end() || !operator(MBBI).getFlag(FrameSetup) {
+            return false;
+        }
+        let mut Opc: u32 = operator(MBBI).getOpcode();
+    }
+
+struct Closure_8 {
+    IsPush2: *mut bool,
+    MBB: *mut MachineBasicBlock,
+    MBBI: *mut iterator,
+    DL: *mut DebugLoc,
+    cap_4: *X86FrameLowering,
+    Reg: *mut Register,
+    LastCSPush: *mut const_iterator,
+}
+
+unsafe fn Closure_8::call(self: *mut Closure_8) {
+            if (*self.IsPush2) {
+                BuildMI((*self.MBB), (*self.MBBI), (*self.DL), self.TII)((*self.Reg))(operator((*self.LastCSPush)).getOperand(1).getReg())(FrameSetup);
+            } else {
+                BuildMI((*self.MBB), (*self.MBBI), (*self.DL), self.TII)((*self.Reg))(FrameSetup);
+            }
+        }
+
+struct Closure_9 {
+    MBB: *mut MachineBasicBlock,
+    MBBI: *mut iterator,
+    DL: *mut DebugLoc,
+    cap_3: *X86FrameLowering,
+    Reg: *mut Register,
+    IsPush2: *mut bool,
+    LastCSPush: *mut const_iterator,
+}
+
+unsafe fn Closure_9::call(self: *mut Closure_9) {
+            BuildMI((*self.MBB), (*self.MBBI), (*self.DL), self.TII)((*self.Reg))(FrameSetup);
+            if (*self.IsPush2) {
+                BuildMI((*self.MBB), (*self.MBBI), (*self.DL), self.TII)(operator((*self.LastCSPush)).getOperand(1).getReg())(FrameSetup);
+            }
+        }
+
+struct Closure_10 {
+    MBB: *mut MachineBasicBlock,
+    MBBI: *mut iterator,
+    DL: *mut DebugLoc,
+    cap_3: *X86FrameLowering,
+    MaxAlign: *mut u64,
+}
+
+unsafe fn Closure_10::call(self: *mut Closure_10) {
+            BuildMI((*self.MBB), (*self.MBBI), (*self.DL), self.TII)((*self.MaxAlign))(FrameSetup);
+        }
+
+struct Closure_11 {
+    MBB: *mut MachineBasicBlock,
+    MBBI: *mut iterator,
+    DL: *mut DebugLoc,
+    cap_3: *X86FrameLowering,
+    NumBytes: *mut u64,
+}
+
+unsafe fn Closure_11::call(self: *mut Closure_11) {
+        BuildMI((*self.MBB), (*self.MBBI), (*self.DL), self.TII)((*self.NumBytes))(FrameSetup);
+    }
+
+struct Closure_12 {
+    MBB: *mut MachineBasicBlock,
+    MBBI: *mut iterator,
+    DL: *mut DebugLoc,
+    cap_3: *X86FrameLowering,
+    FramePtr: *mut Register,
+    SEHFrameOffset: *mut i32,
+}
+
+unsafe fn Closure_12::call(self: *mut Closure_12) {
+            BuildMI((*self.MBB), (*self.MBBI), (*self.DL), self.TII)((*self.FramePtr))((*self.SEHFrameOffset))(FrameSetup);
+        }
+
+struct Closure_13 {
+    MBB: *mut MachineBasicBlock,
+    MBBI: *mut iterator,
+    DL: *mut DebugLoc,
+    cap_3: *X86FrameLowering,
+    Reg: *mut Register,
+    Offset: *mut i32,
+}
+
+unsafe fn Closure_13::call(self: *mut Closure_13) {
+                        BuildMI((*self.MBB), (*self.MBBI), (*self.DL), self.TII)((*self.Reg))((*self.Offset))(FrameSetup);
+                    }
+
+struct Closure_14 {}
+
+fn Closure_14::call(self: *Closure_14, I: *CalleeSavedInfo) {}
+
+struct Closure_15 {
+    MF: *mut MachineFunction,
+    MBB: *mut MachineBasicBlock,
+    TRI: *mut *TargetRegisterInfo,
+}
+
+unsafe fn Closure_15::call(self: *mut Closure_15, Reg: Register) -> bool {
+        let mut MRI: *MachineRegisterInfo = (*self.MF).getRegInfo();
+        if MRI.isLiveIn(Reg) {
+            return false;
+        }
+        (*self.MBB).addLiveIn(Reg.operator MCRegister(), getAll());
+        for let mut AReg: MCRegAliasIterator = Reg((*self.TRI), false); AReg.isValid(); operator(AReg) {
+            if MRI.isLiveIn(Register { Reg: operator(AReg) }) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+struct Closure_16 {
+    UpdateLiveInCheckCanKill: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86FrameLowering.cpp:3295:35),
+}
+
+unsafe fn Closure_16::call(self: *mut Closure_16, Reg: Register) -> RegState {
+        return getKillRegState((*self.UpdateLiveInCheckCanKill).call(Reg));
+    }
+
+struct Closure_17 {}
+
+fn Closure_17::call(self: *Closure_17, Succ: *MachineBasicBlock) -> bool {
+        return Succ.isEHPad();
+    }
+
+struct Closure_18 {}
+
+fn Closure_18::call(self: *Closure_18, MI: *MachineInstr) -> bool {
+        return MI.isMetaInstruction(IgnoreBundle);
+    }
+
+struct Closure_19 {
+    CfaAdjustment: *mut i64,
+}
+
+unsafe fn Closure_19::call(self: *mut Closure_19, PI: iterator, Offset: i64) {
+                (*self.CfaAdjustment) += Offset;
+            }
+
+struct Closure_20 {
+    StackAdjustment: *mut i64,
+}
+
+unsafe fn Closure_20::call(self: *mut Closure_20, Offset: i64) -> auto {}
+
+struct Closure_21 {}
+
+fn Closure_21::call(self: *Closure_21, MO: *MachineOperand) -> bool {
+            return MO.isFI();
+        }

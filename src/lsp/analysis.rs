@@ -667,6 +667,26 @@ impl DocumentAnalysis {
 }
 
 fn span_to_range(line_offsets: &[usize], text: &str, span: Span) -> Range {
+    if span.lo.line > 0 && span.hi.line > 0 {
+        let start_line = (span.lo.line - 1) as u32;
+        let start_col = span.lo.col.saturating_sub(1);
+        let end_line = (span.hi.line - 1) as u32;
+        let mut end_col = span.hi.col.saturating_sub(1);
+        if start_line == end_line && end_col <= start_col {
+            end_col = start_col + 1;
+        }
+        return Range {
+            start: Position {
+                line: start_line,
+                character: start_col,
+            },
+            end: Position {
+                line: end_line,
+                character: end_col,
+            },
+        };
+    }
+
     let start_offset = span.lo.offset.min(text.len());
     let end_offset = span.hi.offset.min(text.len());
 
@@ -689,7 +709,7 @@ fn span_to_range(line_offsets: &[usize], text: &str, span: Span) -> Range {
         },
         end: Position {
             line: end_line as u32,
-            character: (if end_col == start_col && start_line == end_line { start_col + 1 } else { end_col }) as u32,
+            character: (if end_col <= start_col && start_line == end_line { start_col + 1 } else { end_col }) as u32,
         },
     }
 }

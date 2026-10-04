@@ -1,0 +1,1637 @@
+struct VectorLegalizer {
+    DAG: *mut SelectionDAG,
+    TLI: *TargetLowering,
+    Changed: bool,
+    LegalizedNodes: SmallDenseMap<SDValue, SDValue, 64>,
+}
+
+fn VectorLegalizer::AddLegalizedOperand(self, From: SDValue, To: SDValue) {
+    self.LegalizedNodes.insert(make_pair(From, To));
+    if From != To {
+        self.LegalizedNodes.insert(make_pair(To, To));
+    }
+}
+
+fn VectorLegalizer::Run(self) -> bool {
+    let mut HasVectors: bool = false;
+    for let mut I: allnodes_iterator = self.DAG.allnodes_begin();
+let mut E: allnodes_iterator = prev(self.DAG.allnodes_end(), 1); I != next(E, 1); operator(I) {
+        HasVectors = any_of(operator(I).values(), Closure_1 {});
+        if HasVectors {
+            break;
+        }
+    }
+    if !HasVectors {
+        return false;
+    }
+    self.DAG.AssignTopologicalOrder();
+    for let mut I: allnodes_iterator = self.DAG.allnodes_begin();
+let mut E: allnodes_iterator = prev(self.DAG.allnodes_end(), 1); I != next(E, 1); operator(I) {
+        self.LegalizeOp(SDValue { Node: &mut operator(I), ResNo: 0 });
+    }
+    let mut OldRoot: SDValue = self.DAG.getRoot();
+    assert!(self.LegalizedNodes.count(OldRoot), "Root didn't get legalized?");
+    self.DAG.setRoot(self.LegalizedNodes[OldRoot]);
+    self.LegalizedNodes.clear();
+    self.DAG.RemoveDeadNodes();
+    return self.Changed;
+}
+
+fn VectorLegalizer::TranslateLegalizeResults(self, Op: SDValue, Result: *mut SDNode) -> SDValue {
+    assert!(operator(Op).getNumValues() == Result.getNumValues(), "Unexpected number of results");
+    for let mut i: u32 = 0;
+let mut e: u32 = operator(Op).getNumValues(); i != e; i += 1 {
+        self.AddLegalizedOperand(Op.getValue(i), SDValue { Node: Result, ResNo: i });
+    }
+    return SDValue { Node: Result, ResNo: Op.getResNo() };
+}
+
+fn VectorLegalizer::RecursivelyLegalizeResults(self, Op: SDValue, Results: MutableArrayRef<SDValue>) -> SDValue {
+    assert!(Results.len == operator(Op).getNumValues(), "Unexpected number of results");
+    for let mut i: u32 = 0;
+let mut e: u32 = Results.len; i != e; i += 1 {
+        Results[i] = self.LegalizeOp(Results[i]);
+        self.AddLegalizedOperand(Op.getValue(i), Results[i]);
+    }
+    return Results[Op.getResNo()];
+}
+
+fn VectorLegalizer::LegalizeOp(self, Op: SDValue) -> SDValue {
+    let mut I: iterator = self.LegalizedNodes.find(Op);
+    if I != self.LegalizedNodes.end() {
+        return operator(I).second;
+    }
+    let mut Ops: SmallVector<SDValue, 8> = SmallVector<SDValue, 8> {};
+    for Oper in operator(Op).op_values() {
+        Ops.push(self.LegalizeOp(Oper));
+    }
+    let mut Node: *mut SDNode = self.DAG.UpdateNodeOperands(Op.getNode(), ArrayRef<SDValue> { Ops });
+    let mut HasVectorValueOrOp: bool = any_of(Node.values(), Closure_2 {}) || any_of(Node.op_values(), Closure_3 {});
+    if !HasVectorValueOrOp {
+        return self.TranslateLegalizeResults(Op, Node);
+    }
+    let mut Action: LegalizeAction = Legal;
+    let mut ValVT: EVT = EVT {};
+    match Op.getOpcode() {
+        _ => {
+            return self.TranslateLegalizeResults(Op, Node);
+        },
+        LOAD => {
+            let mut LD: *mut LoadSDNode = cast(Node);
+            let mut ExtType: LoadExtType = LD.getExtensionType();
+            let mut LoadedVT: EVT = LD.getMemoryVT();
+            if LoadedVT.isVector() && ExtType != NON_EXTLOAD {
+                Action = self.TLI.getLoadAction(LD.getValueType(0), LoadedVT, LD.getAlign(), LD.getAddressSpace(), ExtType, false);
+            }
+            break;
+        },
+        STORE => {
+            let mut ST: *mut StoreSDNode = cast(Node);
+            let mut StVT: EVT = ST.getMemoryVT();
+            let mut ValVT: MVT = ST.getValue().getSimpleValueType();
+            if StVT.isVector() && ST.isTruncatingStore() {
+                Action = self.TLI.getTruncStoreAction(EVT { ValVT }, StVT, ST.getAlign(), ST.getAddressSpace());
+            }
+            break;
+        },
+        MERGE_VALUES => {
+            Action = self.TLI.getOperationAction(Node.getOpcode(), Node.getValueType(0));
+        },
+        STRICT_FADD => {
+            STRICT_FSUB;
+        },
+        ADD => {
+            SUB;
+        },
+        SMULFIX => {
+            SMULFIXSAT;
+        },
+        LROUND => {
+            LLROUND;
+        },
+        VECREDUCE_SEQ_FADD => {
+            VECREDUCE_SEQ_FMUL;
+        },
+        SETCC => {
+            let mut OpVT: MVT = Node.getOperand(0).getSimpleValueType();
+            let mut CCCode: CondCode = cast(Node.getOperand(2)).get();
+            Action = self.TLI.getCondCodeAction(CCCode, OpVT);
+            if Action == Legal {
+                Action = self.TLI.getOperationAction(Node.getOpcode(), EVT { OpVT });
+            }
+            break;
+        },
+        PARTIAL_REDUCE_UMLA => {
+            PARTIAL_REDUCE_SMLA;
+        },
+        VP_SDIV => {
+            let mut LegalizeVT: EVT = if -1 < 0 { Node.getValueType(-(1 + -1)) } else { Node.getOperand(-1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_SREM => {
+            let mut LegalizeVT: EVT = if -1 < 0 { Node.getValueType(-(1 + -1)) } else { Node.getOperand(-1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_UDIV => {
+            let mut LegalizeVT: EVT = if -1 < 0 { Node.getValueType(-(1 + -1)) } else { Node.getOperand(-1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_UREM => {
+            let mut LegalizeVT: EVT = if -1 < 0 { Node.getValueType(-(1 + -1)) } else { Node.getOperand(-1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_CTTZ_ELTS => {
+            let mut LegalizeVT: EVT = if 0 < 0 { Node.getValueType(-(1 + 0)) } else { Node.getOperand(0).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_CTTZ_ELTS_ZERO_POISON => {
+            let mut LegalizeVT: EVT = if 0 < 0 { Node.getValueType(-(1 + 0)) } else { Node.getOperand(0).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_STORE => {
+            let mut LegalizeVT: EVT = if 1 < 0 { Node.getValueType(-(1 + 1)) } else { Node.getOperand(1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        EXPERIMENTAL_VP_STRIDED_STORE => {
+            let mut LegalizeVT: EVT = if 1 < 0 { Node.getValueType(-(1 + 1)) } else { Node.getOperand(1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_SCATTER => {
+            let mut LegalizeVT: EVT = if 1 < 0 { Node.getValueType(-(1 + 1)) } else { Node.getOperand(1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_LOAD => {
+            let mut LegalizeVT: EVT = if -1 < 0 { Node.getValueType(-(1 + -1)) } else { Node.getOperand(-1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_LOAD_FF => {
+            let mut LegalizeVT: EVT = if -1 < 0 { Node.getValueType(-(1 + -1)) } else { Node.getOperand(-1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        EXPERIMENTAL_VP_STRIDED_LOAD => {
+            let mut LegalizeVT: EVT = if -1 < 0 { Node.getValueType(-(1 + -1)) } else { Node.getOperand(-1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_GATHER => {
+            let mut LegalizeVT: EVT = if -1 < 0 { Node.getValueType(-(1 + -1)) } else { Node.getOperand(-1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_REDUCE_ADD => {
+            let mut LegalizeVT: EVT = if 1 < 0 { Node.getValueType(-(1 + 1)) } else { Node.getOperand(1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_REDUCE_MUL => {
+            let mut LegalizeVT: EVT = if 1 < 0 { Node.getValueType(-(1 + 1)) } else { Node.getOperand(1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_REDUCE_AND => {
+            let mut LegalizeVT: EVT = if 1 < 0 { Node.getValueType(-(1 + 1)) } else { Node.getOperand(1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_REDUCE_OR => {
+            let mut LegalizeVT: EVT = if 1 < 0 { Node.getValueType(-(1 + 1)) } else { Node.getOperand(1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_REDUCE_XOR => {
+            let mut LegalizeVT: EVT = if 1 < 0 { Node.getValueType(-(1 + 1)) } else { Node.getOperand(1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_REDUCE_SMAX => {
+            let mut LegalizeVT: EVT = if 1 < 0 { Node.getValueType(-(1 + 1)) } else { Node.getOperand(1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_REDUCE_SMIN => {
+            let mut LegalizeVT: EVT = if 1 < 0 { Node.getValueType(-(1 + 1)) } else { Node.getOperand(1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_REDUCE_UMAX => {
+            let mut LegalizeVT: EVT = if 1 < 0 { Node.getValueType(-(1 + 1)) } else { Node.getOperand(1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_REDUCE_UMIN => {
+            let mut LegalizeVT: EVT = if 1 < 0 { Node.getValueType(-(1 + 1)) } else { Node.getOperand(1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_REDUCE_FMAX => {
+            let mut LegalizeVT: EVT = if 1 < 0 { Node.getValueType(-(1 + 1)) } else { Node.getOperand(1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_REDUCE_FMIN => {
+            let mut LegalizeVT: EVT = if 1 < 0 { Node.getValueType(-(1 + 1)) } else { Node.getOperand(1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_REDUCE_FMAXIMUM => {
+            let mut LegalizeVT: EVT = if 1 < 0 { Node.getValueType(-(1 + 1)) } else { Node.getOperand(1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_REDUCE_FMINIMUM => {
+            let mut LegalizeVT: EVT = if 1 < 0 { Node.getValueType(-(1 + 1)) } else { Node.getOperand(1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_REDUCE_FADD => {
+            let mut LegalizeVT: EVT = if 1 < 0 { Node.getValueType(-(1 + 1)) } else { Node.getOperand(1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_REDUCE_SEQ_FADD => {
+            let mut LegalizeVT: EVT = if 1 < 0 { Node.getValueType(-(1 + 1)) } else { Node.getOperand(1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_REDUCE_FMUL => {
+            let mut LegalizeVT: EVT = if 1 < 0 { Node.getValueType(-(1 + 1)) } else { Node.getOperand(1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_REDUCE_SEQ_FMUL => {
+            let mut LegalizeVT: EVT = if 1 < 0 { Node.getValueType(-(1 + 1)) } else { Node.getOperand(1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        VP_MERGE => {
+            let mut LegalizeVT: EVT = if -1 < 0 { Node.getValueType(-(1 + -1)) } else { Node.getOperand(-1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        EXPERIMENTAL_VP_SPLICE => {
+            let mut LegalizeVT: EVT = if -1 < 0 { Node.getValueType(-(1 + -1)) } else { Node.getOperand(-1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+        EXPERIMENTAL_VP_REVERSE => {
+            let mut LegalizeVT: EVT = if -1 < 0 { Node.getValueType(-(1 + -1)) } else { Node.getOperand(-1).getValueType() };
+            if !Node.getValueType(0).isVector() && Node.getValueType(0) != EVT { Other } {
+                Action = Legal;
+                break;
+            }
+            Action = self.TLI.getOperationAction(Node.getOpcode(), LegalizeVT);
+        },
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("legalizevectorops", 1) {
+            dbgs() << "\nLegalizing vector op: ";
+            Node.dump(&mut self.DAG);
+        }
+    }
+        if !(false) { break; }
+    }
+    let mut ResultVals: SmallVector<SDValue, 8> = SmallVector<SDValue, 8> {};
+    match Action {
+        _ => {
+            llvm_unreachable_internal("This action is not supported yet!", "llvm\\lib\\CodeGen\\SelectionDAG\\LegalizeVectorOps.cpp", 578);
+        },
+        Promote => {
+            assert!((Op.getOpcode() != LOAD && Op.getOpcode() != STORE), "This action is not supported yet!");
+        },
+        Legal => {
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("legalizevectorops", 1) {
+                    dbgs() << "Legal node: nothing to do\n";
+                }
+            }
+                if !(false) { break; }
+            }
+        },
+        Custom => {
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("legalizevectorops", 1) {
+                    dbgs() << "Trying custom legalization\n";
+                }
+            }
+                if !(false) { break; }
+            }
+        },
+        Expand => {
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("legalizevectorops", 1) {
+                    dbgs() << "Expanding\n";
+                }
+            }
+                if !(false) { break; }
+            }
+        },
+    }
+    if ResultVals.len == 0 {
+        return self.TranslateLegalizeResults(Op, Node);
+    }
+    self.Changed = true;
+    return self.RecursivelyLegalizeResults(Op, MutableArrayRef<SDValue> { ResultVals });
+}
+
+fn VectorLegalizer::LowerOperationWrapper(self, Node: *mut SDNode, Results: *mut SmallVectorImpl<SDValue>) -> bool {
+    let mut Res: SDValue = self.TLI.LowerOperation(SDValue { Node: Node, ResNo: 0 }, self.DAG);
+    if !Res.getNode() {
+        return false;
+    }
+    if Res == SDValue { Node: Node, ResNo: 0 } {
+        return true;
+    }
+    if Node.getNumValues() == 1 {
+        Results.push(ValueParamT { Res });
+        return true;
+    }
+    assert!((Node.getNumValues() == operator(Res).getNumValues()), "Lowering returned the wrong number of results!");
+    for let mut I: u32 = 0;
+let mut E: u32 = Node.getNumValues(); I != E; I += 1 {
+        Results.push(Res.getValue(I));
+    }
+    return true;
+}
+
+fn VectorLegalizer::PromoteSETCC(self, Node: *mut SDNode, Results: *mut SmallVectorImpl<SDValue>) {
+    let mut VecVT: MVT = Node.getOperand(0).getSimpleValueType();
+    let mut NewVecVT: MVT = self.TLI.getTypeToPromoteTo(Node.getOpcode(), VecVT);
+    let mut ExtOp: u32 = if VecVT.isFloatingPoint() { FP_EXTEND } else { ANY_EXTEND };
+    let mut DL: SDLoc = SDLoc { Node };
+    let mut Operands: SmallVector<SDValue, 5> = SmallVector<SDValue, 5> { Node.getNumOperands() };
+    Operands[0] = self.DAG.getNode(ExtOp, DL, EVT { NewVecVT }, Node.getOperand(0));
+    Operands[1] = self.DAG.getNode(ExtOp, DL, EVT { NewVecVT }, Node.getOperand(1));
+    Operands[2] = Node.getOperand(2);
+    let mut ResVT: EVT = self.TLI.getSetCCResultType(self.DAG.getDataLayout(), *self.DAG.getContext(), EVT { NewVecVT });
+    let mut Res: SDValue = self.DAG.getNode(Node.getOpcode(), DL, ResVT, ArrayRef<SDValue> { Operands }, Node.getFlags());
+    if ResVT != Node.getValueType(0) {
+        Res = self.DAG.getBoolExtOrTrunc(Res, DL, Node.getValueType(0), EVT { NewVecVT });
+    }
+    Results.push(ValueParamT { Res });
+}
+
+fn VectorLegalizer::PromoteSTRICT(self, Node: *mut SDNode, Results: *mut SmallVectorImpl<SDValue>) {
+    let mut VecVT: MVT = Node.getOperand(1).getSimpleValueType();
+    let mut NewVecVT: MVT = self.TLI.getTypeToPromoteTo(Node.getOpcode(), VecVT);
+    assert!(VecVT.isFloatingPoint());
+    let mut DL: SDLoc = SDLoc { Node };
+    let mut Operands: SmallVector<SDValue, 5> = SmallVector<SDValue, 5> { Node.getNumOperands() };
+    let mut Chains: SmallVector<SDValue, 2> = SmallVector<SDValue, 2> {};
+    for let mut j: u32 = 1; j != Node.getNumOperands(); j += 1 {
+        if Node.getOperand(j).getValueType().isVector() && !(isVPOpcode(Node.getOpcode()) && getVPMaskIdx(Node.getOpcode()) == j) {
+            let mut Ext: SDValue = self.DAG.getNode(STRICT_FP_EXTEND, DL, ArrayRef<EVT> { [EVT { NewVecVT }, EVT { Other }] }, ArrayRef<SDValue> { [Node.getOperand(0), Node.getOperand(j)] });
+            Operands[j] = Ext.getValue(0);
+            Chains.push(Ext.getValue(1));
+        } else {
+            Operands[j] = Node.getOperand(j);
+        }
+    }
+    let mut VTs: SDVTList = self.DAG.getVTList(EVT { NewVecVT }, Node.getValueType(1));
+    Operands[0] = self.DAG.getNode(TokenFactor, DL, EVT { Other }, ArrayRef<SDValue> { Chains });
+    let mut Res: SDValue = self.DAG.getNode(Node.getOpcode(), DL, VTs, ArrayRef<SDValue> { Operands }, Node.getFlags());
+    let mut Round: SDValue = self.DAG.getNode(STRICT_FP_ROUND, DL, ArrayRef<EVT> { [EVT { VecVT }, EVT { Other }] }, ArrayRef<SDValue> { [Res.getValue(1), Res.getValue(0), self.DAG.getIntPtrConstant(0, DL, true)] });
+    Results.push(Round.getValue(0));
+    Results.push(Round.getValue(1));
+}
+
+fn VectorLegalizer::PromoteFloatVECREDUCE(self, Node: *mut SDNode, Results: *mut SmallVectorImpl<SDValue>, NonArithmetic: bool) {
+    let mut OpVT: MVT = Node.getOperand(0).getSimpleValueType();
+    assert!(OpVT.isFloatingPoint(), "Expected floating point reduction!");
+    let mut NewOpVT: MVT = self.TLI.getTypeToPromoteTo(Node.getOpcode(), OpVT);
+    let mut DL: SDLoc = SDLoc { Node };
+    let mut NewOp: SDValue = self.DAG.getNode(FP_EXTEND, DL, EVT { NewOpVT }, Node.getOperand(0));
+    let mut Rdx: SDValue = self.DAG.getNode(Node.getOpcode(), DL, EVT { NewOpVT.getVectorElementType() }, NewOp, Node.getFlags());
+    let mut Res: SDValue = self.DAG.getNode(FP_ROUND, DL, Node.getValueType(0), Rdx, self.DAG.getIntPtrConstant(NonArithmetic, DL, true));
+    Results.push(ValueParamT { Res });
+}
+
+fn VectorLegalizer::PromoteVECTOR_COMPRESS(self, Node: *mut SDNode, Results: *mut SmallVectorImpl<SDValue>) {
+    let mut DL: SDLoc = SDLoc { Node };
+    let mut VT: EVT = Node.getValueType(0);
+    let mut PromotedVT: MVT = self.TLI.getTypeToPromoteTo(Node.getOpcode(), VT.getSimpleVT());
+    assert!((VT.isInteger() || VT.getSizeInBits() == PromotedVT.getSizeInBits()), "Only integer promotion or bitcasts between types is supported");
+    let mut Vec: SDValue = Node.getOperand(0);
+    let mut Mask: SDValue = Node.getOperand(1);
+    let mut Passthru: SDValue = Node.getOperand(2);
+    if VT.isInteger() {
+        Vec = self.DAG.getNode(ANY_EXTEND, DL, EVT { PromotedVT }, Vec);
+        Mask = self.TLI.promoteTargetBoolean(self.DAG, Mask, EVT { PromotedVT });
+        Passthru = self.DAG.getNode(ANY_EXTEND, DL, EVT { PromotedVT }, Passthru);
+    } else {
+        Vec = self.DAG.getBitcast(EVT { PromotedVT }, Vec);
+        Passthru = self.DAG.getBitcast(EVT { PromotedVT }, Passthru);
+    }
+    let mut Result: SDValue = self.DAG.getNode(VECTOR_COMPRESS, DL, EVT { PromotedVT }, Vec, Mask, Passthru);
+    Result = if VT.isInteger() { self.DAG.getNode(TRUNCATE, DL, VT, Result) } else { self.DAG.getBitcast(VT, Result) };
+    Results.push(ValueParamT { Result });
+}
+
+fn VectorLegalizer::Promote(self, Node: *mut SDNode, Results: *mut SmallVectorImpl<SDValue>) {
+    match Node.getOpcode() {
+        SINT_TO_FP => {
+            UINT_TO_FP;
+        },
+        FP_TO_UINT => {
+            FP_TO_SINT;
+        },
+        SETCC => {
+            self.PromoteSETCC(Node, Results);
+        },
+        STRICT_FADD => {
+            STRICT_FSUB;
+        },
+        VECREDUCE_FADD => {
+            VECREDUCE_FMUL;
+        },
+        VECREDUCE_FMAX => {
+            VECREDUCE_FMAXIMUM;
+        },
+        VECTOR_COMPRESS => {
+            self.PromoteVECTOR_COMPRESS(Node, Results);
+        },
+        FP_ROUND => {
+            FP_EXTEND;
+        },
+    }
+    assert!(Node.getNumValues() == 1, "Can't promote a vector with multiple results!");
+    let mut VT: MVT = Node.getSimpleValueType(0);
+    let mut NVT: MVT = self.TLI.getTypeToPromoteTo(Node.getOpcode(), VT);
+    let mut dl: SDLoc = SDLoc { Node };
+    let mut Operands: SmallVector<SDValue, 4> = SmallVector<SDValue, 4> { Node.getNumOperands() };
+    for let mut j: u32 = 0; j != Node.getNumOperands(); j += 1 {
+        let mut SkipPromote: bool = isVPOpcode(Node.getOpcode()) && getVPMaskIdx(Node.getOpcode()) == j;
+        if Node.getOperand(j).getValueType().isVector() && !SkipPromote {
+            if Node.getOperand(j).getValueType().getVectorElementType().isFloatingPoint() && NVT.isVector() && NVT.getVectorElementType().isFloatingPoint() {
+                Operands[j] = self.DAG.getNode(FP_EXTEND, dl, EVT { NVT }, Node.getOperand(j));
+            } else {
+                Operands[j] = self.DAG.getNode(BITCAST, dl, EVT { NVT }, Node.getOperand(j));
+            }
+        } else {
+            Operands[j] = Node.getOperand(j);
+        }
+    }
+    let mut Res: SDValue = self.DAG.getNode(Node.getOpcode(), dl, EVT { NVT }, ArrayRef<SDValue> { Operands }, Node.getFlags());
+    if (VT.isFloatingPoint() && NVT.isFloatingPoint()) || (VT.isVector() && VT.getVectorElementType().isFloatingPoint() && NVT.isVector() && NVT.getVectorElementType().isFloatingPoint()) {
+        Res = self.DAG.getNode(FP_ROUND, dl, EVT { VT }, Res, self.DAG.getIntPtrConstant(0, dl, true));
+    } else {
+        Res = self.DAG.getNode(BITCAST, dl, EVT { VT }, Res);
+    }
+    Results.push(ValueParamT { Res });
+}
+
+fn VectorLegalizer::PromoteINT_TO_FP(self, Node: *mut SDNode, Results: *mut SmallVectorImpl<SDValue>) {
+    let mut IsStrict: bool = Node.isStrictFPOpcode();
+    let mut VT: MVT = Node.getOperand(if IsStrict { 1 } else { 0 }).getSimpleValueType();
+    let mut NVT: MVT = self.TLI.getTypeToPromoteTo(Node.getOpcode(), VT);
+    assert!(NVT.getVectorNumElements() == VT.getVectorNumElements(), "Vectors have different number of elements!");
+    let mut dl: SDLoc = SDLoc { Node };
+    let mut Operands: SmallVector<SDValue, 4> = SmallVector<SDValue, 4> { Node.getNumOperands() };
+    let mut Opc: u32 = if (Node.getOpcode() == UINT_TO_FP || Node.getOpcode() == STRICT_UINT_TO_FP) { ZERO_EXTEND } else { SIGN_EXTEND };
+    for let mut j: u32 = 0; j != Node.getNumOperands(); j += 1 {
+        if Node.getOperand(j).getValueType().isVector() {
+            Operands[j] = self.DAG.getNode(Opc, dl, EVT { NVT }, Node.getOperand(j));
+        } else {
+            Operands[j] = Node.getOperand(j);
+        }
+    }
+    if IsStrict {
+        let mut Res: SDValue = self.DAG.getNode(Node.getOpcode(), dl, ArrayRef<EVT> { [Node.getValueType(0), EVT { Other }] }, ArrayRef<SDValue> { Operands });
+        Results.push(ValueParamT { Res });
+        Results.push(Res.getValue(1));
+        return;
+    }
+    let mut Res: SDValue = self.DAG.getNode(Node.getOpcode(), dl, Node.getValueType(0), ArrayRef<SDValue> { Operands });
+    Results.push(ValueParamT { Res });
+}
+
+fn VectorLegalizer::PromoteFP_TO_INT(self, Node: *mut SDNode, Results: *mut SmallVectorImpl<SDValue>) {
+    let mut VT: MVT = Node.getSimpleValueType(0);
+    let mut NVT: MVT = self.TLI.getTypeToPromoteTo(Node.getOpcode(), VT);
+    let mut IsStrict: bool = Node.isStrictFPOpcode();
+    assert!(NVT.getVectorNumElements() == VT.getVectorNumElements(), "Vectors have different number of elements!");
+    let mut NewOpc: u32 = Node.getOpcode();
+    if NewOpc == FP_TO_UINT && self.TLI.isOperationLegalOrCustom(FP_TO_SINT, EVT { NVT }, false) {
+        NewOpc = FP_TO_SINT;
+    }
+    if NewOpc == STRICT_FP_TO_UINT && self.TLI.isOperationLegalOrCustom(STRICT_FP_TO_SINT, EVT { NVT }, false) {
+        NewOpc = STRICT_FP_TO_SINT;
+    }
+    let mut dl: SDLoc = SDLoc { Node };
+    let mut Promoted: SDValue = SDValue {};
+    let mut Chain: SDValue = SDValue {};
+    if IsStrict {
+        Promoted = self.DAG.getNode(NewOpc, dl, ArrayRef<EVT> { [EVT { NVT }, EVT { Other }] }, ArrayRef<SDValue> { [Node.getOperand(0), Node.getOperand(1)] });
+        Chain = Promoted.getValue(1);
+    } else {
+        Promoted = self.DAG.getNode(NewOpc, dl, EVT { NVT }, Node.getOperand(0));
+    }
+    if Node.getOpcode() == FP_TO_UINT || Node.getOpcode() == STRICT_FP_TO_UINT {
+        NewOpc = AssertZext;
+    } else {
+        NewOpc = AssertSext;
+    }
+    Promoted = self.DAG.getNode(NewOpc, dl, EVT { NVT }, Promoted, self.DAG.getValueType(EVT { VT.getScalarType() }));
+    Promoted = self.DAG.getNode(TRUNCATE, dl, EVT { VT }, Promoted);
+    Results.push(ValueParamT { Promoted });
+    if IsStrict {
+        Results.push(ValueParamT { Chain });
+    }
+}
+
+fn VectorLegalizer::ExpandLoad(self, N: *mut SDNode) -> pair<SDValue, SDValue> {
+    let mut LD: *mut LoadSDNode = cast(N);
+    return self.TLI.scalarizeVectorLoad(LD, self.DAG);
+}
+
+fn VectorLegalizer::ExpandStore(self, N: *mut SDNode) -> SDValue {
+    let mut ST: *mut StoreSDNode = cast(N);
+    let mut TF: SDValue = self.TLI.scalarizeVectorStore(ST, self.DAG);
+    return TF;
+}
+
+fn VectorLegalizer::Expand(self, Node: *mut SDNode, Results: *mut SmallVectorImpl<SDValue>) {
+    match Node.getOpcode() {
+        LOAD => {
+            let mut Tmp: pair<SDValue, SDValue> = self.ExpandLoad(Node);
+            Results.push(ValueParamT { Tmp.first });
+            Results.push(ValueParamT { Tmp.second });
+            return;
+        },
+        STORE => {
+            Results.push(self.ExpandStore(Node));
+        },
+        MERGE_VALUES => {
+            for let mut i: u32 = 0;
+let mut e: u32 = Node.getNumValues(); i != e; i += 1 {
+                Results.push(ValueParamT { Node.getOperand(i) });
+            }
+        },
+        SIGN_EXTEND_INREG => {
+            if self.ExpandSEXTINREG(Node) {
+                Expanded;
+            } else {
+                Results.push(ValueParamT { Expanded });
+                return;
+            }
+        },
+        ANY_EXTEND_VECTOR_INREG => {
+            Results.push(self.ExpandANY_EXTEND_VECTOR_INREG(Node));
+        },
+        SIGN_EXTEND_VECTOR_INREG => {
+            Results.push(self.ExpandSIGN_EXTEND_VECTOR_INREG(Node));
+        },
+        ZERO_EXTEND_VECTOR_INREG => {
+            Results.push(self.ExpandZERO_EXTEND_VECTOR_INREG(Node));
+        },
+        BSWAP => {
+            if self.ExpandBSWAP(Node) {
+                Expanded;
+            } else {
+                Results.push(ValueParamT { Expanded });
+                return;
+            }
+        },
+        VSELECT => {
+            if self.ExpandVSELECT(Node) {
+                Expanded;
+            } else {
+                Results.push(ValueParamT { Expanded });
+                return;
+            }
+        },
+        VP_SREM => {
+            VP_UREM;
+        },
+        SELECT => {
+            if self.ExpandSELECT(Node) {
+                Expanded;
+            } else {
+                Results.push(ValueParamT { Expanded });
+                return;
+            }
+        },
+        SELECT_CC => {
+            if Node.getValueType(0).isScalableVector() {
+                let mut CondVT: EVT = self.TLI.getSetCCResultType(self.DAG.getDataLayout(), *self.DAG.getContext(), Node.getValueType(0));
+                let mut SetCC: SDValue = self.DAG.getNode(SETCC, SDLoc { Node }, CondVT, Node.getOperand(0), Node.getOperand(1), Node.getOperand(4));
+                Results.push(self.DAG.getSelect(SDLoc { Node }, Node.getValueType(0), SetCC, Node.getOperand(2), Node.getOperand(3), SDNodeFlags { Flags: None }));
+                return;
+            }
+            break;
+        },
+        FP_TO_UINT => {
+            self.ExpandFP_TO_UINT(Node, Results);
+        },
+        UINT_TO_FP => {
+            self.ExpandUINT_TO_FLOAT(Node, Results);
+        },
+        FNEG => {
+            if self.ExpandFNEG(Node) {
+                Expanded;
+            } else {
+                Results.push(ValueParamT { Expanded });
+                return;
+            }
+        },
+        FABS => {
+            if self.ExpandFABS(Node) {
+                Expanded;
+            } else {
+                Results.push(ValueParamT { Expanded });
+                return;
+            }
+        },
+        FCOPYSIGN => {
+            if self.ExpandFCOPYSIGN(Node) {
+                Expanded;
+            } else {
+                Results.push(ValueParamT { Expanded });
+                return;
+            }
+        },
+        FCANONICALIZE => {
+            let mut VT: EVT = Node.getValueType(0);
+            let mut EltVT: EVT = VT.getVectorElementType();
+            if !VT.isScalableVector() && self.TLI.getOperationAction(FCANONICALIZE, EVT { EltVT.getSimpleVT() }) != Expand {
+                break;
+            }
+            let mut Mul: SDValue = self.TLI.expandFCANONICALIZE(Node, self.DAG);
+            Results.push(ValueParamT { Mul });
+            return;
+        },
+        FSUB => {
+            self.ExpandFSUB(Node, Results);
+        },
+        SETCC => {
+            self.ExpandSETCC(Node, Results);
+        },
+        ABS => {
+            ABS_MIN_POISON;
+        },
+        ABDS => {
+            ABDU;
+        },
+        AVGCEILS => {
+            AVGCEILU;
+        },
+        BITREVERSE => {
+            if self.ExpandBITREVERSE(Node) {
+                Expanded;
+            } else {
+                Results.push(ValueParamT { Expanded });
+                return;
+            }
+        },
+        CTPOP => {
+            if self.TLI.expandCTPOP(Node, self.DAG) {
+                Expanded;
+            } else {
+                Results.push(ValueParamT { Expanded });
+                return;
+            }
+        },
+        CTLZ => {
+            CTLZ_ZERO_POISON;
+        },
+        CTTZ => {
+            CTTZ_ZERO_POISON;
+        },
+        FSHL => {
+            FSHR;
+        },
+        CLMUL => {
+            CLMULR;
+        },
+        PEXT => {
+            Results.push(self.TLI.expandPEXT(Node, self.DAG));
+        },
+        PDEP => {
+            Results.push(self.TLI.expandPDEP(Node, self.DAG));
+        },
+        ROTL => {
+            ROTR;
+        },
+        FMINNUM => {
+            FMAXNUM;
+        },
+        FMINIMUM => {
+            FMAXIMUM;
+        },
+        FMINIMUMNUM => {
+            FMAXIMUMNUM;
+        },
+        SMIN => {
+            SMAX;
+        },
+        UADDO => {
+            USUBO;
+        },
+        SADDO => {
+            SSUBO;
+        },
+        UMULO => {
+            SMULO;
+        },
+        MULHS => {
+            MULHU;
+        },
+        USUBSAT => {
+            SSUBSAT;
+        },
+        USHLSAT => {
+            SSHLSAT;
+        },
+        FP_TO_SINT_SAT => {
+            FP_TO_UINT_SAT;
+        },
+        SMULFIX => {
+            UMULFIX;
+        },
+        SDIVFIX => {
+            UDIVFIX;
+        },
+        SDIVFIXSAT => {
+            UDIVFIXSAT;
+        },
+        STRICT_FADD => {
+            STRICT_FSUB;
+        },
+        VECREDUCE_ADD => {
+            VECREDUCE_MUL;
+        },
+        PARTIAL_REDUCE_UMLA => {
+            PARTIAL_REDUCE_SMLA;
+        },
+        VECREDUCE_SEQ_FADD => {
+            VECREDUCE_SEQ_FMUL;
+        },
+        VECTOR_MATCH => {
+            Results.push(self.TLI.expandVectorMatch(Node, self.DAG));
+        },
+        SREM => {
+            UREM;
+        },
+        VP_MERGE => {
+            if self.ExpandVP_MERGE(Node) {
+                Expanded;
+            } else {
+                Results.push(ValueParamT { Expanded });
+                return;
+            }
+        },
+        FREM => {
+            if self.tryExpandVecMathCall(Node, Libcall (EVT)> { getREM, null, null }, Results) {
+                return;
+            }
+        },
+        FSINCOS => {
+            FSINCOSPI;
+        },
+        FPOW => {
+            if self.tryExpandVecMathCall(Node, Libcall (EVT)> { getPOW, null, null }, Results) {
+                return;
+            }
+        },
+        FCBRT => {
+            if self.tryExpandVecMathCall(Node, Libcall (EVT)> { getCBRT, null, null }, Results) {
+                return;
+            }
+        },
+        FMODF => {
+            let mut VT: EVT = Node.getValueType(0);
+            let mut LC: Libcall = getMODF(VT);
+            if LC != UNKNOWN_LIBCALL && self.TLI.expandMultipleResultFPLibCall(self.DAG, LC, Node, Results, optional<unsigned int> { 0 }) {
+                return;
+            }
+            break;
+        },
+        VECTOR_COMPRESS => {
+            Results.push(self.TLI.expandVECTOR_COMPRESS(Node, self.DAG));
+        },
+        CTTZ_ELTS => {
+            CTTZ_ELTS_ZERO_POISON;
+        },
+        VECTOR_FIND_LAST_ACTIVE => {
+            Results.push(self.TLI.expandVectorFindLastActive(Node, self.DAG));
+        },
+        SCMP => {
+            UCMP;
+        },
+        GET_ACTIVE_LANE_MASK => {
+            if self.ExpandGET_ACTIVE_LANE_MASK(Node) {
+                R;
+            } else {
+                Results.push(ValueParamT { R });
+            }
+        },
+        LOOP_DEPENDENCE_WAR_MASK => {
+            LOOP_DEPENDENCE_RAW_MASK;
+        },
+        FADD => {
+            FMUL;
+        },
+        CONVERT_TO_ARBITRARY_FP => {
+            if self.TLI.expandCONVERT_TO_ARBITRARY_FP(Node, self.DAG) {
+                Expanded;
+            } else {
+                Results.push(ValueParamT { Expanded });
+            }
+        },
+        CONVERT_FROM_ARBITRARY_FP => {
+            if self.TLI.expandCONVERT_FROM_ARBITRARY_FP(Node, self.DAG) {
+                Expanded;
+            } else {
+                Results.push(ValueParamT { Expanded });
+            }
+        },
+        MASKED_UDIV => {
+            MASKED_SDIV;
+        },
+    }
+    let mut Unrolled: SDValue = self.DAG.UnrollVectorOp(Node, 0);
+    if Node.getNumValues() == 1 {
+        Results.push(ValueParamT { Unrolled });
+    } else {
+        assert!(Node.getNumValues() == operator(Unrolled).getNumValues(), "VectorLegalizer Expand returned wrong number of results!");
+        for let mut I: u32 = 0;
+let mut E: u32 = operator(Unrolled).getNumValues(); I != E; I += 1 {
+            Results.push(Unrolled.getValue(I));
+        }
+    }
+}
+
+fn VectorLegalizer::ExpandSELECT(self, Node: *mut SDNode) -> SDValue {
+    let mut VT: EVT = Node.getValueType(0);
+    let mut DL: SDLoc = SDLoc { Node };
+    let mut Mask: SDValue = Node.getOperand(0);
+    let mut Op1: SDValue = Node.getOperand(1);
+    let mut Op2: SDValue = Node.getOperand(2);
+    assert!(VT.isVector() && !Mask.getValueType().isVector() && Op1.getValueType() == Op2.getValueType(), "Invalid type");
+    if self.TLI.getOperationAction(AND, VT) == Expand || self.TLI.getOperationAction(XOR, VT) == Expand || self.TLI.getOperationAction(OR, VT) == Expand || self.TLI.getOperationAction(if VT.isFixedLengthVector() { BUILD_VECTOR } else { SPLAT_VECTOR }, VT) == Expand {
+        return SDValue {};
+    }
+    let mut MaskTy: EVT = VT.changeVectorElementTypeToInteger();
+    let mut BitTy: EVT = MaskTy.getScalarType();
+    Mask = self.DAG.getSelect(DL, BitTy, Mask, self.DAG.getAllOnesConstant(DL, BitTy, false, false), self.DAG.getConstant(0, DL, BitTy, false, false), SDNodeFlags { Flags: None });
+    Mask = self.DAG.getSplat(MaskTy, DL, Mask);
+    Op1 = self.DAG.getNode(BITCAST, DL, MaskTy, Op1);
+    Op2 = self.DAG.getNode(BITCAST, DL, MaskTy, Op2);
+    let mut NotMask: SDValue = self.DAG.getNOT(DL, Mask, MaskTy);
+    Op1 = self.DAG.getNode(AND, DL, MaskTy, Op1, Mask);
+    Op2 = self.DAG.getNode(AND, DL, MaskTy, Op2, NotMask);
+    let mut Val: SDValue = self.DAG.getNode(OR, DL, MaskTy, Op1, Op2);
+    return self.DAG.getNode(BITCAST, DL, Node.getValueType(0), Val);
+}
+
+fn VectorLegalizer::ExpandSEXTINREG(self, Node: *mut SDNode) -> SDValue {
+    let mut VT: EVT = Node.getValueType(0);
+    if self.TLI.getOperationAction(SRA, VT) == Expand || self.TLI.getOperationAction(SHL, VT) == Expand {
+        return SDValue {};
+    }
+    let mut DL: SDLoc = SDLoc { Node };
+    let mut OrigTy: EVT = cast(Node.getOperand(1)).getVT();
+    let mut BW: u32 = VT.getScalarSizeInBits();
+    let mut OrigBW: u32 = OrigTy.getScalarSizeInBits();
+    let mut ShiftSz: SDValue = self.DAG.getConstant(BW - OrigBW, DL, VT, false, false);
+    let mut Op: SDValue = self.DAG.getNode(SHL, DL, VT, Node.getOperand(0), ShiftSz);
+    return self.DAG.getNode(SRA, DL, VT, Op, ShiftSz);
+}
+
+fn VectorLegalizer::ExpandANY_EXTEND_VECTOR_INREG(self, Node: *mut SDNode) -> SDValue {
+    let mut DL: SDLoc = SDLoc { Node };
+    let mut VT: EVT = Node.getValueType(0);
+    let mut NumElements: i32 = VT.getVectorNumElements();
+    let mut Src: SDValue = Node.getOperand(0);
+    let mut SrcVT: EVT = Src.getValueType();
+    let mut NumSrcElements: i32 = SrcVT.getVectorNumElements();
+    if SrcVT.bitsLE(VT) {
+        assert!((VT.getSizeInBits().operator unsigned long long() % SrcVT.getScalarSizeInBits()) == 0, "ANY_EXTEND_VECTOR_INREG vector size mismatch");
+        NumSrcElements = VT.getSizeInBits().operator unsigned long long() / SrcVT.getScalarSizeInBits();
+        SrcVT = getVectorVT(*self.DAG.getContext(), SrcVT.getScalarType(), NumSrcElements, false);
+        Src = self.DAG.getInsertSubvector(DL, self.DAG.getUNDEF(SrcVT), Src, 0);
+    }
+    let mut ShuffleMask: SmallVector<int, 16> = SmallVector<int, 16> {};
+    ShuffleMask.resize(NumSrcElements, -1);
+    let mut ExtLaneScale: i32 = NumSrcElements / NumElements;
+    let mut EndianOffset: i32 = if self.DAG.getDataLayout().isBigEndian() { ExtLaneScale - 1 } else { 0 };
+    for let mut i: i32 = 0; i < NumElements; i += 1 {
+        ShuffleMask[i * ExtLaneScale + EndianOffset] = i;
+    }
+    return self.DAG.getNode(BITCAST, DL, VT, self.DAG.getVectorShuffle(SrcVT, DL, Src, self.DAG.getPOISON(SrcVT), ArrayRef<int> { ShuffleMask }));
+}
+
+fn VectorLegalizer::ExpandSIGN_EXTEND_VECTOR_INREG(self, Node: *mut SDNode) -> SDValue {
+    let mut DL: SDLoc = SDLoc { Node };
+    let mut VT: EVT = Node.getValueType(0);
+    let mut Src: SDValue = Node.getOperand(0);
+    let mut SrcVT: EVT = Src.getValueType();
+    let mut Op: SDValue = self.DAG.getNode(ANY_EXTEND_VECTOR_INREG, DL, VT, Src);
+    let mut ExtVT: EVT = getVectorVT(*self.DAG.getContext(), SrcVT.getVectorElementType(), VT.getVectorNumElements(), false);
+    return self.DAG.getNode(SIGN_EXTEND_INREG, DL, VT, Op, self.DAG.getValueType(ExtVT));
+}
+
+fn VectorLegalizer::ExpandZERO_EXTEND_VECTOR_INREG(self, Node: *mut SDNode) -> SDValue {
+    let mut DL: SDLoc = SDLoc { Node };
+    let mut VT: EVT = Node.getValueType(0);
+    let mut NumElements: i32 = VT.getVectorNumElements();
+    let mut Src: SDValue = Node.getOperand(0);
+    let mut SrcVT: EVT = Src.getValueType();
+    let mut NumSrcElements: i32 = SrcVT.getVectorNumElements();
+    if SrcVT.bitsLE(VT) {
+        assert!((VT.getSizeInBits().operator unsigned long long() % SrcVT.getScalarSizeInBits()) == 0, "ZERO_EXTEND_VECTOR_INREG vector size mismatch");
+        NumSrcElements = VT.getSizeInBits().operator unsigned long long() / SrcVT.getScalarSizeInBits();
+        SrcVT = getVectorVT(*self.DAG.getContext(), SrcVT.getScalarType(), NumSrcElements, false);
+        Src = self.DAG.getInsertSubvector(DL, self.DAG.getUNDEF(SrcVT), Src, 0);
+    }
+    let mut Zero: SDValue = self.DAG.getConstant(0, DL, SrcVT, false, false);
+    let mut ShuffleMask: iota_range<int>>, 16U> = to_vector(seq(0, NumSrcElements));
+    let mut ExtLaneScale: i32 = NumSrcElements / NumElements;
+    let mut EndianOffset: i32 = if self.DAG.getDataLayout().isBigEndian() { ExtLaneScale - 1 } else { 0 };
+    for let mut i: i32 = 0; i < NumElements; i += 1 {
+        ShuffleMask[i * ExtLaneScale + EndianOffset] = NumSrcElements + i;
+    }
+    return self.DAG.getNode(BITCAST, DL, VT, self.DAG.getVectorShuffle(SrcVT, DL, Zero, Src, ArrayRef<int> { ShuffleMask }));
+}
+
+fn createBSWAPShuffleMask(VT: EVT, ShuffleMask: *mut SmallVectorImpl<int>) {
+    let mut ScalarSizeInBytes: i32 = VT.getScalarSizeInBits() / 8;
+    for let mut I: i32 = 0;
+let mut E: i32 = VT.getVectorNumElements(); I != E; I += 1 {
+        for let mut J: i32 = ScalarSizeInBytes - 1; J >= 0; J -= 1 {
+            ShuffleMask.push((I * ScalarSizeInBytes) + J);
+        }
+    }
+}
+
+fn VectorLegalizer::ExpandBSWAP(self, Node: *mut SDNode) -> SDValue {
+    let mut VT: EVT = Node.getValueType(0);
+    if VT.isScalableVector() {
+        return self.TLI.expandBSWAP(Node, self.DAG);
+    }
+    let mut ShuffleMask: SmallVector<int, 16> = SmallVector<int, 16> {};
+    createBSWAPShuffleMask(VT, ShuffleMask);
+    let mut ByteVT: EVT = getVectorVT(*self.DAG.getContext(), EVT { i8 }, ShuffleMask.len, false);
+    if self.TLI.isShuffleMaskLegal(ArrayRef<int> { ShuffleMask }, ByteVT) {
+        let mut DL: SDLoc = SDLoc { Node };
+        let mut Op: SDValue = self.DAG.getNode(BITCAST, DL, ByteVT, Node.getOperand(0));
+        Op = self.DAG.getVectorShuffle(ByteVT, DL, Op, self.DAG.getPOISON(ByteVT), ArrayRef<int> { ShuffleMask });
+        return self.DAG.getNode(BITCAST, DL, VT, Op);
+    }
+    if self.TLI.isOperationLegalOrCustom(SHL, VT, false) && self.TLI.isOperationLegalOrCustom(SRL, VT, false) && self.TLI.isOperationLegalOrCustomOrPromote(AND, VT, false) && self.TLI.isOperationLegalOrCustomOrPromote(OR, VT, false) {
+        return self.TLI.expandBSWAP(Node, self.DAG);
+    }
+    return SDValue {};
+}
+
+fn VectorLegalizer::ExpandBITREVERSE(self, Node: *mut SDNode) -> SDValue {
+    let mut VT: EVT = Node.getValueType(0);
+    if VT.isScalableVector() {
+        return self.TLI.expandBITREVERSE(Node, self.DAG);
+    }
+    if self.TLI.isOperationLegalOrCustom(BITREVERSE, VT.getScalarType(), false) {
+        return SDValue {};
+    }
+    let mut ScalarSizeInBits: u32 = VT.getScalarSizeInBits();
+    if ScalarSizeInBits > 8 && (ScalarSizeInBits % 8) == 0 {
+        let mut BSWAPMask: SmallVector<int, 16> = SmallVector<int, 16> {};
+        createBSWAPShuffleMask(VT, BSWAPMask);
+        let mut ByteVT: EVT = getVectorVT(*self.DAG.getContext(), EVT { i8 }, BSWAPMask.len, false);
+        if self.TLI.isShuffleMaskLegal(ArrayRef<int> { BSWAPMask }, ByteVT) && (self.TLI.isOperationLegalOrCustom(BITREVERSE, ByteVT, false) || (self.TLI.isOperationLegalOrCustom(SHL, ByteVT, false) && self.TLI.isOperationLegalOrCustom(SRL, ByteVT, false) && self.TLI.isOperationLegalOrCustomOrPromote(AND, ByteVT, false) && self.TLI.isOperationLegalOrCustomOrPromote(OR, ByteVT, false))) {
+            let mut DL: SDLoc = SDLoc { Node };
+            let mut Op: SDValue = self.DAG.getNode(BITCAST, DL, ByteVT, Node.getOperand(0));
+            Op = self.DAG.getVectorShuffle(ByteVT, DL, Op, self.DAG.getPOISON(ByteVT), ArrayRef<int> { BSWAPMask });
+            Op = self.DAG.getNode(BITREVERSE, DL, ByteVT, Op);
+            Op = self.DAG.getNode(BITCAST, DL, VT, Op);
+            return Op;
+        }
+    }
+    if self.TLI.isOperationLegalOrCustom(SHL, VT, false) && self.TLI.isOperationLegalOrCustom(SRL, VT, false) && self.TLI.isOperationLegalOrCustomOrPromote(AND, VT, false) && self.TLI.isOperationLegalOrCustomOrPromote(OR, VT, false) {
+        return self.TLI.expandBITREVERSE(Node, self.DAG);
+    }
+    return SDValue {};
+}
+
+fn VectorLegalizer::ExpandVSELECT(self, Node: *mut SDNode) -> SDValue {
+    let mut DL: SDLoc = SDLoc { Node };
+    let mut Mask: SDValue = Node.getOperand(0);
+    let mut Op1: SDValue = Node.getOperand(1);
+    let mut Op2: SDValue = Node.getOperand(2);
+    let mut VT: EVT = Mask.getValueType();
+    if self.TLI.getOperationAction(AND, VT) == Expand || self.TLI.getOperationAction(XOR, VT) == Expand || self.TLI.getOperationAction(OR, VT) == Expand {
+        return SDValue {};
+    }
+    let mut BoolContents: BooleanContent = self.TLI.getBooleanContents(Op1.getValueType());
+    if BoolContents != ZeroOrNegativeOneBooleanContent && !(BoolContents == ZeroOrOneBooleanContent && Op1.getValueType().getVectorElementType() == EVT { i1 }) {
+        return SDValue {};
+    }
+    if VT.getSizeInBits() != Op1.getValueSizeInBits() {
+        return SDValue {};
+    }
+    Op1 = self.DAG.getNode(BITCAST, DL, VT, Op1);
+    Op2 = self.DAG.getNode(BITCAST, DL, VT, Op2);
+    let mut NotMask: SDValue = self.DAG.getNOT(DL, Mask, VT);
+    Op1 = self.DAG.getNode(AND, DL, VT, Op1, Mask);
+    Op2 = self.DAG.getNode(AND, DL, VT, Op2, NotMask);
+    let mut Val: SDValue = self.DAG.getNode(OR, DL, VT, Op1, Op2);
+    return self.DAG.getNode(BITCAST, DL, Node.getValueType(0), Val);
+}
+
+fn VectorLegalizer::ExpandVP_MERGE(self, Node: *mut SDNode) -> SDValue {
+    let mut DL: SDLoc = SDLoc { Node };
+    let mut Mask: SDValue = Node.getOperand(0);
+    let mut Op1: SDValue = Node.getOperand(1);
+    let mut Op2: SDValue = Node.getOperand(2);
+    let mut EVL: SDValue = Node.getOperand(3);
+    let mut MaskVT: EVT = Mask.getValueType();
+    let mut IsFixedLen: bool = MaskVT.isFixedLengthVector();
+    let mut EVLVecVT: EVT = getVectorVT(*self.DAG.getContext(), EVL.getValueType(), MaskVT.getVectorElementCount());
+    if (IsFixedLen && !self.TLI.isOperationLegalOrCustom(BUILD_VECTOR, EVLVecVT, false)) || (!IsFixedLen && (!self.TLI.isOperationLegalOrCustom(STEP_VECTOR, EVLVecVT, false) || !self.TLI.isOperationLegalOrCustom(SPLAT_VECTOR, EVLVecVT, false))) {
+        return SDValue {};
+    }
+    if self.TLI.getSetCCResultType(self.DAG.getDataLayout(), *self.DAG.getContext(), EVLVecVT) != MaskVT {
+        return SDValue {};
+    }
+    let mut StepVec: SDValue = self.DAG.getStepVector(DL, EVLVecVT);
+    let mut SplatEVL: SDValue = self.DAG.getSplat(EVLVecVT, DL, EVL);
+    let mut EVLMask: SDValue = self.DAG.getSetCC(DL, MaskVT, StepVec, SplatEVL, SETULT, SDValue {}, false, SDNodeFlags { Flags: None });
+    let mut FullMask: SDValue = self.DAG.getNode(AND, DL, MaskVT, Mask, EVLMask);
+    return self.DAG.getSelect(DL, Node.getValueType(0), FullMask, Op1, Op2, SDNodeFlags { Flags: None });
+}
+
+fn VectorLegalizer::ExpandVP_REM(self, Node: *mut SDNode) -> SDValue {
+    let mut VT: EVT = Node.getValueType(0);
+    let mut DivOpc: u32 = if Node.getOpcode() == VP_SREM { VP_SDIV } else { VP_UDIV };
+    if !self.TLI.isOperationLegalOrCustom(DivOpc, VT, false) || !self.TLI.isOperationLegalOrCustom(MUL, VT, false) || !self.TLI.isOperationLegalOrCustom(SUB, VT, false) {
+        return SDValue {};
+    }
+    let mut DL: SDLoc = SDLoc { Node };
+    let mut Dividend: SDValue = Node.getOperand(0);
+    let mut Divisor: SDValue = Node.getOperand(1);
+    let mut Mask: SDValue = Node.getOperand(2);
+    let mut EVL: SDValue = Node.getOperand(3);
+    let mut Div: SDValue = self.DAG.getNode(DivOpc, DL, VT, Dividend, Divisor, Mask, EVL);
+    let mut Mul: SDValue = self.DAG.getNode(MUL, DL, VT, Divisor, Div);
+    return self.DAG.getNode(SUB, DL, VT, Dividend, Mul);
+}
+
+fn VectorLegalizer::ExpandGET_ACTIVE_LANE_MASK(self, N: *mut SDNode) -> SDValue {
+    let mut DL: SDLoc = SDLoc { N };
+    let mut Start: SDValue = N.getOperand(0);
+    let mut End: SDValue = N.getOperand(1);
+    let mut VT: EVT = N.getValueType(0);
+    let mut OpVT: EVT = Start.getValueType();
+    if VT.isScalableVector() {
+        return SDValue {};
+    }
+    let mut PromoteVT: EVT = VT.changeVectorElementType(*self.DAG.getContext(), OpVT);
+    if self.TLI.isTypeLegal(PromoteVT) && isUIntN(OpVT.getScalarSizeInBits(), VT.getVectorNumElements()) {
+        let mut StartV: SDValue = self.DAG.getSplat(PromoteVT, DL, Start);
+        let mut Seq: SDValue = self.DAG.getStepVector(DL, PromoteVT);
+        Seq = self.DAG.getNode(UADDSAT, DL, PromoteVT, Seq, StartV);
+        let mut MaskVT: EVT = self.TLI.getSetCCResultType(self.DAG.getDataLayout(), *self.DAG.getContext(), PromoteVT);
+        let mut EndV: SDValue = self.DAG.getSplat(PromoteVT, DL, End);
+        let mut Mask: SDValue = self.DAG.getSetCC(DL, MaskVT, Seq, EndV, SETULT, SDValue {}, false, SDNodeFlags { Flags: None });
+        return self.DAG.getBoolExtOrTrunc(Mask, DL, VT, PromoteVT);
+    }
+    if !isUIntN(VT.getScalarSizeInBits(), VT.getVectorNumElements()) {
+        return SDValue {};
+    }
+    let mut Max: SDValue = self.DAG.getConstant(maxUIntN(VT.getScalarSizeInBits()), DL, OpVT, false, false);
+    End = self.DAG.getNode(USUBSAT, DL, OpVT, End, Start);
+    End = self.DAG.getNode(UMIN, DL, OpVT, End, Max);
+    let mut EndV: SDValue = self.DAG.getSplat(VT, DL, End);
+    let mut StepVector: SDValue = self.DAG.getStepVector(DL, VT);
+    return self.DAG.getSetCC(DL, VT, StepVector, EndV, SETULT, SDValue {}, false, SDNodeFlags { Flags: None });
+}
+
+fn VectorLegalizer::ExpandLOOP_DEPENDENCE_MASK(self, N: *mut SDNode) -> SDValue {
+    return self.TLI.expandLoopDependenceMask(N, self.DAG);
+}
+
+fn VectorLegalizer::ExpandMaskedBinOp(self, N: *mut SDNode) -> SDValue {
+    let mut dl: SDLoc = SDLoc { N };
+    let mut VT: EVT = N.getValueType(0);
+    let mut SafeDivisor: SDValue = self.DAG.getSelect(dl, VT, N.getOperand(2), N.getOperand(1), self.DAG.getConstant(1, dl, VT, false, false), SDNodeFlags { Flags: None });
+    return self.DAG.getNode(getUnmaskedBinOpOpcode(N.getOpcode()), dl, VT, N.getOperand(0), SafeDivisor);
+}
+
+fn VectorLegalizer::ExpandFP_TO_UINT(self, Node: *mut SDNode, Results: *mut SmallVectorImpl<SDValue>) {
+    let mut Result: SDValue = SDValue {};
+    let mut Chain: SDValue = SDValue {};
+    if self.TLI.expandFP_TO_UINT(Node, Result, Chain, self.DAG) {
+        Results.push(ValueParamT { Result });
+        if Node.isStrictFPOpcode() {
+            Results.push(ValueParamT { Chain });
+        }
+        return;
+    }
+    if Node.isStrictFPOpcode() {
+        self.UnrollStrictFPOp(Node, Results);
+        return;
+    }
+    Results.push(self.DAG.UnrollVectorOp(Node, 0));
+}
+
+fn VectorLegalizer::ExpandUINT_TO_FLOAT(self, Node: *mut SDNode, Results: *mut SmallVectorImpl<SDValue>) {
+    let mut IsStrict: bool = Node.isStrictFPOpcode();
+    let mut OpNo: u32 = if IsStrict { 1 } else { 0 };
+    let mut Src: SDValue = Node.getOperand(OpNo);
+    let mut SrcVT: EVT = Src.getValueType();
+    let mut DstVT: EVT = Node.getValueType(0);
+    let mut DL: SDLoc = SDLoc { Node };
+    let mut Result: SDValue = SDValue {};
+    let mut Chain: SDValue = SDValue {};
+    if self.TLI.expandUINT_TO_FP(Node, Result, Chain, self.DAG) {
+        Results.push(ValueParamT { Result });
+        if IsStrict {
+            Results.push(ValueParamT { Chain });
+        }
+        return;
+    }
+    if ((!IsStrict && self.TLI.getOperationAction(SINT_TO_FP, SrcVT) == Expand) || (IsStrict && self.TLI.getOperationAction(STRICT_SINT_TO_FP, SrcVT) == Expand)) || self.TLI.getOperationAction(SRL, SrcVT) == Expand {
+        if IsStrict {
+            self.UnrollStrictFPOp(Node, Results);
+            return;
+        }
+        Results.push(self.DAG.UnrollVectorOp(Node, 0));
+        return;
+    }
+    let mut BW: u32 = SrcVT.getScalarSizeInBits();
+    assert!((BW == 64 || BW == 32), "Elements in vector-UINT_TO_FP must be 32 or 64 bits wide");
+    if (!IsStrict && !self.TLI.isOperationLegalOrCustom(FMUL, DstVT, false)) || (IsStrict && !self.TLI.isOperationLegalOrCustom(STRICT_FMUL, DstVT, false)) {
+        let mut FPVT: EVT = EVT { if BW == 32 { f32 } else { f64 } };
+        let mut UIToFP: SDValue = SDValue {};
+        let mut Result: SDValue = SDValue {};
+        let mut TargetZero: SDValue = self.DAG.getIntPtrConstant(0, DL, true);
+        let mut FloatVecVT: EVT = SrcVT.changeVectorElementType(*self.DAG.getContext(), FPVT);
+        if IsStrict {
+            UIToFP = self.DAG.getNode(STRICT_UINT_TO_FP, DL, ArrayRef<EVT> { [FloatVecVT, EVT { Other }] }, ArrayRef<SDValue> { [Node.getOperand(0), Src] });
+            Result = self.DAG.getNode(STRICT_FP_ROUND, DL, ArrayRef<EVT> { [DstVT, EVT { Other }] }, ArrayRef<SDValue> { [Node.getOperand(0), UIToFP, TargetZero] });
+            Results.push(ValueParamT { Result });
+            Results.push(Result.getValue(1));
+        } else {
+            UIToFP = self.DAG.getNode(UINT_TO_FP, DL, FloatVecVT, Src);
+            Result = self.DAG.getNode(FP_ROUND, DL, DstVT, UIToFP, TargetZero);
+            Results.push(ValueParamT { Result });
+        }
+        return;
+    }
+    let mut HalfWord: SDValue = self.DAG.getConstant(BW / 2, DL, SrcVT, false, false);
+    let mut HWMask: u64 = if (BW == 64) { 4294967295 } else { 65535 };
+    let mut HalfWordMask: SDValue = self.DAG.getConstant(HWMask, DL, SrcVT, false, false);
+    let mut TWOHW: SDValue = self.DAG.getConstantFP(1 << (BW / 2), DL, DstVT, false);
+    let mut HI: SDValue = self.DAG.getNode(SRL, DL, SrcVT, Src, HalfWord);
+    let mut LO: SDValue = self.DAG.getNode(AND, DL, SrcVT, Src, HalfWordMask);
+    if IsStrict {
+        let mut fHI: SDValue = self.DAG.getNode(STRICT_SINT_TO_FP, DL, ArrayRef<EVT> { [DstVT, EVT { Other }] }, ArrayRef<SDValue> { [Node.getOperand(0), HI] });
+        fHI = self.DAG.getNode(STRICT_FMUL, DL, ArrayRef<EVT> { [DstVT, EVT { Other }] }, ArrayRef<SDValue> { [fHI.getValue(1), fHI, TWOHW] });
+        let mut fLO: SDValue = self.DAG.getNode(STRICT_SINT_TO_FP, DL, ArrayRef<EVT> { [DstVT, EVT { Other }] }, ArrayRef<SDValue> { [Node.getOperand(0), LO] });
+        let mut TF: SDValue = self.DAG.getNode(TokenFactor, DL, EVT { Other }, fHI.getValue(1), fLO.getValue(1));
+        let mut Result: SDValue = self.DAG.getNode(STRICT_FADD, DL, ArrayRef<EVT> { [DstVT, EVT { Other }] }, ArrayRef<SDValue> { [TF, fHI, fLO] });
+        Results.push(ValueParamT { Result });
+        Results.push(Result.getValue(1));
+        return;
+    }
+    let mut fHI: SDValue = self.DAG.getNode(SINT_TO_FP, DL, DstVT, HI);
+    fHI = self.DAG.getNode(FMUL, DL, DstVT, fHI, TWOHW);
+    let mut fLO: SDValue = self.DAG.getNode(SINT_TO_FP, DL, DstVT, LO);
+    Results.push(self.DAG.getNode(FADD, DL, DstVT, fHI, fLO));
+}
+
+fn VectorLegalizer::ExpandFNEG(self, Node: *mut SDNode) -> SDValue {
+    let mut VT: EVT = Node.getValueType(0);
+    let mut IntVT: EVT = VT.changeVectorElementTypeToInteger();
+    if !self.TLI.isOperationLegalOrCustom(XOR, IntVT, false) {
+        return SDValue {};
+    }
+    if VT.isFixedLengthVector() {
+        let mut EltVT: EVT = VT.getVectorElementType();
+        let mut NumElts: u32 = VT.getVectorNumElements();
+        if (NumElts == 1 && self.TLI.isOperationLegalOrCustomOrPromote(FNEG, EltVT, false)) || (NumElts < 3 && self.TLI.isOperationLegal(FNEG, EltVT) && self.TLI.isExtractVecEltCheap(VT, 0) && (NumElts == 1 || self.TLI.isExtractVecEltCheap(VT, 1))) {
+            return SDValue {};
+        }
+    }
+    let mut DL: SDLoc = SDLoc { Node };
+    let mut Cast: SDValue = self.DAG.getNode(BITCAST, DL, IntVT, Node.getOperand(0));
+    let mut SignMask: SDValue = self.DAG.getConstant(getSignMask(IntVT.getScalarSizeInBits()), DL, IntVT, false, false);
+    let mut Xor: SDValue = self.DAG.getNode(XOR, DL, IntVT, Cast, SignMask);
+    return self.DAG.getNode(BITCAST, DL, VT, Xor);
+}
+
+fn VectorLegalizer::ExpandFABS(self, Node: *mut SDNode) -> SDValue {
+    let mut VT: EVT = Node.getValueType(0);
+    let mut IntVT: EVT = VT.changeVectorElementTypeToInteger();
+    if !self.TLI.isOperationLegalOrCustom(AND, IntVT, false) {
+        return SDValue {};
+    }
+    if VT.isFixedLengthVector() {
+        let mut EltVT: EVT = VT.getVectorElementType();
+        let mut NumElts: u32 = VT.getVectorNumElements();
+        if (NumElts == 1 && self.TLI.isOperationLegalOrCustomOrPromote(FABS, EltVT, false)) || (NumElts < 3 && self.TLI.isOperationLegal(FABS, EltVT) && self.TLI.isExtractVecEltCheap(VT, 0) && (NumElts == 1 || self.TLI.isExtractVecEltCheap(VT, 1))) {
+            return SDValue {};
+        }
+    }
+    let mut DL: SDLoc = SDLoc { Node };
+    let mut Cast: SDValue = self.DAG.getNode(BITCAST, DL, IntVT, Node.getOperand(0));
+    let mut ClearSignMask: SDValue = self.DAG.getConstant(getSignedMaxValue(IntVT.getScalarSizeInBits()), DL, IntVT, false, false);
+    let mut ClearedSign: SDValue = self.DAG.getNode(AND, DL, IntVT, Cast, ClearSignMask);
+    return self.DAG.getNode(BITCAST, DL, VT, ClearedSign);
+}
+
+fn VectorLegalizer::ExpandFCOPYSIGN(self, Node: *mut SDNode) -> SDValue {
+    let mut VT: EVT = Node.getValueType(0);
+    let mut IntVT: EVT = VT.changeVectorElementTypeToInteger();
+    if VT != Node.getOperand(1).getValueType() || !self.TLI.isOperationLegalOrCustom(AND, IntVT, false) || !self.TLI.isOperationLegalOrCustom(OR, IntVT, false) {
+        return SDValue {};
+    }
+    if VT.isFixedLengthVector() {
+        let mut EltVT: EVT = VT.getVectorElementType();
+        let mut NumElts: u32 = VT.getVectorNumElements();
+        if (NumElts == 1 && self.TLI.isOperationLegalOrCustomOrPromote(FCOPYSIGN, EltVT, false)) || (NumElts < 6 && self.TLI.isOperationLegal(FCOPYSIGN, EltVT) && self.TLI.isExtractVecEltCheap(VT, 0) && (NumElts == 1 || self.TLI.isExtractVecEltCheap(VT, 1))) {
+            return SDValue {};
+        }
+    }
+    let mut DL: SDLoc = SDLoc { Node };
+    let mut Mag: SDValue = self.DAG.getNode(BITCAST, DL, IntVT, Node.getOperand(0));
+    let mut Sign: SDValue = self.DAG.getNode(BITCAST, DL, IntVT, Node.getOperand(1));
+    let mut SignMask: SDValue = self.DAG.getConstant(getSignMask(IntVT.getScalarSizeInBits()), DL, IntVT, false, false);
+    let mut SignBit: SDValue = self.DAG.getNode(AND, DL, IntVT, Sign, SignMask);
+    let mut ClearSignMask: SDValue = self.DAG.getConstant(getSignedMaxValue(IntVT.getScalarSizeInBits()), DL, IntVT, false, false);
+    let mut ClearedSign: SDValue = self.DAG.getNode(AND, DL, IntVT, Mag, ClearSignMask);
+    let mut CopiedSign: SDValue = self.DAG.getNode(OR, DL, IntVT, ClearedSign, SignBit, SDNodeFlags { Flags: Disjoint });
+    return self.DAG.getNode(BITCAST, DL, VT, CopiedSign);
+}
+
+fn VectorLegalizer::ExpandFSUB(self, Node: *mut SDNode, Results: *mut SmallVectorImpl<SDValue>) {
+    let mut VT: EVT = Node.getValueType(0);
+    if self.TLI.isOperationLegalOrCustom(FNEG, VT, false) && self.TLI.isOperationLegalOrCustom(FADD, VT, false) {
+        return;
+    }
+    if self.TLI.expandVectorNaryOpBySplitting(Node, self.DAG) {
+        Expanded;
+    } else {
+        Results.push(ValueParamT { Expanded });
+        return;
+    }
+    let mut Tmp: SDValue = self.DAG.UnrollVectorOp(Node, 0);
+    Results.push(ValueParamT { Tmp });
+}
+
+fn VectorLegalizer::ExpandSETCC(self, Node: *mut SDNode, Results: *mut SmallVectorImpl<SDValue>) {
+    let mut NeedInvert: bool = false;
+    let mut IsStrict: bool = Node.getOpcode() == STRICT_FSETCC || Node.getOpcode() == STRICT_FSETCCS;
+    let mut IsSignaling: bool = Node.getOpcode() == STRICT_FSETCCS;
+    let mut Offset: u32 = if IsStrict { 1 } else { 0 };
+    let mut Chain: SDValue = if IsStrict { Node.getOperand(0) } else { SDValue {} };
+    let mut LHS: SDValue = Node.getOperand(0 + Offset);
+    let mut RHS: SDValue = Node.getOperand(1 + Offset);
+    let mut CC: SDValue = Node.getOperand(2 + Offset);
+    let mut OpVT: MVT = LHS.getSimpleValueType();
+    let mut CCCode: CondCode = cast(CC).get();
+    if self.TLI.getCondCodeAction(CCCode, OpVT) != Expand {
+        if IsStrict {
+            self.UnrollStrictFPOp(Node, Results);
+            return;
+        }
+        Results.push(self.UnrollVSETCC(Node));
+        return;
+    }
+    let mut dl: SDLoc = SDLoc { Node };
+    let mut Legalized: bool = self.TLI.LegalizeSetCCCondCode(self.DAG, Node.getValueType(0), LHS, RHS, CC, NeedInvert, dl, Chain, IsSignaling);
+    if Legalized {
+        if CC.getNode() {
+            if IsStrict {
+                LHS = self.DAG.getNode(Node.getOpcode(), dl, Node.getVTList(), ArrayRef<SDValue> { [Chain, LHS, RHS, CC] }, Node.getFlags());
+                Chain = LHS.getValue(1);
+            } else {
+                LHS = self.DAG.getNode(SETCC, dl, Node.getValueType(0), LHS, RHS, CC, Node.getFlags());
+            }
+        }
+        if NeedInvert {
+            LHS = self.DAG.getLogicalNOT(dl, LHS, operator(LHS).getValueType(0));
+        }
+    } else {
+        assert!(!IsStrict, "Don't know how to expand for strict nodes.");
+        let mut VT: EVT = Node.getValueType(0);
+        LHS = self.DAG.getNode(SELECT_CC, dl, VT, LHS, RHS, self.DAG.getBoolConstant(true, dl, VT, LHS.getValueType()), self.DAG.getBoolConstant(false, dl, VT, LHS.getValueType()), CC, Node.getFlags());
+    }
+    Results.push(ValueParamT { LHS });
+    if IsStrict {
+        Results.push(ValueParamT { Chain });
+    }
+}
+
+fn VectorLegalizer::ExpandUADDSUBO(self, Node: *mut SDNode, Results: *mut SmallVectorImpl<SDValue>) {
+    let mut Result: SDValue = SDValue {};
+    let mut Overflow: SDValue = SDValue {};
+    self.TLI.expandUADDSUBO(Node, Result, Overflow, self.DAG);
+    Results.push(ValueParamT { Result });
+    Results.push(ValueParamT { Overflow });
+}
+
+fn VectorLegalizer::ExpandSADDSUBO(self, Node: *mut SDNode, Results: *mut SmallVectorImpl<SDValue>) {
+    let mut Result: SDValue = SDValue {};
+    let mut Overflow: SDValue = SDValue {};
+    self.TLI.expandSADDSUBO(Node, Result, Overflow, self.DAG);
+    Results.push(ValueParamT { Result });
+    Results.push(ValueParamT { Overflow });
+}
+
+fn VectorLegalizer::ExpandMULO(self, Node: *mut SDNode, Results: *mut SmallVectorImpl<SDValue>) {
+    let mut Result: SDValue = SDValue {};
+    let mut Overflow: SDValue = SDValue {};
+    if !self.TLI.expandMULO(Node, Result, Overflow, self.DAG) {
+        tie(Result, Overflow) = self.DAG.UnrollVectorOverflowOp(Node, 0);
+    }
+    Results.push(ValueParamT { Result });
+    Results.push(ValueParamT { Overflow });
+}
+
+fn VectorLegalizer::ExpandFixedPointDiv(self, Node: *mut SDNode, Results: *mut SmallVectorImpl<SDValue>) {
+    let mut N: *mut SDNode = Node;
+    if self.TLI.expandFixedPointDiv(N.getOpcode(), SDLoc { N }, N.getOperand(0), N.getOperand(1), N.getConstantOperandVal(2), self.DAG) {
+        Expanded;
+    } else {
+        Results.push(ValueParamT { Expanded });
+    }
+}
+
+fn VectorLegalizer::ExpandStrictFPOp(self, Node: *mut SDNode, Results: *mut SmallVectorImpl<SDValue>) {
+    if Node.getOpcode() == STRICT_UINT_TO_FP {
+        self.ExpandUINT_TO_FLOAT(Node, Results);
+        return;
+    }
+    if Node.getOpcode() == STRICT_FP_TO_UINT {
+        self.ExpandFP_TO_UINT(Node, Results);
+        return;
+    }
+    if Node.getOpcode() == STRICT_FSETCC || Node.getOpcode() == STRICT_FSETCCS {
+        self.ExpandSETCC(Node, Results);
+        return;
+    }
+    self.UnrollStrictFPOp(Node, Results);
+}
+
+fn VectorLegalizer::ExpandREM(self, Node: *mut SDNode, Results: *mut SmallVectorImpl<SDValue>) {
+    assert!((Node.getOpcode() == SREM || Node.getOpcode() == UREM), "Expected REM node");
+    let mut Result: SDValue = SDValue {};
+    if !self.TLI.expandREM(Node, Result, self.DAG) {
+        Result = self.DAG.UnrollVectorOp(Node, 0);
+    }
+    Results.push(ValueParamT { Result });
+}
+
+fn VectorLegalizer::tryExpandVecMathCall(self, Node: *mut SDNode, GetLibcall: Libcall (EVT)>, Results: *mut SmallVectorImpl<SDValue>) -> bool {
+    assert!(!Node.isStrictFPOpcode(), "Unexpected strict fp operation!");
+    let mut VT: EVT = Node.getValueType(0);
+    let mut Ctx: *mut LLVMContext = *self.DAG.getContext();
+    let mut Libcalls: *LibcallLoweringInfo = self.DAG.getLibcalls();
+    let mut CallVT: EVT = VT;
+    let mut LCImpl: LibcallImpl = Libcalls.getLibcallImpl(GetLibcall.call(CallVT));
+    if LCImpl == Unsupported && VT.getVectorElementCount().isScalar() {
+        return false;
+    }
+    while LCImpl == Unsupported {
+        CallVT = CallVT.getDoubleNumVectorElementsVT(Ctx);
+        if !CallVT.isSimple() {
+            return false;
+        }
+        if self.TLI.isTypeLegal(CallVT) {
+            LCImpl = Libcalls.getLibcallImpl(GetLibcall.call(CallVT));
+        }
+    }
+    let mut RTLCI: *RuntimeLibcallsInfo = self.TLI.getRuntimeLibcallsInfo();
+    let mut DL: SDLoc = SDLoc { Node };
+    let mut Args: ArgListTy = ArgListTy {};
+    let mut HasMaskArg: bool = RTLCI.hasVectorMaskArgument(LCImpl);
+    assert!(FuncTy.getNumParams() == Node.getNumOperands() + HasMaskArg && getEVT(FuncTy.getReturnType(), true) == CallVT, "mismatch in value type and call signature type");
+    for let mut I: u32 = 0;
+let mut E: u32 = FuncTy.getNumParams(); I != E; I += 1 {
+        let mut ParamTy: *mut Type = FuncTy.getParamType(I);
+        if HasMaskArg && I == E - 1 {
+            assert!(cast(ParamTy).getElementType().isIntegerTy(1) && cast(ParamTy).getElementCount() == CallVT.getVectorElementCount(), "unexpected vector mask type");
+            let mut MaskVT: EVT = getEVT(ParamTy, true);
+            let mut SubMaskVT: EVT = MaskVT.changeVectorElementCount(Ctx, VT.getVectorElementCount());
+            let mut Mask: SDValue = self.DAG.getBoolConstant(true, DL, SubMaskVT, VT);
+            if CallVT != VT {
+                Mask = self.DAG.getInsertSubvector(DL, self.DAG.getBoolConstant(false, DL, MaskVT, CallVT), Mask, 0);
+            }
+            Args.emplace_back(Mask, ParamTy);
+        } else {
+            let mut Op: SDValue = Node.getOperand(I);
+            assert!(Op.getValueType() == VT, "mismatch in vector types");
+            if CallVT != VT {
+                let mut NumConcat: u32 = CallVT.getVectorMinNumElements() / VT.getVectorMinNumElements();
+                let mut Ops: SmallVector<SDValue, 4> = SmallVector<SDValue, 4> { NumConcat, Op };
+                Op = self.DAG.getNode(CONCAT_VECTORS, DL, CallVT, ArrayRef<SDValue> { Ops });
+            }
+            assert!(Op.getValueType() == getEVT(ParamTy, true), "mismatch in value type and call argument type");
+            Args.emplace_back(Op, ParamTy);
+        }
+    }
+    let mut Callee: SDValue = self.DAG.getExternalSymbol(LCImpl, EVT { self.TLI.getPointerTy(self.DAG.getDataLayout(), 0) });
+    let mut CC: ID = RTLCI.getLibcallImplCallingConv(LCImpl);
+    let mut CLI: CallLoweringInfo = CallLoweringInfo { self.DAG };
+    CLI.setDebugLoc(DL).setChain(self.DAG.getEntryNode()).setLibCallee(CC, FuncTy.getReturnType(), Callee, move(Args));
+    let mut CallResult: pair<SDValue, SDValue> = self.TLI.LowerCallTo(CLI);
+    let mut Result: SDValue = CallResult.first;
+    if CallVT != VT {
+        Result = self.DAG.getExtractSubvector(DL, VT, Result, 0);
+    }
+    Results.push(ValueParamT { Result });
+    return true;
+}
+
+fn VectorLegalizer::UnrollStrictFPOp(self, Node: *mut SDNode, Results: *mut SmallVectorImpl<SDValue>) {
+    let mut VT: EVT = Node.getValueType(0);
+    let mut EltVT: EVT = VT.getVectorElementType();
+    let mut NumElems: u32 = VT.getVectorNumElements();
+    let mut NumOpers: u32 = Node.getNumOperands();
+    let mut TLI: *TargetLowering = self.DAG.getTargetLoweringInfo();
+    let mut TmpEltVT: EVT = EltVT;
+    if Node.getOpcode() == STRICT_FSETCC || Node.getOpcode() == STRICT_FSETCCS {
+        TmpEltVT = TLI.getSetCCResultType(self.DAG.getDataLayout(), *self.DAG.getContext(), TmpEltVT);
+    }
+    let mut ValueVTs: [2]EVT = [TmpEltVT, EVT { Other }];
+    let mut Chain: SDValue = Node.getOperand(0);
+    let mut dl: SDLoc = SDLoc { Node };
+    let mut OpValues: SmallVector<SDValue, 32> = SmallVector<SDValue, 32> {};
+    let mut OpChains: SmallVector<SDValue, 32> = SmallVector<SDValue, 32> {};
+    for let mut i: u32 = 0; i < NumElems; i += 1 {
+        let mut Opers: SmallVector<SDValue, 4> = SmallVector<SDValue, 4> {};
+        let mut Idx: SDValue = self.DAG.getVectorIdxConstant(i, dl, false);
+        Opers.push(ValueParamT { Chain });
+        for let mut j: u32 = 1; j < NumOpers; j += 1 {
+            let mut Oper: SDValue = Node.getOperand(j);
+            let mut OperVT: EVT = Oper.getValueType();
+            if OperVT.isVector() {
+                Oper = self.DAG.getNode(EXTRACT_VECTOR_ELT, dl, OperVT.getVectorElementType(), Oper, Idx);
+            }
+            Opers.push(ValueParamT { Oper });
+        }
+        let mut ScalarOp: SDValue = self.DAG.getNode(Node.getOpcode(), dl, ArrayRef<EVT> { ValueVTs }, ArrayRef<SDValue> { Opers });
+        let mut ScalarResult: SDValue = ScalarOp.getValue(0);
+        let mut ScalarChain: SDValue = ScalarOp.getValue(1);
+        if Node.getOpcode() == STRICT_FSETCC || Node.getOpcode() == STRICT_FSETCCS {
+            ScalarResult = self.DAG.getSelect(dl, EltVT, ScalarResult, self.DAG.getAllOnesConstant(dl, EltVT, false, false), self.DAG.getConstant(0, dl, EltVT, false, false), SDNodeFlags { Flags: None });
+        }
+        OpValues.push(ValueParamT { ScalarResult });
+        OpChains.push(ValueParamT { ScalarChain });
+    }
+    let mut Result: SDValue = self.DAG.getBuildVector(VT, dl, ArrayRef<SDValue> { OpValues });
+    let mut NewChain: SDValue = self.DAG.getNode(TokenFactor, dl, EVT { Other }, ArrayRef<SDValue> { OpChains });
+    Results.push(ValueParamT { Result });
+    Results.push(ValueParamT { NewChain });
+}
+
+fn VectorLegalizer::UnrollVSETCC(self, Node: *mut SDNode) -> SDValue {
+    let mut VT: EVT = Node.getValueType(0);
+    let mut NumElems: u32 = VT.getVectorNumElements();
+    let mut EltVT: EVT = VT.getVectorElementType();
+    let mut LHS: SDValue = Node.getOperand(0);
+    let mut RHS: SDValue = Node.getOperand(1);
+    let mut CC: SDValue = Node.getOperand(2);
+    let mut TmpEltVT: EVT = LHS.getValueType().getVectorElementType();
+    let mut dl: SDLoc = SDLoc { Node };
+    let mut Ops: SmallVector<SDValue, 8> = SmallVector<SDValue, 8> { NumElems };
+    for let mut i: u32 = 0; i < NumElems; i += 1 {
+        let mut LHSElem: SDValue = self.DAG.getNode(EXTRACT_VECTOR_ELT, dl, TmpEltVT, LHS, self.DAG.getVectorIdxConstant(i, dl, false));
+        let mut RHSElem: SDValue = self.DAG.getNode(EXTRACT_VECTOR_ELT, dl, TmpEltVT, RHS, self.DAG.getVectorIdxConstant(i, dl, false));
+        Ops[i] = self.DAG.getNode(SETCC, dl, self.TLI.getSetCCResultType(self.DAG.getDataLayout(), *self.DAG.getContext(), TmpEltVT), LHSElem, RHSElem, CC);
+        Ops[i] = self.DAG.getSelect(dl, EltVT, Ops[i], self.DAG.getBoolConstant(true, dl, EltVT, VT), self.DAG.getConstant(0, dl, EltVT, false, false), SDNodeFlags { Flags: None });
+    }
+    return self.DAG.getBuildVector(VT, dl, ArrayRef<SDValue> { Ops });
+}
+
+fn SelectionDAG::LegalizeVectors(self) -> bool {
+    return VectorLegalizer { *self }.Run();
+}
+
+struct Closure_1 {}
+
+fn Closure_1::call(self: *Closure_1, T: EVT) -> bool {
+            return T.isVector();
+        }
+
+struct Closure_2 {}
+
+fn Closure_2::call(self: *Closure_2, T: EVT) -> bool {
+        return T.isVector();
+    }
+
+struct Closure_3 {}
+
+fn Closure_3::call(self: *Closure_3, O: SDValue) -> bool {
+        return O.getValueType().isVector();
+    }

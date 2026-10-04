@@ -1,0 +1,844 @@
+static mut LoadsClustered: Statistic = Statistic { "pre-RA-sched", "LoadsClustered", "Number of loads clustered together" };
+
+static mut HighLatencyCycles: opt<int> = opt<int> { "sched-high-latency-cycles", Hidden, init(10), desc { Desc: "Roughly estimate the number of cycles that 'long latency' instructions take for targets with no itinerary" } };
+
+fn ScheduleDAGSDNodes::Run(self, dag: *mut SelectionDAG, bb: *mut MachineBasicBlock) {
+    self.BB = bb;
+    self.DAG = dag;
+    self.clearDAG();
+    self.Sequence.clear();
+    self.Schedule();
+}
+
+fn ScheduleDAGSDNodes::newSUnit(self, N: *mut SDNode) -> *mut SUnit {
+    let mut Addr: *SUnit = null;
+    if !self.SUnits.is_empty() {
+        Addr = &mut self.SUnits[0];
+    }
+    self.SUnits.emplace_back(N, self.SUnits.len as u32);
+    assert!((Addr == null || Addr == &mut self.SUnits[0]), "SUnits std::vector reallocated on the fly!");
+    self.SUnits.back().OrigNode = &mut self.SUnits.back();
+    let mut SU: *mut SUnit = &mut self.SUnits.back();
+    let mut TLI: *TargetLowering = self.DAG.getTargetLoweringInfo();
+    if !N || (N.isMachineOpcode() && N.getMachineOpcode() == IMPLICIT_DEF) {
+        SU.SchedulingPref = None;
+    } else {
+        SU.SchedulingPref = TLI.getSchedulingPreference(N);
+    }
+    return SU;
+}
+
+fn ScheduleDAGSDNodes::Clone(self, Old: *mut SUnit) -> *mut SUnit {
+    let mut SU: *mut SUnit = self.newSUnit(Old.getNode());
+    SU.OrigNode = Old.OrigNode;
+    SU.Latency = Old.Latency;
+    SU.isVRegCycle = Old.isVRegCycle;
+    SU.isCall = Old.isCall;
+    SU.isCallOp = Old.isCallOp;
+    SU.isTwoAddress = Old.isTwoAddress;
+    SU.isCommutable = Old.isCommutable;
+    SU.hasPhysRegDefs = Old.hasPhysRegDefs;
+    SU.hasPhysRegClobbers = Old.hasPhysRegClobbers;
+    SU.isScheduleHigh = Old.isScheduleHigh;
+    SU.isScheduleLow = Old.isScheduleLow;
+    SU.SchedulingPref = Old.SchedulingPref;
+    Old.isCloned = true;
+    return SU;
+}
+
+fn CheckForPhysRegDependency(Def: *mut SDNode, User: *mut SDNode, Op: u32, TRI: *TargetRegisterInfo, TII: *TargetInstrInfo, PhysReg: *mut MCRegister, Cost: *mut i32) {
+    if Op != 2 || User.getOpcode() != CopyToReg {
+        return;
+    }
+    let mut Reg: Register = cast(User.getOperand(1)).getReg();
+    if Reg.isVirtual() {
+        return;
+    }
+    let mut ResNo: u32 = User.getOperand(2).getResNo();
+    if Def.getOpcode() == CopyFromReg && cast(Def.getOperand(1)).getReg() == Reg {
+        PhysReg = Reg.operator MCRegister();
+    } else if Def.isMachineOpcode() {
+        let mut II: *MCInstrDesc = TII.get(Def.getMachineOpcode());
+        if ResNo >= II.getNumDefs() && II.hasImplicitDefOfPhysReg(Reg.operator MCRegister(), null) {
+            PhysReg = Reg.operator MCRegister();
+        }
+    }
+    if PhysReg.operator unsigned int() {
+        let mut RC: *TargetRegisterClass = TRI.getMinimalPhysRegClass(Reg.operator MCRegister());
+        Cost = if RC.expensiveOrImpossibleToCopy() { -1 } else { RC.getCopyCost() };
+    }
+}
+
+fn CloneNodeWithValues(N: *mut SDNode, DAG: *mut SelectionDAG, VTs: ArrayRef<EVT>, ExtraOper: SDValue) {
+    let mut Ops: SmallVector<SDValue, 8> = SmallVector<SDValue, 8> { N.ops() };
+    if ExtraOper.getNode() {
+        Ops.push(ValueParamT { ExtraOper });
+    }
+    let mut VTList: SDVTList = DAG.getVTList(ArrayRef<EVT> { VTs });
+    let mut MN: *mut MachineSDNode = dyn_cast(N);
+    let mut MMOs: SmallVector<MachineMemOperand *, 2> = SmallVector<MachineMemOperand *, 2> {};
+    if MN {
+        MMOs.assign(MN.memoperands_begin(), MN.memoperands_end());
+    }
+    DAG.MorphNodeTo(N, N.getOpcode(), VTList, ArrayRef<SDValue> { Ops });
+    if MN {
+        DAG.setNodeMemRefs(MN, ArrayRef<MachineMemOperand *> { MMOs });
+    }
+}
+
+fn AddGlue(N: *mut SDNode, Glue: SDValue, AddGlue: bool, DAG: *mut SelectionDAG) -> bool {
+    let mut GlueDestNode: *mut SDNode = Glue.getNode();
+    if GlueDestNode == N {
+        return false;
+    }
+    if GlueDestNode && N.getOperand(N.getNumOperands() - 1).getValueType() == EVT { Glue } {
+        return false;
+    }
+    if N.getValueType(N.getNumValues() - 1) == EVT { Glue } {
+        return false;
+    }
+    let mut VTs: SmallVector<EVT, 4> = SmallVector<EVT, 4> { N.values() };
+    if AddGlue {
+        VTs.push(ValueParamT { Glue });
+    }
+    CloneNodeWithValues(N, DAG, ArrayRef<EVT> { VTs }, Glue);
+    return true;
+}
+
+fn RemoveUnusedGlue(N: *mut SDNode, DAG: *mut SelectionDAG) {
+    assert!((N.getValueType(N.getNumValues() - 1) == EVT { Glue } && !N.hasAnyUseOfValue(N.getNumValues() - 1)), "expected an unused glue value");
+    CloneNodeWithValues(N, DAG, EVT> { N.value_begin(), N.getNumValues() - 1 }, SDValue {});
+}
+
+fn ScheduleDAGSDNodes::ClusterNeighboringLoads(self, Node: *mut SDNode) {
+    let mut Chain: SDValue = SDValue {};
+    let mut NumOps: u32 = Node.getNumOperands();
+    if Node.getOperand(NumOps - 1).getValueType() == EVT { Other } {
+        Chain = Node.getOperand(NumOps - 1);
+    }
+    if !Chain {
+        return;
+    }
+    let mut hasTiedInput: Closure_1 = Closure_1 { cap_0: self };
+    let mut Visited: SmallPtrSet<SDNode *, 16> = SmallPtrSet<SDNode *, 16> {};
+    let mut Offsets: SmallVector<int64_t, 4> = SmallVector<int64_t, 4> {};
+    let mut O2SMap: DenseMap<long long, SDNode *> = DenseMap<long long, SDNode *> {};
+    let mut Cluster: bool = false;
+    let mut Base: *mut SDNode = Node;
+    if hasTiedInput.call(Base) {
+        return;
+    }
+    let mut UseCount: u32 = 0;
+    for let mut I: user_iterator = operator(Chain).user_begin();
+let mut E: user_iterator = operator(Chain).user_end(); I != E && UseCount < 100; operator(I) , UseCount += 1 {
+        if I.getUse().getResNo() != Chain.getResNo() {
+            continue;
+        }
+        let mut User: *mut SDNode = operator(I);
+        if User == Node || !Visited.insert(User).second {
+            continue;
+        }
+        let mut Offset1: i64 = 0;
+        let mut Offset2: i64 = 0;
+        if !self.TII.areLoadsFromSameBasePtr(Base, User, Offset1, Offset2) || Offset1 == Offset2 || hasTiedInput.call(User) {
+            continue;
+        }
+        if O2SMap.insert(make_pair(Offset1, Base)).second {
+            Offsets.push(Offset1);
+        }
+        O2SMap.insert(make_pair(Offset2, User));
+        Offsets.push(Offset2);
+        if Offset2 < Offset1 {
+            Base = User;
+        }
+        Cluster = true;
+        UseCount = 0;
+    }
+    if !Cluster {
+        return;
+    }
+    sort(Offsets);
+    let mut Loads: SmallVector<SDNode *, 4> = SmallVector<SDNode *, 4> {};
+    let mut NumLoads: u32 = 0;
+    let mut BaseOff: i64 = Offsets[0];
+    let mut BaseLoad: *mut SDNode = O2SMap[BaseOff];
+    Loads.push(BaseLoad);
+    for let mut i: u32 = 1;
+let mut e: u32 = Offsets.len; i != e; i += 1 {
+        let mut Offset: i64 = Offsets[i];
+        let mut Load: *mut SDNode = O2SMap[Offset];
+        if !self.TII.shouldScheduleLoadsNear(BaseLoad, Load, BaseOff, Offset, NumLoads) {
+            break;
+        }
+        Loads.push(Load);
+        NumLoads += 1;
+    }
+    if NumLoads == 0 {
+        return;
+    }
+    let mut Lead: *mut SDNode = Loads[0];
+    let mut InGlue: SDValue = SDValue {};
+    if AddGlue(Lead, InGlue, true, self.DAG) {
+        InGlue = SDValue { Node: Lead, ResNo: Lead.getNumValues() - 1 };
+    }
+    for let mut I: u32 = 1;
+let mut E: u32 = Loads.len; I != E; I += 1 {
+        let mut OutGlue: bool = I < E - 1;
+        let mut Load: *mut SDNode = Loads[I];
+        if AddGlue(Load, InGlue, OutGlue, self.DAG) {
+            if OutGlue {
+                InGlue = SDValue { Node: Load, ResNo: Load.getNumValues() - 1 };
+            }
+            operator(LoadsClustered);
+        } else if !OutGlue && InGlue.getNode() {
+            RemoveUnusedGlue(InGlue.getNode(), self.DAG);
+        }
+    }
+}
+
+fn ScheduleDAGSDNodes::ClusterNodes(self) {
+    for NI in self.DAG.allnodes() {
+        let mut Node: *mut SDNode = &mut NI;
+        if !Node || !Node.isMachineOpcode() {
+            continue;
+        }
+        let mut Opc: u32 = Node.getMachineOpcode();
+        let mut MCID: *MCInstrDesc = self.TII.get(Opc);
+        if MCID.mayLoad() {
+            self.ClusterNeighboringLoads(Node);
+        }
+    }
+}
+
+fn ScheduleDAGSDNodes::BuildSchedUnits(self) {
+    let mut NumNodes: u32 = 0;
+    for NI in self.DAG.allnodes() {
+        NI.setNodeId(-1);
+        NI.setSchedulerWorklistVisited(false);
+        NumNodes += 1;
+    }
+    self.SUnits.reserve(NumNodes * 2);
+    let mut Worklist: SmallVector<SDNode *, 64> = SmallVector<SDNode *, 64> {};
+    let mut Visited: SmallPtrSet<SDNode *, 32> = SmallPtrSet<SDNode *, 32> {};
+    Worklist.push(self.DAG.getRoot().getNode());
+    self.DAG.getRoot().getNode().setSchedulerWorklistVisited(true);
+    let mut CallSUnits: SmallVector<SUnit *, 8> = SmallVector<SUnit *, 8> {};
+    while !Worklist.is_empty() {
+        let mut NI: *mut SDNode = Worklist.pop_back_val();
+        for Op in NI.op_values() {
+            if Op.getNode().getSchedulerWorklistVisited() {
+                continue;
+            }
+            Op.getNode().setSchedulerWorklistVisited(true);
+            Worklist.push(Op.getNode());
+        }
+        if isPassiveNode(NI) {
+            continue;
+        }
+        if NI.getNodeId() != -1 {
+            continue;
+        }
+        let mut NodeSUnit: *mut SUnit = self.newSUnit(NI);
+        let mut N: *mut SDNode = NI;
+        while N.getNumOperands() && N.getOperand(N.getNumOperands() - 1).getValueType() == EVT { Glue } {
+            N = N.getOperand(N.getNumOperands() - 1).getNode();
+            assert!(N.getNodeId() == -1, "Node already inserted!");
+            N.setNodeId(NodeSUnit.NodeNum);
+            if N.isMachineOpcode() && self.TII.get(N.getMachineOpcode()).isCall() {
+                NodeSUnit.isCall = true;
+            }
+        }
+        N = NI;
+        while N.getValueType(N.getNumValues() - 1) == EVT { Glue } {
+            let mut GlueVal: SDValue = SDValue { Node: N, ResNo: N.getNumValues() - 1 };
+            let mut HasGlueUse: bool = false;
+            for U in N.users() {
+                if GlueVal.isOperandOf(U) {
+                    HasGlueUse = true;
+                    assert!(N.getNodeId() == -1, "Node already inserted!");
+                    N.setNodeId(NodeSUnit.NodeNum);
+                    N = U;
+                    if N.isMachineOpcode() && self.TII.get(N.getMachineOpcode()).isCall() {
+                        NodeSUnit.isCall = true;
+                    }
+                    break;
+                }
+            }
+            if !HasGlueUse {
+                break;
+            }
+        }
+        if NodeSUnit.isCall {
+            CallSUnits.push(NodeSUnit);
+        }
+        if NI.getOpcode() == TokenFactor {
+            NodeSUnit.isScheduleLow = true;
+        }
+        NodeSUnit.setNode(N);
+        assert!(N.getNodeId() == -1, "Node already inserted!");
+        N.setNodeId(NodeSUnit.NodeNum);
+        self.InitNumRegDefsLeft(NodeSUnit);
+        self.computeLatency(NodeSUnit);
+    }
+    while !CallSUnits.is_empty() {
+        let mut SU: *mut SUnit = CallSUnits.pop_back_val();
+        for let mut SUNode: *SDNode = SU.getNode(); SUNode; SUNode = SUNode.getGluedNode() {
+            if SUNode.getOpcode() != CopyToReg {
+                continue;
+            }
+            let mut SrcN: *mut SDNode = SUNode.getOperand(2).getNode();
+            if isPassiveNode(SrcN) {
+                continue;
+            }
+            let mut SrcSU: *mut SUnit = &mut self.SUnits[SrcN.getNodeId()];
+            SrcSU.isCallOp = true;
+        }
+    }
+}
+
+fn ScheduleDAGSDNodes::AddSchedEdges(self) {
+    let mut ST: *TargetSubtargetInfo = self.MF.getSubtarget();
+    let mut UnitLatencies: bool = self.forceUnitLatencies();
+    for SU in self.SUnits {
+        let mut MainNode: *mut SDNode = SU.getNode();
+        if MainNode.isMachineOpcode() {
+            let mut Opc: u32 = MainNode.getMachineOpcode();
+            let mut MCID: *MCInstrDesc = self.TII.get(Opc);
+            for let mut i: u32 = 0; i != MCID.getNumOperands(); i += 1 {
+                if MCID.getOperandConstraint(i, TIED_TO) != -1 {
+                    SU.isTwoAddress = true;
+                    break;
+                }
+            }
+            if MCID.isCommutable() {
+                SU.isCommutable = true;
+            }
+        }
+        for let mut N: *mut SDNode = SU.getNode(); N; N = N.getGluedNode() {
+            if N.isMachineOpcode() && !self.TII.get(N.getMachineOpcode()).implicit_defs().is_empty() {
+                SU.hasPhysRegClobbers = true;
+                let mut NumUsed: u32 = CountResults(N);
+                while NumUsed != 0 && !N.hasAnyUseOfValue(NumUsed - 1) {
+                    NumUsed -= 1;
+                }
+                if NumUsed > self.TII.get(N.getMachineOpcode()).getNumDefs() {
+                    SU.hasPhysRegDefs = true;
+                }
+            }
+            for let mut i: u32 = 0;
+let mut e: u32 = N.getNumOperands(); i != e; i += 1 {
+                let mut OpN: *mut SDNode = N.getOperand(i).getNode();
+                let mut DefIdx: u32 = N.getOperand(i).getResNo();
+                if isPassiveNode(OpN) {
+                    continue;
+                }
+                let mut OpSU: *mut SUnit = &mut self.SUnits[OpN.getNodeId()];
+                assert!(OpSU, "Node has no SUnit!");
+                if OpSU == &mut SU {
+                    continue;
+                }
+                let mut OpVT: EVT = N.getOperand(i).getValueType();
+                assert!(OpVT != EVT { Glue }, "Glued nodes should be in same sunit!");
+                let mut isChain: bool = OpVT == EVT { Other };
+                let mut PhysReg: MCRegister = MCRegister { Reg: 0 };
+                let mut Cost: i32 = 1;
+                CheckForPhysRegDependency(OpN, N, i, self.TRI, self.TII, PhysReg, Cost);
+                assert!((!PhysReg.operator unsigned int() || !isChain), "Chain dependence via physreg data?");
+                if Cost >= 0 && !self.StressSched {
+                    PhysReg = MCRegister { Reg: 0 };
+                }
+                let mut OpLatency: u32 = if isChain { 1 } else { OpSU.Latency };
+                if isChain && OpN.getOpcode() == TokenFactor {
+                    OpLatency = 0;
+                }
+                let mut Dep: SDep = if isChain { SDep { OpSU, Barrier } } else { SDep { Dep: OpSU, Contents: Data, Latency: Register { Reg: PhysReg } } };
+                Dep.setLatency(OpLatency);
+                if !isChain && !UnitLatencies {
+                    self.computeOperandLatency(OpN, N, i, Dep);
+                    ST.adjustSchedDependency(OpSU, DefIdx, &mut SU, i, Dep, null);
+                }
+                if !SU.addPred(Dep, true) && !Dep.isCtrl() && OpSU.NumRegDefsLeft > 1 {
+                    OpSU.NumRegDefsLeft -= 1;
+                }
+            }
+        }
+    }
+}
+
+fn ScheduleDAGSDNodes::BuildSchedGraph(self) {
+    self.ClusterNodes();
+    self.BuildSchedUnits();
+    self.AddSchedEdges();
+}
+
+fn RegDefIter@ScheduleDAGSDNodes@llvm::InitNodeNumDefs(self) {
+    if !self.Node {
+        return;
+    }
+    if !self.Node.isMachineOpcode() {
+        if self.Node.getOpcode() == CopyFromReg {
+            self.NodeNumDefs = 1;
+        } else {
+            self.NodeNumDefs = 0;
+        }
+        return;
+    }
+    let mut POpc: u32 = self.Node.getMachineOpcode();
+    if POpc == IMPLICIT_DEF {
+        self.NodeNumDefs = 0;
+        return;
+    }
+    if POpc == PATCHPOINT && self.Node.getValueType(0) == EVT { Other } {
+        self.NodeNumDefs = 0;
+        return;
+    }
+    let mut NRegDefs: u32 = self.SchedDAG.TII.get(self.Node.getMachineOpcode()).getNumDefs();
+    self.NodeNumDefs = if self.Node.getNumValues() < NRegDefs { self.Node.getNumValues() } else { NRegDefs };
+    self.DefIdx = 0;
+}
+
+fn ScheduleDAGSDNodes@llvm::RegDefIter(self, SU: *SUnit, SD: *ScheduleDAGSDNodes) {
+    self.InitNodeNumDefs();
+    self.Advance();
+}
+
+fn RegDefIter@ScheduleDAGSDNodes@llvm::Advance(self) {
+    while self.Node {
+        for ; self.DefIdx < self.NodeNumDefs; self.DefIdx += 1 {
+            if !self.Node.hasAnyUseOfValue(self.DefIdx) {
+                continue;
+            }
+            self.ValueType = self.Node.getSimpleValueType(self.DefIdx);
+            self.DefIdx += 1;
+            return;
+        }
+        self.Node = self.Node.getGluedNode();
+        if !self.Node {
+            return;
+        }
+        self.InitNodeNumDefs();
+    }
+}
+
+fn ScheduleDAGSDNodes::InitNumRegDefsLeft(self, SU: *mut SUnit) {
+    assert!(SU.NumRegDefsLeft == 0, "expect a new node");
+    for let mut I: RegDefIter = RegDefIter { SU, self }; I.IsValid(); I.Advance() {
+        assert!(SU.NumRegDefsLeft < 65535, "overflow is ok but unexpected");
+        SU.NumRegDefsLeft += 1;
+    }
+}
+
+fn ScheduleDAGSDNodes::computeLatency(self, SU: *mut SUnit) {
+    let mut N: *mut SDNode = SU.getNode();
+    if N && N.getOpcode() == TokenFactor {
+        SU.Latency = 0;
+        return;
+    }
+    if self.forceUnitLatencies() {
+        SU.Latency = 1;
+        return;
+    }
+    if !self.InstrItins || self.InstrItins.isEmpty() {
+        if N && N.isMachineOpcode() && self.TII.isHighLatencyDef(N.getMachineOpcode()) {
+            SU.Latency = HighLatencyCycles.operator int();
+        } else {
+            SU.Latency = 1;
+        }
+        return;
+    }
+    SU.Latency = 0;
+    for let mut N: *mut SDNode = SU.getNode(); N; N = N.getGluedNode() {
+        if N.isMachineOpcode() {
+            SU.Latency += self.TII.getInstrLatency(self.InstrItins, N);
+        }
+    }
+}
+
+fn ScheduleDAGSDNodes::computeOperandLatency(self: *ScheduleDAGSDNodes, Def: *mut SDNode, Use: *mut SDNode, OpIdx: u32, dep: *mut SDep) {
+    if self.forceUnitLatencies() {
+        return;
+    }
+    if dep.getKind() != Data {
+        return;
+    }
+    let mut DefIdx: u32 = Use.getOperand(OpIdx).getResNo();
+    if Use.isMachineOpcode() {
+        OpIdx += self.TII.get(Use.getMachineOpcode()).getNumDefs();
+    }
+    let mut Latency: optional<unsigned int> = self.TII.getOperandLatency(self.InstrItins, Def, DefIdx, Use, OpIdx);
+    if Latency > 1 && Use.getOpcode() == CopyToReg && !self.BB.succ_empty() {
+        let mut Reg: Register = cast(Use.getOperand(1)).getReg();
+        if Reg.isVirtual() {
+            Latency = optional<unsigned int> { operator(Latency) - 1 };
+        }
+    }
+    if Latency {
+        dep.setLatency(operator(Latency));
+    }
+}
+
+fn ScheduleDAGSDNodes::dumpNode(self: *ScheduleDAGSDNodes, SU: *SUnit) {
+    self.dumpNodeName(SU);
+    dbgs() << ": ";
+    if !SU.getNode() {
+        dbgs() << "PHYS REG COPY\n";
+        return;
+    }
+    SU.getNode().dump(self.DAG);
+    dbgs() << "\n";
+    let mut GluedNodes: SmallVector<SDNode *, 4> = SmallVector<SDNode *, 4> {};
+    for let mut N: *mut SDNode = SU.getNode().getGluedNode(); N; N = N.getGluedNode() {
+        GluedNodes.push(N);
+    }
+    while !GluedNodes.is_empty() {
+        dbgs() << "    ";
+        GluedNodes.back().dump(self.DAG);
+        dbgs() << "\n";
+        GluedNodes.pop();
+    }
+}
+
+fn ScheduleDAGSDNodes::dump(self: *ScheduleDAGSDNodes) {
+    if self.EntrySU.getNode() != null {
+        self.dumpNodeAll(self.EntrySU);
+    }
+    for SU in self.SUnits {
+        self.dumpNodeAll(SU);
+    }
+    if self.ExitSU.getNode() != null {
+        self.dumpNodeAll(self.ExitSU);
+    }
+}
+
+fn ScheduleDAGSDNodes::dumpSchedule(self: *ScheduleDAGSDNodes) {
+    for SU in self.Sequence {
+        if SU {
+            self.dumpNode(*SU);
+        } else {
+            dbgs() << "**** NOOP ****\n";
+        }
+    }
+}
+
+fn ScheduleDAGSDNodes::VerifyScheduledSequence(self, isBottomUp: bool) {
+    let mut ScheduledNodes: u32 = self.VerifyScheduledDAG(isBottomUp);
+    let mut Noops: u32 = count(self.Sequence, null);
+    assert!(self.Sequence.len - Noops == ScheduledNodes, "The number of nodes scheduled doesn't match the expected number!");
+}
+
+fn ProcessSDDbgValues(N: *mut SDNode, DAG: *mut SelectionDAG, Emitter: *mut InstrEmitter, Orders: *mut pair<unsigned int, MachineInstr *>>, VRBaseMap: *mut VRBaseMapType, Order: u32) {
+    if !N.getHasDebugValue() {
+        return;
+    }
+    let mut HasUnknownVReg: Closure_2 = Closure_2 { VRBaseMap: &mut VRBaseMap };
+    let mut BB: *mut MachineBasicBlock = Emitter.getBlock();
+    let mut InsertPos: iterator = Emitter.getInsertPos();
+    for DV in DAG.GetDbgValues(N) {
+        if DV.isEmitted() {
+            continue;
+        }
+        let mut DVOrder: u32 = DV.getOrder();
+        if Order != 0 && DVOrder != Order {
+            continue;
+        }
+        if !DV.isInvalidated() && HasUnknownVReg.call(DV) {
+            continue;
+        }
+        let mut DbgMI: *mut MachineInstr = Emitter.EmitDbgValue(DV, VRBaseMap);
+        if !DbgMI {
+            continue;
+        }
+        Orders.push(ValueParamT { DVOrder, DbgMI });
+        BB.insert(iterator { InsertPos }, DbgMI);
+    }
+}
+
+fn ProcessSourceNode(N: *mut SDNode, DAG: *mut SelectionDAG, Emitter: *mut InstrEmitter, VRBaseMap: *mut VRBaseMapType, Orders: *mut pair<unsigned int, MachineInstr *>>, Seen: *mut SmallSet<Register, 8>, NewInsn: *mut MachineInstr) {
+    let mut Order: u32 = N.getIROrder();
+    if !Order || Seen.count(Register { Reg: Order }) {
+        ProcessSDDbgValues(N, DAG, Emitter, Orders, VRBaseMap, 0);
+        return;
+    }
+    if NewInsn {
+        Seen.insert(Register { Reg: Order });
+        Orders.push(ValueParamT { Order, NewInsn });
+    }
+    ProcessSDDbgValues(N, DAG, Emitter, Orders, VRBaseMap, Order);
+}
+
+fn ScheduleDAGSDNodes::EmitPhysRegCopy(self, SU: *mut SUnit, VRBaseMap: *mut SmallDenseMap<SUnit *, Register, 16>, InsertPos: iterator) {
+    for Pred in SU.Preds {
+        if Pred.isCtrl() {
+            continue;
+        }
+        if Pred.getSUnit().CopyDstRC {
+            let mut VRI: iterator = VRBaseMap.find(Pred.getSUnit());
+            assert!(VRI != VRBaseMap.end(), "Node emitted out of order - late");
+            let mut Reg: Register = Register { Reg: 0 };
+            for Succ in SU.Succs {
+                if Succ.isCtrl() {
+                    continue;
+                }
+                if Succ.getReg().operator unsigned int() {
+                    Reg = Succ.getReg();
+                    break;
+                }
+            }
+            BuildMI(*self.BB, iterator { InsertPos }, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(COPY), Reg).addReg(operator(VRI).second, RegState {}, 0);
+        } else {
+            assert!(Pred.getReg().operator unsigned int(), "Unknown physical register!");
+            let mut VRBase: Register = self.MRI.createVirtualRegister(SU.CopyDstRC, "");
+            let mut isNew: bool = VRBaseMap.insert(make_pair(SU, VRBase)).second;
+            isNew as void;
+            assert!(isNew, "Node emitted out of order - early");
+            BuildMI(*self.BB, iterator { InsertPos }, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(COPY), VRBase).addReg(Pred.getReg(), RegState {}, 0);
+        }
+        break;
+    }
+}
+
+fn ScheduleDAGSDNodes::EmitSchedule(self, InsertPos: *mut iterator) -> *mut MachineBasicBlock {
+    let mut Emitter: InstrEmitter = InstrEmitter { self.DAG.getTarget(), self.BB, iterator { InsertPos } };
+    let mut VRBaseMap: VRBaseMapType = VRBaseMapType {};
+    let mut CopyVRBaseMap: SmallDenseMap<SUnit *, Register, 16> = SmallDenseMap<SUnit *, Register, 16> {};
+    let mut Orders: pair<unsigned int, MachineInstr *>, 32> = pair<unsigned int, MachineInstr *>, 32> {};
+    let mut Seen: SmallSet<Register, 8> = SmallSet<Register, 8> {};
+    let mut HasDbg: bool = self.DAG.hasDebugValues();
+    let mut EmitNode: Closure_3 = Closure_3 { cap_0: self, Emitter: &mut Emitter };
+    if HasDbg && self.BB.getParent().begin() == iterator { self.BB } {
+        let mut PDI: DbgIterator = self.DAG.ByvalParmDbgBegin();
+        let mut PDE: DbgIterator = self.DAG.ByvalParmDbgEnd();
+        for ; PDI != PDE; PDI += 1 {
+            let mut DbgMI: *mut MachineInstr = Emitter.EmitDbgValue(*PDI, VRBaseMap);
+            if DbgMI {
+                self.BB.insert(iterator { InsertPos }, DbgMI);
+                (*PDI).clearIsEmitted();
+            }
+        }
+    }
+    for SU in self.Sequence {
+        if !SU {
+            self.TII.insertNoop(*Emitter.getBlock(), iterator { InsertPos });
+            continue;
+        }
+        if !SU.getNode() {
+            self.EmitPhysRegCopy(SU, CopyVRBaseMap, iterator { InsertPos });
+            continue;
+        }
+        let mut GluedNodes: SmallVector<SDNode *, 4> = SmallVector<SDNode *, 4> {};
+        for let mut N: *mut SDNode = SU.getNode().getGluedNode(); N; N = N.getGluedNode() {
+            GluedNodes.push(N);
+        }
+        while !GluedNodes.is_empty() {
+            let mut N: *mut SDNode = GluedNodes.back();
+            let mut NewInsn: *mut MachineInstr = EmitNode.call(N, SU.OrigNode != SU, SU.isCloned, VRBaseMap);
+            if HasDbg {
+                ProcessSourceNode(N, self.DAG, Emitter, VRBaseMap, Orders, Seen, NewInsn);
+            }
+            if self.DAG.getHeapAllocSite(N) {
+                MD;
+            } else if NewInsn && NewInsn.isCall(AnyInBundle) {
+                NewInsn.setHeapAllocMarker(self.MF, MD);
+            }
+            GluedNodes.pop();
+        }
+        let mut NewInsn: *mut MachineInstr = EmitNode.call(SU.getNode(), SU.OrigNode != SU, SU.isCloned, VRBaseMap);
+        if HasDbg {
+            ProcessSourceNode(SU.getNode(), self.DAG, Emitter, VRBaseMap, Orders, Seen, NewInsn);
+        }
+        if self.DAG.getHeapAllocSite(SU.getNode()) {
+            MD;
+        } else {
+            if NewInsn && NewInsn.isCall(AnyInBundle) {
+                NewInsn.setHeapAllocMarker(self.MF, MD);
+            }
+        }
+    }
+    if HasDbg {
+        let mut BBBegin: iterator = self.BB.getFirstNonPHI();
+        stable_sort(Orders, less_first {});
+        stable_sort(self.DAG.DbgBegin(), self.DAG.DbgEnd(), Closure_5 {});
+        let mut DI: DbgIterator = self.DAG.DbgBegin();
+        let mut DE: DbgIterator = self.DAG.DbgEnd();
+        let mut LastOrder: u32 = 0;
+        for let mut i: u32 = 0;
+let mut e: u32 = Orders.len; i != e && DI != DE; i += 1 {
+            let mut Order: u32 = Orders[i].first;
+            let mut MI: *mut MachineInstr = Orders[i].second;
+            assert!(MI);
+            for ; DI != DE; DI += 1 {
+                if (*DI).getOrder() < LastOrder || (*DI).getOrder() >= Order {
+                    break;
+                }
+                if (*DI).isEmitted() {
+                    continue;
+                }
+                let mut DbgMI: *mut MachineInstr = Emitter.EmitDbgValue(*DI, VRBaseMap);
+                if DbgMI {
+                    if !LastOrder {
+                        self.BB.insert(iterator { BBBegin }, DbgMI);
+                    } else {
+                        let mut Pos: iterator = iterator { MI };
+                        MI.getParent().insert(iterator { Pos }, DbgMI);
+                    }
+                }
+            }
+            LastOrder = Order;
+        }
+        let mut DbgMIs: SmallVector<MachineInstr *, 8> = SmallVector<MachineInstr *, 8> {};
+        for ; DI != DE; DI += 1 {
+            if (*DI).isEmitted() {
+                continue;
+            }
+            assert!((*DI).getOrder() >= LastOrder, "emitting DBG_VALUE out of order");
+            if Emitter.EmitDbgValue(*DI, VRBaseMap) {
+                DbgMI;
+            } else {
+                DbgMIs.push(DbgMI);
+            }
+        }
+        let mut InsertBB: *mut MachineBasicBlock = Emitter.getBlock();
+        let mut Pos: iterator = InsertBB.getFirstTerminator();
+        InsertBB.insert(iterator { Pos }, DbgMIs.begin(), DbgMIs.end());
+        let mut DLI: DbgLabelIterator = self.DAG.DbgLabelBegin();
+        let mut DLE: DbgLabelIterator = self.DAG.DbgLabelEnd();
+        LastOrder = 0;
+        for InstrOrder in Orders {
+            let mut Order: u32 = InstrOrder.first;
+            let mut MI: *mut MachineInstr = InstrOrder.second;
+            if !MI {
+                continue;
+            }
+            for ; DLI != DLE && (*DLI).getOrder() >= LastOrder && (*DLI).getOrder() < Order; DLI += 1 {
+                let mut DbgMI: *mut MachineInstr = Emitter.EmitDbgLabel(*DLI);
+                if DbgMI {
+                    if !LastOrder {
+                        self.BB.insert(iterator { BBBegin }, DbgMI);
+                    } else {
+                        let mut Pos: iterator = iterator { MI };
+                        MI.getParent().insert(iterator { Pos }, DbgMI);
+                    }
+                }
+            }
+            if DLI == DLE {
+                break;
+            }
+            LastOrder = Order;
+        }
+    }
+    InsertPos = Emitter.getInsertPos();
+    let mut InsertBB: *mut MachineBasicBlock = Emitter.getBlock();
+    let mut FirstTerm: iterator = InsertBB.getFirstTerminator();
+    if FirstTerm != InsertBB.end() {
+        assert!(!operator(FirstTerm).isDebugValue(), "first terminator cannot be a debug value");
+        for MI in make_early_inc_range(make_range(next(FirstTerm, 1), InsertBB.end())) {
+            if &mut MI == InsertPos {
+                break;
+            }
+            if !MI.isDebugValue() {
+                continue;
+            }
+            MI.getOperand(0).ChangeToRegister(Register { Reg: 0 }, false, false, false, false, false, false);
+            MI.moveBefore(&mut operator(FirstTerm));
+        }
+    }
+    return InsertBB;
+}
+
+fn ScheduleDAGSDNodes::getDAGName(self: *ScheduleDAGSDNodes) -> str {
+    return "sunit-dag." + self.BB.getFullName();
+}
+
+struct Closure_1 {
+    cap_0: *mut ScheduleDAGSDNodes,
+}
+
+fn Closure_1::call(self: *Closure_1, N: *SDNode) -> bool {
+        let mut MCID: *MCInstrDesc = self.TII.get(N.getMachineOpcode());
+        for let mut I: u32 = 0; I != MCID.getNumOperands(); I += 1 {
+            if MCID.getOperandConstraint(I, TIED_TO) != -1 {
+                return true;
+            }
+        }
+        return false;
+    }
+
+struct Closure_2 {
+    VRBaseMap: *mut VRBaseMapType,
+}
+
+unsafe fn Closure_2::call(self: *mut Closure_2, DV: *mut SDDbgValue) -> bool {
+        for L in DV.getLocationOps() {
+            if L.getKind() == SDNODE && (*self.VRBaseMap).count(SDValue { Node: L.getSDNode(), ResNo: L.getResNo() }) == 0 {
+                return true;
+            }
+        }
+        return false;
+    }
+
+struct Closure_4 {
+    cap_0: *mut ScheduleDAGSDNodes,
+    Emitter: *mut InstrEmitter,
+}
+
+unsafe fn Closure_4::call(self: *mut Closure_4, I: iterator) -> MachineInstr> {
+            if I == self.BB.begin() {
+                return self.BB.end();
+            } else {
+                return prev((*self.Emitter).getInsertPos(), 1);
+            }
+        }
+
+struct Closure_3 {
+    cap_0: *mut ScheduleDAGSDNodes,
+    Emitter: *mut InstrEmitter,
+}
+
+unsafe fn Closure_3::call(self: *mut Closure_3, Node: *mut SDNode, IsClone: bool, IsCloned: bool, VRBaseMap: *mut VRBaseMapType) -> auto {
+        let mut GetPrevInsn: Closure_4 = Closure_4 { cap_0: self, Emitter: &mut (*self.Emitter) };
+        let mut Before: iterator = GetPrevInsn.call((*self.Emitter).getInsertPos());
+        (*self.Emitter).EmitNode(Node, IsClone, IsCloned, VRBaseMap);
+        let mut After: iterator = GetPrevInsn.call((*self.Emitter).getInsertPos());
+        if Before == After {
+            return null;
+        }
+        let mut MI: *mut MachineInstr = null;
+        if Before == self.BB.end() {
+            MI = &mut (*self.Emitter).getBlock().instr_front();
+        } else {
+            MI = &mut operator(next(Before, 1));
+        }
+        if MI.isCandidateForAdditionalCallInfo(IgnoreBundle) {
+            if self.DAG.getTarget().Options.EmitCallSiteInfo || self.DAG.getTarget().Options.EmitCallGraphSection {
+                self.MF.addCallSiteInfo(MI, self.DAG.getCallSiteInfo(Node));
+            }
+            if self.DAG.getCalledGlobal(Node) {
+                CalledGlobal;
+            } else if operator(CalledGlobal).Callee {
+                self.MF.addCalledGlobal(MI, operator(CalledGlobal));
+            }
+        }
+        if self.DAG.getNoMergeSiteInfo(Node) {
+            MI.setFlag(NoMerge);
+        }
+        if self.DAG.getPCSections(Node) {
+            MD;
+        } else {
+            MI.setPCSections(self.MF, MD);
+        }
+        if self.DAG.getMMRAMetadata(Node) {
+            MMRA;
+        } else {
+            for let mut It: iterator = iterator { MI.getIterator() };
+let mut End: iterator = next(After, 1); It != End; operator(It) {
+                operator(It).setMMRAMetadata(self.MF, MMRA);
+            }
+        }
+        return MI;
+    }
+
+struct Closure_5 {}
+
+fn Closure_5::call(self: *Closure_5, LHS: *SDDbgValue, RHS: *SDDbgValue) -> bool {
+            return LHS.getOrder() < RHS.getOrder();
+        }

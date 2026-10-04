@@ -1,0 +1,349 @@
+// Внешние системные функции libc
+extern fn memcpy(dest: *mut u8, src: *u8, n: u64) -> *mut u8;
+extern fn memset(dest: *mut u8, c: i32, n: u64) -> *mut u8;
+
+fn blake3_version() -> *u8 {
+    return "1.8.7";
+}
+
+fn chunk_state_init(self: *mut blake3_chunk_state, key: *u32, flags: u8) {
+    memcpy(self.cv, key, 32);
+    self.chunk_counter = 0;
+    memset(self.buf, 0, 64);
+    self.buf_len = 0;
+    self.blocks_compressed = 0;
+    self.flags = flags;
+}
+
+fn chunk_state_reset(self: *mut blake3_chunk_state, key: *u32, chunk_counter: u64) {
+    memcpy(self.cv, key, 32);
+    self.chunk_counter = chunk_counter;
+    self.blocks_compressed = 0;
+    memset(self.buf, 0, 64);
+    self.buf_len = 0;
+}
+
+fn chunk_state_len(self: *blake3_chunk_state) -> u64 {
+    return (64 * self.blocks_compressed as u64) + (self.buf_len as u64);
+}
+
+fn chunk_state_fill_buf(self: *mut blake3_chunk_state, input: *u8, input_len: u64) -> u64 {
+    let mut take: u64 = 64 - (self.buf_len as u64);
+    if take > input_len {
+        take = input_len;
+    }
+    let mut dest: *mut u8 = self.buf + (self.buf_len as u64);
+    memcpy(dest, input, take);
+    self.buf_len += take as u8;
+    return take;
+}
+
+fn chunk_state_maybe_start_flag(self: *blake3_chunk_state) -> u8 {
+    if self.blocks_compressed == 0 {
+        return CHUNK_START;
+    } else {
+        return 0;
+    }
+}
+
+fn make_output(input_cv: *u32, block: *u8, block_len: u8, counter: u64, flags: u8) -> output_t {
+    let mut ret: output_t = output_t {};
+    memcpy(ret.input_cv, input_cv, 32);
+    memcpy(ret.block, block, 64);
+    ret.block_len = block_len;
+    ret.counter = counter;
+    ret.flags = flags;
+    return ret;
+}
+
+fn output_chaining_value(self: *output_t, cv: *mut u8) {
+    let mut cv_words: [8]u32 = zeroed();
+    memcpy(cv_words, self.input_cv, 32);
+    blake3_compress_in_place(cv_words, self.block, self.block_len, self.counter, self.flags);
+    store_cv_words(cv, cv_words);
+}
+
+fn output_root_bytes(self: *output_t, seek: u64, out: *mut u8, out_len: u64) {
+    if out_len == 0 {
+        return;
+    }
+    let mut output_block_counter: u64 = seek / 64;
+    let mut offset_within_block: u64 = seek % 64;
+    let mut wide_buf: [64]u8 = zeroed();
+    if offset_within_block {
+        blake3_compress_xof(self.input_cv, self.block, self.block_len, output_block_counter, self.flags | ROOT, wide_buf);
+        let mut available_bytes: u64 = 64 - offset_within_block;
+        let mut bytes: u64 = if out_len > available_bytes { available_bytes } else { out_len };
+        memcpy(out, wide_buf + offset_within_block, bytes);
+        out += bytes;
+        out_len -= bytes;
+        output_block_counter += 1;
+    }
+    if out_len / 64 {
+        blake3_xof_many(self.input_cv, self.block, self.block_len, output_block_counter, self.flags | ROOT, out, out_len / 64);
+    }
+    output_block_counter += out_len / 64;
+    out += out_len & -64;
+    out_len -= out_len & -64;
+    if out_len {
+        blake3_compress_xof(self.input_cv, self.block, self.block_len, output_block_counter, self.flags | ROOT, wide_buf);
+        memcpy(out, wide_buf, out_len);
+    }
+}
+
+fn chunk_state_update(self: *mut blake3_chunk_state, input: *u8, input_len: u64) {
+    if self.buf_len > 0 {
+        let mut take: u64 = chunk_state_fill_buf(self, input, input_len);
+        input += take;
+        input_len -= take;
+        if input_len > 0 {
+            blake3_compress_in_place(self.cv, self.buf, 64, self.chunk_counter, self.flags | chunk_state_maybe_start_flag(self));
+            self.blocks_compressed += 1;
+            self.buf_len = 0;
+            memset(self.buf, 0, 64);
+        }
+    }
+    while input_len > 64 {
+        blake3_compress_in_place(self.cv, input, 64, self.chunk_counter, self.flags | chunk_state_maybe_start_flag(self));
+        self.blocks_compressed += 1;
+        input += 64;
+        input_len -= 64;
+    }
+    chunk_state_fill_buf(self, input, input_len);
+}
+
+fn chunk_state_output(self: *blake3_chunk_state) -> output_t {
+    let mut block_flags: u8 = self.flags | chunk_state_maybe_start_flag(self) | CHUNK_END;
+    return make_output(self.cv, self.buf, self.buf_len, self.chunk_counter, block_flags);
+}
+
+fn parent_output(block: *u8, key: *u32, flags: u8) -> output_t {
+    return make_output(key, block, 64, 0, flags | PARENT);
+}
+
+fn left_subtree_len(input_len: u64) -> u64 {
+    let mut full_chunks: u64 = (input_len - 1) / 1024;
+    return round_down_to_power_of_2(full_chunks) * 1024;
+}
+
+fn compress_chunks_parallel(input: *u8, input_len: u64, key: *u32, chunk_counter: u64, flags: u8, out: *mut u8) -> u64 {
+    let mut chunks_array: [16]*mut u8 = zeroed();
+    let mut input_position: u64 = 0;
+    let mut chunks_array_len: u64 = 0;
+    while input_len - input_position >= 1024 {
+        chunks_array[chunks_array_len] = &mut input[input_position];
+        input_position += 1024;
+        chunks_array_len += 1;
+    }
+    blake3_hash_many(chunks_array, chunks_array_len, 1024 / 64, key, chunk_counter, true, flags, CHUNK_START, CHUNK_END, out);
+    if input_len > input_position {
+        let mut counter: u64 = chunk_counter + chunks_array_len as u64;
+        let mut chunk_state: blake3_chunk_state = blake3_chunk_state {};
+        chunk_state_init(&mut chunk_state, key, flags);
+        chunk_state.chunk_counter = counter;
+        chunk_state_update(&mut chunk_state, &mut input[input_position], input_len - input_position);
+        let mut output: output_t = chunk_state_output(&mut chunk_state);
+        output_chaining_value(&mut output, &mut out[chunks_array_len * 32]);
+        return chunks_array_len + 1;
+    } else {
+        return chunks_array_len;
+    }
+}
+
+fn compress_parents_parallel(child_chaining_values: *u8, num_chaining_values: u64, key: *u32, flags: u8, out: *mut u8) -> u64 {
+    let mut parents_array: [16]*mut u8 = zeroed();
+    let mut parents_array_len: u64 = 0;
+    while num_chaining_values - (2 * parents_array_len) >= 2 {
+        parents_array[parents_array_len] = &mut child_chaining_values[2 * parents_array_len * 32];
+        parents_array_len += 1;
+    }
+    blake3_hash_many(parents_array, parents_array_len, 1, key, 0, false, flags | PARENT, 0, 0, out);
+    if num_chaining_values > 2 * parents_array_len {
+        memcpy(&mut out[parents_array_len * 32], &mut child_chaining_values[2 * parents_array_len * 32], 32);
+        return parents_array_len + 1;
+    } else {
+        return parents_array_len;
+    }
+}
+
+fn blake3_compress_subtree_wide(input: *u8, input_len: u64, key: *u32, chunk_counter: u64, flags: u8, out: *mut u8, use_tbb: bool) -> u64 {
+    if input_len <= blake3_simd_degree() * 1024 {
+        return compress_chunks_parallel(input, input_len, key, chunk_counter, flags, out);
+    }
+    let mut left_input_len: u64 = left_subtree_len(input_len);
+    let mut right_input_len: u64 = input_len - left_input_len;
+    let mut right_input: *u8 = &mut input[left_input_len];
+    let mut right_chunk_counter: u64 = chunk_counter + (left_input_len / 1024) as u64;
+    let mut cv_array: [1024]u8 = zeroed();
+    let mut degree: u64 = blake3_simd_degree();
+    if left_input_len > 1024 && degree == 1 {
+        degree = 2;
+    }
+    let mut right_cvs: *mut u8 = &mut cv_array[degree * 32];
+    let mut left_n: u64 = 18446744073709551615;
+    let mut right_n: u64 = 18446744073709551615;
+    left_n = blake3_compress_subtree_wide(input, left_input_len, key, chunk_counter, flags, cv_array, use_tbb);
+    right_n = blake3_compress_subtree_wide(right_input, right_input_len, key, right_chunk_counter, flags, right_cvs, use_tbb);
+    if left_n == 1 {
+        memcpy(out, cv_array, 2 * 32);
+        return 2;
+    }
+    let mut num_chaining_values: u64 = left_n + right_n;
+    return compress_parents_parallel(cv_array, num_chaining_values, key, flags, out);
+}
+
+fn compress_subtree_to_parent_node(input: *u8, input_len: u64, key: *u32, chunk_counter: u64, flags: u8, out: *mut u8, use_tbb: bool) {
+    let mut cv_array: [512]u8 = zeroed();
+    let mut num_cvs: u64 = blake3_compress_subtree_wide(input, input_len, key, chunk_counter, flags, cv_array, use_tbb);
+    assert!(num_cvs <= (if 16 > 2 { 16 } else { 2 });
+    let mut out_array: [256]u8 = zeroed();
+    while num_cvs > 2 {
+        num_cvs = compress_parents_parallel(cv_array, num_cvs, key, flags, out_array);
+        memcpy(cv_array, out_array, num_cvs * 32);
+    }
+    memcpy(out, cv_array, 2 * 32);
+}
+
+fn hasher_init_base(self: *mut blake3_hasher, key: *u32, flags: u8) {
+    memcpy(self.key, key, 32);
+    chunk_state_init(&mut self.chunk, key, flags);
+    self.cv_stack_len = 0;
+}
+
+fn blake3_hasher_init(self: *mut blake3_hasher) {
+    hasher_init_base(self, IV, 0);
+}
+
+fn blake3_hasher_init_keyed(self: *mut blake3_hasher, key: *u8) {
+    let mut key_words: [8]u32 = zeroed();
+    load_key_words(key, key_words);
+    hasher_init_base(self, key_words, KEYED_HASH);
+}
+
+fn blake3_hasher_init_derive_key_raw(self: *mut blake3_hasher, context: *void, context_len: u64) {
+    let mut context_hasher: blake3_hasher = blake3_hasher {};
+    hasher_init_base(&mut context_hasher, IV, DERIVE_KEY_CONTEXT);
+    blake3_hasher_update(&mut context_hasher, context, context_len);
+    let mut context_key: [32]u8 = zeroed();
+    blake3_hasher_finalize(&mut context_hasher, context_key, 32);
+    let mut context_key_words: [8]u32 = zeroed();
+    load_key_words(context_key, context_key_words);
+    hasher_init_base(self, context_key_words, DERIVE_KEY_MATERIAL);
+}
+
+fn blake3_hasher_init_derive_key(self: *mut blake3_hasher, context: *u8) {
+    blake3_hasher_init_derive_key_raw(self, context, strlen(context));
+}
+
+fn hasher_merge_cv_stack(self: *mut blake3_hasher, total_len: u64) {
+    let mut post_merge_stack_len: u64 = popcnt(total_len) as u64;
+    while self.cv_stack_len > post_merge_stack_len {
+        let mut parent_node: *mut u8 = &mut self.cv_stack[(self.cv_stack_len - 2) * 32];
+        let mut output: output_t = parent_output(parent_node, self.key, self.chunk.flags);
+        output_chaining_value(&mut output, parent_node);
+        self.cv_stack_len -= 1;
+    }
+}
+
+fn hasher_push_cv(self: *mut blake3_hasher, new_cv: *mut u8, chunk_counter: u64) {
+    hasher_merge_cv_stack(self, chunk_counter);
+    memcpy(&mut self.cv_stack[self.cv_stack_len * 32], new_cv, 32);
+    self.cv_stack_len += 1;
+}
+
+fn blake3_hasher_update_base(self: *mut blake3_hasher, input: *void, input_len: u64, use_tbb: bool) {
+    if input_len == 0 {
+        return;
+    }
+    let mut input_bytes: *u8 = input as *u8;
+    if chunk_state_len(&mut self.chunk) > 0 {
+        let mut take: u64 = 1024 - chunk_state_len(&mut self.chunk);
+        if take > input_len {
+            take = input_len;
+        }
+        chunk_state_update(&mut self.chunk, input_bytes, take);
+        input_bytes += take;
+        input_len -= take;
+        if input_len > 0 {
+            let mut output: output_t = chunk_state_output(&mut self.chunk);
+            let mut chunk_cv: [32]u8 = zeroed();
+            output_chaining_value(&mut output, chunk_cv);
+            hasher_push_cv(self, chunk_cv, self.chunk.chunk_counter);
+            chunk_state_reset(&mut self.chunk, self.key, self.chunk.chunk_counter + 1);
+        } else {
+            return;
+        }
+    }
+    while input_len > 1024 {
+        let mut subtree_len: u64 = round_down_to_power_of_2(input_len);
+        let mut count_so_far: u64 = self.chunk.chunk_counter * 1024;
+        while (((subtree_len - 1) as u64) & count_so_far) != 0 {
+            subtree_len /= 2;
+        }
+        let mut subtree_chunks: u64 = subtree_len / 1024;
+        if subtree_len <= 1024 {
+            let mut chunk_state: blake3_chunk_state = blake3_chunk_state {};
+            chunk_state_init(&mut chunk_state, self.key, self.chunk.flags);
+            chunk_state.chunk_counter = self.chunk.chunk_counter;
+            chunk_state_update(&mut chunk_state, input_bytes, subtree_len);
+            let mut output: output_t = chunk_state_output(&mut chunk_state);
+            let mut cv: [32]u8 = zeroed();
+            output_chaining_value(&mut output, cv);
+            hasher_push_cv(self, cv, chunk_state.chunk_counter);
+        } else {
+            let mut cv_pair: [64]u8 = zeroed();
+            compress_subtree_to_parent_node(input_bytes, subtree_len, self.key, self.chunk.chunk_counter, self.chunk.flags, cv_pair, use_tbb);
+            hasher_push_cv(self, cv_pair, self.chunk.chunk_counter);
+            hasher_push_cv(self, &mut cv_pair[32], self.chunk.chunk_counter + (subtree_chunks / 2));
+        }
+        self.chunk.chunk_counter += subtree_chunks;
+        input_bytes += subtree_len;
+        input_len -= subtree_len;
+    }
+    if input_len > 0 {
+        chunk_state_update(&mut self.chunk, input_bytes, input_len);
+        hasher_merge_cv_stack(self, self.chunk.chunk_counter);
+    }
+}
+
+fn blake3_hasher_update(self: *mut blake3_hasher, input: *void, input_len: u64) {
+    let mut use_tbb: bool = false;
+    blake3_hasher_update_base(self, input, input_len, use_tbb);
+}
+
+fn blake3_hasher_finalize(self: *blake3_hasher, out: *mut u8, out_len: u64) {
+    blake3_hasher_finalize_seek(self, 0, out, out_len);
+}
+
+fn blake3_hasher_finalize_seek(self: *blake3_hasher, seek: u64, out: *mut u8, out_len: u64) {
+    if out_len == 0 {
+        return;
+    }
+    if self.cv_stack_len == 0 {
+        let mut output: output_t = chunk_state_output(&mut self.chunk);
+        output_root_bytes(&mut output, seek, out, out_len);
+        return;
+    }
+    let mut output: output_t = output_t {};
+    let mut cvs_remaining: u64 = 0;
+    if chunk_state_len(&mut self.chunk) > 0 {
+        cvs_remaining = self.cv_stack_len;
+        output = chunk_state_output(&mut self.chunk);
+    } else {
+        cvs_remaining = self.cv_stack_len - 2;
+        output = parent_output(&mut self.cv_stack[cvs_remaining * 32], self.key, self.chunk.flags);
+    }
+    while cvs_remaining > 0 {
+        cvs_remaining -= 1;
+        let mut parent_block: [64]u8 = zeroed();
+        memcpy(parent_block, &mut self.cv_stack[cvs_remaining * 32], 32);
+        output_chaining_value(&mut output, &mut parent_block[32]);
+        output = parent_output(parent_block, self.key, self.chunk.flags);
+    }
+    output_root_bytes(&mut output, seek, out, out_len);
+}
+
+fn blake3_hasher_reset(self: *mut blake3_hasher) {
+    chunk_state_reset(&mut self.chunk, self.key, 0);
+    self.cv_stack_len = 0;
+}

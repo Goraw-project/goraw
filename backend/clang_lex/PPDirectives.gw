@@ -1,0 +1,2343 @@
+// Внешние системные функции libc
+extern fn memcpy(dest: *mut u8, src: *u8, n: u64) -> *mut u8;
+
+fn Preprocessor::AllocateMacroInfo(self, L: SourceLocation) -> *mut MacroInfo {}
+
+fn Preprocessor::AllocateDefMacroDirective(self, MI: *mut MacroInfo, Loc: SourceLocation) -> *mut DefMacroDirective {}
+
+fn Preprocessor::AllocateUndefMacroDirective(self, UndefLoc: SourceLocation) -> *mut UndefMacroDirective {}
+
+fn Preprocessor::AllocateVisibilityMacroDirective(self, Loc: SourceLocation, isPublic: bool) -> *mut VisibilityMacroDirective {}
+
+fn Preprocessor::DiscardUntilEndOfDirective(self, Tmp: *mut Token, DiscardedToks: *mut SmallVectorImpl<Token>) -> SourceRange {
+    let mut Res: SourceRange = SourceRange {};
+    let mut ReadNextTok: Closure_1 = Closure_1 { cap_0: self, Tmp: &mut Tmp, DiscardedToks: &mut DiscardedToks };
+    ReadNextTok.call();
+    Res.setBegin(Tmp.getLocation());
+    while Tmp.isNot(eod) {
+        assert!(Tmp.isNot(eof), "EOF seen while discarding directive tokens");
+        ReadNextTok.call();
+    }
+    Res.setEnd(Tmp.getLocation());
+    return Res;
+}
+
+enum MacroDiag {
+    MD_NoWarn = 0,
+    MD_KeywordDef = 1,
+    MD_ReservedMacro = 2,
+    MD_ReservedAttributeIdentifier = 3,
+}
+
+enum PPElifDiag {
+    PED_Elif = 0,
+    PED_Elifdef = 1,
+    PED_Elifndef = 2,
+}
+
+fn isFeatureTestMacro(MacroName: str) -> bool {
+    let mut ReservedMacro: [29]str = ["_ATFILE_SOURCE", "_BSD_SOURCE", "_CRT_NONSTDC_NO_WARNINGS", "_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES", "_CRT_SECURE_NO_WARNINGS", "_FILE_OFFSET_BITS", "_FORTIFY_SOURCE", "_GLIBCXX_ASSERTIONS", "_GLIBCXX_CONCEPT_CHECKS", "_GLIBCXX_DEBUG", "_GLIBCXX_DEBUG_PEDANTIC", "_GLIBCXX_PARALLEL", "_GLIBCXX_PARALLEL_ASSERTIONS", "_GLIBCXX_SANITIZE_VECTOR", "_GLIBCXX_USE_CXX11_ABI", "_GLIBCXX_USE_DEPRECATED", "_GNU_SOURCE", "_ISOC11_SOURCE", "_ISOC95_SOURCE", "_ISOC99_SOURCE", "_LARGEFILE64_SOURCE", "_POSIX_C_SOURCE", "_REENTRANT", "_SVID_SOURCE", "_THREAD_SAFE", "_XOPEN_SOURCE", "_XOPEN_SOURCE_EXTENDED", "__STDCPP_WANT_MATH_SPEC_FUNCS__", "__STDC_FORMAT_MACROS"];
+    return binary_search(ReservedMacro, MacroName);
+}
+
+fn isLanguageDefinedBuiltin(SourceMgr: *SourceManager, MI: *MacroInfo, MacroName: str) -> bool {
+    if MI.isBuiltinMacro() {
+        return true;
+    }
+    if !SourceMgr.isWrittenInBuiltinFile(MI.getDefinitionLoc()) {
+        return false;
+    }
+    if MacroName.starts_with("__STDC") {
+        return true;
+    }
+    if MacroName == "__cplusplus" {
+        return true;
+    }
+    if MacroName.starts_with("__cpp") {
+        return true;
+    }
+    return false;
+}
+
+fn isReservedCXXAttributeName(PP: *mut Preprocessor, II: *mut IdentifierInfo) -> bool {
+    let mut Lang: *LangOptions = PP.getLangOpts();
+    if Lang() && hasAttribute(AS_CXX11, null, II, PP.getTargetInfo(), Lang, false) > 0 {
+        let mut AttrArgsInfo: AttrArgsInfo = getCXX11AttrArgsInfo(II);
+        if AttrArgsInfo == Required {
+            return PP;
+        }
+        return !PP || AttrArgsInfo == Optional;
+    }
+    return false;
+}
+
+fn shouldWarnOnMacroDef(PP: *mut Preprocessor, II: *mut IdentifierInfo) -> MacroDiag {
+    let mut Lang: *LangOptions = PP.getLangOpts();
+    let mut Text: str = II.getName();
+    if isReservedInAllContexts(II.isReserved(Lang)) {
+        return if isFeatureTestMacro(Text) { MD_NoWarn } else { MD_ReservedMacro };
+    }
+    if II.isKeyword(Lang) {
+        return MD_KeywordDef;
+    }
+    if Lang() && (Text == "override" || Text == "final") {
+        return MD_KeywordDef;
+    }
+    if isReservedCXXAttributeName(PP, II) {
+        return MD_ReservedAttributeIdentifier;
+    }
+    return MD_NoWarn;
+}
+
+fn shouldWarnOnMacroUndef(PP: *mut Preprocessor, II: *mut IdentifierInfo) -> MacroDiag {
+    let mut Lang: *LangOptions = PP.getLangOpts();
+    if isReservedInAllContexts(II.isReserved(Lang)) {
+        return MD_ReservedMacro;
+    }
+    if isReservedCXXAttributeName(PP, II) {
+        return MD_ReservedAttributeIdentifier;
+    }
+    return MD_NoWarn;
+}
+
+fn warnByDefaultOnWrongCase(Include: str) -> bool {
+    if begin(Include, native)("boost") {
+        return true;
+    }
+    let mut MaxStdHeaderNameLen: u64 = 18;
+    if Include.len > MaxStdHeaderNameLen {
+        return false;
+    }
+    let mut LowerInclude: str = zeroed();
+}
+
+fn findSimilarStr(LHS: str, Candidates: i32) -> optional<StringRef> {
+    let mut Length: u64 = LHS.len;
+    let mut MaxDist: u64 = if Length < 3 { Length - 1 } else { Length / 3 };
+    let mut SimilarStr: pair<StringRef, size_t>> = zeroed();
+    if SimilarStr() {
+        return ;
+    } else {
+        return nullopt();
+    }
+}
+
+fn Preprocessor::CheckMacroName(self, MacroNameTok: *mut Token, isDefineUndef: MacroUse, ShadowFlag: *mut bool) -> bool {
+    if MacroNameTok.is(eod) {
+        return ;
+    }
+    let mut II: *mut IdentifierInfo = MacroNameTok.getIdentifierInfo();
+    if !II {
+        return ;
+    }
+    if II.isCPlusPlusOperatorKeyword() {
+         << II << MacroNameTok.getKind();
+    }
+    if (isDefineUndef != MU_Other) && II.getPPKeywordID() == pp_defined {
+        return ;
+    }
+    let mut MacroNameLoc: SourceLocation = MacroNameTok.getLocation();
+    if ShadowFlag {
+        *ShadowFlag = false;
+    }
+    let mut D: MacroDiag = MD_NoWarn;
+    if isDefineUndef == MU_Define {
+        D = shouldWarnOnMacroDef(*self, II);
+    } else if isDefineUndef == MU_Undef {
+        D = shouldWarnOnMacroUndef(*self, II);
+    }
+    if D != MD_NoWarn && !self.SourceMgr.isInSystemHeader(MacroNameLoc) && !self.SourceMgr.isInPredefinedFile(MacroNameLoc) {
+        if D == MD_KeywordDef {
+            if ShadowFlag {
+                *ShadowFlag = true;
+            }
+        }
+        if D == MD_ReservedMacro {
+            
+        }
+        if D == MD_ReservedAttributeIdentifier {
+            << II.getName();
+        }
+    }
+    return false;
+}
+
+fn Preprocessor::ReadMacroName(self, MacroNameTok: *mut Token, isDefineUndef: MacroUse, ShadowFlag: *mut bool) {
+    self.LexUnexpandedToken(MacroNameTok);
+    if MacroNameTok.is(code_completion) {
+        if self.CodeComplete {
+            self.CodeComplete.CodeCompleteMacroName(isDefineUndef == MU_Define);
+        }
+        self.setCodeCompletionReached();
+        self.LexUnexpandedToken(MacroNameTok);
+    }
+    if !self.CheckMacroName(MacroNameTok, isDefineUndef, ShadowFlag) {
+        return;
+    }
+    if MacroNameTok.isNot(eod) {
+        MacroNameTok.setKind(eod);
+        self.DiscardUntilEndOfDirective(null);
+    }
+}
+
+fn Preprocessor::CheckEndOfDirective(self, DirType: str, EnableMacros: bool, ExtraToks: *mut SmallVectorImpl<Token>) -> SourceLocation {
+    let mut Tmp: Token = Token {};
+    Tmp.startToken();
+    let mut ReadNextTok: Closure_2 = Closure_2 { cap_0: self, ExtraToks: ExtraToks, Tmp: &mut Tmp };
+    if EnableMacros {
+        ReadNextTok(&mut Lex);
+    } else {
+        ReadNextTok(&mut LexUnexpandedToken);
+    }
+    while Tmp.is(comment) {
+        ReadNextTok(&mut LexUnexpandedToken);
+    }
+    if Tmp.is(eod) {
+        return Tmp.getLocation();
+    }
+    let mut Hint: FixItHint = FixItHint {};
+    if  {
+        Hint = CreateInsertion(Tmp.getLocation(), "//", false);
+    }
+    let mut DiagID: u32 = 0;
+    self.Diag(Tmp, DiagID) << DirType << Hint;
+    return self.DiscardUntilEndOfDirective(ExtraToks).getEnd();
+}
+
+fn Preprocessor::SuggestTypoedDirective(self: *Preprocessor, Tok: *Token, Directive: str) {
+    if self.getLangOpts() {
+        return;
+    }
+    let mut Candidates: i32 = void { "if", "ifdef", "ifndef", "elif", "else", "endif" };
+    if self.LangOpts || self.LangOpts {
+        Candidates()(void { "elifdef", "elifndef" });
+    }
+    if  {
+        assert!(Tok.getLocation().isFileID();
+        let mut DirectiveRange: CharSourceRange = getCharRange(Tok.getLocation(), Tok.getLocation().getLocWithOffset(Directive.len));
+        let mut SuggValue: str = *;
+        let mut Hint: auto = CreateReplacement(DirectiveRange, SuggValue);
+         << 1 << SuggValue << ;
+    }
+}
+
+fn Preprocessor::SkipExcludedConditionalBlock(self, HashTokenLoc: SourceLocation, IfTokenLoc: SourceLocation, FoundNonSkipPortion: bool, FoundElse: bool, ElseLoc: SourceLocation) {
+    assert!(!self.SkippingExcludedConditionalBlock, "calling SkipExcludedConditionalBlock recursively");
+    let mut SARSkipping: SaveAndRestore = self.SkippingExcludedConditionalBlock;
+    self.NumSkipped += 1;
+    assert!(self.CurPPLexer, "Conditional PP block must be in a file!");
+    if  {
+        
+    } else {
+        self.CurPPLexer.pushConditionalLevel(IfTokenLoc, false, FoundNonSkipPortion, FoundElse);
+    }
+    self.CurPPLexer.LexingRawMode = true;
+    let mut Tok: Token = Token {};
+    let mut endLoc: SourceLocation = SourceLocation {};
+    let mut SkippingRangeState: SkippingRangeStateTy = *self;
+    while true {
+        if  {} else {
+            SkippingRangeState.beginLexPass();
+            while true {
+                if Tok.is(code_completion) {
+                    self.setCodeCompletionReached();
+                    if self.CodeComplete {
+                        self.CodeComplete.CodeCompleteInConditionalExclusion();
+                    }
+                    continue;
+                }
+                if self.getLangOpts() && Tok.isAtStartOfLine() && Tok.is(raw_identifier) && (Tok.getRawIdentifier() == "export" || Tok.getRawIdentifier() == "module") {
+                    let mut ModuleDirectiveSkipping: SaveAndRestore = self.LastExportKeyword;
+                    self.LastExportKeyword.startToken();
+                    self.LookUpIdentifierInfo(Tok);
+                    let mut II: *mut IdentifierInfo = Tok.getIdentifierInfo();
+                    if II.getName()[0] == 'e' {
+                        self.HandleModuleContextualKeyword(Tok);
+                        if Tok.is(raw_identifier) {
+                            self.LookUpIdentifierInfo(Tok);
+                            II = Tok.getIdentifierInfo();
+                        }
+                    }
+                    if II.getName()[0] == 'm' {
+                        let mut RestoreLexingRawMode: SaveAndRestore = self.CurPPLexer.LexingRawMode;
+                        if self.HandleModuleContextualKeyword(Tok) {
+                            self.CurPPLexer.ParsingPreprocessorDirective = true;
+                            let mut StartLoc: SourceLocation = Tok.getLocation();
+                            let mut End: SourceLocation = self.DiscardUntilEndOfDirective(null).getEnd();
+                             << SourceRange { B: StartLoc, E: End };
+                            self.CurPPLexer.ParsingPreprocessorDirective = false;
+                            continue;
+                        }
+                    }
+                }
+                if Tok.is(eof) {
+                    break;
+                }
+                if Tok.isNot(hash) || !Tok.isAtStartOfLine() {
+                    continue;
+                }
+                break;
+            }
+        }
+        if Tok.is(eof) {
+            break;
+        }
+        self.CurPPLexer.ParsingPreprocessorDirective = true;
+        assert!(Tok.is(hash);
+        let mut Hashptr: *u8 = null;
+        self.LexUnexpandedToken(Tok);
+        if Tok.isNot(raw_identifier) {
+            self.CurPPLexer.ParsingPreprocessorDirective = false;
+            continue;
+        }
+        let mut RI: str = Tok.getRawIdentifier();
+        let mut FirstChar: i8 = RI[0];
+        if FirstChar >= 'a' && FirstChar <= 'z' && FirstChar != 'i' && FirstChar != 'e' {
+            self.CurPPLexer.ParsingPreprocessorDirective = false;
+            continue;
+        }
+        let mut DirectiveBuf: [20]i8 = zeroed();
+        let mut Directive: str = "";
+        if !Tok.needsCleaning() && RI.len < 20 {
+            Directive = RI;
+        } else {
+            let mut DirectiveStr: str = self.getSpelling(Tok, null);
+            let mut IdLen: u64 = DirectiveStr.len;
+            if IdLen >= 20 {
+                self.CurPPLexer.ParsingPreprocessorDirective = false;
+                continue;
+            }
+            memcpy(DirectiveBuf, &mut DirectiveStr[0], IdLen);
+            Directive = DirectiveBuf[0..IdLen];
+        }
+        if Directive.starts_with("if") {
+            let mut Sub: str = Directive[2..2 + npos];
+            if Sub.is_empty() || Sub == "def" || Sub == "ndef" {
+                self.DiscardUntilEndOfDirective(null);
+                self.CurPPLexer.pushConditionalLevel(Tok.getLocation(), true, false, false);
+            } else {
+                self.SuggestTypoedDirective(Tok, Directive);
+            }
+        } else if Directive[0] == 'e' {
+            let mut Sub: str = Directive[1..1 + npos];
+            if Sub == "ndif" {
+                let mut CondInfo: PPConditionalInfo = PPConditionalInfo {};
+                CondInfo.WasSkipping = true;
+                let mut InCond: bool = self.CurPPLexer.popConditionalLevel(CondInfo);
+                InCond as void;
+                assert!(!InCond, "Can't be skipping if not in a conditional!");
+                if !CondInfo.WasSkipping {
+                    SkippingRangeState.endLexPass(Hashptr);
+                    self.CurPPLexer.LexingRawMode = false;
+                    endLoc = self.CheckEndOfDirective("endif", false, null);
+                    self.CurPPLexer.LexingRawMode = true;
+                    break;
+                } else {
+                    self.DiscardUntilEndOfDirective(null);
+                }
+            } else if Sub == "lse" {
+                let mut CondInfo: *mut PPConditionalInfo = self.CurPPLexer.peekConditionalLevel();
+                if !CondInfo.WasSkipping {
+                    SkippingRangeState.endLexPass(Hashptr);
+                }
+                if CondInfo.FoundElse {
+                    
+                }
+                CondInfo.FoundElse = true;
+                if !CondInfo.WasSkipping && !CondInfo.FoundNonSkip {
+                    CondInfo.FoundNonSkip = true;
+                    self.CurPPLexer.LexingRawMode = false;
+                    endLoc = self.CheckEndOfDirective("else", false, null);
+                    self.CurPPLexer.LexingRawMode = true;
+                    break;
+                } else {
+                    self.DiscardUntilEndOfDirective(null);
+                }
+            } else if Sub == "lif" {
+                let mut CondInfo: *mut PPConditionalInfo = self.CurPPLexer.peekConditionalLevel();
+                if !CondInfo.WasSkipping {
+                    SkippingRangeState.endLexPass(Hashptr);
+                }
+                if CondInfo.FoundElse {
+                    << PED_Elif;
+                }
+                if CondInfo.WasSkipping || CondInfo.FoundNonSkip {
+                    self.DiscardUntilEndOfDirective(null);
+                } else {
+                    assert!(self.CurPPLexer.LexingRawMode, "We have to be skipping here!");
+                    self.CurPPLexer.LexingRawMode = false;
+                    let mut IfNDefMacro: *mut IdentifierInfo = null;
+                    let mut DER: DirectiveEvalResult = self.EvaluateDirectiveExpression(IfNDefMacro, true);
+                    if !self.CurPPLexer {
+                        return;
+                    }
+                    let mut CondValue: bool = DER.Conditional;
+                    self.CurPPLexer.LexingRawMode = true;
+                    if  {}
+                    if CondValue {
+                        CondInfo.FoundNonSkip = true;
+                        break;
+                    }
+                }
+            } else if Sub == "lifdef" || Sub == "lifndef" {
+                let mut IsElifDef: bool = Sub == "lifdef";
+                let mut CondInfo: *mut PPConditionalInfo = self.CurPPLexer.peekConditionalLevel();
+                let mut DirectiveToken: Token = Tok;
+                if !CondInfo.WasSkipping {
+                    SkippingRangeState.endLexPass(Hashptr);
+                }
+                let mut DiagID: u32 = 0;
+                self.DiagCompat(Tok, DiagID) << (if IsElifDef { PED_Elifdef } else { PED_Elifndef });
+                if CondInfo.FoundElse {
+                    << (if IsElifDef { PED_Elifdef } else { PED_Elifndef });
+                }
+                if CondInfo.WasSkipping || CondInfo.FoundNonSkip {
+                    self.DiscardUntilEndOfDirective(null);
+                } else {
+                    assert!(self.CurPPLexer.LexingRawMode, "We have to be skipping here!");
+                    self.CurPPLexer.LexingRawMode = false;
+                    let mut MacroNameTok: Token = Token {};
+                    self.ReadMacroName(MacroNameTok, MU_Other, null);
+                    self.CurPPLexer.LexingRawMode = true;
+                    if MacroNameTok.is(eod) {
+                        continue;
+                    }
+                    self.emitMacroExpansionWarnings(MacroNameTok, false);
+                    self.CheckEndOfDirective(if IsElifDef { "elifdef" } else { "elifndef" }, false, null);
+                    let mut MII: *mut IdentifierInfo = MacroNameTok.getIdentifierInfo();
+                    let mut MD: MacroDefinition = self.getMacroDefinition(MII);
+                    let mut MI: *mut MacroInfo = MD.getMacroInfo();
+                    if  {
+                        if IsElifDef {} else {}
+                    }
+                    if MI as bool == IsElifDef {
+                        CondInfo.FoundNonSkip = true;
+                        break;
+                    }
+                }
+            } else {
+                self.SuggestTypoedDirective(Tok, Directive);
+            }
+        } else {
+            self.SuggestTypoedDirective(Tok, Directive);
+        }
+        self.CurPPLexer.ParsingPreprocessorDirective = false;
+    }
+    self.CurPPLexer.LexingRawMode = false;
+}
+
+fn Preprocessor::getModuleForLocation(self, Loc: SourceLocation, AllowTextual: bool) -> *mut Module {
+    if !self.SourceMgr.isInMainFile(Loc) {
+        let mut IDOfIncl: FileID = self.SourceMgr.getFileID(self.SourceMgr.getExpansionLoc(Loc));
+        if self.SourceMgr.getFileEntryRefForID(IDOfIncl) {
+            EntryOfIncl;
+        } else {
+            return self.HeaderInfo.getModuleMap().findModuleForHeader(operator(EntryOfIncl), AllowTextual, false).getModule();
+        }
+    }
+    return if self.getLangOpts().CurrentModule.is_empty() { null } else { self.HeaderInfo.lookupModule(self.getLangOpts().CurrentModule, Loc, true, false) };
+}
+
+fn Preprocessor::getHeaderToIncludeForDiagnostics(self, IncLoc: SourceLocation, Loc: SourceLocation) -> OptionalFileEntryRef {
+    let mut IncM: *mut Module = self.getModuleForLocation(IncLoc, self.LangOpts);
+    let mut SM: *mut SourceManager = self.getSourceManager();
+    while !Loc.isInvalid() && !SM.isInMainFile(Loc) {
+        let mut ID: FileID = SM.getFileID(SM.getExpansionLoc(Loc));
+        let mut FE: OptionalFileEntryRef = SM.getFileEntryRefForID(ID);
+        if !FE {
+            break;
+        }
+        self.HeaderInfo.hasModuleMap(operator(FE).getName(), null, self.SourceMgr.isInSystemHeader(Loc));
+        let mut InPrivateHeader: bool = false;
+        if InPrivateHeader {
+            return nullopt;
+        }
+        if self.getHeaderSearchInfo().isFileMultipleIncludeGuarded(operator(FE)) {
+            return operator(FE);
+        }
+        Loc = SM.getIncludeLoc(ID);
+    }
+    return nullopt;
+}
+
+fn Preprocessor::LookupFile(self, FilenameLoc: SourceLocation, Filename: str, isAngled: bool, FromDir: ConstSearchDirIterator, FromFile: *FileEntry, CurDirArg: *mut ConstSearchDirIterator, SearchPath: *mut SmallVectorImpl<char>, RelativePath: *mut SmallVectorImpl<char>, SuggestedModule: *mut KnownHeader, IsMapped: *mut bool, IsFrameworkFound: *mut bool, SkipCache: bool, OpenFile: bool, CacheFailures: bool) -> OptionalFileEntryRef {
+    let mut CurDirLocal: ConstSearchDirIterator = zeroed();
+    let mut CurDir: *mut ConstSearchDirIterator = if CurDirArg { *CurDirArg } else {  };
+    let mut RequestingModule: *mut Module = self.getModuleForLocation(FilenameLoc, self.LangOpts);
+    let mut Includers: pair<OptionalFileEntryRef, DirectoryEntryRef>, 16> = zeroed();
+    let mut BuildSystemModule: bool = false;
+    if operator!() && !FromFile {
+        let mut FID: FileID = self.getCurrentFileLexer().getFileID();
+        let mut FileEnt: OptionalFileEntryRef = self.SourceMgr.getFileEntryRefForID(FID);
+        if !FileEnt {
+            if FID == self.SourceMgr.getMainFileID() && self.MainFileDir {
+                let mut IncludeDir: OptionalDirectoryEntryRef = if self.HeaderInfo.getModuleMap().shouldImportRelativeToBuiltinIncludeDir(Filename, self.getCurrentModule()) { self.HeaderInfo.getModuleMap().getBuiltinDir() } else { self.MainFileDir };
+                Includers()(make_pair(nullopt, operator(IncludeDir)));
+                BuildSystemModule = self.getCurrentModule().IsSystem;
+            } else if (FileEnt = self.SourceMgr.getFileEntryRefForID(self.SourceMgr.getMainFileID())) {
+                let mut CWD: OptionalDirectoryEntryRef = self.FileMgr.getOptionalDirectoryRef(".", true);
+                Includers()(make_pair(operator(FileEnt), operator(CWD)));
+            }
+        } else {
+            Includers()(make_pair(operator(FileEnt), operator(FileEnt).getDir()));
+        }
+        if self.LangOpts && !isAngled {}
+    }
+    if FromFile {
+        let mut TmpCurDir: ConstSearchDirIterator = zeroed();
+        let mut TmpFromDir: ConstSearchDirIterator = zeroed();
+        while self.HeaderInfo.LookupFile(Filename, FilenameLoc, isAngled, operator&(), SearchPath, RelativePath, RequestingModule, SuggestedModule, null, null, SkipCache) {
+            FE;
+        }
+    }
+    let mut FE: OptionalFileEntryRef = self.HeaderInfo.LookupFile(Filename, FilenameLoc, isAngled, &mut CurDir, SearchPath, RelativePath, RequestingModule, SuggestedModule, IsMapped, IsFrameworkFound, SkipCache, BuildSystemModule, OpenFile, CacheFailures);
+    if FE {
+        return FE;
+    }
+    let mut CurFileEnt: OptionalFileEntryRef = OptionalFileEntryRef {};
+    if self.IsFileLexer() {
+        if (CurFileEnt = self.CurPPLexer.getFileEntry()) {
+            if self.HeaderInfo.LookupSubframeworkHeader(Filename, operator(CurFileEnt), SearchPath, RelativePath, RequestingModule, SuggestedModule) {
+                FE;
+            } else {
+                return FE;
+            }
+        }
+    }
+    return nullopt;
+}
+
+fn Preprocessor::LookupEmbedFile(self, Filename: str, isAngled: bool, OpenFile: bool) -> OptionalFileEntryRef {
+    let mut FM: *mut FileManager = self.getFileManager();
+    if is_absolute(Filename, native) {
+        return FM.getOptionalFileRef(Filename, OpenFile, true, false);
+    }
+    let mut SeparateComponents: Closure_3 = Closure_3 {};
+    let mut LookupPath: str = zeroed();
+    if !isAngled {
+        let mut LookupFromFile: OptionalFileEntryRef = self.getCurrentFileLexer().getFileEntry();
+        if LookupFromFile {
+            let mut TmpDir: str = zeroed();
+            TmpDir() = operator(LookupFromFile).getDir().getName();
+            append(Filename);
+            if operator!() {
+                let mut ShouldBeEntry: OptionalFileEntryRef = FM.getOptionalFileRef(OpenFile, true, false);
+                if ShouldBeEntry {
+                    return ShouldBeEntry;
+                }
+            }
+        }
+        LookupPath()();
+        let mut MaybeWorkingDirEntry: OptionalDirectoryEntryRef = FM.getOptionalDirectoryRef(".", true);
+        if MaybeWorkingDirEntry {
+            let mut WorkingDirEntry: DirectoryEntryRef = operator(MaybeWorkingDirEntry);
+            let mut WorkingDir: str = WorkingDirEntry.getName();
+            if !WorkingDir.is_empty() {
+                SeparateComponents(WorkingDir, Filename, false);
+                let mut ShouldBeEntry: OptionalFileEntryRef = FM.getOptionalFileRef(OpenFile, true, false);
+                if ShouldBeEntry {
+                    return ShouldBeEntry;
+                }
+            }
+        }
+    }
+    return nullopt;
+}
+
+struct ResetMacroExpansionHelper {
+    PP: *mut Preprocessor,
+    save: bool,
+}
+
+fn ResetMacroExpansionHelper::ResetMacroExpansionHelper(self, pp: *mut Preprocessor) {
+    if pp.MacroExpansionInDirectivesOverride {
+        pp.DisableMacroExpansion = false;
+    }
+}
+
+fn ResetMacroExpansionHelper::~ResetMacroExpansionHelper(self) {
+    self.PP.DisableMacroExpansion = self.save;
+}
+
+fn Preprocessor::HandleSkippedDirectiveWhileUsingPCH(self, Result: *mut Token, HashLoc: SourceLocation) {
+    if Result.getIdentifierInfo() {
+        II;
+    } else {
+        if II.getPPKeywordID() == pp_define {
+            return self.HandleDefineDirective(Result, false);
+        }
+        if self.SkippingUntilPCHThroughHeader && II.getPPKeywordID() == pp_include {
+            return self.HandleIncludeDirective(HashLoc, Result, null, null);
+        }
+        if self.SkippingUntilPragmaHdrStop && II.getPPKeywordID() == pp_pragma {
+            self.Lex(Result);
+            let mut II: *mut IdentifierInfo = Result.getIdentifierInfo();
+            if II && II.getName() == "hdrstop" {
+                return self.HandlePragmaHdrstop(Result);
+            }
+        }
+    }
+    self.DiscardUntilEndOfDirective(null);
+}
+
+fn Preprocessor::HandleDirective(self, Result: *mut Token) {
+    self.CurPPLexer.ParsingPreprocessorDirective = true;
+    let mut ImmediatelyAfterTopLevelIfndef: bool = self.CurPPLexer.MIOpt.getImmediatelyAfterTopLevelIfndef();
+    self.CurPPLexer.MIOpt.resetImmediatelyAfterTopLevelIfndef();
+    self.NumDirectives += 1;
+    let mut ReadAnyTokensBeforeDirective: bool = self.CurPPLexer.MIOpt.getHasReadAnyTokensVal();
+    let mut Introducer: Token = Result;
+    if Introducer {
+        self.LexUnexpandedToken(Result);
+    }
+    if self.InMacroArgs {
+        if Result.getIdentifierInfo() {
+            II;
+        } else {
+            match II.getPPKeywordID() {
+                pp_include => {
+                    pp_import;
+                },
+                _ => {
+                    break;
+                },
+            }
+        }
+    }
+    let mut helper: ResetMacroExpansionHelper = self;
+    if self.SkippingUntilPCHThroughHeader || self.SkippingUntilPragmaHdrStop {
+        return self.HandleSkippedDirectiveWhileUsingPCH(Result, Introducer.getLocation());
+    }
+    match Result.getKind() {
+        eod => {
+            self.CurPPLexer.MIOpt.SetReadToken(ReadAnyTokensBeforeDirective);
+        },
+        code_completion => {
+            self.setCodeCompletionReached();
+        },
+        numeric_constant => {
+            if self.getLangOpts() && self.SourceMgr.getFileID(Introducer.getLocation()) != self.getPredefinesFileID() {
+                break;
+            }
+        },
+        _ => {
+            let mut II: *mut IdentifierInfo = Result.getIdentifierInfo();
+        },
+    }
+    if self.getLangOpts() {
+        let mut Toks: auto = make_unique(2);
+        Toks()[0] = Introducer;
+        Toks()[1] = Result;
+        if Result.is(hashhash) {
+            Toks()[1](unknown);
+        }
+        (move(), 2, false, false);
+        return;
+    }
+     << 0;
+    self.DiscardUntilEndOfDirective(null);
+}
+
+fn GetLineValue(DigitTok: *mut Token, Val: *mut u32, DiagID: u32, PP: *mut Preprocessor, IsGNULineDirective: bool) -> bool {
+    if DigitTok.isNot(numeric_constant) {
+        PP.Diag(DigitTok, DiagID);
+        if DigitTok.isNot(eod) {
+            PP.DiscardUntilEndOfDirective(null);
+        }
+        return true;
+    }
+    let mut IntegerBuffer: str = zeroed();
+    IntegerBuffer()(DigitTok.getLength());
+    let mut DigitTokBegin: *u8 = operator&([0]);
+    let mut Invalid: bool = false;
+    let mut ActualLength: u32 = PP.getSpelling(DigitTok, DigitTokBegin, &mut Invalid);
+    if Invalid {
+        return true;
+    }
+    Val = 0;
+    for let mut i: u32 = 0; i != ActualLength; i += 1 {
+        if DigitTokBegin[i] == '\'' {
+            continue;
+        }
+        if !isDigit(DigitTokBegin[i]) {
+            PP << IsGNULineDirective;
+            PP.DiscardUntilEndOfDirective(null);
+            return true;
+        }
+        let mut NextVal: u32 = Val * 10 + (DigitTokBegin[i] - '0');
+        if NextVal < Val {
+            PP.Diag(DigitTok, DiagID);
+            PP.DiscardUntilEndOfDirective(null);
+            return true;
+        }
+        Val = NextVal;
+    }
+    if DigitTokBegin[0] == '0' && Val {
+        PP << IsGNULineDirective;
+    }
+    return false;
+}
+
+fn Preprocessor::HandleLineDirective(self) {
+    let mut DigitTok: Token = Token {};
+    self.Lex(DigitTok);
+    let mut LineNo: u32 = 0;
+    if GetLineValue(DigitTok, LineNo, *self) {
+        return;
+    }
+    if LineNo == 0 {
+        
+    }
+    let mut LineLimit: u32 = 32768;
+    if self.LangOpts || self.LangOpts {
+        LineLimit = 2147483648;
+    }
+    if LineNo >= LineLimit {
+        << LineLimit;
+    } else if self.LangOpts && LineNo >= 32768 {
+        
+    }
+    let mut FilenameID: i32 = -1;
+    let mut StrTok: Token = Token {};
+    self.LexHeaderName(StrTok, true);
+    if StrTok.is(eod) {
+        
+    } else if StrTok.isNot(header_name) {
+        self.DiscardUntilEndOfDirective(null);
+        return;
+    } else {
+        let mut FilenameBuffer: str = zeroed();
+        let mut Filename: str = (StrTok);
+        self.GetLineDirectiveFilenameSpelling(StrTok.getLocation(), Filename);
+        FilenameID = self.SourceMgr.getLineTableFilenameID(Filename);
+        self.CheckEndOfDirective("line", true, null);
+    }
+    let mut FileKind: CharacteristicKind = self.SourceMgr.getFileCharacteristic(DigitTok.getLocation());
+    self.SourceMgr.AddLineNote(DigitTok.getLocation(), LineNo, FilenameID, false, false, FileKind);
+}
+
+fn ReadLineMarkerFlags(IsFileEntry: *mut bool, IsFileExit: *mut bool, FileKind: *mut CharacteristicKind, PP: *mut Preprocessor) -> bool {
+    let mut FlagVal: u32 = 0;
+    let mut FlagTok: Token = Token {};
+    PP.Lex(FlagTok);
+    if FlagTok.is(eod) {
+        return false;
+    }
+    if GetLineValue(FlagTok, FlagVal, PP) {
+        return true;
+    }
+    if FlagVal == 1 {
+        IsFileEntry = true;
+        PP.Lex(FlagTok);
+        if FlagTok.is(eod) {
+            return false;
+        }
+        if GetLineValue(FlagTok, FlagVal, PP) {
+            return true;
+        }
+    } else if FlagVal == 2 {
+        IsFileExit = true;
+        let mut SM: *mut SourceManager = PP.getSourceManager();
+        let mut CurFileID: FileID = SM()(FlagTok.getLocation());
+        let mut PLoc: PresumedLoc = SM.getPresumedLoc(FlagTok.getLocation(), true);
+        if PLoc.isInvalid() {
+            return true;
+        }
+        let mut IncLoc: SourceLocation = PLoc.getIncludeLoc();
+        if IncLoc.isInvalid() || SM()(IncLoc) != CurFileID {
+            PP;
+            PP.DiscardUntilEndOfDirective(null);
+            return true;
+        }
+        PP.Lex(FlagTok);
+        if FlagTok.is(eod) {
+            return false;
+        }
+        if GetLineValue(FlagTok, FlagVal, PP) {
+            return true;
+        }
+    }
+    if FlagVal != 3 {
+        PP;
+        PP.DiscardUntilEndOfDirective(null);
+        return true;
+    }
+    FileKind = C_System;
+    PP.Lex(FlagTok);
+    if FlagTok.is(eod) {
+        return false;
+    }
+    if GetLineValue(FlagTok, FlagVal, PP) {
+        return true;
+    }
+    if FlagVal != 4 {
+        PP;
+        PP.DiscardUntilEndOfDirective(null);
+        return true;
+    }
+    FileKind = C_ExternCSystem;
+    PP.Lex(FlagTok);
+    if FlagTok.is(eod) {
+        return false;
+    }
+    PP;
+    PP.DiscardUntilEndOfDirective(null);
+    return true;
+}
+
+fn Preprocessor::HandleDigitDirective(self, DigitTok: *mut Token) {
+    let mut LineNo: u32 = 0;
+    if GetLineValue(DigitTok, LineNo, *self, true) {
+        return;
+    }
+    let mut StrTok: Token = Token {};
+    self.LexHeaderName(StrTok, true);
+    let mut IsFileEntry: bool = false;
+    let mut IsFileExit: bool = false;
+    let mut FilenameID: i32 = -1;
+    let mut FileKind: CharacteristicKind = C_User;
+    if StrTok.is(eod) {
+        FileKind = self.SourceMgr.getFileCharacteristic(DigitTok.getLocation());
+    } else if StrTok.isNot(header_name) {
+        self.DiscardUntilEndOfDirective(null);
+        return;
+    } else {
+        let mut FilenameBuffer: str = zeroed();
+        let mut Filename: str = (StrTok);
+        self.GetLineDirectiveFilenameSpelling(StrTok.getLocation(), Filename);
+        if ReadLineMarkerFlags(IsFileEntry, IsFileExit, FileKind, *self) {
+            return;
+        }
+        if !self.SourceMgr.isInPredefinedFile(DigitTok.getLocation()) {
+            
+        }
+        if !(IsFileExit && Filename.is_empty()) {
+            FilenameID = self.SourceMgr.getLineTableFilenameID(Filename);
+        }
+    }
+    self.SourceMgr.AddLineNote(DigitTok.getLocation(), LineNo, FilenameID, IsFileEntry, IsFileExit, FileKind);
+    if  {
+        let mut Reason: FileChangeReason = RenameFile;
+        if IsFileEntry {
+            Reason = EnterFile;
+        } else if IsFileExit {
+            Reason = ExitFile;
+        }
+    }
+}
+
+fn Preprocessor::HandleUserDiagnosticDirective(self, Tok: *mut Token, isWarning: bool) {
+    let mut Message: str = zeroed();
+    let mut Msg: str = ()(' ');
+    if isWarning {
+        << Msg;
+    } else {
+        << Msg;
+    }
+}
+
+fn Preprocessor::HandleIdentSCCSDirective(self, Tok: *mut Token) {
+    let mut StrTok: Token = Token {};
+    self.Lex(StrTok);
+    if StrTok.isNot(string_literal) && StrTok.isNot(wide_string_literal) {
+        if StrTok.isNot(eod) {
+            self.DiscardUntilEndOfDirective(null);
+        }
+        return;
+    }
+    if StrTok.hasUDSuffix() {
+        self.DiscardUntilEndOfDirective(null);
+        return;
+    }
+    self.CheckEndOfDirective("ident", false, null);
+    if  {
+        let mut Invalid: bool = false;
+        let mut Str: str = self.getSpelling(StrTok, &mut Invalid);
+    }
+}
+
+fn Preprocessor::HandleMacroPublicDirective(self, Tok: *mut Token) {
+    let mut MacroNameTok: Token = Token {};
+    self.ReadMacroName(MacroNameTok, MU_Undef, null);
+    if MacroNameTok.is(eod) {
+        return;
+    }
+    self.CheckEndOfDirective("__public_macro", false, null);
+    let mut II: *mut IdentifierInfo = MacroNameTok.getIdentifierInfo();
+    let mut MD: *mut MacroDirective = self.getLocalMacroDirective(II);
+    if !MD {
+         << II;
+        return;
+    }
+    self.appendMacroDirective(II, self.AllocateVisibilityMacroDirective(MacroNameTok.getLocation(), true));
+}
+
+fn Preprocessor::HandleMacroPrivateDirective(self) {
+    let mut MacroNameTok: Token = Token {};
+    self.ReadMacroName(MacroNameTok, MU_Undef, null);
+    if MacroNameTok.is(eod) {
+        return;
+    }
+    self.CheckEndOfDirective("__private_macro", false, null);
+    let mut II: *mut IdentifierInfo = MacroNameTok.getIdentifierInfo();
+    let mut MD: *mut MacroDirective = self.getLocalMacroDirective(II);
+    if !MD {
+         << II;
+        return;
+    }
+    self.appendMacroDirective(II, self.AllocateVisibilityMacroDirective(MacroNameTok.getLocation(), false));
+}
+
+fn Preprocessor::GetIncludeFilenameSpelling(self, Loc: SourceLocation, Buffer: *mut str) -> bool {
+    assert!(!Buffer.is_empty(), "Can't have tokens with empty spellings!");
+    let mut isAngled: bool = false;
+    if Buffer[0] == '<' {
+        if Buffer.back() != '>' {
+            Buffer = "";
+            return true;
+        }
+        isAngled = true;
+    } else if Buffer[0] == '"' {
+        if Buffer.back() != '"' {
+            Buffer = "";
+            return true;
+        }
+        isAngled = false;
+    } else {
+        Buffer = "";
+        return true;
+    }
+    if Buffer.len <= 2 {
+        Buffer = "";
+        return true;
+    }
+    Buffer = Buffer[1..1 + Buffer.len - 2];
+    return isAngled;
+}
+
+fn Preprocessor::GetLineDirectiveFilenameSpelling(self, Loc: SourceLocation, Buffer: *mut str) {
+    assert!(!Buffer.is_empty(), "Can't have tokens with empty spellings!");
+    if Buffer.len < 2 || Buffer.front() != '"' || Buffer.back() != '"' {
+        Buffer = "";
+        return;
+    }
+    Buffer = Buffer[1..1 + Buffer.len - 2];
+}
+
+fn Preprocessor::EnterAnnotationToken(self, Range: SourceRange, Kind: TokenKind, AnnotationVal: *mut void) {
+    let mut Tok: auto = make_unique(1);
+    Tok()[0]();
+    Tok()[0](Kind);
+    Tok()[0](Range.getBegin());
+    Tok()[0](Range.getEnd());
+    Tok()[0](AnnotationVal);
+    (move(), 1, true, false);
+}
+
+fn diagnoseAutoModuleImport(PP: *mut Preprocessor, HashLoc: SourceLocation, IncludeTok: *mut Token, Path: ArrayRef<IdentifierLoc>, PathEnd: SourceLocation) {
+    let mut PathString: str = zeroed();
+    for let mut I: u64 = 0;
+let mut N: u64 = (); I != N; I += 1 {
+        if I {
+            PathString() += '.';
+        }
+        PathString() += [I]()();
+    }
+    let mut IncludeKind: i32 = 0;
+    match IncludeTok.getIdentifierInfo().getPPKeywordID() {
+        pp_include => {
+            IncludeKind = 0;
+        },
+        pp_import => {
+            IncludeKind = 1;
+        },
+        pp_include_next => {
+            IncludeKind = 2;
+        },
+        pp___include_macros => {
+            IncludeKind = 3;
+        },
+        _ => {
+            llvm_unreachable_internal("unknown include directive kind", "clang\\lib\\Lex\\PPDirectives.cpp", 2040);
+        },
+    }
+    PP << IncludeKind << ;
+}
+
+fn trySimplifyPath(Components: *mut SmallVectorImpl<StringRef>, RealPathName: str, Separator: Style) -> bool {
+    let mut RealPathComponentIter: reverse_iterator = rbegin(RealPathName, native);
+    let mut RealPathComponentEnd: reverse_iterator = rend(RealPathName);
+    let mut Cnt: i32 = 0;
+    let mut SuggestReplacement: bool = false;
+    let mut IsSep: Closure_4 = Closure_4 { Separator: Separator };
+    return SuggestReplacement;
+}
+
+fn Preprocessor::checkModuleIsAvailable(self, LangOpts: *LangOptions, TargetInfo: *TargetInfo, M: *Module, Diags: *mut DiagnosticsEngine) -> bool {
+    let mut Requirement: Requirement = Requirement {};
+    let mut MissingHeader: UnresolvedHeaderDirective = UnresolvedHeaderDirective {};
+    let mut ShadowingModule: *mut Module = null;
+    if M.isAvailable(LangOpts, TargetInfo, Requirement, MissingHeader, ShadowingModule) {
+        return false;
+    }
+    if MissingHeader.FileNameLoc.isValid() {
+        Diags << MissingHeader.IsUmbrella << MissingHeader.FileName;
+    } else if ShadowingModule {
+        Diags << M.Name;
+        Diags;
+    } else {
+        Diags << M.getFullModuleName(false) << Requirement.RequiredState << Requirement.FeatureName;
+    }
+    return true;
+}
+
+fn Preprocessor::getIncludeNextStart(self: *Preprocessor, IncludeNextTok: *Token) -> pair<ConstSearchDirIterator, const FileEntry *> {
+    let mut Lookup: ConstSearchDirIterator = zeroed();
+    let mut LookupFromFile: *FileEntry = null;
+    if self.isInPrimaryFile() && self.LangOpts.IsHeaderFile {} else if self.isInPrimaryFile() {
+        Lookup() = null;
+    } else if self.CurLexerSubmodule {
+        assert!(self.CurPPLexer, "#include_next directive in macro?");
+        if self.CurPPLexer.getFileEntry() {
+            FE;
+        } else {
+            LookupFromFile = operator(FE).operator const clang::FileEntry *();
+        }
+        Lookup() = null;
+    } else if operator!() {} else {
+         += 1;
+    }
+    return void { , LookupFromFile };
+}
+
+fn Preprocessor::HandleIncludeDirective(self, HashLoc: SourceLocation, IncludeTok: *mut Token, LookupFrom: ConstSearchDirIterator, LookupFromFile: *FileEntry) {
+    let mut FilenameTok: Token = Token {};
+    if self.LexHeaderName(FilenameTok, true) {
+        return;
+    }
+    if FilenameTok.isNot(header_name) {
+        if FilenameTok.is(identifier) && (self.PPOpts.SingleFileParseMode || self.PPOpts.SingleModuleParseMode) {
+            self.DiscardUntilEndOfDirective(null);
+            return;
+        }
+        if FilenameTok.isNot(eod) {
+            self.DiscardUntilEndOfDirective(null);
+        }
+        return;
+    }
+    let mut EndLoc: SourceLocation = self.CheckEndOfDirective(IncludeTok.getIdentifierInfo().getNameStart(), true, null);
+    let mut Action: auto = self.HandleHeaderIncludeOrImport(HashLoc, IncludeTok, FilenameTok, EndLoc, LookupFromFile);
+    match Action() {
+        None => {
+            SkippedModuleImport;
+        },
+        ModuleBegin => {
+            self.EnterAnnotationToken(SourceRange { B: HashLoc, E: EndLoc }, annot_module_begin);
+        },
+        HeaderUnitImport => {
+            self.EnterAnnotationToken(SourceRange { B: HashLoc, E: EndLoc }, annot_header_unit);
+        },
+        ModuleImport => {
+            self.EnterAnnotationToken(SourceRange { B: HashLoc, E: EndLoc }, annot_module_include);
+        },
+        Failure => {
+            assert!(self.TheModuleLoader.HadFatalFailure, "This should be an early exit only to a fatal error");
+        },
+    }
+}
+
+fn Preprocessor::LookupHeaderIncludeOrImport(self, CurDir: *mut ConstSearchDirIterator, Filename: *mut str, FilenameLoc: SourceLocation, FilenameRange: CharSourceRange, FilenameTok: *Token, IsFrameworkFound: *mut bool, IsImportDecl: bool, IsMapped: *mut bool, LookupFrom: ConstSearchDirIterator, LookupFromFile: *FileEntry, LookupFilename: *mut str, RelativePath: *mut SmallVectorImpl<char>, SearchPath: *mut SmallVectorImpl<char>, SuggestedModule: *mut KnownHeader, isAngled: bool) -> OptionalFileEntryRef {
+    let mut DiagnoseHeaderInclusion: Closure_5 = Closure_5 { cap_0: self, FilenameLoc: &mut FilenameLoc, Filename: &mut Filename };
+    let mut File: OptionalFileEntryRef = self.LookupFile;
+    if File {
+        DiagnoseHeaderInclusion.call(operator(File));
+        return File;
+    }
+    if  {
+        return nullopt;
+    }
+    if self.SuppressIncludeNotFoundError {
+        return nullopt;
+    }
+    if isAngled {
+        let mut File: OptionalFileEntryRef = self.LookupFile;
+        if File {
+            DiagnoseHeaderInclusion.call(operator(File));
+             << Filename << IsImportDecl << CreateReplacement(FilenameRange, "\"" + "\"");
+            return File;
+        }
+    }
+    let mut OriginalFilename: str = Filename;
+    if self.LangOpts {
+        let mut CorrectTypoFilename: Closure_6 = Closure_6 {};
+        let mut TypoCorrectionName: str = CorrectTypoFilename.call(Filename);
+        let mut TypoCorrectionLookupName: str = CorrectTypoFilename.call(LookupFilename);
+        let mut File: OptionalFileEntryRef = self.LookupFile;
+        if File {
+            DiagnoseHeaderInclusion.call(operator(File));
+            let mut Hint: auto = if isAngled { CreateReplacement(FilenameRange, "<" + ">") } else { CreateReplacement(FilenameRange, "\"" + "\"") };
+             << OriginalFilename << TypoCorrectionName << ;
+            Filename = TypoCorrectionName;
+            LookupFilename = TypoCorrectionLookupName;
+            return File;
+        }
+    }
+    assert!(!File, "expected missing file");
+     << OriginalFilename << FilenameRange;
+    if IsFrameworkFound {
+        let mut SlashPos: u64 = OriginalFilename.find('/', 0);
+        assert!(SlashPos != npos, "Include with framework name should have '/' in the filename");
+        let mut FrameworkName: str = OriginalFilename[0..0 + SlashPos];
+        let mut CacheEntry: *mut FrameworkCacheEntry = self.HeaderInfo.LookupFrameworkCache(FrameworkName);
+        assert!(CacheEntry.Directory, "Found framework should be in cache");
+         << OriginalFilename[SlashPos + 1..SlashPos + 1 + npos] << FrameworkName << operator(CacheEntry.Directory).getName();
+    }
+    return nullopt;
+}
+
+fn Preprocessor::HandleHeaderIncludeOrImport(self, HashLoc: SourceLocation, IncludeTok: *mut Token, FilenameTok: *mut Token, EndLoc: SourceLocation, LookupFrom: ConstSearchDirIterator, LookupFromFile: *FileEntry) -> ImportAction {
+    let mut FilenameBuffer: str = zeroed();
+    let mut Filename: str = (FilenameTok);
+    let mut CharEnd: SourceLocation = FilenameTok.getEndLoc();
+    let mut FilenameRange: CharSourceRange = getCharRange(FilenameTok.getLocation(), CharEnd);
+    let mut OriginalFilename: str = Filename;
+    let mut isAngled: bool = self.GetIncludeFilenameSpelling(FilenameTok.getLocation(), Filename);
+    if Filename.is_empty() {
+        return ImportAction { None, null };
+    }
+    if Filename.ends_with(' ') || Filename.ends_with('.') {
+        let mut Selection: u32 = if Filename.ends_with('.') { 1 } else { 0 };
+         << Filename << Selection;
+    }
+    let mut IsImportDecl: bool = HashLoc.isInvalid();
+    let mut StartLoc: SourceLocation = if IsImportDecl { IncludeTok.getLocation() } else { HashLoc };
+    if self.PragmaARCCFCodeAuditedInfo.getLoc().isValid() {
+         << IsImportDecl;
+        self.PragmaARCCFCodeAuditedInfo = IdentifierLoc {};
+    }
+    if self.PragmaAssumeNonNullLoc.isValid() {
+         << IsImportDecl;
+        self.PragmaAssumeNonNullLoc = SourceLocation {};
+    }
+    if self.HeaderInfo.HasIncludeAliasMap() {
+        let mut NewName: str = self.HeaderInfo.MapHeaderToIncludeAlias(OriginalFilename);
+        if !NewName.is_empty() {
+            Filename = NewName;
+        }
+    }
+    let mut IsMapped: bool = false;
+    let mut IsFrameworkFound: bool = false;
+    let mut CurDir: ConstSearchDirIterator = zeroed();
+    let mut SearchPath: str = zeroed();
+    let mut RelativePath: str = zeroed();
+    let mut SuggestedModule: KnownHeader = KnownHeader {};
+    let mut FilenameLoc: SourceLocation = FilenameTok.getLocation();
+    let mut LookupFilename: str = Filename;
+    let mut NormalizedPath: str = zeroed();
+    let mut BackslashStyle: Style = native;
+    if is_style_posix(BackslashStyle) && self.LangOpts {
+        NormalizedPath() = Filename;
+        native();
+        LookupFilename = ;
+        BackslashStyle = windows;
+    }
+    let mut File: OptionalFileEntryRef = self.LookupHeaderIncludeOrImport(operator&(), Filename, FilenameLoc, FilenameRange, FilenameTok, IsFrameworkFound, IsImportDecl, IsMapped, LookupFromFile, LookupFilename, SuggestedModule, isAngled);
+    if self.usingPCHWithThroughHeader() && self.SkippingUntilPCHThroughHeader {
+        if File && self.isPCHThroughHeader(&mut operator(File).getFileEntry()) {
+            self.SkippingUntilPCHThroughHeader = false;
+        }
+        return ImportAction { None, null };
+    }
+    let mut Action: (unnamed at P:\Goraw\llvm-project\clang\lib\Lex\PPDirectives.cpp:2448:3) = Enter;
+    let mut DependencyScanModuleImport: bool = false;
+    if self.PPOpts.SingleFileParseMode {
+        Action = IncludeLimitReached;
+    }
+    if Action == Enter && self.HasReachedMaxIncludeDepth && File && self.alreadyIncluded(operator(File)) {
+        Action = IncludeLimitReached;
+    }
+    let mut ModuleToImport: *mut Module = SuggestedModule.getModule();
+    let mut MaybeTranslateInclude: bool = Action == Enter && File && ModuleToImport && !ModuleToImport.isForBuilding(self.getLangOpts());
+    let mut UsableHeaderUnit: bool = false;
+    if self.getLangOpts() && ModuleToImport && ModuleToImport.isHeaderUnit() {
+        if self.TrackGMFState.inGMF() || IsImportDecl {
+            UsableHeaderUnit = true;
+        } else if !IsImportDecl {
+            ModuleToImport = null;
+        }
+    }
+    let mut UsableClangHeaderModule: bool = (self.getLangOpts() || self.getLangOpts()) && ModuleToImport && !ModuleToImport.isHeaderUnit();
+    if MaybeTranslateInclude && (UsableHeaderUnit || UsableClangHeaderModule) {
+        if checkModuleIsAvailable(self.getLangOpts(), self.getTargetInfo(), *ModuleToImport, self.getDiagnostics()) {
+             << ModuleToImport.getTopLevelModuleName();
+            return ImportAction { None, null };
+        }
+        let mut Path: SmallVector<IdentifierLoc, 2> = zeroed();
+        for let mut Mod: *mut Module = ModuleToImport; Mod; Mod = Mod.Parent {
+            Path()(FilenameTok.getLocation(), self.getIdentifierInfo(Mod.Name));
+        }
+        reverse();
+        if !IsImportDecl {
+            diagnoseAutoModuleImport(*self, StartLoc, IncludeTok, CharEnd);
+        }
+        if self.PPOpts.DependencyScanningModuleMapImports && ModuleToImport.Kind == ModuleMapModule {
+            Action = Skip;
+            DependencyScanModuleImport = true;
+        } else {
+            let mut Imported: ModuleLoadResult = self.TheModuleLoader.loadModule(IncludeTok.getLocation(), Hidden, true);
+            assert!((Imported.operator clang::Module *() == null || Imported.operator clang::Module *() == ModuleToImport), "the imported module is different than the suggested one");
+            if Imported {
+                Action = Import;
+            } else if Imported.isMissingExpected() {
+                self.markClangModuleAsAffecting(Imported.operator clang::Module *() as *mut Module.getTopLevelModule());
+                ModuleToImport = null;
+                UsableClangHeaderModule = false;
+            } else if Imported.isConfigMismatch() {} else {
+                if self.hadModuleLoaderFatalFailure() {
+                    let mut Result: *mut Token = IncludeTok;
+                    Result.startToken();
+                }
+                return ImportAction { None, null };
+            }
+        }
+    }
+    let mut FileCharacter: CharacteristicKind = self.SourceMgr.getFileCharacteristic(FilenameTok.getLocation());
+    if File {
+        FileCharacter = max(self.HeaderInfo.getFileDirFlavor(operator(File)), FileCharacter);
+    }
+    let mut EnterOnce: bool = IsImportDecl || IncludeTok.getIdentifierInfo().getPPKeywordID() == pp_import;
+    let mut IsFirstIncludeOfFile: bool = false;
+    if Action == Enter && File && operator!(self.HeaderInfo.ShouldEnterIncludeFile(*self, operator(File), EnterOnce, self.getLangOpts(), ModuleToImport, IsFirstIncludeOfFile)) {
+        if UsableHeaderUnit && operator!(self.getLangOpts()) {
+            Action = if self.TrackGMFState.inGMF() { Import } else { Skip };
+        } else {
+            Action = if (UsableClangHeaderModule && operator!(self.getLangOpts())) { Import } else { Skip };
+        }
+    }
+    if  {
+        return ImportAction { None, null };
+    }
+    if  {}
+    if !File {
+        return ImportAction { None, null };
+    }
+    if IsImportDecl && !ModuleToImport {
+         << OriginalFilename << operator(File).getName();
+        return ImportAction { None, null };
+    }
+    let mut CheckIncludePathPortability: bool = !IsMapped && !operator(File).getFileEntry().tryGetRealPathName().is_empty();
+    if CheckIncludePathPortability {
+        let mut Name: str = LookupFilename;
+        let mut NameWithoriginalSlashes: str = Filename;
+        let mut NameWasUNC: bool = Name.consume_front("\\\\?\\");
+        NameWithoriginalSlashes.consume_front("\\\\?\\");
+        let mut RealPathName: str = operator(File).getFileEntry().tryGetRealPathName();
+        let mut Components: SmallVector<StringRef, 16> = zeroed();
+        let mut FixedDriveRealPath: str = zeroed();
+        if is_absolute(Name, native) && is_absolute(RealPathName, native) && toLowercase(Name[0]) == toLowercase(RealPathName[0]) && isLowercase(Name[0]) != isLowercase(RealPathName[0]) {
+            (((operator!(operator!((Components()() >= 3 && "should have drive, backslash, name")))) || (_wassert(L"Components.size() >= 3 && \"should have drive, backslash, name\"", L"clang\\lib\\Lex\\PPDirectives.cpp", (2669) as u32) , 0)) as void);
+            (((operator!(operator!((Components()[0]() == 2 && "should start with drive")))) || (_wassert(L"Components[0].size() == 2 && \"should start with drive\"", L"clang\\lib\\Lex\\PPDirectives.cpp", (2670) as u32) , 0)) as void);
+            (((operator!(operator!((Components()[0][1] == ':' && "should have colon")))) || (_wassert(L"Components[0][1] == ':' && \"should have colon\"", L"clang\\lib\\Lex\\PPDirectives.cpp", (2671) as u32) , 0)) as void);
+            FixedDriveRealPath() = (Name[0..0 + 1] + RealPathName[1..1 + npos]);
+            RealPathName = ;
+        }
+        if trySimplifyPath(RealPathName, BackslashStyle) {
+            let mut Path: str = zeroed();
+            Path()(Name.len + 2);
+            Path()(if isAngled { '<' } else { '"' });
+            let mut IsSep: Closure_7 = Closure_7 { BackslashStyle: BackslashStyle };
+            if NameWasUNC {
+                Path() = (Path()(0, 1) + "\\\\?\\" + (1))();
+            }
+            let mut DiagId: auto = zeroed();
+            (FilenameTok) <<  << CreateReplacement(FilenameRange);
+        }
+        let mut SuppressBackslashDiag: bool = self.Diags.isIgnored || FilenameLoc.isMacroID() || self.SourceMgr.isWrittenInBuiltinFile(FilenameLoc) || self.SourceMgr.isWrittenInModuleIncludes(FilenameLoc);
+        if !SuppressBackslashDiag && OriginalFilename.contains('\') {
+            let mut SuggestedPath: str = OriginalFilename;
+            replace(SuggestedPath, '\', '/');
+             << Name << CreateReplacement(FilenameRange, SuggestedPath);
+        }
+    }
+    match Action {
+        Skip => {
+            if ModuleToImport {
+                return ImportAction { SkippedModuleImport, ModuleToImport };
+            }
+        },
+        IncludeLimitReached => {
+            return ImportAction { None, null };
+        },
+        Import => {
+            assert!(ModuleToImport, "no module to import");
+            self.makeModuleVisible(ModuleToImport, EndLoc, true);
+            if IncludeTok.getIdentifierInfo().getPPKeywordID() == pp___include_macros {
+                return ImportAction { None, null };
+            }
+            return ImportAction { ModuleImport, ModuleToImport };
+        },
+        Enter => {
+            break;
+        },
+    }
+    if  {
+        self.HasReachedMaxIncludeDepth = true;
+        return ImportAction { None, null };
+    }
+    if isAngled && self.isInNamedModule() {
+        << self.getNamedModuleName();
+    }
+    let mut IncludePos: SourceLocation = FilenameTok.getLocation();
+    if IncludePos.isMacroID() {
+        IncludePos = self.SourceMgr.getExpansionRange(IncludePos).getEnd();
+    }
+    let mut FID: FileID = self.SourceMgr.createFileID(operator(File), IncludePos, FileCharacter, 0, 0);
+    if !FID.isValid() {
+        self.TheModuleLoader.HadFatalFailure = true;
+        return ImportAction { Failure, null };
+    }
+    if self.EnterSourceFile(FID, FilenameTok.getLocation(), IsFirstIncludeOfFile) {
+        return ImportAction { None, null };
+    }
+    if ModuleToImport && !ModuleToImport.isHeaderUnit() {
+        if ModuleToImport.getTopLevelModule().ShadowingModule {
+             << ModuleToImport.getFullModuleName(false);
+            return ImportAction { None, null };
+        }
+        if self.getLangOpts() && ModuleToImport.isForBuilding(self.getLangOpts()) {
+            return ImportAction { None, null };
+        }
+        assert!(!self.CurLexerSubmodule, "should not have marked this as a module yet");
+        self.CurLexerSubmodule = ModuleToImport;
+        self.EnterSubmodule(ModuleToImport, EndLoc, false);
+        return ImportAction { ModuleBegin, ModuleToImport };
+    }
+    assert!(!IsImportDecl, "failed to diagnose missing module for import decl");
+    return ImportAction { None, null };
+}
+
+fn Preprocessor::HandleIncludeNextDirective(self, HashLoc: SourceLocation, IncludeNextTok: *mut Token) {
+    let mut Lookup: ConstSearchDirIterator = zeroed();
+    let mut LookupFromFile: *FileEntry = null;
+    return self.HandleIncludeDirective(HashLoc, IncludeNextTok, LookupFromFile);
+}
+
+fn Preprocessor::HandleMicrosoftImportDirective(self, Tok: *mut Token) {
+    self.DiscardUntilEndOfDirective(null);
+}
+
+fn Preprocessor::HandleImportDirective(self, HashLoc: SourceLocation, ImportTok: *mut Token) {
+    if operator!(self.LangOpts) {
+        if self.LangOpts {
+            return self.HandleMicrosoftImportDirective(ImportTok);
+        }
+    }
+    return self.HandleIncludeDirective(HashLoc, ImportTok, null, null);
+}
+
+fn Preprocessor::HandleIncludeMacrosDirective(self, HashLoc: SourceLocation, IncludeMacrosTok: *mut Token) {
+    let mut Loc: SourceLocation = IncludeMacrosTok.getLocation();
+    let mut FID: FileID = self.SourceMgr.getFileID(Loc);
+    if FID != self.getPredefinesFileID() && FID != self.DeferredGMFInputsFileID {
+        self.DiscardUntilEndOfDirective(null);
+        return;
+    }
+    self.HandleIncludeDirective(HashLoc, IncludeMacrosTok, null, null);
+    let mut TmpTok: Token = Token {};
+    while true {
+        {
+        self.Lex(TmpTok);
+        assert!(TmpTok.isNot(eof), "Didn't find end of -imacros!");
+    }
+        if !(TmpTok.isNot(hashhash)) { break; }
+    }
+}
+
+fn Preprocessor::ReadMacroParameterList(self, MI: *mut MacroInfo, Tok: *mut Token) -> bool {
+    let mut Parameters: SmallVector<IdentifierInfo *, 32> = zeroed();
+    while true {
+        self.LexUnexpandedNonComment(Tok);
+        match Tok.getKind() {
+            r_paren => {
+                if Parameters()() {
+                    return false;
+                }
+            },
+            ellipsis => {
+                if operator!(self.LangOpts) {
+                    
+                }
+            },
+            eod => {
+                
+            },
+            _ => {
+                let mut II: *mut IdentifierInfo = Tok.getIdentifierInfo();
+            },
+        }
+    }
+}
+
+fn isConfigurationPattern(MacroName: *mut Token, MI: *mut MacroInfo, LOptions: *LangOptions) -> bool {
+    if MI.getNumTokens() == 1 {
+        let mut Value: *Token = MI.getReplacementToken(0);
+        if MacroName.getKind() == Value.getKind() {
+            return true;
+        }
+        let mut MacroText: str = MacroName.getIdentifierInfo().getName();
+        if Value.getIdentifierInfo() {
+            II;
+        } else {
+            if !II.isKeyword(LOptions) {
+                return false;
+            }
+            let mut ValueText: str = II.getName();
+            let mut TrimmedValue: str = ValueText;
+            if !ValueText.starts_with("__") {
+                if ValueText.starts_with("_") {
+                    TrimmedValue = TrimmedValue.drop_front(1);
+                } else {
+                    return false;
+                }
+            } else {
+                TrimmedValue = TrimmedValue.drop_front(2);
+                if TrimmedValue.ends_with("__") {
+                    TrimmedValue = TrimmedValue.drop_back(2);
+                }
+            }
+            return TrimmedValue == MacroText;
+        }
+    }
+    return MacroName && MI.getNumTokens() == 0;
+}
+
+fn Preprocessor::ReadOptionalMacroParameterListAndBody(self, MacroNameTok: *Token, ImmediatelyAfterHeaderGuard: bool) -> *mut MacroInfo {
+    let mut LastTok: Token = MacroNameTok;
+    let mut MI: MacroInfo *const = self.AllocateMacroInfo(MacroNameTok.getLocation());
+    let mut Tok: Token = Token {};
+    self.LexUnexpandedToken(Tok);
+    let mut _: scope_exit = Closure_8 { cap_0: self };
+    let mut VariadicMacroScopeGuard: VariadicMacroScopeGuard = *self;
+    if Tok.is(eod) {
+        if ImmediatelyAfterHeaderGuard {
+            self.CurPPLexer.MIOpt.SetDefinedMacro(MacroNameTok.getIdentifierInfo(), MacroNameTok.getLocation());
+        }
+    } else if Tok.hasLeadingSpace() {
+        Tok.clearFlag(LeadingSpace);
+    } else if Tok.is(l_paren) {
+        MI.setIsFunctionLike();
+        if self.ReadMacroParameterList(MI, LastTok) {
+            return null;
+        }
+        if MI.isC99Varargs() {
+            VariadicMacroScopeGuard.enterScope();
+        }
+        self.LexUnexpandedToken(Tok);
+    } else if self.LangOpts || self.LangOpts {} else {
+        let mut isInvalid: bool = false;
+        if Tok.is(at) {
+            isInvalid = true;
+        } else if Tok.is(unknown) {
+            isInvalid = true;
+        }
+        if isInvalid {
+            
+        } else {
+            
+        }
+    }
+    if !Tok.is(eod) {
+        LastTok = Tok;
+    }
+    let mut Tokens: SmallVector<Token, 16> = zeroed();
+    if MI.isObjectLike() {
+        while Tok.isNot(eod) {
+            LastTok = Tok;
+            Tokens()(Tok);
+            self.LexUnexpandedToken(Tok);
+        }
+    } else {
+        let mut VAOCtx: VAOptDefinitionContext = *self;
+        while Tok.isNot(eod) {
+            LastTok = Tok;
+            if !Tok {
+                Tokens()(Tok);
+                if VAOCtx.isVAOptToken(Tok) {
+                    if VAOCtx.isInVAOpt() {
+                        return null;
+                    }
+                    self.LexUnexpandedToken(Tok);
+                    if Tok.isNot(l_paren) {
+                        return null;
+                    }
+                    Tokens()(Tok);
+                    VAOCtx.sawVAOptFollowedByOpeningParens(Tok.getLocation());
+                    self.LexUnexpandedToken(Tok);
+                    if Tok.is(hashhash) {
+                        return null;
+                    }
+                    continue;
+                } else if VAOCtx.isInVAOpt() {
+                    if Tok.is(r_paren) {
+                        if VAOCtx.sawClosingParen() {
+                            (((operator!(operator!((Tokens()() >= 3 && "Must have seen at least __VA_OPT__( and a subsequent tok::r_paren")))) || (_wassert(L"Tokens.size() >= 3 && \"Must have seen at least __VA_OPT__( \" \"and a subsequent tok::r_paren\"", L"clang\\lib\\Lex\\PPDirectives.cpp", (3192) as u32) , 0)) as void);
+                            if Tokens()[() - 2](hashhash) {
+                                return null;
+                            }
+                        }
+                    } else if Tok.is(l_paren) {
+                        VAOCtx.sawOpeningParen(Tok.getLocation());
+                    }
+                }
+                self.LexUnexpandedToken(Tok);
+                continue;
+            }
+            if self.getLangOpts() {
+                Tok.setKind(unknown);
+                Tokens()(Tok);
+                self.LexUnexpandedToken(Tok);
+                continue;
+            }
+            if Tok.is(hashhash) {
+                self.LexUnexpandedToken(Tok);
+                if Tok.is(eod) {
+                    Tokens()(LastTok);
+                    break;
+                }
+                if operator!() && Tok.getIdentifierInfo() == self.Ident__VA_ARGS__ && [() - 1](comma) {
+                    MI.setHasCommaPasting();
+                }
+                Tokens()(LastTok);
+                continue;
+            }
+            self.LexUnexpandedToken(Tok);
+            if !VAOCtx.isVAOptToken(Tok) && (Tok.getIdentifierInfo() == null || MI.getParameterNum(Tok.getIdentifierInfo()) == -1) {
+                if self.getLangOpts() && Tok.isNot(eod) {
+                    LastTok.setKind(unknown);
+                    Tokens()(LastTok);
+                    continue;
+                } else {
+                     << LastTok.is(hashat);
+                    return null;
+                }
+            }
+            Tokens()(LastTok);
+            if !VAOCtx.isVAOptToken(Tok) {
+                Tokens()(Tok);
+                LastTok = Tok;
+                self.LexUnexpandedToken(Tok);
+            }
+        }
+        if VAOCtx.isInVAOpt() {
+            assert!(Tok.is(eod), "Must be at End Of preprocessing Directive");
+             << LastTok.getKind() << r_paren;
+             << l_paren;
+            return null;
+        }
+    }
+    MI.setDefinitionEndLoc(LastTok.getLocation());
+    MI();
+    return MI;
+}
+
+fn isObjCProtectedMacro(II: *IdentifierInfo) -> bool {
+    return II.isStr("__strong") || II.isStr("__weak") || II.isStr("__unsafe_unretained") || II.isStr("__autoreleasing");
+}
+
+fn Preprocessor::HandleDefineDirective(self, DefineTok: *mut Token, ImmediatelyAfterHeaderGuard: bool) {
+    self.NumDefined += 1;
+    let mut MacroNameTok: Token = Token {};
+    let mut MacroShadowsKeyword: bool = false;
+    self.ReadMacroName(MacroNameTok, MU_Define, &mut MacroShadowsKeyword);
+    if MacroNameTok.is(eod) {
+        return;
+    }
+    let mut II: *mut IdentifierInfo = MacroNameTok.getIdentifierInfo();
+    if !II.hasMacroDefinition() && II.hadMacroDefinition() && II.isFinal() {
+        self.emitFinalMacroWarning(MacroNameTok, false);
+    }
+    let mut MI: MacroInfo *const = self.ReadOptionalMacroParameterListAndBody(MacroNameTok, ImmediatelyAfterHeaderGuard);
+    if !MI {
+        return;
+    }
+    if MacroShadowsKeyword && !isConfigurationPattern(MacroNameTok, MI, self.getLangOpts()) {}
+    let mut NumTokens: u32 = MI.getNumTokens();
+    if NumTokens != 0 {
+        if MI.getReplacementToken(0).is(hashhash) {
+            return;
+        }
+        if MI.getReplacementToken(NumTokens - 1).is(hashhash) {
+            return;
+        }
+    }
+    if self.SkippingUntilPCHThroughHeader {
+        let mut OtherMI: *MacroInfo = self.getMacroInfo(MacroNameTok.getIdentifierInfo());
+        if !OtherMI || operator!(MI.isIdenticalTo(*OtherMI, *self, self.LangOpts)) {
+            << MacroNameTok.getIdentifierInfo();
+        }
+        if operator!(self.LangOpts) {
+            return;
+        }
+    }
+    if self.getMacroInfo(MacroNameTok.getIdentifierInfo()) {
+        OtherMI;
+    } else {
+        if MacroNameTok.getIdentifierInfo().isFinal() {
+            self.emitFinalMacroWarning(MacroNameTok, false);
+        }
+        if self.getLangOpts() && self.SourceMgr.getFileID(OtherMI.getDefinitionLoc()) == self.getPredefinesFileID() && isObjCProtectedMacro(MacroNameTok.getIdentifierInfo()) {
+            if (!self.getDiagnostics().getSuppressSystemWarnings() || !self.SourceMgr.isInSystemHeader(DefineTok.getLocation())) && operator!(MI.isIdenticalTo(*OtherMI, *self, self.LangOpts)) {}
+            assert!(!OtherMI.isWarnIfUnused();
+            return;
+        }
+        if !self.getDiagnostics().getSuppressSystemWarnings() || !self.SourceMgr.isInSystemHeader(DefineTok.getLocation()) {
+            if !OtherMI.isUsed() && OtherMI.isWarnIfUnused() {
+                
+            }
+            if isLanguageDefinedBuiltin(self.SourceMgr, OtherMI, II.getName()) {
+                
+            } else if !OtherMI.isAllowRedefinitionsWithoutWarning() && operator!(MI.isIdenticalTo(*OtherMI, *self, self.LangOpts)) {
+                 << MacroNameTok.getIdentifierInfo();
+            }
+        }
+    }
+    let mut MD: *mut DefMacroDirective = self.appendDefMacroDirective(MacroNameTok.getIdentifierInfo(), MI);
+    assert!(!MI.isUsed();
+    if self.getSourceManager().isInMainFile(MI.getDefinitionLoc()) && operator!(self.Diags.isIgnored) && !self.MacroExpansionInDirectivesOverride && self.getSourceManager().getFileID(MI.getDefinitionLoc()) != self.getPredefinesFileID() {
+        MI.setIsWarnIfUnused(true);
+    }
+}
+
+fn Preprocessor::HandleUndefDirective(self) {
+    self.NumUndefined += 1;
+    let mut MacroNameTok: Token = Token {};
+    self.ReadMacroName(MacroNameTok, MU_Undef, null);
+    if MacroNameTok.is(eod) {
+        return;
+    }
+    self.CheckEndOfDirective("undef", false, null);
+    let mut II: *mut IdentifierInfo = MacroNameTok.getIdentifierInfo();
+    let mut MD: MacroDefinition = self.getMacroDefinition(II);
+    let mut Undef: *mut UndefMacroDirective = null;
+    if II.isFinal() {
+        self.emitFinalMacroWarning(MacroNameTok, true);
+    }
+    if MD.getMacroInfo() {
+        MI;
+    } else {
+        if !MI.isUsed() && MI.isWarnIfUnused() {
+            
+        }
+        if isLanguageDefinedBuiltin(self.SourceMgr, MI, II.getName()) {
+            
+        }
+        Undef = self.AllocateUndefMacroDirective(MacroNameTok.getLocation());
+    }
+    if Undef {
+        self.appendMacroDirective(II, Undef);
+    }
+}
+
+fn Preprocessor::HandleIfdefDirective(self, Result: *mut Token, HashToken: *Token, isIfndef: bool, ReadAnyTokensBeforeDirective: bool) {
+    self.NumIf += 1;
+    let mut DirectiveTok: Token = Result;
+    let mut MacroNameTok: Token = Token {};
+    self.ReadMacroName(MacroNameTok, MU_Other, null);
+    if MacroNameTok.is(eod) {
+        self.SkipExcludedConditionalBlock(HashToken.getLocation(), DirectiveTok.getLocation(), false, false, SourceLocation {});
+        return;
+    }
+    self.emitMacroExpansionWarnings(MacroNameTok, true);
+    self.CheckEndOfDirective(if isIfndef { "ifndef" } else { "ifdef" }, false, null);
+    let mut MII: *mut IdentifierInfo = MacroNameTok.getIdentifierInfo();
+    let mut MD: MacroDefinition = self.getMacroDefinition(MII);
+    let mut MI: *mut MacroInfo = MD.getMacroInfo();
+    if self.CurPPLexer.getConditionalStackDepth() == 0 {
+        if !ReadAnyTokensBeforeDirective && !MI {
+            assert!(isIfndef, "#ifdef shouldn't reach here");
+            self.CurPPLexer.MIOpt.EnterTopLevelIfndef(MII, MacroNameTok.getLocation());
+        } else {
+            self.CurPPLexer.MIOpt.EnterTopLevelConditional();
+        }
+    }
+    if MI {
+        self.markMacroAsUsed(MI);
+    }
+    if  {}
+    let mut RetainExcludedCB: bool = self.PPOpts.RetainExcludedConditionalBlocks && self.getSourceManager().isInMainFile(DirectiveTok.getLocation());
+    if self.PPOpts.SingleFileParseMode && !MI {
+        self.CurPPLexer.pushConditionalLevel(DirectiveTok.getLocation(), false, false, false);
+    } else if self.PPOpts.SingleModuleParseMode && !MI {
+        self.SkipExcludedConditionalBlock(HashToken.getLocation(), DirectiveTok.getLocation(), true, false, SourceLocation {});
+    } else if !MI == isIfndef || RetainExcludedCB {
+        self.CurPPLexer.pushConditionalLevel(DirectiveTok.getLocation(), false, true, false);
+    } else {
+        self.SkipExcludedConditionalBlock(HashToken.getLocation(), DirectiveTok.getLocation(), false, false, SourceLocation {});
+    }
+}
+
+fn Preprocessor::HandleIfDirective(self, IfToken: *mut Token, HashToken: *Token, ReadAnyTokensBeforeDirective: bool) {
+    self.NumIf += 1;
+    let mut IfNDefMacro: *mut IdentifierInfo = null;
+    let mut DER: DirectiveEvalResult = self.EvaluateDirectiveExpression(IfNDefMacro, true);
+    let mut ConditionalTrue: bool = DER.Conditional;
+    if !self.CurPPLexer {
+        return;
+    }
+    if self.CurPPLexer.getConditionalStackDepth() == 0 {
+        if !ReadAnyTokensBeforeDirective && IfNDefMacro && ConditionalTrue {
+            self.CurPPLexer.MIOpt.EnterTopLevelIfndef(IfNDefMacro, IfToken.getLocation());
+        } else {
+            self.CurPPLexer.MIOpt.EnterTopLevelConditional();
+        }
+    }
+    let mut RetainExcludedCB: bool = self.PPOpts.RetainExcludedConditionalBlocks && self.getSourceManager().isInMainFile(IfToken.getLocation());
+    if self.PPOpts.SingleFileParseMode && DER.IncludedUndefinedIds {
+        self.CurPPLexer.pushConditionalLevel(IfToken.getLocation(), false, false, false);
+    } else if self.PPOpts.SingleModuleParseMode && DER.IncludedUndefinedIds {
+        self.SkipExcludedConditionalBlock(HashToken.getLocation(), IfToken.getLocation(), true, false, SourceLocation {});
+    } else if ConditionalTrue || RetainExcludedCB {
+        self.CurPPLexer.pushConditionalLevel(IfToken.getLocation(), false, true, false);
+    } else {
+        self.SkipExcludedConditionalBlock(HashToken.getLocation(), IfToken.getLocation(), false, false, SourceLocation {});
+    }
+}
+
+fn Preprocessor::HandleEndifDirective(self, EndifToken: *mut Token) {
+    self.NumEndif += 1;
+    self.CheckEndOfDirective("endif", false, null);
+    let mut CondInfo: PPConditionalInfo = PPConditionalInfo {};
+    if self.CurPPLexer.popConditionalLevel(CondInfo) {
+        return;
+    }
+    if self.CurPPLexer.getConditionalStackDepth() == 0 {
+        self.CurPPLexer.MIOpt.ExitTopLevelConditional();
+    }
+    assert!(!CondInfo.WasSkipping && !self.CurPPLexer.LexingRawMode, "This code should only be reachable in the non-skipping case!");
+}
+
+fn Preprocessor::HandleElseDirective(self, Result: *mut Token, HashToken: *Token) {
+    self.NumElse += 1;
+    self.CheckEndOfDirective("else", false, null);
+    let mut CI: PPConditionalInfo = PPConditionalInfo {};
+    if self.CurPPLexer.popConditionalLevel(CI) {
+        return;
+    }
+    if self.CurPPLexer.getConditionalStackDepth() == 0 {
+        self.CurPPLexer.MIOpt.EnterTopLevelConditional();
+    }
+    if CI.FoundElse {
+        
+    }
+    let mut RetainExcludedCB: bool = self.PPOpts.RetainExcludedConditionalBlocks && self.getSourceManager().isInMainFile(Result.getLocation());
+    if (self.PPOpts.SingleFileParseMode && !CI.FoundNonSkip) || RetainExcludedCB {
+        self.CurPPLexer.pushConditionalLevel(CI.IfLoc, false, false, true);
+        return;
+    }
+    self.SkipExcludedConditionalBlock(HashToken.getLocation(), CI.IfLoc, true, true, Result.getLocation());
+}
+
+fn Preprocessor::HandleElifFamilyDirective(self, ElifToken: *mut Token, HashToken: *Token, Kind: PPKeywordKind) {
+    let mut DirKind: PPElifDiag = if Kind == pp_elif { PED_Elif } else { if Kind == pp_elifdef { PED_Elifdef } else { PED_Elifndef } };
+    self.NumElse += 1;
+    match DirKind {
+        PED_Elifdef => {
+            PED_Elifndef;
+        },
+        _ => {
+            break;
+        },
+    }
+    let mut ConditionRange: SourceRange = self.DiscardUntilEndOfDirective(null);
+    let mut CI: PPConditionalInfo = PPConditionalInfo {};
+    if self.CurPPLexer.popConditionalLevel(CI) {
+         << DirKind;
+        return;
+    }
+    if self.CurPPLexer.getConditionalStackDepth() == 0 {
+        self.CurPPLexer.MIOpt.EnterTopLevelConditional();
+    }
+    if CI.FoundElse {
+        << DirKind;
+    }
+    if  {
+        match Kind {
+            pp_elif => {
+                
+            },
+            pp_elifdef => {
+                
+            },
+            pp_elifndef => {
+                
+            },
+            _ => {
+                assert!(false, "unexpected directive kind");
+            },
+        }
+    }
+    let mut RetainExcludedCB: bool = self.PPOpts.RetainExcludedConditionalBlocks && self.getSourceManager().isInMainFile(ElifToken.getLocation());
+    if (self.PPOpts.SingleFileParseMode && !CI.FoundNonSkip) || RetainExcludedCB {
+        self.CurPPLexer.pushConditionalLevel(ElifToken.getLocation(), false, false, false);
+        return;
+    }
+    self.SkipExcludedConditionalBlock(HashToken.getLocation(), CI.IfLoc, true, CI.FoundElse, ElifToken.getLocation());
+}
+
+fn Preprocessor::LexEmbedParameters(self, CurTok: *mut Token, ForHasEmbed: bool) -> optional<LexEmbedParametersResult> {
+    let mut Result: LexEmbedParametersResult = LexEmbedParametersResult {};
+    let mut EndTokenKind: TokenKind = if ForHasEmbed { r_paren } else { eod };
+    let mut DiagMismatchedBracesAndSkipToEOD: Closure_9 = Closure_9 { cap_0: self, CurTok: &mut CurTok };
+    let mut ExpectOrDiagAndSkipToEOD: Closure_10 = Closure_10 { CurTok: &mut CurTok, cap_1: self };
+    let mut LexPPParameterName: Closure_11 = Closure_11 { ExpectOrDiagAndSkipToEOD: &mut ExpectOrDiagAndSkipToEOD, CurTok: &mut CurTok, cap_2: self };
+    let mut NormalizeParameterName: Closure_12 = Closure_12 {};
+    let mut LexParenthesizedIntegerExpr: Closure_13 = Closure_13 { ExpectOrDiagAndSkipToEOD: &mut ExpectOrDiagAndSkipToEOD, cap_1: self, CurTok: &mut CurTok, EndTokenKind: &mut EndTokenKind };
+    let mut GetMatchingCloseBracket: Closure_14 = Closure_14 {};
+    let mut LexParenthesizedBalancedTokenSoup: Closure_15 = Closure_15 { ExpectOrDiagAndSkipToEOD: &mut ExpectOrDiagAndSkipToEOD, cap_1: self, CurTok: &mut CurTok, GetMatchingCloseBracket: &mut GetMatchingCloseBracket, DiagMismatchedBracesAndSkipToEOD: &mut DiagMismatchedBracesAndSkipToEOD };
+    self.LexNonComment(CurTok);
+    while !CurTok {
+        let mut ParamStartLoc: SourceLocation = CurTok.getLocation();
+        let mut ParamName: string> = zeroed();
+        if operator!() {
+            return nullopt();
+        }
+        let mut Parameter: str = NormalizeParameterName(*);
+        if Parameter == "limit" {
+            if Result() {
+                << Parameter;
+            }
+            let mut Limit: optional<size_t> = zeroed();
+            if operator!() {
+                return nullopt();
+            }
+            Result() = void { *, void { ParamStartLoc, CurTok.getLocation() } };
+        } else if Parameter == "clang::offset" {
+            if Result() {
+                << Parameter;
+            }
+            let mut Offset: optional<size_t> = zeroed();
+            if operator!() {
+                return nullopt();
+            }
+            Result() = void { *, void { ParamStartLoc, CurTok.getLocation() } };
+        } else if Parameter == "prefix" {
+            if Result() {
+                << Parameter;
+            }
+            let mut Soup: SmallVector<Token, 4> = zeroed();
+            if operator!(LexParenthesizedBalancedTokenSoup()) {
+                return nullopt();
+            }
+            Result() = void { move(), void { ParamStartLoc, CurTok.getLocation() } };
+        } else if Parameter == "suffix" {
+            if Result() {
+                << Parameter;
+            }
+            let mut Soup: SmallVector<Token, 4> = zeroed();
+            if operator!(LexParenthesizedBalancedTokenSoup()) {
+                return nullopt();
+            }
+            Result() = void { move(), void { ParamStartLoc, CurTok.getLocation() } };
+        } else if Parameter == "if_empty" {
+            if Result() {
+                << Parameter;
+            }
+            let mut Soup: SmallVector<Token, 4> = zeroed();
+            if operator!(LexParenthesizedBalancedTokenSoup()) {
+                return nullopt();
+            }
+            Result() = void { move(), void { ParamStartLoc, CurTok.getLocation() } };
+        } else {
+            Result.UnrecognizedParams += 1;
+            if CurTok.is(l_paren) {
+                let mut Soup: SmallVector<Token, 4> = zeroed();
+                if operator!(LexParenthesizedBalancedTokenSoup()) {
+                    return nullopt();
+                }
+            }
+            if !ForHasEmbed {
+                 << 1 << Parameter;
+                if CurTok.isNot(EndTokenKind) {
+                    self.DiscardUntilEndOfDirective(CurTok, null);
+                }
+                return nullopt();
+            }
+        }
+    }
+    return Result();
+}
+
+fn Preprocessor::HandleEmbedDirectiveImpl(self, HashLoc: SourceLocation, Params: *LexEmbedParametersResult, BinaryContents: str, FileName: str) {
+    if BinaryContents.is_empty() {
+        if Params() {
+            let mut Toks: ArrayRef<Token> = zeroed();
+            let mut TokCount: u64 = ();
+            let mut NewToks: auto = make_unique(TokCount);
+            copy();
+            (move(), TokCount, true, true);
+        }
+        return;
+    }
+    let mut NumPrefixToks: u64 = Params.PrefixTokenCount();
+    let mut NumSuffixToks: u64 = Params.SuffixTokenCount();
+    let mut TotalNumToks: u64 = 1 + NumPrefixToks + NumSuffixToks;
+    let mut CurIdx: u64 = 0;
+    let mut Toks: auto = make_unique(TotalNumToks);
+    if Params() {
+        copy(Params(), operator&([CurIdx]));
+        CurIdx += NumPrefixToks;
+    }
+    let mut Data: *mut EmbedAnnotationData = null;
+    Data.BinaryData = BinaryContents;
+    Data.FileName = FileName;
+    Toks()[CurIdx]();
+    Toks()[CurIdx](annot_embed);
+    Toks()[CurIdx](HashLoc);
+    Toks()[CurIdx += 1](Data);
+    if Params() {
+        copy(Params(), operator&([CurIdx]));
+        CurIdx += NumSuffixToks;
+    }
+    assert!(CurIdx == TotalNumToks, "Calculated the incorrect number of tokens");
+    (move(), TotalNumToks, true, true);
+}
+
+fn Preprocessor::HandleEmbedDirective(self, HashLoc: SourceLocation, EmbedTok: *mut Token) {
+    if self.LangOpts {
+        
+    } else {
+        << (if self.LangOpts { 1 } else { 0 });
+    }
+    let mut FilenameTok: Token = Token {};
+    if self.LexHeaderName(FilenameTok, true) {
+        return;
+    }
+    if FilenameTok.isNot(header_name) {
+        if FilenameTok.isNot(eod) {
+            self.DiscardUntilEndOfDirective(null);
+        }
+        return;
+    }
+    let mut CurTok: Token = Token {};
+    let mut Params: optional<LexEmbedParametersResult> = zeroed();
+    (((operator!(operator!(((Params() || CurTok.is(eod)) && "expected success or to be at the end of the directive")))) || (_wassert(L"(Params || CurTok.is(tok::eod)) && \"expected success or to be at the end of the directive\"", L"clang\\lib\\Lex\\PPDirectives.cpp", (4114) as u32) , 0)) as void);
+    if operator!() {
+        return;
+    }
+    let mut FilenameBuffer: str = zeroed();
+    let mut Filename: str = (FilenameTok);
+    let mut OriginalFilename: str = Filename;
+    let mut isAngled: bool = self.GetIncludeFilenameSpelling(FilenameTok.getLocation(), Filename);
+    if Filename.is_empty() {
+        return;
+    }
+    let mut MaybeFileRef: OptionalFileEntryRef = self.LookupEmbedFile(Filename, isAngled, true);
+    if !MaybeFileRef {
+        if  {
+            return;
+        }
+         << Filename;
+        return;
+    }
+    if operator(MaybeFileRef).isDeviceFile() {
+         << Filename;
+        return;
+    }
+    let mut MaybeFile: MemoryBufferRef> = zeroed();
+    if operator!() {
+         << Filename << "a buffer to the contents could not be created";
+        return;
+    }
+    let mut BinaryContents: str = ();
+    if Params() {
+        BinaryContents = BinaryContents.substr();
+    }
+    if Params() {
+        BinaryContents = BinaryContents.substr(0);
+    }
+    let mut Mem: *mut void = null;
+    memcpy(Mem, OriginalFilename.ptr, OriginalFilename.len);
+    let mut FilenameToGo: str = Mem as *mut u8[0..OriginalFilename.len];
+    self.HandleEmbedDirectiveImpl(HashLoc, *, BinaryContents, FilenameToGo);
+}
+
+fn Preprocessor::HandleCXXImportDirective(self, ImportTok: Token) {
+    (((operator!(operator!((self.getLangOpts() && ImportTok.is(kw_import))))) || (_wassert(L"getLangOpts().CPlusPlusModules && ImportTok.is(tok::kw_import)", L"clang\\lib\\Lex\\PPDirectives.cpp", (4201) as u32) , 0)) as void);
+    let mut SaveImportingCXXModules: SaveAndRestore<bool> = zeroed();
+    let mut Tok: Token = Token {};
+    if self.LexHeaderName(Tok, true) {
+        if Tok.isNot(eod) {
+            self.CheckEndOfDirective(ImportTok.getIdentifierInfo().getName(), false, null);
+        }
+        return;
+    }
+    let mut UseLoc: SourceLocation = ImportTok.getLocation();
+    let mut DirToks: SmallVector<Token, 4> = zeroed();
+    let mut Path: SmallVector<IdentifierLoc, 2> = zeroed();
+    let mut ImportingHeader: bool = false;
+    let mut IsPartition: bool = false;
+    match Tok.getKind() {
+        header_name => {
+            ImportingHeader = true;
+        },
+        colon => {
+            IsPartition = true;
+        },
+        code_completion => {
+            identifier;
+        },
+        _ => {
+            DirToks()(Tok);
+        },
+    }
+    if operator!(()(semi, eod)) {
+        self.CollectPPImportSuffix();
+    }
+    if DirToks()()(eod) {
+        self.CheckEndOfDirective(ImportTok.getIdentifierInfo().getName(), false, null);
+    } else {
+        DirToks()();
+    }
+    if DirToks()()(semi) {
+        self.EnterModuleSuffixTokenStream();
+        return;
+    }
+    if ImportingHeader {
+        let mut SemiLoc: SourceLocation = ()();
+        if SemiLoc.isMacroID() {
+            
+        }
+        let mut Action: auto = self.HandleHeaderIncludeOrImport(SourceLocation {}, ImportTok, Tok, SemiLoc, null, null);
+        match Action() {
+            None => {
+                break;
+            },
+            ModuleBegin => {
+                DirToks()();
+            },
+            ModuleImport => {
+                HeaderUnitImport;
+            },
+            Failure => {
+                assert!(self.TheModuleLoader.HadFatalFailure, "This should be an early exit only to a fatal error");
+            },
+        }
+    }
+    self.EnterModuleSuffixTokenStream();
+}
+
+fn Preprocessor::HandleCXXModuleDirective(self, ModuleTok: Token) {
+    (((operator!(operator!((self.getLangOpts() && ModuleTok.is(kw_module))))) || (_wassert(L"getLangOpts().CPlusPlusModules && ModuleTok.is(tok::kw_module)", L"clang\\lib\\Lex\\PPDirectives.cpp", (4345) as u32) , 0)) as void);
+    let mut StartLoc: SourceLocation = ModuleTok.getLocation();
+    let mut Tok: Token = Token {};
+    let mut UseLoc: SourceLocation = ModuleTok.getLocation();
+    let mut DirToks: SmallVector<Token, 4> = zeroed();
+    let mut Path: SmallVector<IdentifierLoc, 2> = zeroed();
+    let mut Partition: SmallVector<IdentifierLoc, 2> = zeroed();
+    self.LexUnexpandedToken(Tok);
+    match Tok.getKind() {
+        semi => {
+            DirToks()(Tok);
+        },
+        colon => {
+            DirToks()(Tok);
+        },
+        identifier => {
+            if self.HandleModuleName(ModuleTok.getIdentifierInfo().getName(), UseLoc, Tok, false, false) {
+                return;
+            }
+            if Tok.is(colon) {
+                self.LexUnexpandedToken(Tok);
+                if self.HandleModuleName(ModuleTok.getIdentifierInfo().getName(), UseLoc, Tok, false, true) {
+                    return;
+                }
+            }
+            if Tok.is(identifier) && self.getMacroDefinition(Tok.getIdentifierInfo()) {
+                let mut TokCopy: i32 = make_unique(1);
+                TokCopy()[0] = Tok;
+                (move(), 1, false, false);
+                self.Lex(Tok);
+                DirToks()() = Tok;
+            }
+            break;
+        },
+        _ => {
+            DirToks()(Tok);
+        },
+    }
+    if operator!(()(semi, eod)) {
+        self.CollectPPImportSuffix();
+    }
+    let mut End: SourceLocation = if ()(eod) { self.CheckEndOfDirective(ModuleTok.getIdentifierInfo().getName(), false, operator&()) } else { ()() };
+    let mut IsGMFIntroducer: bool = () == 2 && [0](kw_module) && [1](semi);
+    let mut IsSynthesizedGMF: bool = IsGMFIntroducer && self.HasSynthesizedGMF && self.CurPPLexer.getFileID() == self.getPredefinesFileID();
+    if  {
+         << SourceRange { B: StartLoc, E: End };
+    }
+    if self.CurPPLexer.getConditionalStackDepth() != 0 {
+         << SourceRange { B: StartLoc, E: End };
+    }
+    if IsGMFIntroducer {
+        self.EnterDeferredGMFInputs(End);
+    }
+    self.EnterModuleSuffixTokenStream();
+}
+
+fn Preprocessor::HandleObjCImportDirective(self, AtTok: *mut Token, ImportTok: *mut Token) {
+    (((operator!(operator!((self.getLangOpts() && AtTok.is(at) && ImportTok.isObjCAtKeyword(objc_import))))) || (_wassert(L"getLangOpts().ObjC && AtTok.is(tok::at) && ImportTok.isObjCAtKeyword(tok::objc_import)", L"clang\\lib\\Lex\\PPDirectives.cpp", (4463) as u32) , 0)) as void);
+    ImportTok.setKind(kw_import);
+    let mut DirToks: SmallVector<Token, 32> = zeroed();
+    let mut Path: SmallVector<IdentifierLoc, 3> = zeroed();
+    let mut UseLoc: SourceLocation = ImportTok.getLocation();
+    self.ModuleImportLoc = ImportTok.getLocation();
+    let mut Tok: Token = Token {};
+    self.Lex(Tok);
+    if self.HandleModuleName(ImportTok.getIdentifierInfo().getName(), UseLoc, Tok, true, false) {
+        return;
+    }
+    if operator!(()(semi, eod)) {
+        self.CollectPPImportSuffix();
+    }
+    let mut End: SourceLocation = if ()(eod) { self.CheckEndOfDirective(ImportTok.getIdentifierInfo().getName(), false, operator&()) } else { ()() };
+    let mut Imported: *mut Module = null;
+    if self.getLangOpts() {
+        Imported = self.TheModuleLoader.loadModule(self.ModuleImportLoc, Hidden, false);
+        if Imported {
+            self.makeModuleVisible(Imported, End, true);
+        }
+    }
+    self.EnterModuleSuffixTokenStream();
+}
+
+struct Closure_1 {
+    cap_0: *mut Preprocessor,
+    Tmp: *mut Token,
+    DiscardedToks: *mut *mut SmallVectorImpl<Token>,
+}
+
+unsafe fn Closure_1::call(self: *mut Closure_1) {
+        self.LexUnexpandedToken((*self.Tmp));
+        if (*self.DiscardedToks) && (*self.Tmp).isNot(eod) {
+            (*self.DiscardedToks)()((*self.Tmp));
+        }
+    }
+
+struct Closure_2 {
+    cap_0: *mut Preprocessor,
+    ExtraToks: *mut SmallVectorImpl<Token>,
+    Tmp: *mut Token,
+}
+
+unsafe fn Closure_2::call(self: *mut Closure_2) {
+        invoke(LexFn, self, (*self.Tmp));
+        if self.ExtraToks && (*self.Tmp).isNot(eod) {
+            self.ExtraToks()((*self.Tmp));
+        }
+    }
+
+struct Closure_3 {}
+
+fn Closure_3::call(self: *Closure_3, LookupPath: *mut SmallVectorImpl<char>, StartingFrom: str, FileName: str, RemoveInitialFileComponentFromLookupPath: bool) {
+        native(StartingFrom, LookupPath, native);
+        if RemoveInitialFileComponentFromLookupPath {
+            remove_filename(LookupPath, native);
+        }
+        if operator!(LookupPath()()) && operator!(is_separator(LookupPath()())) {
+            LookupPath()(get_separator(native).front());
+        }
+        LookupPath()(FileName.begin(), FileName.end());
+    }
+
+struct Closure_4 {
+    Separator: Style,
+}
+
+fn Closure_4::call(self: *Closure_4, Component: str) -> bool {
+        return Component.len == 1 && is_separator(Component[0], self.Separator);
+    }
+
+struct Closure_5 {
+    cap_0: *mut Preprocessor,
+    FilenameLoc: *mut SourceLocation,
+    Filename: *mut str,
+}
+
+unsafe fn Closure_5::call(self: *mut Closure_5, FE: FileEntryRef) {
+        if self.LangOpts {
+            return;
+        }
+        let mut RequestingModule: *mut Module = self.getModuleForLocation((*self.FilenameLoc), self.LangOpts);
+        let mut RequestingModuleIsModuleInterface: bool = !self.SourceMgr.isInMainFile((*self.FilenameLoc));
+        self.HeaderInfo.getModuleMap().diagnoseHeaderInclusion(RequestingModule, RequestingModuleIsModuleInterface, (*self.FilenameLoc), (*self.Filename), FE);
+    }
+
+struct Closure_6 {}
+
+fn Closure_6::call(self: *Closure_6, Filename: str) -> str {
+            Filename = Filename.drop_until;
+            while !Filename.is_empty() && !isAlphanumeric(Filename.back()) {
+                Filename = Filename.drop_back(1);
+            }
+            return Filename;
+        }
+
+struct Closure_7 {
+    BackslashStyle: Style,
+}
+
+fn Closure_7::call(self: *Closure_7, c: i8) -> bool {
+                return is_separator(c, self.BackslashStyle);
+            }
+
+struct Closure_8 {
+    cap_0: *mut Preprocessor,
+}
+
+fn Closure_8::call(self: *Closure_8) {
+        if  {
+            self.DiscardUntilEndOfDirective(null);
+        }
+    }
+
+struct Closure_9 {
+    cap_0: *mut Preprocessor,
+    CurTok: *mut Token,
+}
+
+unsafe fn Closure_9::call(self: *mut Closure_9, Expected: TokenKind, Matches: TokenKind, SourceLocation>) {
+         << Expected;
+         << ;
+        if (*self.CurTok).isNot(eod) {
+            self.DiscardUntilEndOfDirective((*self.CurTok), null);
+        }
+    }
+
+struct Closure_10 {
+    CurTok: *mut Token,
+    cap_1: *mut Preprocessor,
+}
+
+unsafe fn Closure_10::call(self: *mut Closure_10, Kind: TokenKind) -> bool {
+        if (*self.CurTok).isNot(Kind) {
+             << Kind;
+            if (*self.CurTok).isNot(eod) {
+                self.DiscardUntilEndOfDirective((*self.CurTok), null);
+            }
+            return false;
+        }
+        return true;
+    }
+
+struct Closure_11 {
+    ExpectOrDiagAndSkipToEOD: *mut (lambda at P:\Goraw\llvm-project\clang\lib\Lex\PPDirectives.cpp:3785:35),
+    CurTok: *mut Token,
+    cap_2: *mut Preprocessor,
+}
+
+unsafe fn Closure_11::call(self: *mut Closure_11) -> auto {
+        let mut Prefix: *IdentifierInfo = (*self.CurTok).getIdentifierInfo();
+        self.LexNonComment((*self.CurTok));
+        if (*self.CurTok).is(coloncolon) {
+            self.LexNonComment((*self.CurTok));
+            let mut Suffix: *IdentifierInfo = (*self.CurTok).getIdentifierInfo();
+            self.LexNonComment((*self.CurTok));
+        }
+    }
+
+struct Closure_12 {}
+
+fn Closure_12::call(self: *Closure_12, Name: str) -> str {
+        if Name.len > 4 && Name.starts_with("__") && Name.ends_with("__") {
+            return Name[2..2 + Name.len - 4];
+        }
+        return Name;
+    }
+
+struct Closure_13 {
+    ExpectOrDiagAndSkipToEOD: *mut (lambda at P:\Goraw\llvm-project\clang\lib\Lex\PPDirectives.cpp:3785:35),
+    cap_1: *mut Preprocessor,
+    CurTok: *mut Token,
+    EndTokenKind: *mut TokenKind,
+}
+
+unsafe fn Closure_13::call(self: *mut Closure_13) -> auto {
+        let mut ParameterIfNDef: *mut IdentifierInfo = null;
+        let mut EvaluatedDefined: bool = false;
+        let mut LimitEvalResult: DirectiveEvalResult = self.EvaluateDirectiveExpression(ParameterIfNDef, (*self.CurTok), EvaluatedDefined, false);
+        if operator!(LimitEvalResult()) {
+            assert!((*self.CurTok).is(eod), "expect to be at the end of directive");
+        }
+        self.LexNonComment((*self.CurTok));
+        if EvaluatedDefined {}
+        if LimitEvalResult() {
+            let mut Result: *APSInt = *LimitEvalResult();
+            if Result.isNegative() {
+                 << toString(Result, 10) << 0;
+                if (*self.CurTok).isNot((*self.EndTokenKind)) {
+                    self.DiscardUntilEndOfDirective((*self.CurTok), null);
+                }
+            }
+        }
+    }
+
+struct Closure_14 {}
+
+fn Closure_14::call(self: *Closure_14, Kind: TokenKind) -> TokenKind {
+        match Kind {
+            l_paren => {
+                return r_paren;
+            },
+            l_brace => {
+                return r_brace;
+            },
+            l_square => {
+                return r_square;
+            },
+            _ => {
+                llvm_unreachable_internal("should not get here", "clang\\lib\\Lex\\PPDirectives.cpp", 3897);
+            },
+        }
+    }
+
+struct Closure_15 {
+    ExpectOrDiagAndSkipToEOD: *mut (lambda at P:\Goraw\llvm-project\clang\lib\Lex\PPDirectives.cpp:3785:35),
+    cap_1: *mut Preprocessor,
+    CurTok: *mut Token,
+    GetMatchingCloseBracket: *mut (lambda at P:\Goraw\llvm-project\clang\lib\Lex\PPDirectives.cpp:3888:34),
+    DiagMismatchedBracesAndSkipToEOD: *mut (lambda at P:\Goraw\llvm-project\clang\lib\Lex\PPDirectives.cpp:3777:7),
+}
+
+unsafe fn Closure_15::call(self: *mut Closure_15, Tokens: *mut SmallVectorImpl<Token>) -> bool {
+        let mut BracketStack: i32 = 0;
+        if !(*self.ExpectOrDiagAndSkipToEOD).call(l_paren) {
+            return false;
+        }
+        self.LexNonComment((*self.CurTok));
+        let mut WaitingForInnerCloseParen: bool = false;
+        while (*self.CurTok).isNot(eod) && (WaitingForInnerCloseParen || (*self.CurTok).isNot(r_paren)) {
+            match (*self.CurTok).getKind() {
+                _ => {
+                    break;
+                },
+                l_paren => {
+                    WaitingForInnerCloseParen = true;
+                },
+                l_brace => {
+                    l_square;
+                },
+                r_paren => {
+                    WaitingForInnerCloseParen = false;
+                },
+                r_brace => {
+                    r_square;
+                },
+            }
+            Tokens()((*self.CurTok));
+            self.LexNonComment((*self.CurTok));
+        }
+        if !(*self.ExpectOrDiagAndSkipToEOD).call(r_paren) {
+            return false;
+        }
+        self.LexNonComment((*self.CurTok));
+        return true;
+    }

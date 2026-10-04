@@ -1,0 +1,498 @@
+static mut TransformAll: i32 = "aarch64-a57-fp-load-balancing-force-all";
+
+static mut OverrideBalance: i32 = "aarch64-a57-fp-load-balancing-override";
+
+fn isMul(MI: *mut MachineInstr) -> bool {
+    match MI.getOpcode() {
+        _ => {
+            return false;
+        },
+    }
+}
+
+fn isMla(MI: *mut MachineInstr) -> bool {
+    match MI.getOpcode() {
+        _ => {
+            return false;
+        },
+    }
+}
+
+enum Color {
+    Even = 0,
+    Odd = 1,
+}
+
+const ColorNames: [2]*mut u8 = ["Even", "Odd"];
+
+struct AArch64A57FPLoadBalancingImpl {
+    MRI: *mut MachineRegisterInfo,
+    TRI: *TargetRegisterInfo,
+    RCI: *mut RegisterClassInfo,
+}
+
+struct AArch64A57FPLoadBalancingLegacy {
+    Resolver: *mut AnalysisResolver,
+    PassID: *void,
+    Kind: PassKind,
+    RequiredProperties: MachineFunctionProperties,
+    SetProperties: MachineFunctionProperties,
+    ClearedProperties: MachineFunctionProperties,
+}
+
+fn AArch64A57FPLoadBalancingLegacy::getRequiredProperties(self: *AArch64A57FPLoadBalancingLegacy) -> MachineFunctionProperties {
+    return MachineFunctionProperties {}.setNoVRegs();
+}
+
+fn AArch64A57FPLoadBalancingLegacy::getPassName(self: *AArch64A57FPLoadBalancingLegacy) -> str {
+    return "A57 FP Anti-dependency breaker";
+}
+
+fn AArch64A57FPLoadBalancingLegacy::getAnalysisUsage(self: *AArch64A57FPLoadBalancingLegacy, AU: *mut AnalysisUsage) {
+    AU.setPreservesCFG();
+    AU;
+    self.getAnalysisUsage;
+}
+
+fn AArch64A57FPLoadBalancingLegacy::getPassKind(self: *AArch64A57FPLoadBalancingLegacy) -> PassKind {
+    return self.Kind;
+}
+
+fn AArch64A57FPLoadBalancingLegacy::getPassID(self: *AArch64A57FPLoadBalancingLegacy) -> AnalysisID {
+    return self.PassID;
+}
+
+fn AArch64A57FPLoadBalancingLegacy::doInitialization(self, arg: *mut Module) -> bool {
+    return false;
+}
+
+fn AArch64A57FPLoadBalancingLegacy::doFinalization(self, arg: *mut Module) -> bool {
+    return false;
+}
+
+fn AArch64A57FPLoadBalancingLegacy::assignPassManager(self, arg: *mut PMStack, arg: PassManagerType) {}
+
+fn AArch64A57FPLoadBalancingLegacy::getResolver(self: *AArch64A57FPLoadBalancingLegacy) -> *mut AnalysisResolver {
+    return self.Resolver;
+}
+
+fn AArch64A57FPLoadBalancingLegacy::getSetProperties(self: *AArch64A57FPLoadBalancingLegacy) -> MachineFunctionProperties {
+    return MachineFunctionProperties {};
+}
+
+fn AArch64A57FPLoadBalancingLegacy::getClearedProperties(self: *AArch64A57FPLoadBalancingLegacy) -> MachineFunctionProperties {
+    return MachineFunctionProperties {};
+}
+
+static mut ID: i8 = 0;
+
+struct Chain {
+    StartInst: *mut MachineInstr,
+    LastInst: *mut MachineInstr,
+    KillInst: *mut MachineInstr,
+    StartInstIdx: u32,
+    LastInstIdx: u32,
+    KillInstIdx: u32,
+    Insts: i32,
+    KillIsImmutable: bool,
+    LastColor: Color,
+}
+
+fn Chain::add(self, MI: *mut MachineInstr, Idx: u32, C: Color) {
+    self.LastInst = MI;
+    self.LastInstIdx = Idx;
+    self.LastColor = C;
+    assert!((self.KillInstIdx == 0 || self.LastInstIdx < self.KillInstIdx), "Chain: broken invariant. A Chain can only be killed after its last def");
+}
+
+fn Chain::contains(self, MI: *mut MachineInstr) -> bool {}
+
+fn Chain::size(self: *Chain) -> u32 {}
+
+fn Chain::setKill(self, MI: *mut MachineInstr, Idx: u32, Immutable: bool) {
+    self.KillInst = MI;
+    self.KillInstIdx = Idx;
+    self.KillIsImmutable = Immutable;
+    assert!((self.KillInstIdx == 0 || self.LastInstIdx < self.KillInstIdx), "Chain: broken invariant. A Chain can only be killed after its last def");
+}
+
+fn Chain::getStart(self: *Chain) -> *mut MachineInstr {
+    return self.StartInst;
+}
+
+fn Chain::getLast(self: *Chain) -> *mut MachineInstr {
+    return self.LastInst;
+}
+
+fn Chain::getKill(self: *Chain) -> *mut MachineInstr {
+    return self.KillInst;
+}
+
+fn Chain::end(self: *Chain) -> i32 {}
+
+fn Chain::begin(self: *Chain) -> i32 {
+    return self.getStart();
+}
+
+fn Chain::isKillImmutable(self: *Chain) -> bool {
+    return self.KillIsImmutable;
+}
+
+fn Chain::getPreferredColor(self) -> Color {
+    if OverrideBalance() != 0 {
+        return if  == 1 { Even } else { Odd };
+    }
+    return self.LastColor;
+}
+
+fn Chain::rangeOverlapsWith(self: *Chain, Other: *Chain) -> bool {
+    let mut End: u32 = if self.KillInst { self.KillInstIdx } else { self.LastInstIdx };
+    let mut OtherEnd: u32 = if Other.KillInst { Other.KillInstIdx } else { Other.LastInstIdx };
+    return self.StartInstIdx <= OtherEnd && Other.StartInstIdx <= End;
+}
+
+fn Chain::startsBefore(self: *Chain, Other: *Chain) -> bool {
+    return self.StartInstIdx < Other.StartInstIdx;
+}
+
+fn Chain::requiresFixup(self: *Chain) -> bool {
+    return (self.getKill() && self.isKillImmutable()) || !self.getKill();
+}
+
+fn Chain::str(self: *Chain) -> str {
+    let mut S: str = "";
+    let mut OS: raw_string_ostream = S;
+    OS << "{";
+    self.StartInst.print(OS, true, false, false, true, null);
+    OS << " -> ";
+    self.LastInst.print(OS, true, false, false, true, null);
+    if self.KillInst {
+        OS << " (kill @ ";
+        self.KillInst.print(OS, true, false, false, true, null);
+        OS << ")";
+    }
+    OS << "}";
+    return OS;
+}
+
+fn AArch64A57FPLoadBalancingImpl::run(self, MF: *mut MachineFunction) -> bool {
+    if operator!(MF()) {
+        return false;
+    }
+    let mut Changed: bool = false;
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("aarch64-a57-fp-load-balancing", 1) {
+            dbgs() << "***** AArch64A57FPLoadBalancing *****\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    self.MRI = &mut MF.getRegInfo();
+    self.TRI = MF.getRegInfo().getTargetRegisterInfo();
+    return Changed;
+}
+
+fn AArch64A57FPLoadBalancingLegacy::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
+    if self.skipFunction {
+        return false;
+    }
+    let mut RCI: *mut RegisterClassInfo = operator&();
+    return RCI.run(MF);
+}
+
+fn AArch64A57FPLoadBalancingPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
+    let mut RCI: *mut RegisterClassInfo = operator&(MFAM()(MF));
+    if RCI.run(MF) {
+        let mut PA: PreservedAnalyses = getMachineFunctionPassPreservedAnalyses();
+        PA;
+        return PA;
+    }
+    return all();
+}
+
+fn AArch64A57FPLoadBalancingImpl::runOnBasicBlock(self, MBB: *mut MachineBasicBlock) -> bool {
+    let mut Changed: bool = false;
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("aarch64-a57-fp-load-balancing", 1) {
+            dbgs() << "Running on MBB: " << MBB << " - scanning instructions...\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    let mut ActiveChains: i32 = 0;
+    let mut AllChains: i32 = 0;
+    let mut Idx: u32 = 0;
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("aarch64-a57-fp-load-balancing", 1) {
+            dbgs() << "Scan complete, " << () << " chains created.\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    let mut EC: EquivalenceClasses<Chain *> = zeroed();
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("aarch64-a57-fp-load-balancing", 1) {
+            dbgs() << "Created " << () << " disjoint sets.\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    let mut V: i32 = 0;
+    sort(Closure_1 {});
+    let mut Parity: i32 = 0;
+    return Changed;
+}
+
+fn AArch64A57FPLoadBalancingImpl::getAndEraseNext(self, PreferredColor: Color, L: *mut i32) -> *mut Chain {
+    if L()() {
+        return null;
+    }
+    let mut SizeFuzz: u32 = 1;
+    let mut MinSize: u32 = ()() - SizeFuzz;
+    for let mut I: auto = ();
+let mut E: auto = (); I() != ;  += 1 {
+        if (operator*())() <= MinSize {
+            let mut Ch: *mut Chain = operator*( -= 1);
+            L()();
+            return Ch;
+        }
+        if (operator*())() == PreferredColor {
+            let mut Ch: *mut Chain = operator*();
+            L()();
+            return Ch;
+        }
+    }
+    let mut Ch: *mut Chain = ();
+    L()();
+    return Ch;
+}
+
+fn AArch64A57FPLoadBalancingImpl::colorChainSet(self, GV: i32, MBB: *mut MachineBasicBlock, Parity: *mut i32) -> bool {
+    let mut Changed: bool = false;
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("aarch64-a57-fp-load-balancing", 1) {
+            dbgs() << "colorChainSet(): #sets=" << () << "\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    sort(Closure_2 {});
+    let mut PreferredColor: Color = if Parity < 0 { Even } else { Odd };
+    while  {
+        G;
+    }
+    return Changed;
+}
+
+fn AArch64A57FPLoadBalancingImpl::scavengeRegister(self, G: *mut Chain, C: Color, MBB: *mut MachineBasicBlock) -> i32 {
+    let mut Units: LiveRegUnits = *self.TRI;
+    Units.addLiveOuts(MBB);
+    let mut I: i32 = MBB()();
+    let mut ChainEnd: i32 = G()();
+    while I() !=  {
+         -= 1;
+        if operator!() {
+            Units.stepBackward(operator*());
+        }
+    }
+    let mut ChainBegin: i32 = G()();
+    (((operator!(operator!((ChainBegin() !=  && "Chain should contain instructions")))) || (_wassert(L"ChainBegin != ChainEnd && \"Chain should contain instructions\"", L"llvm\\lib\\Target\\AArch64\\AArch64A57FPLoadBalancing.cpp", (537) as u32) , 0)) as void);
+    while true {
+        {
+         -= 1;
+        Units.accumulate(operator*());
+    }
+        if !( != ) { break; }
+    }
+    let mut RegClassID: u32 = ()()[0];
+    let mut Ord: auto = self.RCI.getOrder(self.TRI.getRegClass(RegClassID));
+    return -1;
+}
+
+fn AArch64A57FPLoadBalancingImpl::colorChain(self, G: *mut Chain, C: Color, MBB: *mut MachineBasicBlock) -> bool {
+    let mut Changed: bool = false;
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("aarch64-a57-fp-load-balancing", 1) {
+            dbgs() << " - colorChain(" << G << ", " << ColorNames[C as i32] << ")\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    let mut Reg: i32 = self.scavengeRegister(G, C, MBB);
+    if Reg == -1 {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("aarch64-a57-fp-load-balancing", 1) {
+                dbgs() << "Scavenging (thus coloring) failed!\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        return false;
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("aarch64-a57-fp-load-balancing", 1) {
+            dbgs() << " - Scavenged register: " << printReg(Reg, self.TRI, 0, null) << "\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    let mut Substs: i32 = 0;
+    (((operator!(operator!((Substs()() == 0 && "No substitutions should be left active!")))) || (_wassert(L"Substs.size() == 0 && \"No substitutions should be left active!\"", L"llvm\\lib\\Target\\AArch64\\AArch64A57FPLoadBalancing.cpp", (614) as u32) , 0)) as void);
+    if G.getKill() {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("aarch64-a57-fp-load-balancing", 1) {
+                dbgs() << " - Kill instruction seen.\n";
+            }
+        }
+            if !(false) { break; }
+        }
+    } else {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("aarch64-a57-fp-load-balancing", 1) {
+                dbgs() << " - Destination register not changed.\n";
+            }
+        }
+            if !(false) { break; }
+        }
+    }
+    return Changed;
+}
+
+fn AArch64A57FPLoadBalancingImpl::scanInstruction(self, MI: *mut MachineInstr, Idx: u32, ActiveChains: *mut i32, AllChains: *mut i32) {
+    if isMul(MI) {
+        let mut DestReg: Register = MI.getOperand(0).getReg();
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("aarch64-a57-fp-load-balancing", 1) {
+                dbgs() << "New chain started for register " << printReg(DestReg, self.TRI, 0, null) << " at " << *MI;
+            }
+        }
+            if !(false) { break; }
+        }
+        let mut G: auto = make_unique(MI, Idx, self.getColor(DestReg.operator unsigned int()));
+        ActiveChains()[DestReg] = ();
+        AllChains()(move());
+    } else if isMla(MI) {
+        let mut DestReg: Register = MI.getOperand(0).getReg();
+        let mut AccumReg: Register = MI.getOperand(3).getReg();
+        if ActiveChains()(AccumReg) != () {
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("aarch64-a57-fp-load-balancing", 1) {
+                    dbgs() << "Chain found for accumulator register " << printReg(AccumReg, self.TRI, 0, null) << " in MI " << *MI;
+                }
+            }
+                if !(false) { break; }
+            }
+            if MI.getOperand(3).isKill() {
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("aarch64-a57-fp-load-balancing", 1) {
+                        dbgs() << "Instruction was successfully added to chain.\n";
+                    }
+                }
+                    if !(false) { break; }
+                }
+                ActiveChains()[AccumReg](MI, Idx, self.getColor(DestReg.operator unsigned int()));
+                if DestReg != AccumReg {
+                    ActiveChains()[DestReg] = [AccumReg];
+                    ActiveChains()(AccumReg);
+                }
+                return;
+            }
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("aarch64-a57-fp-load-balancing", 1) {
+                    dbgs() << "Cannot add to chain because accumulator operand wasn't " << "marked <kill>!\n";
+                }
+            }
+                if !(false) { break; }
+            }
+        }
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("aarch64-a57-fp-load-balancing", 1) {
+                dbgs() << "Creating new chain for dest register " << printReg(DestReg, self.TRI, 0, null) << "\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        let mut G: auto = make_unique(MI, Idx, self.getColor(DestReg.operator unsigned int()));
+        ActiveChains()[DestReg] = ();
+        AllChains()(move());
+    } else {}
+}
+
+fn AArch64A57FPLoadBalancingImpl::maybeKillChain(self, MI: *mut MachineInstr, MO: *mut MachineOperand, Idx: u32, ActiveChains: *mut i32) {
+    if MO.isReg() {
+        if MO.isKill() && (MO.getReg()) != () {
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("aarch64-a57-fp-load-balancing", 1) {
+                    dbgs() << "Kill seen for chain " << printReg(MO.getReg(), self.TRI, 0, null) << "\n";
+                }
+            }
+                if !(false) { break; }
+            }
+            ActiveChains()[MO.getReg()](&mut MI, Idx, MO.isTied());
+        }
+        ActiveChains()(MO.getReg());
+    } else if MO.isRegMask() {
+        for let mut I: auto = ();
+let mut E: auto = (); I() != ;  {
+            if MO() {
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("aarch64-a57-fp-load-balancing", 1) {
+                        dbgs() << "Kill (regmask) seen for chain " << printReg(self.TRI) << "\n";
+                    }
+                }
+                    if !(false) { break; }
+                }
+                I()(&mut MI, Idx, true);
+                ActiveChains()( += 1);
+            } else {
+                += 1;
+            }
+        }
+    }
+}
+
+fn AArch64A57FPLoadBalancingImpl::getColor(self, Reg: u32) -> Color {
+    if (self.TRI.getEncodingValue % 2) == 0 {
+        return Even;
+    } else {
+        return Odd;
+    }
+}
+
+fn createAArch64A57FPLoadBalancingLegacyPass() -> *mut FunctionPass {
+    return AArch64A57FPLoadBalancingLegacy {};
+}
+
+struct Closure_1 {}
+
+fn Closure_1::call(self: *Closure_1, A: i32, B: i32) -> auto {}
+
+struct Closure_2 {}
+
+fn Closure_2::call(self: *Closure_2, G1: *Chain, G2: *Chain) -> bool {
+        if G1.len != G2.len {
+            return G1.len > G2.len;
+        }
+        if G1.requiresFixup() != G2.requiresFixup() {
+            return G1.requiresFixup() > G2.requiresFixup();
+        }
+        assert!((G1 == G2 || (G1.startsBefore(G2) ^ G2.startsBefore(G1))), "Starts before not total order!");
+        return G1.startsBefore(G2);
+    }

@@ -1,0 +1,160 @@
+fn xgetbv() -> u64 {
+    return _xgetbv(0);
+}
+
+fn cpuid(out: *mut u32, id: u32) {
+    __cpuid(out as *mut i32, id);
+}
+
+fn cpuidex(out: *mut u32, id: u32, sid: u32) {
+    __cpuidex(out as *mut i32, id, sid);
+}
+
+enum cpu_feature {
+    SSE2 = 0,
+    SSSE3 = 1,
+    SSE41 = 2,
+    AVX = 3,
+    AVX2 = 4,
+    AVX512F = 5,
+    AVX512VL = 6,
+    UNDEFINED = 7,
+}
+
+static mut g_cpu_features: LONG = UNDEFINED;
+
+fn get_cpu_features() -> cpu_feature {
+    let mut features: cpu_feature = _InterlockedOr(&mut g_cpu_features, 0);
+    if features != UNDEFINED {
+        return features;
+    } else {
+        let mut regs: [4]u32 = [4]u32 {};
+        let mut eax: *mut u32 = &mut regs[0];
+        let mut ebx: *mut u32 = &mut regs[1];
+        let mut ecx: *mut u32 = &mut regs[2];
+        let mut edx: *mut u32 = &mut regs[3];
+        edx as void;
+        features(0);
+        cpuid(regs, 0);
+        let mut max_id: i32 = *eax;
+        cpuid(regs, 1);
+        features(SSE2);
+        if *ecx & (1 << 9) {
+            features(SSSE3);
+        }
+        if *ecx & (1 << 19) {
+            features(SSE41);
+        }
+        if *ecx & (1 << 27) {
+            let mut mask: u64 = xgetbv();
+            if (mask & 6) == 6 {
+                if *ecx & (1 << 28) {
+                    features(AVX);
+                }
+                if max_id >= 7 {
+                    cpuidex(regs, 7, 0);
+                    if *ebx & (1 << 5) {
+                        features(AVX2);
+                    }
+                    if (mask & 224) == 224 {
+                        if *ebx & (1 << 31) {
+                            features(AVX512VL);
+                        }
+                        if *ebx & (1 << 16) {
+                            features(AVX512F);
+                        }
+                    }
+                }
+            }
+        }
+        _InterlockedExchange(&mut g_cpu_features, features);
+        return features;
+    }
+}
+
+fn blake3_compress_in_place(cv: *mut u32, block: *u8, block_len: u8, counter: u64, flags: u8) {
+    let mut features: cpu_feature = get_cpu_features();
+    ((features)) as void;
+    if features & AVX512VL {
+        blake3_compress_in_place_avx512(cv, block, block_len, counter, flags);
+        return;
+    }
+    if features & SSE41 {
+        blake3_compress_in_place_sse41(cv, block, block_len, counter, flags);
+        return;
+    }
+    if features & SSE2 {
+        blake3_compress_in_place_sse2(cv, block, block_len, counter, flags);
+        return;
+    }
+    blake3_compress_in_place_portable(cv, block, block_len, counter, flags);
+}
+
+fn blake3_compress_xof(cv: *u32, block: *u8, block_len: u8, counter: u64, flags: u8, out: *mut u8) {
+    let mut features: cpu_feature = get_cpu_features();
+    ((features)) as void;
+    if features & AVX512VL {
+        blake3_compress_xof_avx512(cv, block, block_len, counter, flags, out);
+        return;
+    }
+    if features & SSE41 {
+        blake3_compress_xof_sse41(cv, block, block_len, counter, flags, out);
+        return;
+    }
+    if features & SSE2 {
+        blake3_compress_xof_sse2(cv, block, block_len, counter, flags, out);
+        return;
+    }
+    blake3_compress_xof_portable(cv, block, block_len, counter, flags, out);
+}
+
+fn blake3_xof_many(cv: *u32, block: *u8, block_len: u8, counter: u64, flags: u8, out: *mut u8, outblocks: u64) {
+    if outblocks == 0 {
+        return;
+    }
+    let mut features: cpu_feature = get_cpu_features();
+    ((features)) as void;
+    for let mut i: u64 = 0; i < outblocks; i += 1 {
+        blake3_compress_xof(cv, block, block_len, counter + i, flags, out + 64 * i);
+    }
+}
+
+fn blake3_hash_many(inputs: *uint8_t *const, num_inputs: u64, blocks: u64, key: *u32, counter: u64, increment_counter: bool, flags: u8, flags_start: u8, flags_end: u8, out: *mut u8) {
+    let mut features: cpu_feature = get_cpu_features();
+    ((features)) as void;
+    if (features & (AVX512F | AVX512VL)) == (AVX512F | AVX512VL) {
+        blake3_hash_many_avx512(inputs, num_inputs, blocks, key, counter, increment_counter, flags, flags_start, flags_end, out);
+        return;
+    }
+    if features & AVX2 {
+        blake3_hash_many_avx2(inputs, num_inputs, blocks, key, counter, increment_counter, flags, flags_start, flags_end, out);
+        return;
+    }
+    if features & SSE41 {
+        blake3_hash_many_sse41(inputs, num_inputs, blocks, key, counter, increment_counter, flags, flags_start, flags_end, out);
+        return;
+    }
+    if features & SSE2 {
+        blake3_hash_many_sse2(inputs, num_inputs, blocks, key, counter, increment_counter, flags, flags_start, flags_end, out);
+        return;
+    }
+    blake3_hash_many_portable(inputs, num_inputs, blocks, key, counter, increment_counter, flags, flags_start, flags_end, out);
+}
+
+fn blake3_simd_degree() -> u64 {
+    let mut features: cpu_feature = get_cpu_features();
+    ((features)) as void;
+    if (features & (AVX512F | AVX512VL)) == (AVX512F | AVX512VL) {
+        return 16;
+    }
+    if features & AVX2 {
+        return 8;
+    }
+    if features & SSE41 {
+        return 4;
+    }
+    if features & SSE2 {
+        return 4;
+    }
+    return 1;
+}

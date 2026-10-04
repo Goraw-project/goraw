@@ -1,0 +1,485 @@
+enum LinkFrom {
+    Dst = 0,
+    Src = 1,
+    Both = 2,
+}
+
+struct ModuleLinker {
+    Mover: *mut IRMover,
+    SrcM: unique_ptr<Module>,
+    ValuesToLink: SetVector<GlobalValue *>,
+    Flags: u32,
+    Internalize: StringSet<>,
+    InternalizeCallback: function<void (Module &, const StringSet<> &)>,
+    ComdatsChosen: SelectionKind, LinkFrom>>,
+    LazyComdatMembers: vector<GlobalValue *>>,
+}
+
+fn ModuleLinker::shouldOverrideFromSrc(self) -> bool {
+    return self.Flags & OverrideFromSrc;
+}
+
+fn ModuleLinker::shouldLinkOnlyNeeded(self) -> bool {
+    return self.Flags & LinkOnlyNeeded;
+}
+
+fn ModuleLinker::emitError(self, Message: str) -> bool {
+    operator(self.SrcM).getContext().diagnose(LinkDiagnosticInfo { DS_Error, Message });
+    return true;
+}
+
+fn ModuleLinker::getLinkedToGlobal(self, SrcGV: *GlobalValue) -> *mut GlobalValue {
+    let mut DstM: *mut Module = self.Mover.getModule();
+    if !SrcGV.hasName() || isLocalLinkage(SrcGV.getLinkage()) {
+        return null;
+    }
+    let mut DGV: *mut GlobalValue = DstM.getNamedValue(SrcGV.getName());
+    if !DGV {
+        return null;
+    }
+    if DGV.hasLocalLinkage() {
+        return null;
+    }
+    return DGV;
+}
+
+fn getMinVisibility(A: VisibilityTypes, B: VisibilityTypes) -> VisibilityTypes {
+    if A == HiddenVisibility || B == HiddenVisibility {
+        return HiddenVisibility;
+    }
+    if A == ProtectedVisibility || B == ProtectedVisibility {
+        return ProtectedVisibility;
+    }
+    return DefaultVisibility;
+}
+
+fn ModuleLinker::getComdatLeader(self, M: *mut Module, ComdatName: str, GVar: **mut GlobalVariable) -> bool {
+    let mut GVal: *GlobalValue = M.getNamedValue(ComdatName);
+    if dyn_cast_or_null(GVal) {
+        GA;
+    } else {
+        GVal = GA.getAliaseeObject();
+        if !GVal {
+            return self.emitError("Linking COMDATs named '" + ComdatName + "': COMDAT key involves incomputable alias size.");
+        }
+    }
+    GVar = dyn_cast_or_null(GVal);
+    if !GVar {
+        return self.emitError("Linking COMDATs named '" + ComdatName + "': GlobalVariable required for data dependent selection!");
+    }
+    return false;
+}
+
+fn ModuleLinker::computeResultingSelectionKind(self, ComdatName: str, Src: SelectionKind, Dst: SelectionKind, Result: *mut SelectionKind, From: *mut LinkFrom) -> bool {
+    let mut DstM: *mut Module = self.Mover.getModule();
+    let mut DstAnyOrLargest: bool = Dst == Any || Dst == Largest;
+    let mut SrcAnyOrLargest: bool = Src == Any || Src == Largest;
+    if DstAnyOrLargest && SrcAnyOrLargest {
+        if Dst == Largest || Src == Largest {
+            Result = Largest;
+        } else {
+            Result = Any;
+        }
+    } else if Src == Dst {
+        Result = Dst;
+    } else {
+        return self.emitError("Linking COMDATs named '" + ComdatName + "': invalid selection kinds!");
+    }
+    match Result {
+        Any => {
+            From = Dst;
+        },
+        NoDeduplicate => {
+            From = Both;
+        },
+        ExactMatch => {
+            Largest;
+        },
+    }
+    return false;
+}
+
+fn ModuleLinker::getComdatResult(self, SrcC: *Comdat, Result: *mut SelectionKind, From: *mut LinkFrom) -> bool {
+    let mut DstM: *mut Module = self.Mover.getModule();
+    let mut SSK: SelectionKind = SrcC.getSelectionKind();
+    let mut ComdatName: str = SrcC.getName();
+    let mut ComdatSymTab: *mut ComdatSymTabType = DstM.getComdatSymbolTable();
+    let mut DstCI: iterator = ComdatSymTab.find(ComdatName);
+    if DstCI == ComdatSymTab.end() {
+        From = Src;
+        Result = SSK;
+        return false;
+    }
+    let mut DstC: *Comdat = &mut operator(DstCI).second;
+    let mut DSK: SelectionKind = DstC.getSelectionKind();
+    return self.computeResultingSelectionKind(ComdatName, SSK, DSK, Result, From);
+}
+
+fn ModuleLinker::shouldLinkFromSource(self, LinkFromSrc: *mut bool, Dest: *GlobalValue, Src: *GlobalValue) -> bool {
+    if self.shouldOverrideFromSrc() {
+        LinkFromSrc = true;
+        return false;
+    }
+    if Src.hasAppendingLinkage() || Dest.hasAppendingLinkage() {
+        LinkFromSrc = true;
+        return false;
+    }
+    let mut SrcIsDeclaration: bool = Src.isDeclarationForLinker();
+    let mut DestIsDeclaration: bool = Dest.isDeclarationForLinker();
+    if SrcIsDeclaration {
+        if Src.hasDLLImportStorageClass() {
+            LinkFromSrc = DestIsDeclaration;
+            return false;
+        }
+        if Dest.hasExternalWeakLinkage() {
+            LinkFromSrc = true;
+            return false;
+        }
+        LinkFromSrc = !Src.isDeclaration() && Dest.isDeclaration();
+        return false;
+    }
+    if DestIsDeclaration {
+        LinkFromSrc = true;
+        return false;
+    }
+    if Src.hasCommonLinkage() {
+        if Dest.hasLinkOnceLinkage() || Dest.hasWeakLinkage() {
+            LinkFromSrc = true;
+            return false;
+        }
+        if !Dest.hasCommonLinkage() {
+            LinkFromSrc = false;
+            return false;
+        }
+        let mut DL: *DataLayout = Dest.getDataLayout();
+        let mut DestSize: u64 = cast(Dest).getGlobalSize(DL);
+        let mut SrcSize: u64 = cast(Src).getGlobalSize(DL);
+        LinkFromSrc = SrcSize > DestSize;
+        return false;
+    }
+    if Src.isWeakForLinker() {
+        assert!(!Dest.hasExternalWeakLinkage();
+        assert!(!Dest.hasAvailableExternallyLinkage();
+        if Dest.hasLinkOnceLinkage() && Src.hasWeakLinkage() {
+            LinkFromSrc = true;
+            return false;
+        }
+        LinkFromSrc = false;
+        return false;
+    }
+    if Dest.isWeakForLinker() {
+        assert!(Src.hasExternalLinkage();
+        LinkFromSrc = true;
+        return false;
+    }
+    assert!(!Src.hasExternalWeakLinkage();
+    assert!(!Dest.hasExternalWeakLinkage();
+    assert!(Dest.hasExternalLinkage() && Src.hasExternalLinkage(), "Unexpected linkage type!");
+    return self.emitError("Linking globals named '" + Src.getName() + "': symbol multiply defined!");
+}
+
+fn ModuleLinker::linkIfNeeded(self, GV: *mut GlobalValue, GVToClone: *mut SmallVectorImpl<GlobalValue *>) -> bool {
+    let mut DGV: *mut GlobalValue = self.getLinkedToGlobal(&mut GV);
+    if self.shouldLinkOnlyNeeded() {
+        if !GV.hasAppendingLinkage() {
+            if !DGV {
+                return false;
+            }
+            if !DGV.isDeclaration() {
+                return false;
+            }
+        }
+    }
+    if DGV && !GV.hasLocalLinkage() && !GV.hasAppendingLinkage() {
+        let mut DGVar: *mut GlobalVariable = dyn_cast(DGV);
+        let mut SGVar: *mut GlobalVariable = dyn_cast(&mut GV);
+        if DGVar && SGVar {
+            if DGVar.isDeclaration() && SGVar.isDeclaration() && (!DGVar.isConstant() || !SGVar.isConstant()) {
+                DGVar.setConstant(false);
+                SGVar.setConstant(false);
+            }
+            if DGVar.hasCommonLinkage() && SGVar.hasCommonLinkage() {
+                let mut DAlign: MaybeAlign = DGVar.getAlign();
+                let mut SAlign: MaybeAlign = SGVar.getAlign();
+                let mut Align: MaybeAlign = MaybeAlign { nullopt };
+                if DAlign || SAlign {
+                    Align = MaybeAlign { if DAlign.valueOrOne() > SAlign.valueOrOne() { DAlign.valueOrOne() } else { SAlign.valueOrOne() } };
+                }
+                SGVar.setAlignment(Align);
+                DGVar.setAlignment(Align);
+            }
+        }
+        let mut Visibility: VisibilityTypes = getMinVisibility(DGV.getVisibility(), GV.getVisibility());
+        DGV.setVisibility(Visibility);
+        GV.setVisibility(Visibility);
+        let mut UnnamedAddr: UnnamedAddr = getMinUnnamedAddr(DGV.getUnnamedAddr(), GV.getUnnamedAddr());
+        DGV.setUnnamedAddr(UnnamedAddr);
+        GV.setUnnamedAddr(UnnamedAddr);
+    }
+    if !DGV && !self.shouldOverrideFromSrc() && (GV.hasLocalLinkage() || GV.hasLinkOnceLinkage() || GV.hasAvailableExternallyLinkage()) {
+        return false;
+    }
+    if GV.isDeclaration() {
+        return false;
+    }
+    let mut ComdatFrom: LinkFrom = Dst;
+    if GV.getComdat() {
+        SC;
+    } else {
+        tie(ignore, ComdatFrom) = self.ComdatsChosen[SC];
+        if ComdatFrom == Dst {
+            return false;
+        }
+    }
+    let mut LinkFromSrc: bool = true;
+    if DGV && self.shouldLinkFromSource(LinkFromSrc, *DGV, GV) {
+        return true;
+    }
+    if DGV && ComdatFrom == Both {
+        GVToClone.push(if LinkFromSrc { DGV } else { &mut GV });
+    }
+    if LinkFromSrc {
+        self.ValuesToLink.insert(&mut GV);
+    }
+    return false;
+}
+
+fn ModuleLinker::addLazyFor(self, GV: *mut GlobalValue, Add: *ValueAdder) {
+    if !GV.hasLinkOnceLinkage() && !GV.hasAvailableExternallyLinkage() && !self.shouldLinkOnlyNeeded() {
+        return;
+    }
+    if self.InternalizeCallback {
+        self.Internalize.insert(GV.getName());
+    }
+    Add.call(GV);
+    let mut SC: *Comdat = GV.getComdat();
+    if !SC {
+        return;
+    }
+    for GV2 in self.LazyComdatMembers[SC] {
+        let mut DGV: *mut GlobalValue = self.getLinkedToGlobal(GV2);
+        let mut LinkFromSrc: bool = true;
+        if DGV && self.shouldLinkFromSource(LinkFromSrc, *DGV, *GV2) {
+            return;
+        }
+        if !LinkFromSrc {
+            continue;
+        }
+        if self.InternalizeCallback {
+            self.Internalize.insert(GV2.getName());
+        }
+        Add.call(*GV2);
+    }
+}
+
+fn ModuleLinker::dropReplacedComdat(self, GV: *mut GlobalValue, ReplacedDstComdats: *DenseSet<const Comdat *>) {
+    let mut C: *mut Comdat = GV.getComdat();
+    if !C {
+        return;
+    }
+    if !ReplacedDstComdats.count(C) {
+        return;
+    }
+    if GV.use_empty() {
+        GV.eraseFromParent();
+        return;
+    }
+    if dyn_cast(&mut GV) {
+        F;
+    } else {
+        F.deleteBody();
+    }
+}
+
+fn ModuleLinker::run(self) -> bool {
+    let mut DstM: *mut Module = self.Mover.getModule();
+    let mut ReplacedDstComdats: DenseSet<const Comdat *> = DenseSet<const Comdat *> {};
+    let mut NonPrevailingComdats: DenseSet<const Comdat *> = DenseSet<const Comdat *> {};
+    for SMEC in operator(self.SrcM).getComdatSymbolTable() {
+        let mut C: *Comdat = SMEC.getValue();
+        if self.ComdatsChosen.count(&mut C) {
+            continue;
+        }
+        let mut SK: SelectionKind = zeroed();
+        let mut From: LinkFrom = zeroed();
+        if self.getComdatResult(&mut C, SK, From) {
+            return true;
+        }
+        self.ComdatsChosen[&mut C] = make_pair(SK, From);
+        if From == Dst {
+            NonPrevailingComdats.insert(&mut C);
+        }
+        if From != Src {
+            continue;
+        }
+        let mut ComdatSymTab: *mut ComdatSymTabType = DstM.getComdatSymbolTable();
+        let mut DstCI: iterator = ComdatSymTab.find(C.getName());
+        if DstCI == ComdatSymTab.end() {
+            continue;
+        }
+        let mut DstC: *Comdat = &mut operator(DstCI).second;
+        ReplacedDstComdats.insert(DstC);
+    }
+    for GV in make_early_inc_range(DstM.aliases()) {
+        self.dropReplacedComdat(GV, ReplacedDstComdats);
+    }
+    for GV in make_early_inc_range(DstM.globals()) {
+        self.dropReplacedComdat(GV, ReplacedDstComdats);
+    }
+    for GV in make_early_inc_range(DstM) {
+        self.dropReplacedComdat(GV, ReplacedDstComdats);
+    }
+    if !NonPrevailingComdats.is_empty() {
+        let mut AliasedGlobals: DenseSet<GlobalObject *> = DenseSet<GlobalObject *> {};
+        for GA in operator(self.SrcM).aliases() {
+            let mut GO: *mut GlobalObject = GA.getAliaseeObject();
+            if GO && GO.getComdat() {
+                AliasedGlobals.insert(GO);
+            }
+        }
+        for C in NonPrevailingComdats {
+            let mut ToUpdate: SmallVector<GlobalObject *> = SmallVector<GlobalObject *> {};
+            for GO in C.getUsers() {
+                if GO.hasPrivateLinkage() && !AliasedGlobals.contains(GO) {
+                    ToUpdate.push(GO);
+                }
+            }
+            for GO in ToUpdate {
+                GO.setLinkage(AvailableExternallyLinkage);
+                GO.setComdat(null);
+            }
+        }
+    }
+    for GV in operator(self.SrcM).globals() {
+        if GV.hasLinkOnceLinkage() {
+            if GV.getComdat() {
+                SC;
+            } else {
+                self.LazyComdatMembers[SC].push(&mut GV);
+            }
+        }
+    }
+    for SF in operator(self.SrcM) {
+        if SF.hasLinkOnceLinkage() {
+            if SF.getComdat() {
+                SC;
+            } else {
+                self.LazyComdatMembers[SC].push(&mut SF);
+            }
+        }
+    }
+    for GA in operator(self.SrcM).aliases() {
+        if GA.hasLinkOnceLinkage() {
+            if GA.getComdat() {
+                SC;
+            } else {
+                self.LazyComdatMembers[SC].push(&mut GA);
+            }
+        }
+    }
+    let mut GVToClone: SmallVector<GlobalValue *, 0> = SmallVector<GlobalValue *, 0> {};
+    for GV in operator(self.SrcM).globals() {
+        if self.linkIfNeeded(GV, GVToClone) {
+            return true;
+        }
+    }
+    for SF in operator(self.SrcM) {
+        if self.linkIfNeeded(SF, GVToClone) {
+            return true;
+        }
+    }
+    for GA in operator(self.SrcM).aliases() {
+        if self.linkIfNeeded(GA, GVToClone) {
+            return true;
+        }
+    }
+    for GI in operator(self.SrcM).ifuncs() {
+        if self.linkIfNeeded(GI, GVToClone) {
+            return true;
+        }
+    }
+    for GV in GVToClone {
+        if dyn_cast(GV) {
+            Var;
+        } else {
+            let mut NewVar: *mut GlobalVariable = GlobalVariable { *Var.getParent(), Var.getValueType(), Var.isConstant(), Var.getLinkage(), Var.getInitializer(), "", null, NotThreadLocal, optional<unsigned int> { nullopt }, false };
+            NewVar.copyAttributesFrom(Var);
+            NewVar.setVisibility(DefaultVisibility);
+            NewVar.setLinkage(PrivateLinkage);
+            NewVar.setDSOLocal(true);
+            NewVar.setComdat(Var.getComdat());
+            if Var.getParent() != &mut self.Mover.getModule() {
+                self.ValuesToLink.insert(NewVar);
+            }
+        }
+    }
+    for let mut I: u32 = 0; I < self.ValuesToLink.len; I += 1 {
+        let mut GV: *mut GlobalValue = self.ValuesToLink[I];
+        let mut SC: *Comdat = GV.getComdat();
+        if !SC {
+            continue;
+        }
+        for GV2 in self.LazyComdatMembers[SC] {
+            let mut DGV: *mut GlobalValue = self.getLinkedToGlobal(GV2);
+            let mut LinkFromSrc: bool = true;
+            if DGV && self.shouldLinkFromSource(LinkFromSrc, *DGV, *GV2) {
+                return true;
+            }
+            if LinkFromSrc {
+                self.ValuesToLink.insert(GV2);
+            }
+        }
+    }
+    if self.InternalizeCallback {
+        for GV in self.ValuesToLink {
+            self.Internalize.insert(GV.getName());
+        }
+    }
+    let mut HasErrors: bool = false;
+    if self.Mover.move(unique_ptr<Module> { move(self.SrcM) }, self.ValuesToLink.getArrayRef(), LazyCallback { Closure_1 { cap_0: self }, null, null }, false) {
+        E;
+    } else {
+        handleAllErrors(Error { Payload: move(E) }, Closure_2 { DstM: &mut DstM, HasErrors: &mut HasErrors });
+    }
+    if HasErrors {
+        return true;
+    }
+    if self.InternalizeCallback {
+        self.InternalizeCallback.call(DstM, self.Internalize);
+    }
+    return false;
+}
+
+fn Linker::linkInModule(self, Src: unique_ptr<Module>, Flags: u32, InternalizeCallback: function<void (Module &, const StringSet<> &)>) -> bool {
+    let mut ModLinker: ModuleLinker = ModuleLinker { self.Mover, unique_ptr<Module> { move(Src) }, Flags, function<void (Module &, const StringSet<> &)> { move(InternalizeCallback) } };
+    return ModLinker.run();
+}
+
+fn Linker::linkModules(self, Dest: *mut Module, Src: unique_ptr<Module>, Flags: u32, InternalizeCallback: function<void (Module &, const StringSet<> &)>) -> bool {
+    let mut L: Linker = Linker { Mover: Dest };
+    return L.linkInModule(unique_ptr<Module> { move(Src) }, Flags, function<void (Module &, const StringSet<> &)> { move(InternalizeCallback) });
+}
+
+fn LLVMLinkModules2(Dest: LLVMModuleRef, Src: LLVMModuleRef) -> LLVMBool {
+    let mut D: *mut Module = unwrap(Dest);
+    let mut M: unique_ptr<Module> = unique_ptr<Module> { unwrap(Src) };
+    return linkModules(*D, unique_ptr<Module> { move(M) }, None, function<void (Module &, const StringSet<> &)> {});
+}
+
+struct Closure_1 {
+    cap_0: *mut ModuleLinker,
+}
+
+fn Closure_1::call(self: *Closure_1, GV: *mut GlobalValue, Add: ValueAdder) {
+        self.addLazyFor(GV, Add);
+    }
+
+struct Closure_2 {
+    DstM: *mut Module,
+    HasErrors: *mut bool,
+}
+
+unsafe fn Closure_2::call(self: *mut Closure_2, EIB: *mut ErrorInfoBase) {
+            (*self.DstM).getContext().diagnose(LinkDiagnosticInfo { DS_Error, EIB.message() });
+            (*self.HasErrors) = true;
+        }

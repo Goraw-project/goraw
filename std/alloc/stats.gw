@@ -1,0 +1,780 @@
+// Внешние системные функции libc
+extern fn memset(dest: *mut u8, c: i32, n: u64) -> *mut u8;
+
+fn mi_stat_update_mt(stat: *mut mi_stat_count_t, amount: i64) {
+    if amount == 0 {
+        return;
+    }
+    let mut current: i64 = mi_atomic_addi64_relaxed(&mut stat.current, amount);
+    mi_atomic_maxi64_relaxed(&mut stat.peak, current + amount);
+    if amount > 0 {
+        mi_atomic_addi64_relaxed(&mut stat.total, amount);
+    }
+}
+
+fn mi_stat_update(stat: *mut mi_stat_count_t, amount: i64) {
+    if amount == 0 {
+        return;
+    }
+    stat.current += amount;
+    if stat.current > stat.peak {
+        stat.peak = stat.current;
+    }
+    if amount > 0 {
+        stat.total += amount;
+    }
+}
+
+fn mi_stat_adjust_mt(stat: *mut mi_stat_count_t, amount: i64) {
+    if amount == 0 {
+        return;
+    }
+    let mut peak: i64 = atomic_load_explicit(&mut stat.peak as *mut atomic<int64_t>, memory_order_relaxed);
+    mi_atomic_addi64_relaxed(&mut stat.current, amount);
+    let mut prev_total: i64 = mi_atomic_addi64_relaxed(&mut stat.total, amount);
+    if prev_total == peak {
+        mi_atomic_addi64_relaxed(&mut stat.peak, amount);
+    }
+}
+
+fn mi_stat_adjust(stat: *mut mi_stat_count_t, amount: i64) {
+    if amount == 0 {
+        return;
+    }
+    stat.current += amount;
+    if stat.total == stat.peak {
+        stat.peak += amount;
+    }
+    stat.total += amount;
+}
+
+fn mi_stat_count_add_mt(stat: *mut mi_stat_count_t, src: *mi_stat_count_t) {
+    if stat == src {
+        return;
+    }
+    mi_atomic_void_addi64_relaxed(&mut stat.total, &mut src.total);
+    let mut src_peak: i64 = atomic_load_explicit(&mut src.peak as *mut atomic<int64_t>, memory_order_relaxed);
+    let mut src_current: i64 = atomic_load_explicit(&mut src.current as *mut atomic<int64_t>, memory_order_relaxed);
+    let mut prev_current: i64 = mi_atomic_addi64_relaxed(&mut stat.current, src_current);
+    mi_atomic_maxi64_relaxed(&mut stat.peak, prev_current + src_peak);
+}
+
+fn mi_stat_counter_add_mt(stat: *mut mi_stat_counter_t, src: *mi_stat_counter_t) {
+    if stat == src {
+        return;
+    }
+    mi_atomic_void_addi64_relaxed(&mut stat.total, &mut src.total);
+}
+
+fn mi_stats_add(stats: *mut mi_stats_t, src: *mi_stats_t) {
+    if stats == 0 || src == 0 || stats == src {
+        return;
+    }
+    mi_stat_count_add_mt(&mut stats.pages, &mut src.pages);
+    mi_stat_count_add_mt(&mut stats.reserved, &mut src.reserved);
+    mi_stat_count_add_mt(&mut stats.committed, &mut src.committed);
+    mi_stat_counter_add_mt(&mut stats.reset, &mut src.reset);
+    mi_stat_counter_add_mt(&mut stats.purged, &mut src.purged);
+    mi_stat_count_add_mt(&mut stats.page_committed, &mut src.page_committed);
+    mi_stat_count_add_mt(&mut stats.pages_abandoned, &mut src.pages_abandoned);
+    mi_stat_count_add_mt(&mut stats.threads, &mut src.threads);
+    mi_stat_count_add_mt(&mut stats.malloc_normal, &mut src.malloc_normal);
+    mi_stat_count_add_mt(&mut stats.malloc_huge, &mut src.malloc_huge);
+    mi_stat_counter_add_mt(&mut stats.malloc_requested, &mut src.malloc_requested);
+    mi_stat_counter_add_mt(&mut stats.mmap_calls, &mut src.mmap_calls);
+    mi_stat_counter_add_mt(&mut stats.commit_calls, &mut src.commit_calls);
+    mi_stat_counter_add_mt(&mut stats.reset_calls, &mut src.reset_calls);
+    mi_stat_counter_add_mt(&mut stats.purge_calls, &mut src.purge_calls);
+    mi_stat_counter_add_mt(&mut stats.arena_count, &mut src.arena_count);
+    mi_stat_counter_add_mt(&mut stats.malloc_normal_count, &mut src.malloc_normal_count);
+    mi_stat_counter_add_mt(&mut stats.malloc_huge_count, &mut src.malloc_huge_count);
+    mi_stat_counter_add_mt(&mut stats.malloc_guarded_count, &mut src.malloc_guarded_count);
+    mi_stat_counter_add_mt(&mut stats.arena_rollback_count, &mut src.arena_rollback_count);
+    mi_stat_counter_add_mt(&mut stats.arena_purges, &mut src.arena_purges);
+    mi_stat_counter_add_mt(&mut stats.pages_extended, &mut src.pages_extended);
+    mi_stat_counter_add_mt(&mut stats.pages_retire, &mut src.pages_retire);
+    mi_stat_counter_add_mt(&mut stats.page_searches, &mut src.page_searches);
+    mi_stat_counter_add_mt(&mut stats.page_searches_count, &mut src.page_searches_count);
+    mi_stat_count_add_mt(&mut stats.segments, &mut src.segments);
+    mi_stat_count_add_mt(&mut stats.segments_abandoned, &mut src.segments_abandoned);
+    mi_stat_count_add_mt(&mut stats.segments_cache, &mut src.segments_cache);
+    mi_stat_count_add_mt(&mut stats._segments_reserved, &mut src._segments_reserved);
+    mi_stat_count_add_mt(&mut stats.heaps, &mut src.heaps);
+    mi_stat_count_add_mt(&mut stats.theaps, &mut src.theaps);
+    mi_stat_count_add_mt(&mut stats.pages_os_abandoned, &mut src.pages_os_abandoned);
+    mi_stat_count_add_mt(&mut stats.pages_os_allocated, &mut src.pages_os_allocated);
+    mi_stat_counter_add_mt(&mut stats.pages_reclaim_on_alloc, &mut src.pages_reclaim_on_alloc);
+    mi_stat_counter_add_mt(&mut stats.pages_reclaim_on_free, &mut src.pages_reclaim_on_free);
+    mi_stat_counter_add_mt(&mut stats.pages_reabandon_full, &mut src.pages_reabandon_full);
+    mi_stat_counter_add_mt(&mut stats.pages_unabandon_busy_wait, &mut src.pages_unabandon_busy_wait);
+    mi_stat_counter_add_mt(&mut stats.heaps_delete_wait, &mut src.heaps_delete_wait);
+    mi_stat_counter_add_mt(&mut stats.pages_stat_updates, &mut src.pages_stat_updates);
+    mi_stat_counter_add_mt(&mut stats.pages_stat_update_count, &mut src.pages_stat_update_count);
+    mi_stat_counter_add_mt(&mut stats.profile_samples, &mut src.profile_samples);
+    for let mut i: u64 = 0; i <= (73); i += 1 {
+        mi_stat_count_add_mt(&mut stats.malloc_bins[i], &mut src.malloc_bins[i]);
+    }
+    for let mut i: u64 = 0; i <= (73); i += 1 {
+        mi_stat_count_add_mt(&mut stats.page_bins[i], &mut src.page_bins[i]);
+    }
+    for let mut i: u64 = 0; i < MI_CBIN_COUNT; i += 1 {
+        mi_stat_count_add_mt(&mut stats.chunk_bins[i], &mut src.chunk_bins[i]);
+    }
+}
+
+fn mi_printf_amount(n: i64, unit: i64, out: *mut mi_output_fun, arg: *mut void, limitwidth: bool) {
+    let mut buf: [32]i8 = zeroed();
+    memset(&mut buf, 0, (buf));
+    let mut len: i32 = 32;
+    let mut suffix: *u8 = (if unit <= 0 { " " } else { "B" });
+    let mut base: i64 = (if unit == 0 { 1000 } else { 1024 });
+    if unit > 0 {
+        n *= unit;
+    }
+    let mut pos: i64 = (if n < 0 { -n } else { n });
+    if pos < base {
+        if n != 1 || suffix[0] != 'B' {
+            _mi_snprintf(buf, len, "%lld   %-3s", n as i64, (if n == 0 { "" } else { suffix }));
+        }
+    } else {
+        let mut divider: i64 = base;
+        let mut magnitude: *u8 = "K";
+        if pos >= divider * base {
+            divider *= base;
+            magnitude = "M";
+        }
+        if pos >= divider * base {
+            divider *= base;
+            magnitude = "G";
+        }
+        let mut tens: i64 = (n / (divider / 10));
+        let mut whole: i64 = (tens / 10) as i64;
+        let mut frac1: i64 = (tens % 10) as i64;
+        let mut unitdesc: [8]i8 = zeroed();
+        _mi_snprintf(unitdesc, 8, "%s%s%s", magnitude, (if base == 1024 { "i" } else { "" }), suffix);
+        _mi_snprintf(buf, len, "%ld.%ld %-3s", whole, (if frac1 < 0 { -frac1 } else { frac1 }), unitdesc);
+    }
+    if limitwidth {
+        _mi_fprintf(out, arg, "%12s", buf);
+    } else {
+        _mi_fprintf(out, arg, "%s", buf);
+    }
+}
+
+fn mi_print_amount(n: i64, unit: i64, out: *mut mi_output_fun, arg: *mut void) {
+    mi_printf_amount(n, unit, out, arg, true);
+}
+
+fn mi_print_count(n: i64, unit: i64, out: *mut mi_output_fun, arg: *mut void) {
+    if unit == 1 {
+        _mi_fprintf(out, arg, "%12s", " ");
+    } else {
+        mi_print_amount(n, 0, out, arg);
+    }
+}
+
+fn mi_stat_print_ex(stat: *mi_stat_count_t, msg: *u8, unit: i64, out: *mut mi_output_fun, arg: *mut void, notok: *u8) {
+    _mi_fprintf(out, arg, "  %-12s:", msg);
+    if unit != 0 {
+        if unit > 0 {
+            mi_print_amount(stat.peak, unit, out, arg);
+            mi_print_amount(stat.total, unit, out, arg);
+            mi_print_amount(stat.current, unit, out, arg);
+            mi_print_amount(unit, 1, out, arg);
+            mi_print_count(stat.total, unit, out, arg);
+        } else if unit == -1 {
+            mi_print_amount(stat.peak, -1, out, arg);
+            mi_print_amount(stat.total, -1, out, arg);
+            mi_print_amount(stat.current, -1, out, arg);
+            _mi_fprintf(out, arg, "%24s", "");
+        } else {
+            mi_print_amount(stat.peak, 1, out, arg);
+            mi_print_amount(stat.total, 1, out, arg);
+            mi_print_amount(stat.current, -1, out, arg);
+            _mi_fprintf(out, arg, "%12s", "");
+            mi_print_count(-unit, 0, out, arg);
+        }
+        if stat.current != 0 {
+            _mi_fprintf(out, arg, "  ");
+            _mi_fprintf(out, arg, "%s", (if notok == 0 { "not all freed" } else { notok }));
+            _mi_fprintf(out, arg, "\n");
+        } else {
+            _mi_fprintf(out, arg, "  ok\n");
+        }
+    } else {
+        mi_print_amount(stat.peak, 0, out, arg);
+        mi_print_amount(stat.total, 0, out, arg);
+        mi_print_amount(stat.current, 0, out, arg);
+        _mi_fprintf(out, arg, "\n");
+    }
+}
+
+fn mi_stat_print(stat: *mi_stat_count_t, msg: *u8, unit: i64, out: *mut mi_output_fun, arg: *mut void) {
+    mi_stat_print_ex(stat, msg, unit, out, arg, 0);
+}
+
+fn mi_stat_total_print(stat: *mi_stat_counter_t, msg: *u8, out: *mut mi_output_fun, arg: *mut void) {
+    _mi_fprintf(out, arg, "  %-12s:", msg);
+    _mi_fprintf(out, arg, "%12s", " ");
+    mi_print_amount(stat.total, 1, out, arg);
+    _mi_fprintf(out, arg, "\n");
+}
+
+fn mi_stat_counter_print(stat: *mi_stat_counter_t, msg: *u8, out: *mut mi_output_fun, arg: *mut void) {
+    _mi_fprintf(out, arg, "  %-12s:", msg);
+    mi_print_amount(stat.total, 0, out, arg);
+    _mi_fprintf(out, arg, "\n");
+}
+
+fn mi_stat_counter_print_size(stat: *mi_stat_counter_t, msg: *u8, out: *mut mi_output_fun, arg: *mut void) {
+    _mi_fprintf(out, arg, "  %-12s:", msg);
+    mi_print_amount(stat.total, 1, out, arg);
+    _mi_fprintf(out, arg, "\n");
+}
+
+fn mi_stat_average_print(count: i64, total: i64, msg: *u8, out: *mut mi_output_fun, arg: *mut void) {
+    let mut avg_tens: i64 = (if count == 0 { 0 } else { (total * 10 / count) });
+    let mut avg_whole: i64 = avg_tens / 10;
+    let mut avg_frac1: i64 = avg_tens % 10;
+    _mi_fprintf(out, arg, "  %-12s: %5lld.%lld avg\n", msg, avg_whole, avg_frac1);
+}
+
+fn mi_print_header(name: *u8, out: *mut mi_output_fun, arg: *mut void) {
+    _mi_fprintf(out, arg, " %-13s %11s %11s %11s %11s %11s\n", name, "peak   ", "total   ", "current   ", "block   ", "total#   ");
+}
+
+fn mi_stats_print_bins(bins: *mi_stat_count_t, max: u64, out: *mut mi_output_fun, arg: *mut void) -> bool {
+    let mut found: bool = false;
+    let mut buf: [64]i8 = zeroed();
+    for let mut i: u64 = 0; i <= max; i += 1 {
+        if bins[i].total > 0 {
+            found = true;
+            let mut unit: u64 = _mi_bin_size(i as u8);
+            let mut pagekind: *u8 = (if unit <= ((((1) * (1 << (13 + (3)))) - (4 * (1024))) / 6) { "S" } else { (if unit <= (((8 * ((1) * (1 << (13 + (3))))) - (4 * (1024))) / 6) { "M" } else { (if unit <= (((1 << (3)) * (8 * ((1) * (1 << (13 + (3)))))) / 8) { "L" } else { "H" }) }) });
+            _mi_snprintf(buf, 64, "bin%2s  %3lu", pagekind, i as i64);
+            mi_stat_print(&mut bins[i], buf, unit as i64, out, arg);
+        }
+    }
+    if found {
+        _mi_fprintf(out, arg, "\n");
+    }
+    return found;
+}
+
+struct buffered_s {
+    out: *mut mi_output_fun,
+    arg: *mut void,
+    buf: *mut u8,
+    used: u64,
+    count: u64,
+}
+
+fn mi_buffered_flush(buf: *mut buffered_t) {
+    buf.buf[buf.used] = 0;
+    _mi_fputs(buf.out, buf.arg, 0, buf.buf);
+    buf.used = 0;
+}
+
+fn mi_buffered_out(msg: *u8, arg: *mut void) {
+    let mut buf: *mut buffered_t = arg as *mut buffered_t;
+    if msg == 0 || buf == 0 {
+        return;
+    }
+    for let mut src: *u8 = msg; *src != 0; src += 1 {
+        let mut c: i8 = *src;
+        if buf.used >= buf.count {
+            mi_buffered_flush(buf);
+        }
+        (if (buf.used < buf.count) { 0 as void } else { _mi_assert_fail("buf->used < buf->count", "mimalloc\\src\\stats.c", 322, "mi_buffered_out") });
+        buf.buf[buf.used += 1] = c;
+        if c == 10 {
+            mi_buffered_flush(buf);
+        }
+    }
+}
+
+fn mi_process_info_print_out(out: *mut mi_output_fun, arg: *mut void) {
+    let mut elapsed: u64 = 0;
+    let mut user_time: u64 = 0;
+    let mut sys_time: u64 = 0;
+    let mut current_rss: u64 = 0;
+    let mut peak_rss: u64 = 0;
+    let mut current_commit: u64 = 0;
+    let mut peak_commit: u64 = 0;
+    let mut page_faults: u64 = 0;
+    mi_process_info(&mut elapsed, &mut user_time, &mut sys_time, &mut current_rss, &mut peak_rss, &mut current_commit, &mut peak_commit, &mut page_faults);
+    _mi_fprintf(out, arg, "  %-12s: %5zu.%03zu s\n", "elapsed", elapsed / 1000, elapsed % 1000);
+    _mi_fprintf(out, arg, "  %-12s: user: %zu.%03zu s, system: %zu.%03zu s, faults: %zu, peak rss: ", "process", user_time / 1000, user_time % 1000, sys_time / 1000, sys_time % 1000, page_faults);
+    mi_printf_amount(peak_rss as i64, 1, out, arg, false);
+    if peak_commit > 0 {
+        _mi_fprintf(out, arg, ", peak commit: ");
+        mi_printf_amount(peak_commit as i64, 1, out, arg, false);
+    }
+    _mi_fprintf(out, arg, "\n");
+}
+
+static mut mi_process_start: mi_msecs_t = zeroed();
+
+fn mi_stats_add_into(to: *mut mi_stats_t, from: *mi_stats_t) {
+    (if (to != 0 && from != 0) { 0 as void } else { _mi_assert_fail("to != NULL && from != NULL", "mimalloc\\src\\stats.c", 446, "mi_stats_add_into") });
+    if to == from {
+        return;
+    }
+    mi_stats_add(to, from);
+}
+
+fn mi_stats_merge_theap_to_heap(theap: *mut mi_theap_t) -> *mi_stats_t {
+    let mut stats: *mut mi_stats_t = &mut theap.stats;
+    let mut heap_stats: *mut mi_stats_t = &mut _mi_theap_heap(theap).stats;
+    _mi_stats_merge_into(heap_stats, stats);
+    return heap_stats;
+}
+
+fn mi_heap_get_stats(heap: *mut mi_heap_t) -> *mi_stats_t {
+    if heap == 0 {
+        heap = mi_heap_main();
+    }
+    let mut theap: *mut mi_theap_t = _mi_heap_theap_peek(heap);
+    if theap == 0 {
+        return &mut heap.stats;
+    } else {
+        return mi_stats_merge_theap_to_heap(theap);
+    }
+}
+
+fn mi_theap_get_stats(theap: *mut mi_theap_t) -> *mi_stats_t {
+    return &mut theap.stats;
+}
+
+fn mi_stats_reset() {
+    if !mi_theap_is_initialized(_mi_theap_default()) {
+        return;
+    }
+    let mut heap_main: *mut mi_heap_t = mi_heap_main();
+    mi_heap_get_stats(heap_main);
+    mi_heap_stats_merge_to_subproc(heap_main);
+}
+
+fn mi_heap_stats_print_out(heap: *mut mi_heap_t, out: *mut mi_output_fun, arg: *mut void) {
+    if heap == 0 {
+        heap = mi_heap_main();
+    }
+    _mi_stats_print("heap", heap.heap_seq, mi_heap_get_stats(heap), out, arg);
+}
+
+struct mi_heap_print_visit_info_s {
+    out: *mut mi_output_fun,
+    out_arg: *mut void,
+}
+
+fn mi_heap_print_visitor(heap: *mut mi_heap_t, arg: *mut void) -> bool {
+    let mut vinfo: *mut mi_heap_print_visit_info_t = (arg) as *mut mi_heap_print_visit_info_t;
+    mi_heap_stats_print_out(heap, vinfo.out, vinfo.out_arg);
+    return true;
+}
+
+fn mi_subproc_heap_stats_print_out(subproc_id: mi_subproc_id_t, out: *mut mi_output_fun, arg: *mut void) {
+    let mut subproc: *mut mi_subproc_t = _mi_subproc_from_id(subproc_id);
+    if subproc == 0 {
+        return;
+    }
+    let mut vinfo: mi_heap_print_visit_info_t = mi_heap_print_visit_info_t { out, arg };
+    mi_subproc_visit_heaps(subproc_id, &mut mi_heap_print_visitor, &mut vinfo);
+    if subproc.theap_meta != 0 {
+        _mi_stats_print("meta", subproc.subproc_seq, &mut subproc.theap_meta.stats, out, arg);
+    }
+    _mi_stats_print("subproc", subproc.subproc_seq, &mut subproc.stats, out, arg);
+}
+
+fn mi_subproc_stats_print_out(subproc_id: mi_subproc_id_t, out: *mut mi_output_fun, arg: *mut void) {
+    let mut subproc: *mut mi_subproc_t = _mi_subproc_from_id(subproc_id);
+    if subproc == 0 {
+        return;
+    }
+    let mut stats: mi_stats_t = mi_stats_t {};
+    mi_stats_init(&mut stats);
+    if mi_subproc_stats_get(subproc_id, &mut stats) {
+        _mi_stats_print("subproc", subproc.subproc_seq, &mut stats, out, arg);
+    }
+}
+
+fn mi_stats_print_out(out: *mut mi_output_fun, arg: *mut void) {
+    mi_subproc_stats_print_out(mi_subproc_current(), out, arg);
+}
+
+fn mi_stats_print(out: *mut void) {
+    mi_stats_print_out(out as *mut mi_output_fun, 0);
+}
+
+fn mi_thread_stats_print_out(out: *mut mi_output_fun, arg: *mut void) {
+    let mut theap: *mut mi_theap_t = _mi_theap_default();
+    if theap == 0 || !mi_theap_is_initialized(theap) {
+        return;
+    }
+    _mi_stats_print("heap", _mi_theap_heap(theap).heap_seq, &mut theap.stats, out, arg);
+    mi_stats_merge_theap_to_heap(_mi_theap_default());
+}
+
+static mut mi_clock_diff: mi_msecs_t = zeroed();
+
+fn mi_process_info(elapsed_msecs: *mut u64, user_msecs: *mut u64, system_msecs: *mut u64, current_rss: *mut u64, peak_rss: *mut u64, current_commit: *mut u64, peak_commit: *mut u64, page_faults: *mut u64) {
+    let mut pinfo: mi_process_info_t = mi_process_info_t {};
+    memset(&mut pinfo, 0, (pinfo));
+    pinfo.elapsed = _mi_clock_end(mi_process_start);
+    {
+        let mut subproc: *mi_subproc_t = _mi_subproc_main();
+        if subproc != 0 {
+            let mut current: i64 = atomic_load_explicit((&mut subproc.stats.committed.current) as *mut atomic<int64_t>, memory_order_relaxed);
+            let mut peak: i64 = atomic_load_explicit((&mut subproc.stats.committed.peak) as *mut atomic<int64_t>, memory_order_relaxed);
+            pinfo.current_commit = (if current < 0 { 0 } else { (if current < 9223372036854775807 { current as u64 } else { 9223372036854775807 }) });
+            pinfo.peak_commit = (if peak < 0 { 0 } else { (if peak < 9223372036854775807 { peak as u64 } else { 9223372036854775807 }) });
+        }
+    }
+    pinfo.current_rss = pinfo.current_commit;
+    pinfo.peak_rss = pinfo.peak_commit;
+    pinfo.utime = 0;
+    pinfo.stime = 0;
+    pinfo.page_faults = 0;
+    _mi_prim_process_info(&mut pinfo);
+    if elapsed_msecs != 0 {
+        *elapsed_msecs = (if pinfo.elapsed < 0 { 0 } else { (if pinfo.elapsed < 9223372036854775807 as mi_msecs_t { pinfo.elapsed as u64 } else { 9223372036854775807 }) });
+    }
+    if user_msecs != 0 {
+        *user_msecs = (if pinfo.utime < 0 { 0 } else { (if pinfo.utime < 9223372036854775807 as mi_msecs_t { pinfo.utime as u64 } else { 9223372036854775807 }) });
+    }
+    if system_msecs != 0 {
+        *system_msecs = (if pinfo.stime < 0 { 0 } else { (if pinfo.stime < 9223372036854775807 as mi_msecs_t { pinfo.stime as u64 } else { 9223372036854775807 }) });
+    }
+    if current_rss != 0 {
+        *current_rss = pinfo.current_rss;
+    }
+    if peak_rss != 0 {
+        *peak_rss = pinfo.peak_rss;
+    }
+    if current_commit != 0 {
+        *current_commit = pinfo.current_commit;
+    }
+    if peak_commit != 0 {
+        *peak_commit = pinfo.peak_commit;
+    }
+    if page_faults != 0 {
+        *page_faults = pinfo.page_faults;
+    }
+}
+
+fn mi_process_info_print() {
+    mi_process_info_print_out(0, 0);
+}
+
+fn mi_stats_get_bin_size(bin: u64) -> u64 {
+    if bin > (73) {
+        return 0;
+    }
+    return _mi_bin_size(bin);
+}
+
+fn mi_stats_copy(stats_to: *mut mi_stats_t, stats_from: *mi_stats_t) -> bool {
+    if stats_to == 0 || stats_to.size !=  || stats_to.version != 5 {
+        return false;
+    }
+    if stats_from == 0 || stats_from.size != stats_to.size {
+        return false;
+    }
+    _mi_memcpy(stats_to, stats_from, stats_to.size);
+    return true;
+}
+
+fn mi_subproc_stats_get_exclusive(subproc_id: mi_subproc_id_t, stats: *mut mi_stats_t) -> bool {
+    let mut subproc: *mi_subproc_t = _mi_subproc_from_id(subproc_id);
+    if subproc == 0 {
+        return false;
+    }
+    return mi_stats_copy(stats, &mut subproc.stats);
+}
+
+fn mi_heap_stats_get(heap: *mut mi_heap_t, stats: *mut mi_stats_t) -> bool {
+    return mi_stats_copy(stats, mi_heap_get_stats(heap));
+}
+
+fn mi_theap_stats_get(theap: *mut mi_theap_t, stats: *mut mi_stats_t) -> bool {
+    return mi_stats_copy(stats, mi_theap_get_stats(theap));
+}
+
+fn mi_theap_stats_merge_to_heap(theap: *mut mi_theap_t) {
+    if theap == 0 {
+        return;
+    }
+    _mi_theap_merge_stats(theap);
+}
+
+fn mi_heap_aggregate_visitor(heap: *mut mi_heap_t, arg: *mut void) -> bool {
+    let mut stats: *mut mi_stats_t = arg as *mut mi_stats_t;
+    mi_stats_add_into(stats, mi_heap_get_stats(heap));
+    return true;
+}
+
+fn mi_subproc_stats_get(subproc_id: mi_subproc_id_t, stats: *mut mi_stats_t) -> bool {
+    if stats == 0 {
+        return false;
+    }
+    let mut subproc: *mut mi_subproc_t = _mi_subproc_from_id(subproc_id);
+    if subproc == 0 {
+        return false;
+    }
+    if !mi_stats_copy(stats, &mut subproc.stats) {
+        return false;
+    }
+    mi_subproc_visit_heaps(subproc_id, &mut mi_heap_aggregate_visitor, stats);
+    return true;
+}
+
+fn mi_stats_get(stats: *mut mi_stats_t) -> bool {
+    return mi_subproc_stats_get(mi_subproc_current(), stats);
+}
+
+struct mi_json_buf_s {
+    buf: *mut u8,
+    size: u64,
+    used: u64,
+    can_realloc: bool,
+}
+
+fn mi_json_buf_expand(hbuf: *mut mi_json_buf_t) -> bool {
+    if hbuf == 0 {
+        return false;
+    }
+    if hbuf.buf != 0 && hbuf.size > 0 {
+        hbuf.buf[hbuf.size - 1] = 0;
+    }
+    if hbuf.size > 18446744073709551615 / 2 || !hbuf.can_realloc {
+        return false;
+    }
+    let mut newsize: u64 = (if hbuf.size == 0 { mi_good_size(12 * (1024)) } else { 2 * hbuf.size });
+    let mut newbuf: char *const = mi_rezalloc(hbuf.buf, newsize) as *mut u8;
+    if newbuf == 0 {
+        return false;
+    }
+    hbuf.buf = newbuf;
+    hbuf.size = newsize;
+    return true;
+}
+
+fn mi_json_buf_print(hbuf: *mut mi_json_buf_t, msg: *u8) {
+    if msg == 0 || hbuf == 0 {
+        return;
+    }
+    if hbuf.used + 1 >= hbuf.size && !hbuf.can_realloc {
+        return;
+    }
+    for let mut src: *u8 = msg; *src != 0; src += 1 {
+        let mut c: i8 = *src;
+        if hbuf.used + 1 >= hbuf.size {
+            if !mi_json_buf_expand(hbuf) {
+                return;
+            }
+        }
+        (if (hbuf.used < hbuf.size) { 0 as void } else { _mi_assert_fail("hbuf->used < hbuf->size", "mimalloc\\src\\stats.c", 699, "mi_json_buf_print") });
+        hbuf.buf[hbuf.used += 1] = c;
+    }
+    (if (hbuf.used < hbuf.size) { 0 as void } else { _mi_assert_fail("hbuf->used < hbuf->size", "mimalloc\\src\\stats.c", 702, "mi_json_buf_print") });
+    hbuf.buf[hbuf.used] = 0;
+}
+
+fn mi_json_buf_print_count_bin(hbuf: *mut mi_json_buf_t, prefix: *u8, stat: *mi_stat_count_t, bin: u64, add_comma: bool) {
+    let mut binsize: u64 = mi_stats_get_bin_size(bin);
+    let mut pagesize: u64 = (if binsize <= ((((1) * (1 << (13 + (3)))) - (4 * (1024))) / 6) { ((1) * (1 << (13 + (3)))) } else { (if binsize <= (((8 * ((1) * (1 << (13 + (3))))) - (4 * (1024))) / 6) { (8 * ((1) * (1 << (13 + (3))))) } else { (if binsize <= (((1 << (3)) * (8 * ((1) * (1 << (13 + (3)))))) / 8) { ((1 << (3)) * (8 * ((1) * (1 << (13 + (3)))))) } else { 0 }) }) });
+    let mut buf: [128]i8 = zeroed();
+    _mi_snprintf(buf, 128, "%s{ \"total\": %lld, \"peak\": %lld, \"current\": %lld, \"block_size\": %zu, \"page_size\": %zu }%s\n", prefix, stat.total, stat.peak, stat.current, binsize, pagesize, (if add_comma { "," } else { "" }));
+    buf[127] = 0;
+    mi_json_buf_print(hbuf, buf);
+}
+
+fn mi_json_buf_print_count_cbin(hbuf: *mut mi_json_buf_t, prefix: *u8, stat: *mi_stat_count_t, bin: mi_chunkbin_t, add_comma: bool) {
+    let mut cbin: *u8 = " ";
+    match bin {
+        MI_CBIN_SMALL => {
+            cbin = "S";
+        },
+        MI_CBIN_MEDIUM => {
+            cbin = "M";
+        },
+        MI_CBIN_LARGE => {
+            cbin = "L";
+        },
+        MI_CBIN_HUGE => {
+            cbin = "H";
+        },
+        MI_CBIN_OTHER => {
+            cbin = "X";
+        },
+        _ => {
+            cbin = " ";
+        },
+    }
+    let mut buf: [128]i8 = zeroed();
+    _mi_snprintf(buf, 128, "%s{ \"total\": %lld, \"peak\": %lld, \"current\": %lld, \"bin\": \"%s\" }%s\n", prefix, stat.total, stat.peak, stat.current, cbin, (if add_comma { "," } else { "" }));
+    buf[127] = 0;
+    mi_json_buf_print(hbuf, buf);
+}
+
+fn mi_json_buf_print_count(hbuf: *mut mi_json_buf_t, prefix: *u8, stat: *mi_stat_count_t, add_comma: bool) {
+    let mut buf: [128]i8 = zeroed();
+    _mi_snprintf(buf, 128, "%s{ \"total\": %lld, \"peak\": %lld, \"current\": %lld }%s\n", prefix, stat.total, stat.peak, stat.current, (if add_comma { "," } else { "" }));
+    buf[127] = 0;
+    mi_json_buf_print(hbuf, buf);
+}
+
+fn mi_json_buf_print_count_value(hbuf: *mut mi_json_buf_t, name: *u8, stat: *mi_stat_count_t) {
+    let mut buf: [128]i8 = zeroed();
+    _mi_snprintf(buf, 128, "  \"%s\": ", name);
+    buf[127] = 0;
+    mi_json_buf_print(hbuf, buf);
+    mi_json_buf_print_count(hbuf, "", stat, true);
+}
+
+fn mi_json_buf_print_value(hbuf: *mut mi_json_buf_t, name: *u8, val: i64) {
+    let mut buf: [128]i8 = zeroed();
+    _mi_snprintf(buf, 128, "  \"%s\": %lld,\n", name, val);
+    buf[127] = 0;
+    mi_json_buf_print(hbuf, buf);
+}
+
+fn mi_json_buf_print_size(hbuf: *mut mi_json_buf_t, name: *u8, val: u64, add_comma: bool) {
+    let mut buf: [128]i8 = zeroed();
+    _mi_snprintf(buf, 128, "    \"%s\": %zu%s\n", name, val, (if add_comma { "," } else { "" }));
+    buf[127] = 0;
+    mi_json_buf_print(hbuf, buf);
+}
+
+fn mi_json_buf_print_counter_value(hbuf: *mut mi_json_buf_t, name: *u8, stat: *mi_stat_counter_t) {
+    mi_json_buf_print_value(hbuf, name, stat.total);
+}
+
+fn mi_stats_get_json_from(stats: *mi_stats_t, output_size: u64, output_buf: *mut u8) -> *mut u8 {
+    if stats == 0 || stats.size !=  || stats.version != 5 {
+        return 0;
+    }
+    let mut hbuf: mi_json_buf_t = mi_json_buf_t { 0, 0, 0, true };
+    if output_size > 0 && output_buf != 0 {
+        _mi_memzero(output_buf, output_size);
+        hbuf.buf = output_buf;
+        hbuf.size = output_size;
+        hbuf.can_realloc = false;
+    } else {
+        if !mi_json_buf_expand(&mut hbuf) {
+            return 0;
+        }
+    }
+    mi_json_buf_print(&mut hbuf, "{\n");
+    mi_json_buf_print_value(&mut hbuf, "stat_version", 5);
+    mi_json_buf_print_value(&mut hbuf, "mimalloc_version", 30503);
+    mi_json_buf_print(&mut hbuf, "  \"process\": {\n");
+    let mut elapsed: u64 = 0;
+    let mut user_time: u64 = 0;
+    let mut sys_time: u64 = 0;
+    let mut current_rss: u64 = 0;
+    let mut peak_rss: u64 = 0;
+    let mut current_commit: u64 = 0;
+    let mut peak_commit: u64 = 0;
+    let mut page_faults: u64 = 0;
+    mi_process_info(&mut elapsed, &mut user_time, &mut sys_time, &mut current_rss, &mut peak_rss, &mut current_commit, &mut peak_commit, &mut page_faults);
+    mi_json_buf_print_size(&mut hbuf, "elapsed_msecs", elapsed, true);
+    mi_json_buf_print_size(&mut hbuf, "user_msecs", user_time, true);
+    mi_json_buf_print_size(&mut hbuf, "system_msecs", sys_time, true);
+    mi_json_buf_print_size(&mut hbuf, "page_faults", page_faults, true);
+    mi_json_buf_print_size(&mut hbuf, "rss_current", current_rss, true);
+    mi_json_buf_print_size(&mut hbuf, "rss_peak", peak_rss, true);
+    mi_json_buf_print_size(&mut hbuf, "commit_current", current_commit, true);
+    mi_json_buf_print_size(&mut hbuf, "commit_peak", peak_commit, false);
+    mi_json_buf_print(&mut hbuf, "  },\n");
+    mi_json_buf_print_count_value(&mut hbuf, "pages", &mut stats.pages);
+    mi_json_buf_print_count_value(&mut hbuf, "reserved", &mut stats.reserved);
+    mi_json_buf_print_count_value(&mut hbuf, "committed", &mut stats.committed);
+    mi_json_buf_print_counter_value(&mut hbuf, "reset", &mut stats.reset);
+    mi_json_buf_print_counter_value(&mut hbuf, "purged", &mut stats.purged);
+    mi_json_buf_print_count_value(&mut hbuf, "page_committed", &mut stats.page_committed);
+    mi_json_buf_print_count_value(&mut hbuf, "pages_abandoned", &mut stats.pages_abandoned);
+    mi_json_buf_print_count_value(&mut hbuf, "threads", &mut stats.threads);
+    mi_json_buf_print_count_value(&mut hbuf, "malloc_normal", &mut stats.malloc_normal);
+    mi_json_buf_print_count_value(&mut hbuf, "malloc_huge", &mut stats.malloc_huge);
+    mi_json_buf_print_counter_value(&mut hbuf, "malloc_requested", &mut stats.malloc_requested);
+    mi_json_buf_print_counter_value(&mut hbuf, "mmap_calls", &mut stats.mmap_calls);
+    mi_json_buf_print_counter_value(&mut hbuf, "commit_calls", &mut stats.commit_calls);
+    mi_json_buf_print_counter_value(&mut hbuf, "reset_calls", &mut stats.reset_calls);
+    mi_json_buf_print_counter_value(&mut hbuf, "purge_calls", &mut stats.purge_calls);
+    mi_json_buf_print_counter_value(&mut hbuf, "arena_count", &mut stats.arena_count);
+    mi_json_buf_print_counter_value(&mut hbuf, "malloc_normal_count", &mut stats.malloc_normal_count);
+    mi_json_buf_print_counter_value(&mut hbuf, "malloc_huge_count", &mut stats.malloc_huge_count);
+    mi_json_buf_print_counter_value(&mut hbuf, "malloc_guarded_count", &mut stats.malloc_guarded_count);
+    mi_json_buf_print_counter_value(&mut hbuf, "arena_rollback_count", &mut stats.arena_rollback_count);
+    mi_json_buf_print_counter_value(&mut hbuf, "arena_purges", &mut stats.arena_purges);
+    mi_json_buf_print_counter_value(&mut hbuf, "pages_extended", &mut stats.pages_extended);
+    mi_json_buf_print_counter_value(&mut hbuf, "pages_retire", &mut stats.pages_retire);
+    mi_json_buf_print_counter_value(&mut hbuf, "page_searches", &mut stats.page_searches);
+    mi_json_buf_print_counter_value(&mut hbuf, "page_searches_count", &mut stats.page_searches_count);
+    mi_json_buf_print_count_value(&mut hbuf, "segments", &mut stats.segments);
+    mi_json_buf_print_count_value(&mut hbuf, "segments_abandoned", &mut stats.segments_abandoned);
+    mi_json_buf_print_count_value(&mut hbuf, "segments_cache", &mut stats.segments_cache);
+    mi_json_buf_print_count_value(&mut hbuf, "_segments_reserved", &mut stats._segments_reserved);
+    mi_json_buf_print_count_value(&mut hbuf, "heaps", &mut stats.heaps);
+    mi_json_buf_print_count_value(&mut hbuf, "theaps", &mut stats.theaps);
+    mi_json_buf_print_count_value(&mut hbuf, "pages_os_abandoned", &mut stats.pages_os_abandoned);
+    mi_json_buf_print_count_value(&mut hbuf, "pages_os_allocated", &mut stats.pages_os_allocated);
+    mi_json_buf_print_counter_value(&mut hbuf, "pages_reclaim_on_alloc", &mut stats.pages_reclaim_on_alloc);
+    mi_json_buf_print_counter_value(&mut hbuf, "pages_reclaim_on_free", &mut stats.pages_reclaim_on_free);
+    mi_json_buf_print_counter_value(&mut hbuf, "pages_reabandon_full", &mut stats.pages_reabandon_full);
+    mi_json_buf_print_counter_value(&mut hbuf, "pages_unabandon_busy_wait", &mut stats.pages_unabandon_busy_wait);
+    mi_json_buf_print_counter_value(&mut hbuf, "heaps_delete_wait", &mut stats.heaps_delete_wait);
+    mi_json_buf_print_counter_value(&mut hbuf, "pages_stat_updates", &mut stats.pages_stat_updates);
+    mi_json_buf_print_counter_value(&mut hbuf, "pages_stat_update_count", &mut stats.pages_stat_update_count);
+    mi_json_buf_print_counter_value(&mut hbuf, "profile_samples", &mut stats.profile_samples);
+    mi_json_buf_print(&mut hbuf, "  \"malloc_bins\": [\n");
+    for let mut i: u64 = 0; i <= (73); i += 1 {
+        mi_json_buf_print_count_bin(&mut hbuf, "    ", &mut stats.malloc_bins[i], i, i != (73));
+    }
+    mi_json_buf_print(&mut hbuf, "  ],\n");
+    mi_json_buf_print(&mut hbuf, "  \"page_bins\": [\n");
+    for let mut i: u64 = 0; i <= (73); i += 1 {
+        mi_json_buf_print_count_bin(&mut hbuf, "    ", &mut stats.page_bins[i], i, i != (73));
+    }
+    mi_json_buf_print(&mut hbuf, "  ],\n");
+    mi_json_buf_print(&mut hbuf, "  \"chunk_bins\": [\n");
+    for let mut i: u64 = 0; i < MI_CBIN_COUNT; i += 1 {
+        mi_json_buf_print_count_cbin(&mut hbuf, "    ", &mut stats.chunk_bins[i], i as mi_chunkbin_t, i != MI_CBIN_COUNT - 1);
+    }
+    mi_json_buf_print(&mut hbuf, "  ]\n");
+    mi_json_buf_print(&mut hbuf, "}\n");
+    if hbuf.used + 1 >= hbuf.size {
+        if hbuf.can_realloc {
+            mi_free(hbuf.buf);
+        }
+        return 0;
+    } else {
+        return hbuf.buf;
+    }
+}
+
+fn mi_subproc_stats_get_json(subproc_id: mi_subproc_id_t, buf_size: u64, buf: *mut u8) -> *mut u8 {
+    let mut subproc: *mut mi_subproc_t = _mi_subproc_from_id(subproc_id);
+    if subproc == 0 {
+        return 0;
+    }
+    let mut stats: mi_stats_t = mi_stats_t {};
+    mi_stats_init(&mut stats);
+    if !mi_subproc_stats_get(subproc_id, &mut stats) {
+        return 0;
+    }
+    return mi_stats_get_json_from(&mut stats, buf_size, buf);
+}
+
+fn mi_heap_stats_get_json(heap: *mut mi_heap_t, buf_size: u64, buf: *mut u8) -> *mut u8 {
+    return mi_stats_get_json_from(mi_heap_get_stats(heap), buf_size, buf);
+}
+
+fn mi_stats_get_json(buf_size: u64, buf: *mut u8) -> *mut u8 {
+    return mi_subproc_stats_get_json(mi_subproc_current(), buf_size, buf);
+}
+
+fn mi_stats_as_json(stats: *mut mi_stats_t, buf_size: u64, buf: *mut u8) -> *mut u8 {
+    return mi_stats_get_json_from(stats, buf_size, buf);
+}

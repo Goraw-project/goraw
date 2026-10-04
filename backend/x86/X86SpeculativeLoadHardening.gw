@@ -1,0 +1,978 @@
+static mut NumCondBranchesTraced: Statistic = Statistic { "x86-slh", "NumCondBranchesTraced", "Number of conditional branches traced" };
+
+static mut NumBranchesUntraced: Statistic = Statistic { "x86-slh", "NumBranchesUntraced", "Number of branches unable to trace" };
+
+static mut NumAddrRegsHardened: Statistic = Statistic { "x86-slh", "NumAddrRegsHardened", "Number of address mode used registers hardened" };
+
+static mut NumPostLoadRegsHardened: Statistic = Statistic { "x86-slh", "NumPostLoadRegsHardened", "Number of post-load register values hardened" };
+
+static mut NumCallsOrJumpsHardened: Statistic = Statistic { "x86-slh", "NumCallsOrJumpsHardened", "Number of calls or jumps requiring extra hardening" };
+
+static mut NumInstsInserted: Statistic = Statistic { "x86-slh", "NumInstsInserted", "Number of instructions inserted" };
+
+static mut NumLFENCEsInserted: Statistic = Statistic { "x86-slh", "NumLFENCEsInserted", "Number of lfence instructions inserted" };
+
+static mut EnableSpeculativeLoadHardening: i32 = "x86-speculative-load-hardening";
+
+static mut HardenEdgesWithLFENCE: i32 = "x86-slh-lfence";
+
+static mut EnablePostLoadHardening: i32 = "x86-slh-post-load";
+
+static mut FenceCallAndRet: i32 = "x86-slh-fence-call-and-ret";
+
+static mut HardenInterprocedurally: i32 = "x86-slh-ip";
+
+static mut HardenLoads: i32 = "x86-slh-loads";
+
+static mut HardenIndirectCallsAndJumps: i32 = "x86-slh-indirect";
+
+const X86SLHPassName: str = "X86 speculative load hardening";
+
+struct X86SpeculativeLoadHardeningLegacy {
+    Resolver: *mut AnalysisResolver,
+    PassID: *void,
+    Kind: PassKind,
+    RequiredProperties: MachineFunctionProperties,
+    SetProperties: MachineFunctionProperties,
+    ClearedProperties: MachineFunctionProperties,
+}
+
+fn X86SpeculativeLoadHardeningLegacy::getPassName(self: *X86SpeculativeLoadHardeningLegacy) -> str {
+    return X86SLHPassName;
+}
+
+fn X86SpeculativeLoadHardeningLegacy::getPassKind(self: *X86SpeculativeLoadHardeningLegacy) -> PassKind {
+    return self.Kind;
+}
+
+fn X86SpeculativeLoadHardeningLegacy::getPassID(self: *X86SpeculativeLoadHardeningLegacy) -> AnalysisID {
+    return self.PassID;
+}
+
+fn X86SpeculativeLoadHardeningLegacy::doInitialization(self, arg: *mut Module) -> bool {
+    return false;
+}
+
+fn X86SpeculativeLoadHardeningLegacy::doFinalization(self, arg: *mut Module) -> bool {
+    return false;
+}
+
+fn X86SpeculativeLoadHardeningLegacy::assignPassManager(self, arg: *mut PMStack, arg: PassManagerType) {}
+
+fn X86SpeculativeLoadHardeningLegacy::getResolver(self: *X86SpeculativeLoadHardeningLegacy) -> *mut AnalysisResolver {
+    return self.Resolver;
+}
+
+fn X86SpeculativeLoadHardeningLegacy::getRequiredProperties(self: *X86SpeculativeLoadHardeningLegacy) -> MachineFunctionProperties {
+    return MachineFunctionProperties {};
+}
+
+fn X86SpeculativeLoadHardeningLegacy::getSetProperties(self: *X86SpeculativeLoadHardeningLegacy) -> MachineFunctionProperties {
+    return MachineFunctionProperties {};
+}
+
+fn X86SpeculativeLoadHardeningLegacy::getClearedProperties(self: *X86SpeculativeLoadHardeningLegacy) -> MachineFunctionProperties {
+    return MachineFunctionProperties {};
+}
+
+struct X86SpeculativeLoadHardeningImpl {
+    Subtarget: *X86Subtarget,
+    MRI: *mut MachineRegisterInfo,
+    TII: *X86InstrInfo,
+    TRI: *TargetRegisterInfo,
+    PS: optional<PredState>,
+}
+
+fn X86SpeculativeLoadHardeningLegacy::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
+    let mut Impl: X86SpeculativeLoadHardeningImpl = X86SpeculativeLoadHardeningImpl {};
+    let mut Changed: bool = Impl.run(MF);
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("x86-slh", 1) {
+            dbgs() << "Final speculative load hardened function:\n";
+            MF.dump();
+            dbgs() << "\n";
+            MF.verify(self, null, null, true);
+        }
+    }
+        if !(false) { break; }
+    }
+    return Changed;
+}
+
+static mut ID: i8 = 0;
+
+fn X86SpeculativeLoadHardeningLegacy::getAnalysisUsage(self: *X86SpeculativeLoadHardeningLegacy, AU: *mut AnalysisUsage) {
+    AU;
+    self.getAnalysisUsage(AU);
+}
+
+fn splitEdge(MBB: *mut MachineBasicBlock, Succ: *mut MachineBasicBlock, SuccCount: i32, Br: *mut MachineInstr, UncondBr: *mut *mut MachineInstr, TII: *X86InstrInfo) -> *mut MachineBasicBlock {
+    assert!(!Succ.isEHPad(), "Shouldn't get edges to EH pads!");
+    let mut MF: *mut MachineFunction = *MBB.getParent();
+    let mut NewMBB: *mut MachineBasicBlock = *MF.CreateMachineBasicBlock(null, optional<UniqueBBID> { nullopt });
+    MF.insert(next(iterator { &mut MBB }), &mut NewMBB);
+    if Br {
+        assert!(Br.getOperand(0).getMBB() == &mut Succ, "Didn't start with the right target!");
+        Br.getOperand(0).setMBB(&mut NewMBB);
+        if !UncondBr {
+            let mut OldLayoutSucc: *mut MachineBasicBlock = operator*(next(iterator { &mut NewMBB }));
+            assert!(MBB.isSuccessor(&mut OldLayoutSucc), "Without an unconditional branch, the old layout successor should be an actual successor!");
+            let mut BrBuilder: auto = BuildMI(&mut MBB, DebugLoc { Loc: null }, TII())(&mut OldLayoutSucc);
+            UncondBr = operator&(operator*());
+        }
+        if !NewMBB.isLayoutSuccessor(&mut Succ) {
+            let mut Cond: SmallVector<MachineOperand, 4> = zeroed();
+            TII.insertBranch(NewMBB, &mut Succ, null, Br.getDebugLoc());
+        }
+    } else {
+        assert!(!UncondBr, "Cannot have a branchless successor and an unconditional branch!");
+        assert!(NewMBB.isLayoutSuccessor(&mut Succ), "A non-branch successor must have been a layout successor before and now is a layout successor of the new block.");
+    }
+    if SuccCount == 1 {
+        MBB.replaceSuccessor(&mut Succ, &mut NewMBB);
+    } else {
+        MBB.splitSuccessor(&mut Succ, &mut NewMBB, false);
+    }
+    NewMBB.addSuccessor(&mut Succ, getUnknown());
+    for MI in Succ {
+        if !MI.isPHI() {
+            break;
+        }
+        for let mut OpIdx: i32 = 1;
+let mut NumOps: i32 = MI.getNumOperands(); OpIdx < NumOps; OpIdx += 2 {
+            let mut OpV: *mut MachineOperand = MI.getOperand(OpIdx);
+            let mut OpMBB: *mut MachineOperand = MI.getOperand(OpIdx + 1);
+            assert!(OpMBB.isMBB(), "Block operand to a PHI is not a block!");
+            if OpMBB.getMBB() != &mut MBB {
+                continue;
+            }
+            if SuccCount == 1 {
+                OpMBB.setMBB(&mut NewMBB);
+                break;
+            }
+            MI.addOperand(MF, OpV);
+            MI.addOperand(MF, CreateMBB(&mut NewMBB, 0));
+            break;
+        }
+    }
+    for LI in Succ.liveins() {
+        NewMBB.addLiveIn(LI);
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("x86-slh", 1) {
+            dbgs() << "  Split edge from '" << MBB.getName() << "' to '" << Succ.getName() << "'.\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    return NewMBB;
+}
+
+fn canonicalizePHIOperands(MF: *mut MachineFunction) {
+    let mut Preds: SmallPtrSet<MachineBasicBlock *, 4> = zeroed();
+    let mut DupIndices: SmallVector<int, 4> = SmallVector<int, 4> {};
+    for MBB in MF {
+        for MI in MBB {
+            if !MI.isPHI() {
+                break;
+            }
+            for let mut OpIdx: i32 = 1;
+let mut NumOps: i32 = MI.getNumOperands(); OpIdx < NumOps; OpIdx += 2 {
+                if operator!((MI.getOperand(OpIdx + 1).getMBB())) {
+                    DupIndices.push(OpIdx);
+                }
+            }
+            while !DupIndices.is_empty() {
+                let mut OpIdx: i32 = DupIndices.pop_back_val();
+                MI.removeOperand(OpIdx + 1);
+                MI.removeOperand(OpIdx);
+            }
+            Preds()();
+        }
+    }
+}
+
+fn hasVulnerableLoad(MF: *mut MachineFunction) -> bool {
+    for MBB in MF {
+        for MI in MBB {
+            if  {
+                break;
+            }
+            if !MI.mayLoad(AnyInBundle) {
+                continue;
+            }
+            if  {
+                continue;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+fn X86SpeculativeLoadHardeningImpl::run(self, MF: *mut MachineFunction) -> bool {
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("x86-slh", 1) {
+            dbgs() << "********** " << X86SLHPassName << " : " << MF.getName() << " **********\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    if operator!() && !MF.getFunction().hasFnAttribute(SpeculativeLoadHardening) {
+        return false;
+    }
+    self.Subtarget = operator&(MF);
+    self.MRI = &mut MF.getRegInfo();
+    self.TII = self.Subtarget.getInstrInfo();
+    self.TRI;
+    if MF.begin() == MF.end() {
+        return false;
+    }
+    if HardenEdgesWithLFENCE() {
+        self.hardenEdgesWithLFENCE(MF);
+        return true;
+    }
+    let mut Loc: DebugLoc = DebugLoc { Loc: null };
+    let mut Entry: *mut MachineBasicBlock = operator(MF.begin());
+    let mut EntryInsertPt: iterator = Entry.SkipPHIsLabelsAndDebug(Entry.begin(), Register { Reg: 0 }, true);
+    let mut HasVulnerableLoad: bool = hasVulnerableLoad(MF);
+    let mut Infos: SmallVector<BlockCondInfo, 16> = zeroed();
+    if !HasVulnerableLoad && () {
+        return true;
+    }
+    let mut PoisonVal: i32 = -1;
+    BuildMI(Entry, EntryInsertPt, Loc, self.TII)(PoisonVal);
+    operator(NumInstsInserted);
+    if HasVulnerableLoad &&  {
+        BuildMI(Entry, EntryInsertPt, Loc, self.TII);
+        operator(NumInstsInserted);
+        operator(NumLFENCEsInserted);
+    }
+    if FenceCallAndRet() && () {
+        return true;
+    }
+    if HardenInterprocedurally() && operator!() {} else {
+        let mut PredStateSubReg: Register = self.MRI;
+        let mut ZeroI: auto = BuildMI(Entry, EntryInsertPt, Loc, self.TII, PredStateSubReg);
+        operator(NumInstsInserted);
+        let mut ZeroEFLAGSDefOp: *mut MachineOperand = ;
+        assert!(ZeroEFLAGSDefOp && ZeroEFLAGSDefOp.isImplicit(), "Must have an implicit def of EFLAGS!");
+        ZeroEFLAGSDefOp.setIsDead(true);
+        BuildMI(Entry, EntryInsertPt, Loc, self.TII)(PredStateSubReg);
+    }
+    canonicalizePHIOperands(MF);
+    let mut CMovs: auto = self.tracePredStateThroughCFG(MF);
+    if HardenInterprocedurally() {
+        for MBB in MF {
+            assert!(!MBB.isEHScopeEntry(), "Only Itanium ABI EH supported!");
+            assert!(!MBB.isEHFuncletEntry(), "Only Itanium ABI EH supported!");
+            assert!(!MBB.isCleanupFuncletEntry(), "Only Itanium ABI EH supported!");
+            if !MBB.isEHPad() {
+                continue;
+            }
+        }
+    }
+    if HardenIndirectCallsAndJumps() {
+        self.unfoldCallAndJumpLoads(MF);
+        let mut IndirectBrCMovs: auto = self.tracePredStateThroughIndirectBranches;
+        CMovs()();
+    }
+    self.tracePredStateThroughBlocksAndHarden(MF);
+    return true;
+}
+
+fn X86SpeculativeLoadHardeningImpl::hardenEdgesWithLFENCE(self, MF: *mut MachineFunction) {
+    let mut Blocks: SmallSetVector<MachineBasicBlock *, 8> = zeroed();
+    for MBB in MF {
+        if MBB.succ_size() <= 1 {
+            continue;
+        }
+        let mut TermIt: iterator = MBB.getFirstTerminator();
+        if TermIt == MBB.end() || !operator(TermIt).isBranch(AnyInBundle) {
+            continue;
+        }
+        for SuccMBB in MBB.successors() {
+            if !SuccMBB.isEHPad() {
+                Blocks()(SuccMBB);
+            }
+        }
+    }
+}
+
+fn X86SpeculativeLoadHardeningImpl::collectBlockCondInfo(self, MF: *mut MachineFunction) -> BlockCondInfo, 16> {
+    let mut Infos: SmallVector<BlockCondInfo, 16> = zeroed();
+    for MBB in MF {
+        if MBB.succ_size() <= 1 {
+            continue;
+        }
+        let mut Info: BlockCondInfo = BlockCondInfo { &mut MBB, void {}, null };
+        if Info()() {
+            operator(NumBranchesUntraced);
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("x86-slh", 1) {
+                    dbgs() << "WARNING: unable to secure successors of block:\n";
+                    MBB.dump();
+                }
+            }
+                if !(false) { break; }
+            }
+            continue;
+        }
+        Infos()(Info);
+    }
+    return ;
+}
+
+fn X86SpeculativeLoadHardeningImpl::tracePredStateThroughCFG(self, MF: *mut MachineFunction, Infos: ArrayRef<BlockCondInfo>) -> SmallVector<MachineInstr *, 16> {
+    let mut CMovs: SmallVector<MachineInstr *, 16> = zeroed();
+    return ;
+}
+
+fn getRegClassForUnfoldedLoad(TII: *X86InstrInfo, Opcode: u32) -> *TargetRegisterClass {
+    let mut Index: u32 = 0;
+    let mut UnfoldedOpc: u32 = TII.getOpcodeAfterMemoryUnfold(Opcode, true, false, &mut Index);
+    let mut MCID: *MCInstrDesc = TII()(UnfoldedOpc);
+    return TII.getRegClass(MCID, Index);
+}
+
+fn X86SpeculativeLoadHardeningImpl::unfoldCallAndJumpLoads(self, MF: *mut MachineFunction) {}
+
+fn X86SpeculativeLoadHardeningImpl::tracePredStateThroughIndirectBranches(self, MF: *mut MachineFunction) -> SmallVector<MachineInstr *, 16> {
+    let mut TargetAddrSSA: MachineSSAUpdater = MachineSSAUpdater { MF, null };
+    TargetAddrSSA.Initialize(self.MRI);
+    let mut IndirectTerminatedMBBs: SmallPtrSet<MachineBasicBlock *, 4> = zeroed();
+    let mut IndirectTargetMBBs: SmallPtrSet<MachineBasicBlock *, 4> = zeroed();
+    for MBB in MF {
+        let mut MII: reverse_instr_iterator = MBB.instr_rbegin();
+        while MII != MBB.instr_rend() && operator(MII).isDebugInstr() {
+            operator(MII);
+        }
+        if MII == MBB.instr_rend() {
+            continue;
+        }
+        let mut TI: *mut MachineInstr = operator(MII);
+        if !TI.isTerminator(AnyInBundle) || !TI.isBranch(AnyInBundle) {
+            continue;
+        }
+        let mut TargetReg: Register = Register { Reg: 0 };
+        match TI.getOpcode() {
+            _ => {
+                continue;
+            },
+        }
+        if any_of(MBB.terminators(), Closure_1 { TI: &mut TI }) {
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("x86-slh", 1) {
+                    {
+                        dbgs() << "ERROR: Found other terminators in a block with an indirect branch! This is not yet supported! Terminator sequence:\n";
+                        for MI in MBB.terminators() {
+                            MI.dump();
+                            dbgs() << 10;
+                        }
+                    }
+                }
+            }
+                if !(false) { break; }
+            }
+            report_fatal_error("Unimplemented terminator sequence!", true);
+        }
+        TargetAddrSSA.AddAvailableValue(&mut MBB, TargetReg);
+        IndirectTerminatedMBBs()(&mut MBB);
+        IndirectTargetMBBs()(MBB.successors());
+    }
+    let mut CMovs: SmallVector<MachineInstr *, 16> = zeroed();
+    if IndirectTargetMBBs()() {
+        return ;
+    }
+    for MBB in MF {
+        if operator!((&mut MBB)) {
+            continue;
+        }
+        assert!(!MBB.isEHPad(), "Unexpected EH pad as target of an indirect branch!");
+        (((operator!(operator!((operator!(MBB.isLiveIn) && "Cannot check within a block that already has live-in EFLAGS!")))) || (_wassert(L"!MBB.isLiveIn(X86::EFLAGS) && \"Cannot check within a block that already has live-in EFLAGS!\"", L"llvm\\lib\\Target\\X86\\X86SpeculativeLoadHardening.cpp", (1086) as u32) , 0)) as void);
+        for Pred in MBB.predecessors() {
+            if IndirectTerminatedMBBs()(Pred) {
+                continue;
+            }
+            if !all_of(Pred.successors(), Closure_2 { MBB: &mut MBB }) {
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("x86-slh", 1) {
+                        {
+                            dbgs() << "ERROR: Found conditional entry to target of indirect branch!\n";
+                            Pred.dump();
+                            MBB.dump();
+                        }
+                    }
+                }
+                    if !(false) { break; }
+                }
+                report_fatal_error("Cannot harden a conditional entry to a target of an indirect branch!", true);
+            }
+            let mut InsertPt: iterator = Pred.getFirstTerminator();
+            let mut TargetReg: Register = self.MRI;
+            if MF.getTarget().getCodeModel() == Small && !self.Subtarget.isPositionIndependent() {
+                let mut AddrI: auto = BuildMI(*Pred, InsertPt, DebugLoc { Loc: null }, self.TII, TargetReg)(&mut MBB);
+                operator(NumInstsInserted);
+                 as void;
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("x86-slh", 1) {
+                        dbgs() << "  Inserting mov: ";
+                        AddrI()();
+                        dbgs() << "\n";
+                    }
+                }
+                    if !(false) { break; }
+                }
+            } else {
+                let mut AddrI: auto = BuildMI(*Pred, InsertPt, DebugLoc { Loc: null }, self.TII, TargetReg)(1)(0)(&mut MBB)(0);
+                operator(NumInstsInserted);
+                 as void;
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("x86-slh", 1) {
+                        dbgs() << "  Inserting lea: ";
+                        AddrI()();
+                        dbgs() << "\n";
+                    }
+                }
+                    if !(false) { break; }
+                }
+            }
+            TargetAddrSSA.AddAvailableValue(Pred, TargetReg);
+        }
+        let mut TargetReg: Register = TargetAddrSSA.GetValueInMiddleOfBlock(&mut MBB, false);
+        MBB.setMachineBlockAddressTaken();
+        let mut InsertPt: iterator = MBB.SkipPHIsLabelsAndDebug(MBB.begin(), Register { Reg: 0 }, true);
+        if MF.getTarget().getCodeModel() == Small && !self.Subtarget.isPositionIndependent() {
+            let mut CheckI: auto = BuildMI(MBB, InsertPt, DebugLoc { Loc: null }, self.TII)(TargetReg, Kill)(&mut MBB);
+            operator(NumInstsInserted);
+             as void;
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("x86-slh", 1) {
+                    dbgs() << "  Inserting cmp: ";
+                    CheckI()();
+                    dbgs() << "\n";
+                }
+            }
+                if !(false) { break; }
+            }
+        } else {
+            let mut AddrReg: Register = self.MRI;
+            let mut AddrI: auto = BuildMI(MBB, InsertPt, DebugLoc { Loc: null }, self.TII, AddrReg)(1)(0)(&mut MBB)(0);
+            operator(NumInstsInserted);
+             as void;
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("x86-slh", 1) {
+                    dbgs() << "  Inserting lea: ";
+                    AddrI()();
+                    dbgs() << "\n";
+                }
+            }
+                if !(false) { break; }
+            }
+            let mut CheckI: auto = BuildMI(MBB, InsertPt, DebugLoc { Loc: null }, self.TII)(TargetReg, Kill)(AddrReg, Kill);
+            operator(NumInstsInserted);
+             as void;
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("x86-slh", 1) {
+                    dbgs() << "  Inserting cmp: ";
+                    CheckI()();
+                    dbgs() << "\n";
+                }
+            }
+                if !(false) { break; }
+            }
+        }
+        let mut PredStateSizeInBytes: i32 = self.TRI / 8;
+        let mut CMovOp: auto = getCMovOpcode(PredStateSizeInBytes, false, false);
+        let mut UpdatedStateReg: Register = self.MRI;
+        let mut CMovI: auto = BuildMI(MBB, InsertPt, DebugLoc { Loc: null }, self.TII(), UpdatedStateReg)(COND_NE);
+        CMovI()(true);
+        operator(NumInstsInserted);
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-slh", 1) {
+                dbgs() << "  Inserting cmov: ";
+                CMovI()();
+                dbgs() << "\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        CMovs()(operator&(operator*()));
+    }
+    return ;
+}
+
+fn isEFLAGSDefLive(MI: *MachineInstr) -> bool {
+    if MI {
+        DefOp;
+    } else {
+        return !DefOp.isDead();
+    }
+    return false;
+}
+
+fn isEFLAGSLive(MBB: *mut MachineBasicBlock, I: iterator, TRI: *TargetRegisterInfo) -> bool {
+    return MBB.isLiveIn;
+}
+
+fn X86SpeculativeLoadHardeningImpl::tracePredStateThroughBlocksAndHarden(self, MF: *mut MachineFunction) {
+    let mut HardenPostLoad: SmallPtrSet<MachineInstr *, 16> = zeroed();
+    let mut HardenLoadAddr: SmallPtrSet<MachineInstr *, 16> = zeroed();
+    let mut HardenedAddrRegs: i32 = 0;
+    let mut AddrRegToHardenedReg: i32 = 0;
+    let mut LoadDepRegs: i32 = 0;
+    for MBB in MF {
+        if HardenLoads() {
+            for MI in MBB {
+                if any_of(MI.uses(), Closure_3 {}) {
+                    for Def in MI.defs() {
+                        if Def.isReg() {
+                            LoadDepRegs()(Def.getReg().id());
+                        }
+                    }
+                }
+                if  {
+                    break;
+                }
+                if !MI.mayLoad(AnyInBundle) {
+                    continue;
+                }
+                if  {
+                    continue;
+                }
+                let mut MemRefBeginIdx: i32 = getFirstAddrOperandIdx(MI);
+                if MemRefBeginIdx < 0 {
+                    while true {
+                        {
+                        if DebugFlag && isCurrentDebugType("x86-slh", 1) {
+                            dbgs() << "WARNING: unable to harden loading instruction: ";
+                            MI.dump();
+                        }
+                    }
+                        if !(false) { break; }
+                    }
+                    continue;
+                }
+                let mut BaseMO: *mut MachineOperand = MI.getOperand(MemRefBeginIdx + AddrBaseReg);
+                let mut IndexMO: *mut MachineOperand = MI.getOperand(MemRefBeginIdx + AddrIndexReg);
+                let mut BaseReg: Register = Register { Reg: 0 };
+                let mut IndexReg: Register = Register { Reg: 0 };
+                if  {
+                    BaseReg = BaseMO.getReg();
+                }
+                if IndexMO.getReg().isValid() {
+                    IndexReg = IndexMO.getReg();
+                }
+                if !BaseReg.operator unsigned int() && !IndexReg.operator unsigned int() {
+                    continue;
+                }
+                if (BaseReg && (BaseReg.id())) || (IndexReg && (IndexReg.id())) {
+                    continue;
+                }
+                if EnablePostLoadHardening() && isDataInvariantLoad(MI) && !isEFLAGSDefLive(MI) && MI.getDesc().getNumDefs() == 1 && MI.getOperand(0).isReg() && self.canHardenRegister(MI.getOperand(0).getReg()) && operator!((BaseReg)) && operator!((IndexReg)) {
+                    HardenPostLoad()(&mut MI);
+                    HardenedAddrRegs()(MI.getOperand(0).getReg());
+                    continue;
+                }
+                HardenLoadAddr()(&mut MI);
+                if BaseReg.operator unsigned int() {
+                    HardenedAddrRegs()(BaseReg);
+                }
+                if IndexReg.operator unsigned int() {
+                    HardenedAddrRegs()(IndexReg);
+                }
+                for Def in MI.defs() {
+                    if Def.isReg() {
+                        LoadDepRegs()(Def.getReg().id());
+                    }
+                }
+            }
+        }
+        for MI in MBB {
+            if HardenLoads() {
+                (((operator!(operator!((operator!((HardenLoadAddr()(&mut MI) && (&mut MI))) && "Requested to harden both the address and def of a load!")))) || (_wassert(L"!(HardenLoadAddr.count(&MI) && HardenPostLoad.count(&MI)) && \"Requested to harden both the address and def of a load!\"", L"llvm\\lib\\Target\\X86\\X86SpeculativeLoadHardening.cpp", (1404) as u32) , 0)) as void);
+                if HardenLoadAddr()(&mut MI) {
+                    let mut MemRefBeginIdx: i32 = getFirstAddrOperandIdx(MI);
+                    assert!(MemRefBeginIdx >= 0, "Cannot have an invalid index here!");
+                    let mut BaseMO: *mut MachineOperand = MI.getOperand(MemRefBeginIdx + AddrBaseReg);
+                    let mut IndexMO: *mut MachineOperand = MI.getOperand(MemRefBeginIdx + AddrIndexReg);
+                    continue;
+                }
+                if HardenPostLoad()(&mut MI) {
+                    assert!(!MI.isCall(AnyInBundle), "Must not try to post-load harden a call!");
+                    if isDataInvariantLoad(MI) && !isEFLAGSDefLive(MI) {
+                        let mut SunkMI: *mut MachineInstr = self.sinkPostLoadHardenedInst(MI);
+                        if SunkMI != &mut MI {
+                            if !SunkMI {
+                                continue;
+                            }
+                            HardenPostLoad()(SunkMI);
+                            continue;
+                        }
+                    }
+                    let mut HardenedReg: Register = self.hardenPostLoad(MI);
+                    AddrRegToHardenedReg()[HardenedReg] = HardenedReg;
+                    continue;
+                }
+            }
+            if operator!() {
+                continue;
+            }
+            if !MI.isCall(AnyInBundle) && !MI.isReturn(AnyInBundle) {
+                continue;
+            }
+            if MI.isReturn(AnyInBundle) && !MI.isCall(AnyInBundle) {
+                self.hardenReturnInstr(MI);
+                continue;
+            }
+            assert!(MI.isCall(AnyInBundle), "Should only reach here for calls!");
+            self.tracePredStateThroughCall(MI);
+        }
+        HardenPostLoad()();
+        HardenLoadAddr()();
+        HardenedAddrRegs()();
+        AddrRegToHardenedReg()();
+        LoadDepRegs()();
+    }
+}
+
+fn X86SpeculativeLoadHardeningImpl::saveEFLAGS(self, MBB: *mut MachineBasicBlock, InsertPt: iterator, Loc: *DebugLoc) -> Register {
+    let mut Reg: Register = self.MRI;
+    BuildMI(MBB, InsertPt, Loc, self.TII, Reg);
+    operator(NumInstsInserted);
+    return Reg;
+}
+
+fn X86SpeculativeLoadHardeningImpl::restoreEFLAGS(self, MBB: *mut MachineBasicBlock, InsertPt: iterator, Loc: *DebugLoc, Reg: Register) {
+    BuildMI(MBB, InsertPt, Loc, self.TII)(Reg);
+    operator(NumInstsInserted);
+}
+
+fn X86SpeculativeLoadHardeningImpl::mergePredStateIntoSP(self, MBB: *mut MachineBasicBlock, InsertPt: iterator, Loc: *DebugLoc, PredStateReg: Register) {
+    let mut TmpReg: Register = self.MRI;
+    let mut ShiftI: auto = BuildMI(MBB, InsertPt, Loc, self.TII, TmpReg)(PredStateReg, Kill)(47);
+    ShiftI();
+    operator(NumInstsInserted);
+    let mut OrI: auto = BuildMI(MBB, InsertPt, Loc, self.TII)(TmpReg, Kill);
+    OrI();
+    operator(NumInstsInserted);
+}
+
+fn X86SpeculativeLoadHardeningImpl::extractPredStateFromSP(self, MBB: *mut MachineBasicBlock, InsertPt: iterator, Loc: *DebugLoc) -> Register {
+    let mut PredStateReg: Register = self.MRI;
+    let mut TmpReg: Register = self.MRI;
+    BuildMI(MBB, InsertPt, Loc, self.TII(COPY), TmpReg);
+    let mut ShiftI: auto = BuildMI(MBB, InsertPt, Loc, self.TII, PredStateReg)(TmpReg, Kill)(self.TRI - 1);
+    ShiftI();
+    operator(NumInstsInserted);
+    return PredStateReg;
+}
+
+fn X86SpeculativeLoadHardeningImpl::hardenLoadAddr(self, MI: *mut MachineInstr, BaseMO: *mut MachineOperand, IndexMO: *mut MachineOperand, AddrRegToHardenedReg: *mut i32) {
+    let mut MBB: *mut MachineBasicBlock = *MI.getParent();
+    let mut Loc: *DebugLoc = MI.getDebugLoc();
+    let mut EFLAGSLive: bool = isEFLAGSLive(MBB, iterator { MI.getIterator() }, *self.TRI);
+    let mut HardenOpRegs: SmallVector<MachineOperand *, 2> = zeroed();
+    if BaseMO.isFI() {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-slh", 1) {
+                dbgs() << "  Skipping hardening base of explicit stack frame load: ";
+                MI.dump();
+                dbgs() << "\n";
+            }
+        }
+            if !(false) { break; }
+        }
+    } else if  {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-slh", 1) {
+                dbgs() << "  Cannot harden base of explicit RSP offset in a load!";
+            }
+        }
+            if !(false) { break; }
+        }
+    } else if  {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-slh", 1) {}
+        }
+            if !(false) { break; }
+        }
+    } else {
+        assert!(BaseMO.isReg(), "Only allowed to have a frame index or register base.");
+        HardenOpRegs()(&mut BaseMO);
+    }
+    if  {
+        HardenOpRegs()(&mut IndexMO);
+    }
+    (((operator!(operator!(((HardenOpRegs()() == 1 || () == 2) && "Should have exactly one or two registers to harden!")))) || (_wassert(L"(HardenOpRegs.size() == 1 || HardenOpRegs.size() == 2) && \"Should have exactly one or two registers to harden!\"", L"llvm\\lib\\Target\\X86\\X86SpeculativeLoadHardening.cpp", (1625) as u32) , 0)) as void);
+    (((operator!(operator!(((HardenOpRegs()() == 1 || [0]() != [1]()) && "Should not have two of the same registers!")))) || (_wassert(L"(HardenOpRegs.size() == 1 || HardenOpRegs[0]->getReg() != HardenOpRegs[1]->getReg()) && \"Should not have two of the same registers!\"", L"llvm\\lib\\Target\\X86\\X86SpeculativeLoadHardening.cpp", (1628) as u32) , 0)) as void);
+    erase_if(Closure_4 {});
+    if HardenOpRegs()() {
+        return;
+    }
+    let mut StateReg: Register = zeroed();
+    let mut InsertPt: self_iterator = MI.getIterator();
+    let mut FlagsReg: Register = Register { Reg: 0 };
+    if EFLAGSLive && operator!(self.Subtarget()) {
+        EFLAGSLive = false;
+        FlagsReg = self.saveEFLAGS(MBB, iterator { instr_iterator { InsertPt } }, Loc);
+    }
+    if FlagsReg.operator unsigned int() {
+        self.restoreEFLAGS(MBB, iterator { instr_iterator { InsertPt } }, Loc, FlagsReg);
+    }
+}
+
+fn X86SpeculativeLoadHardeningImpl::sinkPostLoadHardenedInst(self, InitialMI: *mut MachineInstr, HardenedInstrs: *mut SmallPtrSetImpl<MachineInstr *>) -> *mut MachineInstr {
+    assert!(isDataInvariantLoad(InitialMI), "Cannot get here with a non-invariant load!");
+    assert!(!isEFLAGSDefLive(InitialMI), "Cannot get here with a data invariant load that interferes with EFLAGS!");
+    let mut SinkCheckToSingleUse: Closure_5 = Closure_5 { cap_0: self, HardenedInstrs: &mut HardenedInstrs };
+    let mut MI: *mut MachineInstr = &mut InitialMI;
+    while  {
+        MI = operator*();
+        if !MI {
+            break;
+        }
+    }
+    return MI;
+}
+
+fn X86SpeculativeLoadHardeningImpl::canHardenRegister(self, Reg: Register) -> bool {
+    if !Reg.isVirtual() {
+        return false;
+    }
+    let mut RC: *TargetRegisterClass = self.MRI.getRegClass(Reg);
+    let mut RegBytes: i32 = self.TRI.getRegSizeInBits(*RC).operator unsigned long long() / 8;
+    if RegBytes > 8 {
+        return false;
+    }
+    let mut RegIdx: u32 = Log2_32(RegBytes);
+    assert!(RegIdx < 4, "Unsupported register size");
+    let mut NOREXRegClasses: []*mut TargetRegisterClass = zeroed();
+    if RC == NOREXRegClasses[RegIdx] {
+        return false;
+    }
+    let mut GPRRegClasses: []*mut TargetRegisterClass = zeroed();
+    return RC.hasSuperClassEq(GPRRegClasses[RegIdx]);
+}
+
+fn X86SpeculativeLoadHardeningImpl::hardenValueInRegister(self, Reg: Register, MBB: *mut MachineBasicBlock, InsertPt: iterator, Loc: *DebugLoc) -> Register {
+    assert!(self.canHardenRegister(Reg), "Cannot harden this register!");
+    let mut RC: *TargetRegisterClass = self.MRI.getRegClass(Reg);
+    let mut Bytes: i32 = self.TRI.getRegSizeInBits(*RC).operator unsigned long long() / 8;
+    let mut StateReg: Register = zeroed();
+    assert!((Bytes == 1 || Bytes == 2 || Bytes == 4 || Bytes == 8), "Unknown register size");
+    if Bytes != 8 {
+        let mut SubRegImms: []u32 = zeroed();
+        let mut SubRegImm: u32 = SubRegImms[Log2_32(Bytes)];
+        let mut NarrowStateReg: Register = self.MRI.createVirtualRegister(RC, "");
+        BuildMI(MBB, InsertPt, Loc, self.TII(COPY), NarrowStateReg)(StateReg, void {}, SubRegImm);
+        StateReg = NarrowStateReg;
+    }
+    let mut FlagsReg: Register = Register { Reg: 0 };
+    if isEFLAGSLive(MBB, iterator { InsertPt }, *self.TRI) {
+        FlagsReg = self.saveEFLAGS(MBB, iterator { InsertPt }, Loc);
+    }
+    let mut NewReg: Register = self.MRI.createVirtualRegister(RC, "");
+    let mut OrOpCodes: []u32 = zeroed();
+    let mut OrOpCode: u32 = OrOpCodes[Log2_32(Bytes)];
+    let mut OrI: auto = BuildMI(MBB, InsertPt, Loc, self.TII(OrOpCode), NewReg)(StateReg)(Reg);
+    OrI();
+    operator(NumInstsInserted);
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("x86-slh", 1) {
+            dbgs() << "  Inserting or: ";
+            OrI()();
+            dbgs() << "\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    if FlagsReg.operator unsigned int() {
+        self.restoreEFLAGS(MBB, iterator { InsertPt }, Loc, FlagsReg);
+    }
+    return NewReg;
+}
+
+fn X86SpeculativeLoadHardeningImpl::hardenPostLoad(self, MI: *mut MachineInstr) -> Register {
+    let mut MBB: *mut MachineBasicBlock = *MI.getParent();
+    let mut Loc: *DebugLoc = MI.getDebugLoc();
+    let mut DefOp: *mut MachineOperand = MI.getOperand(0);
+    let mut OldDefReg: Register = DefOp.getReg();
+    let mut DefRC: *TargetRegisterClass = self.MRI.getRegClass(OldDefReg);
+    let mut UnhardenedReg: Register = self.MRI.createVirtualRegister(DefRC, "");
+    DefOp.setReg(UnhardenedReg);
+    let mut HardenedReg: Register = self.hardenValueInRegister(UnhardenedReg, MBB, next(MI.getIterator()), Loc);
+    self.MRI.replaceRegWith(OldDefReg, HardenedReg);
+    operator(NumPostLoadRegsHardened);
+    return HardenedReg;
+}
+
+fn X86SpeculativeLoadHardeningImpl::hardenReturnInstr(self, MI: *mut MachineInstr) {
+    let mut MBB: *mut MachineBasicBlock = *MI.getParent();
+    let mut Loc: *DebugLoc = MI.getDebugLoc();
+    let mut InsertPt: self_iterator = MI.getIterator();
+    if FenceCallAndRet() {
+        return;
+    }
+    self.mergePredStateIntoSP;
+}
+
+fn X86SpeculativeLoadHardeningImpl::tracePredStateThroughCall(self, MI: *mut MachineInstr) {
+    let mut MBB: *mut MachineBasicBlock = *MI.getParent();
+    let mut MF: *mut MachineFunction = *MBB.getParent();
+    let mut InsertPt: self_iterator = MI.getIterator();
+    let mut Loc: *DebugLoc = MI.getDebugLoc();
+    if FenceCallAndRet() {
+        if MI.isReturn(AnyInBundle) {
+            return;
+        }
+        BuildMI(MBB, next(InsertPt), Loc, self.TII);
+        operator(NumInstsInserted);
+        operator(NumLFENCEsInserted);
+        return;
+    }
+    let mut StateReg: Register = zeroed();
+    self.mergePredStateIntoSP(MBB, iterator { instr_iterator { InsertPt } }, Loc, StateReg);
+    if MI.isReturn(AnyInBundle) || (next(InsertPt) == MBB.end() && MBB.succ_empty()) {
+        return;
+    }
+    let mut RetSymbol: *mut MCSymbol = MF.getContext().createTempSymbol("slh_ret_addr", true);
+    MI.setPostInstrSymbol(MF, RetSymbol);
+    let mut AddrRC: *TargetRegisterClass = null;
+    let mut ExpectedRetAddrReg: Register = Register { Reg: 0 };
+    if !self.Subtarget.getFrameLowering().has128ByteRedZone(MF) || MF.exposesReturnsTwice() {
+        ExpectedRetAddrReg = self.MRI.createVirtualRegister(AddrRC, "");
+        if MF.getTarget().getCodeModel() == Small && !self.Subtarget.isPositionIndependent() {
+            BuildMI(MBB, InsertPt, Loc, self.TII, ExpectedRetAddrReg)(RetSymbol);
+        } else {
+            BuildMI(MBB, InsertPt, Loc, self.TII, ExpectedRetAddrReg)(1)(0)(RetSymbol)(0);
+        }
+    }
+    operator(InsertPt);
+    if !ExpectedRetAddrReg.operator unsigned int() {
+        ExpectedRetAddrReg = self.MRI.createVirtualRegister(AddrRC, "");
+        BuildMI(MBB, InsertPt, Loc, self.TII, ExpectedRetAddrReg)(1)(0)(-8)(0);
+    }
+    let mut NewStateReg: Register = self.extractPredStateFromSP(MBB, iterator { instr_iterator { InsertPt } }, Loc);
+    if MF.getTarget().getCodeModel() == Small && !self.Subtarget.isPositionIndependent() {
+        BuildMI(MBB, InsertPt, Loc, self.TII)(ExpectedRetAddrReg, Kill)(RetSymbol);
+    } else {
+        let mut ActualRetAddrReg: Register = self.MRI.createVirtualRegister(AddrRC, "");
+        BuildMI(MBB, InsertPt, Loc, self.TII, ActualRetAddrReg)(1)(0)(RetSymbol)(0);
+        BuildMI(MBB, InsertPt, Loc, self.TII)(ExpectedRetAddrReg, Kill)(ActualRetAddrReg, Kill);
+    }
+    let mut PredStateSizeInBytes: i32 = self.TRI / 8;
+    let mut CMovOp: auto = getCMovOpcode(PredStateSizeInBytes, false, false);
+    let mut UpdatedStateReg: Register = self.MRI;
+    let mut CMovI: auto = BuildMI(MBB, InsertPt, Loc, self.TII(), UpdatedStateReg)(NewStateReg, Kill)(COND_NE);
+    CMovI()(true);
+    operator(NumInstsInserted);
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("x86-slh", 1) {
+            dbgs() << "  Inserting cmov: ";
+            CMovI()();
+            dbgs() << "\n";
+        }
+    }
+        if !(false) { break; }
+    }
+}
+
+fn X86SpeculativeLoadHardeningImpl::hardenIndirectCallOrJumpInstr(self, MI: *mut MachineInstr, AddrRegToHardenedReg: *mut i32) {
+    match MI.getOpcode() {
+        _ => {
+            break;
+        },
+    }
+    assert!(!MI.mayLoad(AnyInBundle), "Found a lingering loading instruction!");
+    if !MI.getOperand(0).isReg() {
+        return;
+    }
+    let mut TargetOp: *mut MachineOperand = MI.getOperand(0);
+    let mut OldTargetReg: Register = TargetOp.getReg();
+    let mut HardenedTargetReg: *mut Register = [OldTargetReg];
+    if !HardenedTargetReg.operator unsigned int() {
+        HardenedTargetReg = self.hardenValueInRegister(OldTargetReg, *MI.getParent(), iterator { MI.getIterator() }, MI.getDebugLoc());
+    }
+    TargetOp.setReg(HardenedTargetReg);
+    operator(NumCallsOrJumpsHardened);
+}
+
+fn X86SpeculativeLoadHardeningPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
+    let mut Impl: X86SpeculativeLoadHardeningImpl = X86SpeculativeLoadHardeningImpl {};
+    let mut Changed: bool = Impl.run(MF);
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("x86-slh", 1) {
+            dbgs() << "Final speculative load hardened function:\n";
+            MF.dump();
+            dbgs() << "\n";
+            MF.verify(MFAM, null, null, true);
+        }
+    }
+        if !(false) { break; }
+    }
+    return if Changed { getMachineFunctionPassPreservedAnalyses() } else { all() };
+}
+
+fn createX86SpeculativeLoadHardeningLegacyPass() -> *mut FunctionPass {
+    return X86SpeculativeLoadHardeningLegacy {};
+}
+
+struct Closure_1 {
+    TI: *mut MachineInstr,
+}
+
+unsafe fn Closure_1::call(self: *mut Closure_1, OtherTI: *mut MachineInstr) -> bool {
+            return !OtherTI.isDebugInstr() && &mut OtherTI != &mut (*self.TI);
+        }
+
+struct Closure_2 {
+    MBB: *mut MachineBasicBlock,
+}
+
+unsafe fn Closure_2::call(self: *mut Closure_2, Succ: *mut MachineBasicBlock) -> bool {
+                return Succ.isEHPad() || Succ == &mut (*self.MBB);
+            }
+
+struct Closure_3 {}
+
+fn Closure_3::call(self: *Closure_3, Op: *mut MachineOperand) -> auto {}
+
+struct Closure_4 {}
+
+fn Closure_4::call(self: *Closure_4, Op: *mut MachineOperand) -> bool {
+        let mut It: auto = (Op.getReg());
+        if It() == () {
+            return false;
+        }
+        Op.setReg();
+        return true;
+    }
+
+struct Closure_5 {
+    cap_0: *mut X86SpeculativeLoadHardeningImpl,
+    HardenedInstrs: *mut SmallPtrSetImpl<MachineInstr *>,
+}
+
+unsafe fn Closure_5::call(self: *mut Closure_5, MI: *mut MachineInstr) -> auto {
+        let mut DefReg: Register = MI.getOperand(0).getReg();
+        let mut SingleUseMI: *mut MachineInstr = null;
+    }

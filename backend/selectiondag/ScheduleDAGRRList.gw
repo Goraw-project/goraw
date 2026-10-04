@@ -1,0 +1,2601 @@
+static mut NumBacktracks: Statistic = Statistic { "pre-RA-sched", "NumBacktracks", "Number of times scheduler backtracked" };
+
+static mut NumUnfolds: Statistic = Statistic { "pre-RA-sched", "NumUnfolds", "Number of nodes unfolded" };
+
+static mut NumDups: Statistic = Statistic { "pre-RA-sched", "NumDups", "Number of duplicated nodes" };
+
+static mut NumPRCopies: Statistic = Statistic { "pre-RA-sched", "NumPRCopies", "Number of physical register copies" };
+
+static mut burrListDAGScheduler: RegisterScheduler = RegisterScheduler { "list-burr", "Bottom-up register reduction list scheduling", createBURRListDAGScheduler };
+
+static mut sourceListDAGScheduler: RegisterScheduler = RegisterScheduler { "source", "Similar to list-burr but schedules in source order when possible", createSourceListDAGScheduler };
+
+static mut hybridListDAGScheduler: RegisterScheduler = RegisterScheduler { "list-hybrid", "Bottom-up register pressure aware list scheduling which tries to balance latency and register pressure", createHybridListDAGScheduler };
+
+static mut ILPListDAGScheduler: RegisterScheduler = RegisterScheduler { "list-ilp", "Bottom-up register pressure aware list scheduling which tries to balance ILP and register pressure", createILPListDAGScheduler };
+
+static mut DisableSchedCycles: opt<bool> = opt<bool> { "disable-sched-cycles", Hidden, init(false), desc { Desc: "Disable cycle-level precision during preRA scheduling" } };
+
+static mut DisableSchedRegPressure: opt<bool> = opt<bool> { "disable-sched-reg-pressure", Hidden, init(false), desc { Desc: "Disable regpressure priority in sched=list-ilp" } };
+
+static mut DisableSchedLiveUses: opt<bool> = opt<bool> { "disable-sched-live-uses", Hidden, init(true), desc { Desc: "Disable live use priority in sched=list-ilp" } };
+
+static mut DisableSchedVRegCycle: opt<bool> = opt<bool> { "disable-sched-vrcycle", Hidden, init(false), desc { Desc: "Disable virtual register cycle interference checks" } };
+
+static mut DisableSchedPhysRegJoin: opt<bool> = opt<bool> { "disable-sched-physreg-join", Hidden, init(false), desc { Desc: "Disable physreg def-use affinity" } };
+
+static mut DisableSchedStalls: opt<bool> = opt<bool> { "disable-sched-stalls", Hidden, init(true), desc { Desc: "Disable no-stall priority in sched=list-ilp" } };
+
+static mut DisableSchedCriticalPath: opt<bool> = opt<bool> { "disable-sched-critical-path", Hidden, init(false), desc { Desc: "Disable critical path priority in sched=list-ilp" } };
+
+static mut DisableSchedHeight: opt<bool> = opt<bool> { "disable-sched-height", Hidden, init(false), desc { Desc: "Disable scheduled-height priority in sched=list-ilp" } };
+
+static mut Disable2AddrHack: opt<bool> = opt<bool> { "disable-2addr-hack", Hidden, init(true), desc { Desc: "Disable scheduler's two-address hack" } };
+
+static mut MaxReorderWindow: opt<int> = opt<int> { "max-sched-reorder", Hidden, init(6), desc { Desc: "Number of instructions to allow ahead of the critical path in sched=list-ilp" } };
+
+static mut AvgIPC: opt<unsigned int> = opt<unsigned int> { "sched-avg-ipc", Hidden, init(1), desc { Desc: "Average inst/cycle when no target itinerary exists." } };
+
+struct ScheduleDAGRRList {
+    TM: *TargetMachine,
+    TII: *TargetInstrInfo,
+    TRI: *TargetRegisterInfo,
+    MF: *mut MachineFunction,
+    MRI: *mut MachineRegisterInfo,
+    SUnits: []SUnit,
+    EntrySU: SUnit,
+    ExitSU: SUnit,
+    StressSched: bool,
+    BB: *mut MachineBasicBlock,
+    DAG: *mut SelectionDAG,
+    InstrItins: *InstrItineraryData,
+    Sequence: []*mut SUnit,
+    NeedLatency: bool,
+    AvailableQueue: *mut SchedulingPriorityQueue,
+    PendingQueue: []*mut SUnit,
+    HazardRec: *mut ScheduleHazardRecognizer,
+    CurCycle: u32,
+    MinAvailableCycle: u32,
+    IssueCount: u32,
+    NumLiveRegs: u32,
+    LiveRegDefs: []*mut unique_ptr<SUnit,
+    LiveRegGens: []*mut unique_ptr<SUnit,
+    Interferences: SmallVector<SUnit *, 4>,
+    LRegsMap: LRegsMapT,
+    Topo: ScheduleDAGTopologicalSort,
+    CallSeqEndForStart: SmallDenseMap<SUnit *, SUnit *, 16>,
+}
+
+fn ScheduleDAGRRList::ScheduleDAGRRList(self, mf: *mut MachineFunction, needlatency: bool, availqueue: *mut SchedulingPriorityQueue, OptLevel: CodeGenOptLevel) {
+    let mut STI: *TargetSubtargetInfo = mf.getSubtarget();
+    if DisableSchedCycles || !self.NeedLatency {
+        self.HazardRec = ScheduleHazardRecognizer {};
+    } else {
+        self.HazardRec = STI.getInstrInfo().CreateTargetHazardRecognizer(&mut STI, self);
+    }
+}
+
+fn ScheduleDAGRRList::~ScheduleDAGRRList(self) {
+    self.HazardRec;
+    self.AvailableQueue;
+}
+
+fn ScheduleDAGRRList::getHazardRec(self) -> *mut ScheduleHazardRecognizer {
+    return self.HazardRec;
+}
+
+fn ScheduleDAGRRList::IsReachable(self, SU: *SUnit, TargetSU: *SUnit) -> bool {
+    return self.Topo.IsReachable(SU, TargetSU);
+}
+
+fn ScheduleDAGRRList::WillCreateCycle(self, SU: *mut SUnit, TargetSU: *mut SUnit) -> bool {
+    return self.Topo.WillCreateCycle(SU, TargetSU);
+}
+
+fn ScheduleDAGRRList::AddPredQueued(self, SU: *mut SUnit, D: *SDep) {
+    self.Topo.AddPredQueued(SU, D.getSUnit());
+    SU.addPred(D, true);
+}
+
+fn ScheduleDAGRRList::RemovePred(self, SU: *mut SUnit, D: *SDep) {
+    self.Topo.RemovePred(SU, D.getSUnit());
+    SU.removePred(D);
+}
+
+fn ScheduleDAGRRList::isReady(self, SU: *mut SUnit) -> bool {
+    return DisableSchedCycles || !self.AvailableQueue.hasReadyFilter() || self.AvailableQueue.isReady(SU);
+}
+
+fn ScheduleDAGRRList::CreateNewSUnit(self, N: *mut SDNode) -> *mut SUnit {
+    let mut NumSUnits: u32 = self.SUnits.len;
+    let mut NewNode: *mut SUnit = self.newSUnit(N);
+    if NewNode.NodeNum >= NumSUnits {
+        self.Topo.AddSUnitWithoutPredecessors(NewNode);
+    }
+    return NewNode;
+}
+
+fn ScheduleDAGRRList::CreateClone(self, N: *mut SUnit) -> *mut SUnit {
+    let mut NumSUnits: u32 = self.SUnits.len;
+    let mut NewNode: *mut SUnit = self.Clone(N);
+    if NewNode.NodeNum >= NumSUnits {
+        self.Topo.AddSUnitWithoutPredecessors(NewNode);
+    }
+    return NewNode;
+}
+
+fn ScheduleDAGRRList::forceUnitLatencies(self: *ScheduleDAGRRList) -> bool {
+    return !self.NeedLatency;
+}
+
+fn ScheduleDAGRRList::getInstrDesc(self: *ScheduleDAGRRList, SU: *SUnit) -> *MCInstrDesc {
+    if SU.isInstr() {
+        return &mut SU.getInstr().getDesc();
+    }
+    return self.getNodeDesc(SU.getNode());
+}
+
+fn ScheduleDAGRRList::addCustomGraphFeatures(self: *ScheduleDAGRRList, arg: *mut GraphWriter<ScheduleDAG *>) {}
+
+fn ScheduleDAGRRList::isPassiveNode(self, Node: *mut SDNode) -> bool {
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if Node.getOpcode() == EntryToken || isa(Node) {
+        return true;
+    }
+    return false;
+}
+
+const RegSequenceCost: u32 = 1;
+
+fn GetCostForDef(RegDefPos: *RegDefIter, TLI: *TargetLowering, TII: *TargetInstrInfo, TRI: *TargetRegisterInfo, RegClass: *mut u32, Cost: *mut u32, MF: *MachineFunction) {
+    let mut VT: MVT = RegDefPos.GetValue();
+    if VT == Untyped {
+        let mut Node: *SDNode = RegDefPos.GetNode();
+        if !Node.isMachineOpcode() && Node.getOpcode() == CopyFromReg {
+            let mut Reg: Register = cast(Node.getOperand(1)).getReg();
+            let mut RC: *TargetRegisterClass = MF.getRegInfo().getRegClass(Reg);
+            RegClass = RC.getID();
+            Cost = 1;
+            return;
+        }
+        let mut Opcode: u32 = Node.getMachineOpcode();
+        if Opcode == REG_SEQUENCE {
+            let mut DstRCIdx: u32 = Node.getConstantOperandVal(0);
+            let mut RC: *TargetRegisterClass = TRI.getRegClass(DstRCIdx);
+            RegClass = RC.getID();
+            Cost = RegSequenceCost;
+            return;
+        }
+        let mut Idx: u32 = RegDefPos.GetIdx();
+        let mut Desc: *MCInstrDesc = TII.get(Opcode);
+        let mut RC: *TargetRegisterClass = TII.getRegClass(Desc, Idx);
+        assert!(RC, "Not a valid register class");
+        RegClass = RC.getID();
+        Cost = 1;
+    } else {
+        RegClass = TLI.getRepRegClassFor(VT).getID();
+        Cost = TLI.getRepRegClassCostFor(VT);
+    }
+}
+
+fn ScheduleDAGRRList::Schedule(self) {
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            dbgs() << "********** List Scheduling " << printMBBReference(*self.BB) << " '" << self.BB.getName() << "' **********\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    self.CurCycle = 0;
+    self.IssueCount = 0;
+    self.MinAvailableCycle = if DisableSchedCycles { 0 } else { max() };
+    self.NumLiveRegs = 0;
+    self.LiveRegDefs.reset(self.TRI.getNumRegs() + 1);
+    self.LiveRegGens.reset(self.TRI.getNumRegs() + 1);
+    self.CallSeqEndForStart.clear();
+    assert!(self.Interferences.is_empty() && self.LRegsMap.is_empty(), "stale Interferences");
+    self.BuildSchedGraph();
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            self.dump();
+        }
+    }
+        if !(false) { break; }
+    }
+    self.Topo.MarkDirty();
+    self.AvailableQueue.initNodes(self.SUnits);
+    self.HazardRec.Reset();
+    self.ListScheduleBottomUp();
+    self.AvailableQueue.releaseState();
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            {
+                dbgs() << "*** Final schedule ***\n";
+                self.dumpSchedule();
+                dbgs() << 10;
+            }
+        }
+    }
+        if !(false) { break; }
+    }
+}
+
+fn ScheduleDAGRRList::ReleasePred(self, SU: *mut SUnit, PredEdge: *SDep) {
+    let mut PredSU: *mut SUnit = PredEdge.getSUnit();
+    if PredSU.NumSuccsLeft == 0 {
+        dbgs() << "*** Scheduling failed! ***\n";
+        self.dumpNode(*PredSU);
+        dbgs() << " has been released too many times!\n";
+        llvm_unreachable_internal(null, "llvm\\lib\\CodeGen\\SelectionDAG\\ScheduleDAGRRList.cpp", 400);
+    }
+    PredSU.NumSuccsLeft -= 1;
+    if !self.forceUnitLatencies() {
+        PredSU.setHeightToAtLeast(SU.getHeight() + PredEdge.getLatency());
+    }
+    if PredSU.NumSuccsLeft == 0 && PredSU != &mut self.EntrySU {
+        PredSU.isAvailable = true;
+        let mut Height: u32 = PredSU.getHeight();
+        if Height < self.MinAvailableCycle {
+            self.MinAvailableCycle = Height;
+        }
+        if self.isReady(PredSU) {
+            self.AvailableQueue.push(PredSU);
+        } else if !PredSU.isPending {
+            PredSU.isPending = true;
+            self.PendingQueue.push(PredSU);
+        }
+    }
+}
+
+fn IsChainDependent(Outer: *mut SDNode, Inner: *mut SDNode, NestLevel: u32, TII: *TargetInstrInfo) -> bool {
+    let mut N: *mut SDNode = Outer;
+    while true {
+        if N == Inner {
+            return true;
+        }
+        if N.getOpcode() == TokenFactor {
+            for Op in N.op_values() {
+                if IsChainDependent(Op.getNode(), Inner, NestLevel, TII) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if N.isMachineOpcode() {
+            if N.getMachineOpcode() == TII.getCallFrameDestroyOpcode() {
+                NestLevel += 1;
+            } else if N.getMachineOpcode() == TII.getCallFrameSetupOpcode() {
+                if NestLevel == 0 {
+                    return false;
+                }
+                NestLevel -= 1;
+            }
+        }
+        for Op in N.op_values() {
+            if Op.getValueType() == EVT { Other } {
+                N = Op.getNode();
+            }
+        }
+        return false;
+        if N.getOpcode() == EntryToken {
+            return false;
+        }
+    }
+}
+
+fn FindCallSeqStart(N: *mut SDNode, NestLevel: *mut u32, MaxNest: *mut u32, TII: *TargetInstrInfo) -> *mut SDNode {
+    while true {
+        if N.getOpcode() == TokenFactor {
+            let mut Best: *mut SDNode = null;
+            let mut BestMaxNest: u32 = MaxNest;
+            for Op in N.op_values() {
+                let mut MyNestLevel: u32 = NestLevel;
+                let mut MyMaxNest: u32 = MaxNest;
+                if FindCallSeqStart(Op.getNode(), MyNestLevel, MyMaxNest, TII) {
+                    New;
+                } else if !Best || (MyMaxNest > BestMaxNest) {
+                    Best = New;
+                    BestMaxNest = MyMaxNest;
+                }
+            }
+            assert!(Best);
+            MaxNest = BestMaxNest;
+            return Best;
+        }
+        if N.isMachineOpcode() {
+            if N.getMachineOpcode() == TII.getCallFrameDestroyOpcode() {
+                NestLevel += 1;
+                MaxNest = if MaxNest > NestLevel { MaxNest } else { NestLevel };
+            } else if N.getMachineOpcode() == TII.getCallFrameSetupOpcode() {
+                assert!(NestLevel != 0);
+                NestLevel -= 1;
+                if NestLevel == 0 {
+                    return N;
+                }
+            }
+        }
+        for Op in N.op_values() {
+            if Op.getValueType() == EVT { Other } {
+                N = Op.getNode();
+            }
+        }
+        return null;
+        if N.getOpcode() == EntryToken {
+            return null;
+        }
+    }
+}
+
+fn ScheduleDAGRRList::ReleasePredecessors(self, SU: *mut SUnit) {
+    for Pred in SU.Preds {
+        self.ReleasePred(SU, &mut Pred);
+        if Pred.isAssignedRegDep() {
+            let mut RegDef: *mut SUnit = self.LiveRegDefs[Pred.getReg().operator unsigned int()];
+            RegDef as void;
+            assert!((!RegDef || RegDef == SU || RegDef == Pred.getSUnit()), "interference on register dependence");
+            self.LiveRegDefs[Pred.getReg().operator unsigned int()] = Pred.getSUnit();
+            if !self.LiveRegGens[Pred.getReg().operator unsigned int()] {
+                self.NumLiveRegs += 1;
+                self.LiveRegGens[Pred.getReg().operator unsigned int()] = SU;
+            }
+        }
+    }
+    let mut CallResource: u32 = self.TRI.getNumRegs();
+    if !self.LiveRegDefs[CallResource] {
+        for let mut Node: *mut SDNode = SU.getNode(); Node; Node = Node.getGluedNode() {
+            if Node.isMachineOpcode() && Node.getMachineOpcode() == self.TII.getCallFrameDestroyOpcode() {
+                let mut NestLevel: u32 = 0;
+                let mut MaxNest: u32 = 0;
+                let mut N: *mut SDNode = FindCallSeqStart(Node, NestLevel, MaxNest, self.TII);
+                assert!(N, "Must find call sequence start");
+                let mut Def: *mut SUnit = &mut self.SUnits[N.getNodeId()];
+                self.CallSeqEndForStart[Def] = SU;
+                self.NumLiveRegs += 1;
+                self.LiveRegDefs[CallResource] = Def;
+                self.LiveRegGens[CallResource] = SU;
+                break;
+            }
+        }
+    }
+}
+
+fn ScheduleDAGRRList::ReleasePending(self) {
+    if DisableSchedCycles {
+        assert!(self.PendingQueue.is_empty(), "pending instrs not allowed in this mode");
+        return;
+    }
+    if self.AvailableQueue.len == 0 {
+        self.MinAvailableCycle = max();
+    }
+    for let mut i: u32 = 0;
+let mut e: u32 = self.PendingQueue.len; i != e; i += 1 {
+        let mut ReadyCycle: u32 = self.PendingQueue[i].getHeight();
+        if ReadyCycle < self.MinAvailableCycle {
+            self.MinAvailableCycle = ReadyCycle;
+        }
+        if self.PendingQueue[i].isAvailable {
+            if !self.isReady(self.PendingQueue[i]) {
+                continue;
+            }
+            self.AvailableQueue.push(self.PendingQueue[i]);
+        }
+        self.PendingQueue[i].isPending = false;
+        self.PendingQueue[i] = self.PendingQueue.back();
+        self.PendingQueue.pop();
+        i -= 1;
+        e -= 1;
+    }
+}
+
+fn ScheduleDAGRRList::AdvanceToCycle(self, NextCycle: u32) {
+    if NextCycle <= self.CurCycle {
+        return;
+    }
+    self.IssueCount = 0;
+    self.AvailableQueue.setCurCycle(NextCycle);
+    if !self.HazardRec.isEnabled() {
+        self.CurCycle = NextCycle;
+    } else {
+        for ; self.CurCycle != NextCycle; self.CurCycle += 1 {
+            self.HazardRec.RecedeCycle();
+        }
+    }
+    self.ReleasePending();
+}
+
+fn ScheduleDAGRRList::AdvancePastStalls(self, SU: *mut SUnit) {
+    if DisableSchedCycles {
+        return;
+    }
+    let mut ReadyCycle: u32 = SU.getHeight();
+    self.AdvanceToCycle(ReadyCycle);
+    if SU.isCall {
+        return;
+    }
+    let mut Stalls: i32 = 0;
+    while true {
+        let mut HT: HazardType = self.HazardRec.getHazardType(SU, -Stalls);
+        if HT == NoHazard {
+            break;
+        }
+        Stalls += 1;
+    }
+    self.AdvanceToCycle(self.CurCycle + Stalls);
+}
+
+fn ScheduleDAGRRList::EmitNode(self, SU: *mut SUnit) {
+    if !self.HazardRec.isEnabled() {
+        return;
+    }
+    if !SU.getNode() {
+        return;
+    }
+    match SU.getNode().getOpcode() {
+        _ => {
+            assert!(SU.getNode().isMachineOpcode(), "This target-independent node should not be scheduled.");
+        },
+        MERGE_VALUES => {
+            TokenFactor;
+        },
+        INLINEASM => {
+            INLINEASM_BR;
+        },
+    }
+    if SU.isCall {
+        self.HazardRec.Reset();
+    }
+    self.HazardRec.EmitInstruction(SU);
+}
+
+fn ScheduleDAGRRList::ScheduleNodeBottomUp(self, SU: *mut SUnit) {
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            dbgs() << "\n*** Scheduling [" << self.CurCycle << "]: ";
+        }
+    }
+        if !(false) { break; }
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            self.dumpNode(*SU);
+        }
+    }
+        if !(false) { break; }
+    }
+    if self.CurCycle < SU.getHeight() {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                dbgs() << "   Height [" << SU.getHeight() << "] pipeline stall!\n";
+            }
+        }
+            if !(false) { break; }
+        }
+    }
+    SU.setHeightToAtLeast(self.CurCycle);
+    self.EmitNode(SU);
+    self.Sequence.push(SU);
+    self.AvailableQueue.scheduledNode(SU);
+    if !self.HazardRec.isEnabled() && AvgIPC.operator unsigned int() < 2 {
+        self.AdvanceToCycle(self.CurCycle + 1);
+    }
+    self.ReleasePredecessors(SU);
+    for Succ in SU.Succs {
+        if Succ.isAssignedRegDep() && self.LiveRegDefs[Succ.getReg().operator unsigned int()] == SU {
+            assert!(self.NumLiveRegs > 0, "NumLiveRegs is already zero!");
+            self.NumLiveRegs -= 1;
+            self.LiveRegDefs[Succ.getReg().operator unsigned int()] = null;
+            self.LiveRegGens[Succ.getReg().operator unsigned int()] = null;
+            self.releaseInterferences(Succ.getReg().operator unsigned int());
+        }
+    }
+    let mut CallResource: u32 = self.TRI.getNumRegs();
+    if self.LiveRegDefs[CallResource] == SU {
+        for let mut SUNode: *SDNode = SU.getNode(); SUNode; SUNode = SUNode.getGluedNode() {
+            if SUNode.isMachineOpcode() && SUNode.getMachineOpcode() == self.TII.getCallFrameSetupOpcode() {
+                assert!(self.NumLiveRegs > 0, "NumLiveRegs is already zero!");
+                self.NumLiveRegs -= 1;
+                self.LiveRegDefs[CallResource] = null;
+                self.LiveRegGens[CallResource] = null;
+                self.releaseInterferences(CallResource);
+            }
+        }
+    }
+    resetVRegCycle(SU);
+    SU.isScheduled = true;
+    if self.HazardRec.isEnabled() || AvgIPC.operator unsigned int() > 1 {
+        if SU.getNode() && SU.getNode().isMachineOpcode() {
+            self.IssueCount += 1;
+        }
+        if (self.HazardRec.isEnabled() && self.HazardRec.atIssueLimit()) || (!self.HazardRec.isEnabled() && self.IssueCount == AvgIPC.operator unsigned int()) {
+            self.AdvanceToCycle(self.CurCycle + 1);
+        }
+    }
+}
+
+fn ScheduleDAGRRList::CapturePred(self, PredEdge: *mut SDep) {
+    let mut PredSU: *mut SUnit = PredEdge.getSUnit();
+    if PredSU.isAvailable {
+        PredSU.isAvailable = false;
+        if !PredSU.isPending {
+            self.AvailableQueue.remove(PredSU);
+        }
+    }
+    assert!(PredSU.NumSuccsLeft < max(), "NumSuccsLeft will overflow!");
+    PredSU.NumSuccsLeft += 1;
+}
+
+fn ScheduleDAGRRList::UnscheduleNodeBottomUp(self, SU: *mut SUnit) {
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            dbgs() << "*** Unscheduling [" << SU.getHeight() << "]: ";
+        }
+    }
+        if !(false) { break; }
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            self.dumpNode(*SU);
+        }
+    }
+        if !(false) { break; }
+    }
+    for Pred in SU.Preds {
+        self.CapturePred(&mut Pred);
+        if Pred.isAssignedRegDep() && SU == self.LiveRegGens[Pred.getReg().operator unsigned int()] {
+            assert!(self.NumLiveRegs > 0, "NumLiveRegs is already zero!");
+            assert!(self.LiveRegDefs[Pred.getReg().operator unsigned int()] == Pred.getSUnit(), "Physical register dependency violated?");
+            self.NumLiveRegs -= 1;
+            self.LiveRegDefs[Pred.getReg().operator unsigned int()] = null;
+            self.LiveRegGens[Pred.getReg().operator unsigned int()] = null;
+            self.releaseInterferences(Pred.getReg().operator unsigned int());
+        }
+    }
+    let mut CallResource: u32 = self.TRI.getNumRegs();
+    for let mut SUNode: *SDNode = SU.getNode(); SUNode; SUNode = SUNode.getGluedNode() {
+        if SUNode.isMachineOpcode() && SUNode.getMachineOpcode() == self.TII.getCallFrameSetupOpcode() {
+            let mut SeqEnd: *mut SUnit = self.CallSeqEndForStart[SU];
+            assert!(SeqEnd, "Call sequence start/end must be known");
+            assert!(!self.LiveRegDefs[CallResource]);
+            assert!(!self.LiveRegGens[CallResource]);
+            self.NumLiveRegs += 1;
+            self.LiveRegDefs[CallResource] = SU;
+            self.LiveRegGens[CallResource] = SeqEnd;
+        }
+    }
+    if self.LiveRegGens[CallResource] == SU {
+        for let mut SUNode: *SDNode = SU.getNode(); SUNode; SUNode = SUNode.getGluedNode() {
+            if SUNode.isMachineOpcode() && SUNode.getMachineOpcode() == self.TII.getCallFrameDestroyOpcode() {
+                assert!(self.NumLiveRegs > 0, "NumLiveRegs is already zero!");
+                assert!(self.LiveRegDefs[CallResource]);
+                assert!(self.LiveRegGens[CallResource]);
+                self.NumLiveRegs -= 1;
+                self.LiveRegDefs[CallResource] = null;
+                self.LiveRegGens[CallResource] = null;
+                self.releaseInterferences(CallResource);
+            }
+        }
+    }
+    for Succ in SU.Succs {
+        if Succ.isAssignedRegDep() {
+            let mut Reg: Register = Succ.getReg();
+            if !self.LiveRegDefs[Reg.operator unsigned int()] {
+                self.NumLiveRegs += 1;
+            }
+            self.LiveRegDefs[Reg.operator unsigned int()] = SU;
+            if !self.LiveRegGens[Reg.operator unsigned int()] {
+                self.LiveRegGens[Reg.operator unsigned int()] = Succ.getSUnit();
+                for Succ2 in SU.Succs {
+                    if Succ2.isAssignedRegDep() && Succ2.getReg() == Reg && Succ2.getSUnit().getHeight() < self.LiveRegGens[Reg.operator unsigned int()].getHeight() {
+                        self.LiveRegGens[Reg.operator unsigned int()] = Succ2.getSUnit();
+                    }
+                }
+            }
+        }
+    }
+    if SU.getHeight() < self.MinAvailableCycle {
+        self.MinAvailableCycle = SU.getHeight();
+    }
+    SU.setHeightDirty();
+    SU.isScheduled = false;
+    SU.isAvailable = true;
+    if !DisableSchedCycles && self.AvailableQueue.hasReadyFilter() {
+        SU.isPending = true;
+        self.PendingQueue.push(SU);
+    } else {
+        self.AvailableQueue.push(SU);
+    }
+    self.AvailableQueue.unscheduledNode(SU);
+}
+
+fn ScheduleDAGRRList::RestoreHazardCheckerBottomUp(self) {
+    self.HazardRec.Reset();
+    let mut LookAhead: u32 = if self.Sequence.len as u32 < self.HazardRec.getMaxLookAhead() { self.Sequence.len as u32 } else { self.HazardRec.getMaxLookAhead() };
+    if LookAhead == 0 {
+        return;
+    }
+    let mut I: []*mut SUnit = []*mut SUnit { (self.Sequence.end() - LookAhead) };
+    let mut HazardCycle: u32 = (operator(I)).getHeight();
+    for let mut E: iterator = self.Sequence.end(); !I == E; operator(I) {
+        let mut SU: *mut SUnit = operator(I);
+        for ; SU.getHeight() > HazardCycle; HazardCycle += 1 {
+            self.HazardRec.RecedeCycle();
+        }
+        self.EmitNode(SU);
+    }
+}
+
+fn ScheduleDAGRRList::BacktrackBottomUp(self, SU: *mut SUnit, BtSU: *mut SUnit) {
+    let mut OldSU: *mut SUnit = self.Sequence.back();
+    while true {
+        self.Sequence.pop();
+        self.CurCycle = OldSU.getHeight();
+        self.UnscheduleNodeBottomUp(OldSU);
+        self.AvailableQueue.setCurCycle(self.CurCycle);
+        if OldSU == BtSU {
+            break;
+        }
+        OldSU = self.Sequence.back();
+    }
+    assert!(!SU.isSucc(OldSU), "Something is wrong!");
+    self.RestoreHazardCheckerBottomUp();
+    self.ReleasePending();
+    operator(NumBacktracks);
+}
+
+fn isOperandOf(SU: *SUnit, N: *mut SDNode) -> bool {
+    for let mut SUNode: *SDNode = SU.getNode(); SUNode; SUNode = SUNode.getGluedNode() {
+        if SUNode.isOperandOf(N) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn ScheduleDAGRRList::TryUnfoldSU(self, SU: *mut SUnit) -> *mut SUnit {
+    let mut N: *mut SDNode = SU.getNode();
+    let mut NewNodes: SmallVector<SDNode *, 2> = SmallVector<SDNode *, 2> {};
+    if !self.TII.unfoldMemoryOperand(*self.DAG, N, NewNodes) {
+        return null;
+    }
+    assert!(NewNodes.len == 2, "Expected a load folding node!");
+    N = NewNodes[1];
+    let mut LoadNode: *mut SDNode = NewNodes[0];
+    let mut NumVals: u32 = N.getNumValues();
+    let mut OldNumVals: u32 = SU.getNode().getNumValues();
+    let mut isNewLoad: bool = true;
+    let mut LoadSU: *mut SUnit = null;
+    if LoadNode.getNodeId() != -1 {
+        LoadSU = &mut self.SUnits[LoadNode.getNodeId()];
+        if LoadSU.isScheduled {
+            return SU;
+        }
+        isNewLoad = false;
+    } else {
+        LoadSU = self.CreateNewSUnit(LoadNode);
+        LoadNode.setNodeId(LoadSU.NodeNum);
+        self.InitNumRegDefsLeft(LoadSU);
+        self.computeLatency(LoadSU);
+    }
+    let mut isNewN: bool = true;
+    let mut NewSU: *mut SUnit = null;
+    if N.getNodeId() != -1 {
+        NewSU = &mut self.SUnits[N.getNodeId()];
+        if NewSU.isScheduled {
+            return SU;
+        }
+        isNewN = false;
+    } else {
+        NewSU = self.CreateNewSUnit(N);
+        N.setNodeId(NewSU.NodeNum);
+        let mut MCID: *MCInstrDesc = self.TII.get(N.getMachineOpcode());
+        for let mut i: u32 = 0; i != MCID.getNumOperands(); i += 1 {
+            if MCID.getOperandConstraint(i, TIED_TO) != -1 {
+                NewSU.isTwoAddress = true;
+                break;
+            }
+        }
+        if MCID.isCommutable() {
+            NewSU.isCommutable = true;
+        }
+        self.InitNumRegDefsLeft(NewSU);
+        self.computeLatency(NewSU);
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            dbgs() << "Unfolding SU #" << SU.NodeNum << "\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    for let mut i: u32 = 0; i != NumVals; i += 1 {
+        self.DAG.ReplaceAllUsesOfValueWith(SDValue { Node: SU.getNode(), ResNo: i }, SDValue { Node: N, ResNo: i });
+    }
+    self.DAG.ReplaceAllUsesOfValueWith(SDValue { Node: SU.getNode(), ResNo: OldNumVals - 1 }, SDValue { Node: LoadNode, ResNo: 1 });
+    let mut ChainPreds: SmallVector<SDep, 4> = SmallVector<SDep, 4> {};
+    let mut ChainSuccs: SmallVector<SDep, 4> = SmallVector<SDep, 4> {};
+    let mut LoadPreds: SmallVector<SDep, 4> = SmallVector<SDep, 4> {};
+    let mut NodePreds: SmallVector<SDep, 4> = SmallVector<SDep, 4> {};
+    let mut NodeSuccs: SmallVector<SDep, 4> = SmallVector<SDep, 4> {};
+    for Pred in SU.Preds {
+        if Pred.isCtrl() {
+            ChainPreds.push(ValueParamT { Pred });
+        } else if isOperandOf(Pred.getSUnit(), LoadNode) {
+            LoadPreds.push(ValueParamT { Pred });
+        } else {
+            NodePreds.push(ValueParamT { Pred });
+        }
+    }
+    for Succ in SU.Succs {
+        if Succ.isCtrl() {
+            ChainSuccs.push(ValueParamT { Succ });
+        } else {
+            NodeSuccs.push(ValueParamT { Succ });
+        }
+    }
+    for Pred in ChainPreds {
+        self.RemovePred(SU, Pred);
+        if isNewLoad {
+            self.AddPredQueued(LoadSU, Pred);
+        }
+    }
+    for Pred in LoadPreds {
+        self.RemovePred(SU, Pred);
+        if isNewLoad {
+            self.AddPredQueued(LoadSU, Pred);
+        }
+    }
+    for Pred in NodePreds {
+        self.RemovePred(SU, Pred);
+        self.AddPredQueued(NewSU, Pred);
+    }
+    for D in NodeSuccs {
+        let mut SuccDep: *mut SUnit = D.getSUnit();
+        D.setSUnit(SU);
+        self.RemovePred(SuccDep, D);
+        D.setSUnit(NewSU);
+        self.AddPredQueued(SuccDep, D);
+        if self.AvailableQueue.tracksRegPressure() && SuccDep.isScheduled && !D.isCtrl() && NewSU.NumRegDefsLeft > 0 {
+            NewSU.NumRegDefsLeft -= 1;
+        }
+    }
+    for D in ChainSuccs {
+        let mut SuccDep: *mut SUnit = D.getSUnit();
+        D.setSUnit(SU);
+        self.RemovePred(SuccDep, D);
+        if isNewLoad {
+            D.setSUnit(LoadSU);
+            self.AddPredQueued(SuccDep, D);
+        }
+    }
+    let mut D: SDep = SDep { Dep: LoadSU, Contents: Data, Latency: Register { Reg: 0 } };
+    D.setLatency(LoadSU.Latency);
+    self.AddPredQueued(NewSU, D);
+    if isNewLoad {
+        self.AvailableQueue.addNode(LoadSU);
+    }
+    if isNewN {
+        self.AvailableQueue.addNode(NewSU);
+    }
+    operator(NumUnfolds);
+    if NewSU.NumSuccsLeft == 0 {
+        NewSU.isAvailable = true;
+    }
+    return NewSU;
+}
+
+fn ScheduleDAGRRList::CopyAndMoveSuccessors(self, SU: *mut SUnit) -> *mut SUnit {
+    let mut N: *mut SDNode = SU.getNode();
+    if !N {
+        return null;
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            dbgs() << "Considering duplicating the SU\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            self.dumpNode(*SU);
+        }
+    }
+        if !(false) { break; }
+    }
+    if N.getGluedNode() && !self.TII.canCopyGluedNodeDuringSchedule(N) {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                dbgs() << "Giving up because it has incoming glue and the target does not want to copy it\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        return null;
+    }
+    let mut NewSU: *mut SUnit = null;
+    let mut TryUnfold: bool = false;
+    for let mut i: u32 = 0;
+let mut e: u32 = N.getNumValues(); i != e; i += 1 {
+        let mut VT: MVT = N.getSimpleValueType(i);
+        if VT == Glue {
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                    dbgs() << "Giving up because it has outgoing glue\n";
+                }
+            }
+                if !(false) { break; }
+            }
+            return null;
+        } else if VT == Other {
+            TryUnfold = true;
+        }
+    }
+    for Op in N.op_values() {
+        let mut VT: MVT = Op.getNode().getSimpleValueType(Op.getResNo());
+        if VT == Glue && !self.TII.canCopyGluedNodeDuringSchedule(N) {
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                    dbgs() << "Giving up because it one of the operands is glue and the target does not want to copy it\n";
+                }
+            }
+                if !(false) { break; }
+            }
+            return null;
+        }
+    }
+    if TryUnfold {
+        let mut UnfoldSU: *mut SUnit = self.TryUnfoldSU(SU);
+        if !UnfoldSU {
+            return null;
+        }
+        SU = UnfoldSU;
+        N = SU.getNode();
+        if SU.NumSuccsLeft == 0 {
+            return SU;
+        }
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            dbgs() << "    Duplicating SU #" << SU.NodeNum << "\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    NewSU = self.CreateClone(SU);
+    for Pred in SU.Preds {
+        if !Pred.isArtificial() {
+            self.AddPredQueued(NewSU, Pred);
+        }
+    }
+    self.AddPredQueued(NewSU, SDep { SU, Artificial });
+    let mut DelDeps: pair<SUnit *, SDep>, 4> = pair<SUnit *, SDep>, 4> {};
+    for Succ in SU.Succs {
+        if Succ.isArtificial() {
+            continue;
+        }
+        let mut SuccSU: *mut SUnit = Succ.getSUnit();
+        if SuccSU.isScheduled {
+            let mut D: SDep = Succ;
+            D.setSUnit(NewSU);
+            self.AddPredQueued(SuccSU, D);
+            D.setSUnit(SU);
+            DelDeps.emplace_back(SuccSU, D);
+        }
+    }
+    for x in DelDeps {
+        self.RemovePred(DelSU, DelD);
+    }
+    self.AvailableQueue.updateNode(SU);
+    self.AvailableQueue.addNode(NewSU);
+    operator(NumDups);
+    return NewSU;
+}
+
+fn ScheduleDAGRRList::InsertCopiesAndMoveSuccs(self, SU: *mut SUnit, Reg: u32, DestRC: *TargetRegisterClass, SrcRC: *TargetRegisterClass, Copies: *mut SmallVectorImpl<SUnit *>) {
+    let mut CopyFromSU: *mut SUnit = self.CreateNewSUnit(null);
+    CopyFromSU.CopySrcRC = SrcRC;
+    CopyFromSU.CopyDstRC = DestRC;
+    let mut CopyToSU: *mut SUnit = self.CreateNewSUnit(null);
+    CopyToSU.CopySrcRC = DestRC;
+    CopyToSU.CopyDstRC = SrcRC;
+    let mut DelDeps: pair<SUnit *, SDep>, 4> = pair<SUnit *, SDep>, 4> {};
+    for Succ in SU.Succs {
+        if Succ.isArtificial() {
+            continue;
+        }
+        let mut SuccSU: *mut SUnit = Succ.getSUnit();
+        if SuccSU.isScheduled {
+            let mut D: SDep = Succ;
+            D.setSUnit(CopyToSU);
+            self.AddPredQueued(SuccSU, D);
+            DelDeps.emplace_back(SuccSU, Succ);
+        } else {
+            self.AddPredQueued(SuccSU, SDep { CopyFromSU, Artificial });
+        }
+    }
+    for x in DelDeps {
+        self.RemovePred(DelSU, DelD);
+    }
+    let mut FromDep: SDep = SDep { Dep: SU, Contents: Data, Latency: Register { Reg: Reg } };
+    FromDep.setLatency(SU.Latency);
+    self.AddPredQueued(CopyFromSU, FromDep);
+    let mut ToDep: SDep = SDep { Dep: CopyFromSU, Contents: Data, Latency: Register { Reg: 0 } };
+    ToDep.setLatency(CopyFromSU.Latency);
+    self.AddPredQueued(CopyToSU, ToDep);
+    self.AvailableQueue.updateNode(SU);
+    self.AvailableQueue.addNode(CopyFromSU);
+    self.AvailableQueue.addNode(CopyToSU);
+    Copies.push(CopyFromSU);
+    Copies.push(CopyToSU);
+    operator(NumPRCopies);
+}
+
+fn CheckForLiveRegDef(SU: *mut SUnit, Reg: MCRegister, LiveRegDefs: *mut *mut SUnit, RegAdded: *mut SmallSet<unsigned int, 4>, LRegs: *mut SmallVectorImpl<unsigned int>, TRI: *TargetRegisterInfo, Node: *SDNode) {
+    for let mut AliasI: MCRegAliasIterator = MCRegAliasIterator { Reg, TRI, true }; AliasI.isValid(); operator(AliasI) {
+        if !LiveRegDefs[operator(AliasI).operator unsigned int()] {
+            continue;
+        }
+        if LiveRegDefs[operator(AliasI).operator unsigned int()] == SU {
+            continue;
+        }
+        if Node && LiveRegDefs[operator(AliasI).operator unsigned int()].getNode() == Node {
+            continue;
+        }
+        if RegAdded.insert(operator(AliasI).operator unsigned int()).second {
+            LRegs.push(operator(AliasI).operator unsigned int());
+        }
+    }
+}
+
+fn CheckForLiveRegDefMasked(SU: *mut SUnit, RegMask: *u32, LiveRegDefs: ArrayRef<SUnit *>, RegAdded: *mut SmallSet<unsigned int, 4>, LRegs: *mut SmallVectorImpl<unsigned int>) {
+    for let mut i: u32 = 1;
+let mut e: u32 = LiveRegDefs.len - 1; i != e; i += 1 {
+        if !LiveRegDefs[i] {
+            continue;
+        }
+        if LiveRegDefs[i] == SU {
+            continue;
+        }
+        if !clobbersPhysReg(RegMask, MCRegister { Reg: i }) {
+            continue;
+        }
+        if RegAdded.insert(i).second {
+            LRegs.push(i);
+        }
+    }
+}
+
+fn getNodeRegMask(N: *SDNode) -> *u32 {
+    for Op in N.op_values() {
+        if dyn_cast(Op.getNode()) {
+            RegOp;
+        } else {
+            return RegOp.getRegMask();
+        }
+    }
+    return null;
+}
+
+fn ScheduleDAGRRList::DelayForLiveRegsBottomUp(self, SU: *mut SUnit, LRegs: *mut SmallVectorImpl<unsigned int>) -> bool {
+    if self.NumLiveRegs == 0 {
+        return false;
+    }
+    let mut RegAdded: SmallSet<unsigned int, 4> = SmallSet<unsigned int, 4> {};
+    for Pred in SU.Preds {
+        if Pred.isAssignedRegDep() && self.LiveRegDefs[Pred.getReg().operator unsigned int()] != SU {
+            CheckForLiveRegDef(Pred.getSUnit(), Pred.getReg().operator MCRegister(), self.LiveRegDefs.get(), RegAdded, LRegs, self.TRI, null);
+        }
+    }
+    for let mut Node: *mut SDNode = SU.getNode(); Node; Node = Node.getGluedNode() {
+        if Node.getOpcode() == INLINEASM || Node.getOpcode() == INLINEASM_BR {
+            let mut NumOps: u32 = Node.getNumOperands();
+            if Node.getOperand(NumOps - 1).getValueType() == EVT { Glue } {
+                NumOps -= 1;
+            }
+            for let mut i: u32 = Op_FirstOperand; i != NumOps;  {
+                let mut Flags: u32 = Node.getConstantOperandVal(i);
+                let mut F: Flag = Flag { Flags };
+                let mut NumVals: u32 = F.getNumOperandRegisters();
+                i += 1;
+                if F.isRegDefKind() || F.isRegDefEarlyClobberKind() || F.isClobberKind() {
+                    for ; NumVals; NumVals -= 1 , i += 1 {
+                        let mut Reg: Register = cast(Node.getOperand(i)).getReg();
+                        if Reg.isPhysical() {
+                            CheckForLiveRegDef(SU, Reg.operator MCRegister(), self.LiveRegDefs.get(), RegAdded, LRegs, self.TRI, null);
+                        }
+                    }
+                } else {
+                    i += NumVals;
+                }
+            }
+            continue;
+        }
+        if Node.getOpcode() == CopyToReg {
+            let mut Reg: Register = cast(Node.getOperand(1)).getReg();
+            if Reg.isPhysical() {
+                let mut SrcNode: *mut SDNode = Node.getOperand(2).getNode();
+                CheckForLiveRegDef(SU, Reg.operator MCRegister(), self.LiveRegDefs.get(), RegAdded, LRegs, self.TRI, SrcNode);
+            }
+        }
+        if !Node.isMachineOpcode() {
+            continue;
+        }
+        if Node.getMachineOpcode() == self.TII.getCallFrameDestroyOpcode() {
+            let mut CallResource: u32 = self.TRI.getNumRegs();
+            if self.LiveRegDefs[CallResource] {
+                let mut Gen: *mut SDNode = self.LiveRegGens[CallResource].getNode();
+                while Gen.getGluedNode() {
+                    Glued;
+                }
+                if !IsChainDependent(Gen, Node, 0, self.TII) && RegAdded.insert(CallResource).second {
+                    LRegs.push(CallResource);
+                }
+            }
+        }
+        if getNodeRegMask(Node) {
+            RegMask;
+        } else {
+            CheckForLiveRegDefMasked(SU, RegMask, SUnit *> { self.LiveRegDefs.get(), self.TRI.getNumRegs() }, RegAdded, LRegs);
+        }
+        let mut MCID: *MCInstrDesc = self.TII.get(Node.getMachineOpcode());
+        if MCID.hasOptionalDef() {
+            for let mut i: u32 = 0; i < MCID.getNumDefs(); i += 1 {
+                if MCID.operands()[i].isOptionalDef() {
+                    let mut OptionalDef: *SDValue = Node.getOperand(i - Node.getNumValues());
+                    let mut Reg: Register = cast(OptionalDef).getReg();
+                    CheckForLiveRegDef(SU, Reg.operator MCRegister(), self.LiveRegDefs.get(), RegAdded, LRegs, self.TRI, null);
+                }
+            }
+        }
+        for Reg in MCID.implicit_defs() {
+            CheckForLiveRegDef(SU, MCRegister { Reg: Reg }, self.LiveRegDefs.get(), RegAdded, LRegs, self.TRI, null);
+        }
+    }
+    return !LRegs.is_empty();
+}
+
+fn ScheduleDAGRRList::releaseInterferences(self, Reg: u32) {
+    for let mut i: u32 = self.Interferences.len; i > 0; i -= 1 {
+        let mut SU: *mut SUnit = self.Interferences[i - 1];
+        let mut LRegsPos: iterator = self.LRegsMap.find(SU);
+        if Reg {
+            let mut LRegs: *mut SmallVectorImpl<unsigned int> = operator(LRegsPos).second;
+            if !is_contained(LRegs, Reg) {
+                continue;
+            }
+        }
+        SU.isPending = false;
+        if SU.isAvailable && !SU.NodeQueueId {
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                    dbgs() << "    Repushing SU #" << SU.NodeNum << 10;
+                }
+            }
+                if !(false) { break; }
+            }
+            self.AvailableQueue.push(SU);
+        }
+        if i < self.Interferences.len {
+            self.Interferences[i - 1] = self.Interferences.back();
+        }
+        self.Interferences.pop();
+        self.LRegsMap.erase(iterator { LRegsPos });
+    }
+}
+
+fn ScheduleDAGRRList::PickNodeToScheduleBottomUp(self) -> *mut SUnit {
+    let mut CurSU: *mut SUnit = if self.AvailableQueue.len == 0 { null } else { self.AvailableQueue.pop() };
+    let mut FindAvailableNode: Closure_1 = Closure_1 { CurSU: &mut CurSU, cap_1: self };
+    FindAvailableNode.call();
+    if CurSU {
+        return CurSU;
+    }
+    for TrySU in self.Interferences {
+        let mut LRegs: *mut SmallVectorImpl<unsigned int> = self.LRegsMap[TrySU];
+        let mut BtSU: *mut SUnit = null;
+        let mut LiveCycle: u32 = max();
+        for Reg in LRegs {
+            if self.LiveRegGens[Reg].getHeight() < LiveCycle {
+                BtSU = self.LiveRegGens[Reg];
+                LiveCycle = BtSU.getHeight();
+            }
+        }
+        if !self.WillCreateCycle(TrySU, BtSU) {
+            self.BacktrackBottomUp(TrySU, BtSU);
+            if BtSU.isAvailable {
+                BtSU.isAvailable = false;
+                if !BtSU.isPending {
+                    self.AvailableQueue.remove(BtSU);
+                }
+            }
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                    dbgs() << "ARTIFICIAL edge from " << *BtSU << " to " << *TrySU << "\n";
+                }
+            }
+                if !(false) { break; }
+            }
+            self.AddPredQueued(TrySU, SDep { BtSU, Artificial });
+            if !TrySU.isAvailable || !TrySU.NodeQueueId {
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                        dbgs() << "TrySU not available; choosing node from queue\n";
+                    }
+                }
+                    if !(false) { break; }
+                }
+                CurSU = self.AvailableQueue.pop();
+            } else {
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                        dbgs() << "TrySU available\n";
+                    }
+                }
+                    if !(false) { break; }
+                }
+                self.AvailableQueue.remove(TrySU);
+                CurSU = TrySU;
+            }
+            FindAvailableNode.call();
+            break;
+        }
+    }
+    if !CurSU {
+        let mut TrySU: *mut SUnit = self.Interferences[0];
+        let mut LRegs: *mut SmallVectorImpl<unsigned int> = self.LRegsMap[TrySU];
+        assert!(LRegs.len == 1, "Can't handle this yet!");
+        let mut Reg: u32 = LRegs[0];
+        let mut LRDef: *mut SUnit = self.LiveRegDefs[Reg];
+        let mut RC: *TargetRegisterClass = self.TRI.getMinimalPhysRegClass(MCRegister { Reg: Reg });
+        let mut DestRC: *TargetRegisterClass = self.TRI.getCrossCopyRegClass(RC);
+        let mut NewDef: *mut SUnit = null;
+        if DestRC != RC {
+            NewDef = self.CopyAndMoveSuccessors(LRDef);
+            if !DestRC && !NewDef {
+                report_fatal_error("Can't handle live physical register dependency!", true);
+            }
+        }
+        if !NewDef {
+            let mut Copies: SmallVector<SUnit *, 2> = SmallVector<SUnit *, 2> {};
+            self.InsertCopiesAndMoveSuccs(LRDef, Reg, DestRC, RC, Copies);
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                    dbgs() << "    Adding an edge from SU #" << TrySU.NodeNum << " to SU #" << Copies.front().NodeNum << "\n";
+                }
+            }
+                if !(false) { break; }
+            }
+            self.AddPredQueued(TrySU, SDep { Copies.front(), Artificial });
+            NewDef = Copies.back();
+        }
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                dbgs() << "    Adding an edge from SU #" << NewDef.NodeNum << " to SU #" << TrySU.NodeNum << "\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        self.LiveRegDefs[Reg] = NewDef;
+        self.AddPredQueued(NewDef, SDep { TrySU, Artificial });
+        TrySU.isAvailable = false;
+        CurSU = NewDef;
+    }
+    assert!(CurSU, "Unable to resolve live physical register dependencies!");
+    return CurSU;
+}
+
+fn ScheduleDAGRRList::ListScheduleBottomUp(self) {
+    self.ReleasePredecessors(&mut self.ExitSU);
+    if !self.SUnits.is_empty() {
+        let mut RootSU: *mut SUnit = &mut self.SUnits[self.DAG.getRoot().getNode().getNodeId()];
+        assert!(RootSU.Succs.is_empty(), "Graph root shouldn't have successors!");
+        RootSU.isAvailable = true;
+        self.AvailableQueue.push(RootSU);
+    }
+    self.Sequence.reserve(self.SUnits.len);
+    while !self.AvailableQueue.is_empty() || !self.Interferences.is_empty() {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                dbgs() << "\nExamining Available:\n";
+                self.AvailableQueue.dump(self);
+            }
+        }
+            if !(false) { break; }
+        }
+        let mut SU: *mut SUnit = self.PickNodeToScheduleBottomUp();
+        self.AdvancePastStalls(SU);
+        self.ScheduleNodeBottomUp(SU);
+        while self.AvailableQueue.len == 0 && !self.PendingQueue.is_empty() {
+            assert!(self.MinAvailableCycle < max(), "MinAvailableCycle uninitialized");
+            self.AdvanceToCycle(if self.CurCycle + 1 > self.MinAvailableCycle { self.CurCycle + 1 } else { self.MinAvailableCycle });
+        }
+    }
+    reverse(self.Sequence.begin(), self.Sequence.end());
+    self.VerifyScheduledSequence(true);
+}
+
+struct queue_sort {
+}
+
+fn queue_sort::isReady(self: *queue_sort, SU: *mut SUnit, CurCycle: u32) -> bool {
+    return true;
+}
+
+// ========================================================
+// [C++ Template - Неинстанциированный класс-шаблон: reverse_sort]
+// template <typename SF>
+// struct reverse_sort {
+//     SortFunc: *mut SF,
+// }
+// 
+// fn reverse_sort::operator()(self: *reverse_sort, left: *mut SUnit, right: *mut SUnit) -> bool {
+//     return self.SortFunc(right, left);
+// }
+// ========================================================
+
+struct bu_ls_rr_sort {
+    SPQ: *mut RegReductionPQBase,
+}
+
+fn bu_ls_rr_sort::isReady(self: *bu_ls_rr_sort, SU: *mut SUnit, CurCycle: u32) -> bool {
+    return true;
+}
+
+struct src_ls_rr_sort {
+    SPQ: *mut RegReductionPQBase,
+}
+
+fn src_ls_rr_sort::isReady(self: *src_ls_rr_sort, SU: *mut SUnit, CurCycle: u32) -> bool {
+    return true;
+}
+
+struct hybrid_ls_rr_sort {
+    SPQ: *mut RegReductionPQBase,
+}
+
+struct ilp_ls_rr_sort {
+    SPQ: *mut RegReductionPQBase,
+}
+
+struct RegReductionPQBase {
+    CurCycle: u32,
+    HasReadyFilter: bool,
+    Queue: []*mut SUnit,
+    CurQueueId: u32,
+    TracksRegPressure: bool,
+    SrcOrder: bool,
+    SUnits: *mut []SUnit,
+    MF: *mut MachineFunction,
+    TII: *TargetInstrInfo,
+    TRI: *TargetRegisterInfo,
+    TLI: *TargetLowering,
+    scheduleDAG: *mut ScheduleDAGRRList,
+    SethiUllmanNumbers: []u32,
+    RegPressure: []u32,
+    RegLimit: []u32,
+}
+
+fn RegReductionPQBase::RegReductionPQBase(self, mf: *mut MachineFunction, hasReadyFilter: bool, tracksrp: bool, srcorder: bool, tii: *TargetInstrInfo, tri: *TargetRegisterInfo, tli: *TargetLowering) {
+    if self.TracksRegPressure {
+        let mut NumRC: u32 = self.TRI.getNumRegClasses();
+        self.RegLimit.resize(NumRC);
+        self.RegPressure.resize(NumRC);
+        fill(self.RegLimit, 0);
+        fill(self.RegPressure, 0);
+        for RC in self.TRI.regclasses() {
+            self.RegLimit[RC.getID()] = tri.getRegPressureLimit(&mut RC, self.MF);
+        }
+    }
+}
+
+fn RegReductionPQBase::setScheduleDAG(self, scheduleDag: *mut ScheduleDAGRRList) {
+    self.scheduleDAG = scheduleDag;
+}
+
+fn RegReductionPQBase::getHazardRec(self) -> *mut ScheduleHazardRecognizer {
+    return self.scheduleDAG.getHazardRec();
+}
+
+fn RegReductionPQBase::releaseState(self) {
+    self.SUnits = null;
+    self.SethiUllmanNumbers.clear();
+    fill(self.RegPressure, 0);
+}
+
+fn RegReductionPQBase::getNodeOrdering(self: *RegReductionPQBase, SU: *SUnit) -> u32 {
+    if !SU.getNode() {
+        return 0;
+    }
+    return SU.getNode().getIROrder();
+}
+
+fn RegReductionPQBase::empty(self: *RegReductionPQBase) -> bool {
+    return self.Queue.len == 0;
+}
+
+fn RegReductionPQBase::push(self, U: *mut SUnit) {
+    assert!(!U.NodeQueueId, "Node in the queue already");
+    U.NodeQueueId = self.CurQueueId += 1;
+    self.Queue.push(U);
+}
+
+fn RegReductionPQBase::remove(self, SU: *mut SUnit) {
+    assert!(!self.Queue.is_empty(), "Queue is empty!");
+    assert!(SU.NodeQueueId != 0, "Not in queue!");
+    let mut I: []*mut SUnit = find(self.Queue, SU);
+    if !I == prev(self.Queue.end(), 1) {
+        swap(operator(I), self.Queue.back());
+    }
+    self.Queue.pop();
+    SU.NodeQueueId = 0;
+}
+
+fn RegReductionPQBase::tracksRegPressure(self: *RegReductionPQBase) -> bool {
+    return self.TracksRegPressure;
+}
+
+fn RegReductionPQBase::hasReadyFilter(self: *RegReductionPQBase) -> bool {
+    return self.HasReadyFilter;
+}
+
+fn RegReductionPQBase::isReady(self: *RegReductionPQBase, arg: *mut SUnit) -> bool {
+    assert!(!self.HasReadyFilter, "The ready filter must override isReady()");
+    return true;
+}
+
+fn RegReductionPQBase::push_all(self, Nodes: *[]*mut SUnit) {
+    for SU in Nodes {
+        self.push(SU);
+    }
+}
+
+fn RegReductionPQBase::dump(self: *RegReductionPQBase, arg: *mut ScheduleDAG) {}
+
+fn RegReductionPQBase::setCurCycle(self, Cycle: u32) {
+    self.CurCycle = Cycle;
+}
+
+fn RegReductionPQBase::getCurCycle(self: *RegReductionPQBase) -> u32 {
+    return self.CurCycle;
+}
+
+// ========================================================
+// [C++ Template - Неинстанциированный шаблон функции: popFromQueueImpl]
+// template <typename SF>
+// fn popFromQueueImpl(Q: *mut []*mut SUnit, Picker: *mut ilp_ls_rr_sort) -> *mut SUnit {
+//     let mut BestIdx: u32 = 0;
+//     for let mut I: u32 = 1;
+// let mut E: u32 = if Q.len < 1000 as decltype(Q.size()) { Q.len } else { 1000 as decltype(Q.size()) }; I != E; I += 1 {
+//         if Picker.call(Q[BestIdx], Q[I]) {
+//             BestIdx = I;
+//         }
+//     }
+//     let mut V: *mut SUnit = Q[BestIdx];
+//     if BestIdx + 1 != Q.len {
+//         swap(Q[BestIdx], Q.back());
+//     }
+//     Q.pop();
+//     return V;
+// }
+// ========================================================
+
+// ========================================================
+// [C++ Template - Неинстанциированный шаблон функции: popFromQueue]
+// template <typename SF>
+// fn popFromQueue(Q: *mut []*mut SUnit, Picker: *mut ilp_ls_rr_sort, DAG: *mut ScheduleDAG) -> *mut SUnit {
+//     if DAG.StressSched {
+//         let mut RPicker: ilp_ls_rr_sort> = ilp_ls_rr_sort> { Picker };
+//         return popFromQueueImpl(Q, RPicker);
+//     }
+//     DAG as void;
+//     return popFromQueueImpl(Q, Picker);
+// }
+// ========================================================
+
+// ========================================================
+// [C++ Template - Неинстанциированный класс-шаблон: RegReductionPriorityQueue]
+// template <typename SF>
+// struct RegReductionPriorityQueue {
+//     Picker: SF,
+// }
+// 
+// fn RegReductionPriorityQueue::isBottomUp(self: *RegReductionPriorityQueue) -> bool {
+//     return ;
+// }
+// 
+// fn RegReductionPriorityQueue::isReady(self: *RegReductionPriorityQueue, U: *mut SUnit) -> bool {
+//     return self.Picker && self.Picker(U, self.getCurCycle());
+// }
+// 
+// fn RegReductionPriorityQueue::pop(self) -> *mut SUnit {
+//     if self.Queue.empty() {
+//         return null;
+//     }
+//     let mut V: *mut SUnit = popFromQueue(self.Queue, self.Picker, self.scheduleDAG);
+//     V.NodeQueueId = 0;
+//     return V;
+// }
+// 
+// fn RegReductionPriorityQueue::dump(self: *RegReductionPriorityQueue, DAG: *mut ScheduleDAG) {
+//     let mut DumpQueue: []*mut SUnit = self.Queue;
+//     let mut DumpPicker: SF = self.Picker;
+//     while !DumpQueue.is_empty() {
+//         let mut SU: *mut SUnit = popFromQueue(DumpQueue, DumpPicker, self.scheduleDAG);
+//         dbgs() << "Height " << SU.getHeight() << ": ";
+//         DAG.dumpNode(*SU);
+//     }
+// }
+// ========================================================
+
+fn checkSpecialNodes(left: *SUnit, right: *SUnit) -> i32 {
+    let mut LSchedLow: bool = left.isScheduleLow;
+    let mut RSchedLow: bool = right.isScheduleLow;
+    if LSchedLow != RSchedLow {
+        return if LSchedLow < RSchedLow { 1 } else { -1 };
+    }
+    return 0;
+}
+
+fn CalcNodeSethiUllmanNumber(SU: *SUnit, SUNumbers: *mut []u32) -> u32 {
+    if SUNumbers[SU.NodeNum] != 0 {
+        return SUNumbers[SU.NodeNum];
+    }
+    let mut WorkList: SmallVector<WorkState, 16> = SmallVector<WorkState, 16> {};
+    WorkList.push(ValueParamT { SU });
+    while !WorkList.is_empty() {
+        let mut Temp: *mut WorkState = WorkList.back();
+        let mut TempSU: *SUnit = Temp.SU;
+        let mut AllPredsKnown: bool = true;
+        for let mut P: u32 = Temp.PredsProcessed; P < TempSU.Preds.len; P += 1 {
+            let mut Pred: *SDep = TempSU.Preds[P];
+            if Pred.isCtrl() {
+                continue;
+            }
+            let mut PredSU: *mut SUnit = Pred.getSUnit();
+            if SUNumbers[PredSU.NodeNum] == 0 {
+                for It in WorkList {
+                    assert!(It.SU != PredSU, "Trying to push an element twice?");
+                }
+                Temp.PredsProcessed = P + 1;
+                WorkList.push(ValueParamT { PredSU });
+                AllPredsKnown = false;
+                break;
+            }
+        }
+        if !AllPredsKnown {
+            continue;
+        }
+        let mut SethiUllmanNumber: u32 = 0;
+        let mut Extra: u32 = 0;
+        for Pred in TempSU.Preds {
+            if Pred.isCtrl() {
+                continue;
+            }
+            let mut PredSU: *mut SUnit = Pred.getSUnit();
+            let mut PredSethiUllman: u32 = SUNumbers[PredSU.NodeNum];
+            assert!(PredSethiUllman > 0, "We should have evaluated this pred!");
+            if PredSethiUllman > SethiUllmanNumber {
+                SethiUllmanNumber = PredSethiUllman;
+                Extra = 0;
+            } else if PredSethiUllman == SethiUllmanNumber {
+                Extra += 1;
+            }
+        }
+        SethiUllmanNumber += Extra;
+        if SethiUllmanNumber == 0 {
+            SethiUllmanNumber = 1;
+        }
+        SUNumbers[TempSU.NodeNum] = SethiUllmanNumber;
+        WorkList.pop();
+    }
+    assert!(SUNumbers[SU.NodeNum] > 0, "SethiUllman should never be zero!");
+    return SUNumbers[SU.NodeNum];
+}
+
+fn RegReductionPQBase::CalculateSethiUllmanNumbers(self) {
+    self.SethiUllmanNumbers.assign(self.SUnits.len, 0);
+    for SU in *self.SUnits {
+        CalcNodeSethiUllmanNumber(&mut SU, self.SethiUllmanNumbers);
+    }
+}
+
+fn RegReductionPQBase::addNode(self, SU: *SUnit) {
+    let mut SUSize: u32 = self.SethiUllmanNumbers.len;
+    if self.SUnits.len > SUSize {
+        self.SethiUllmanNumbers.resize(SUSize * 2, 0);
+    }
+    CalcNodeSethiUllmanNumber(SU, self.SethiUllmanNumbers);
+}
+
+fn RegReductionPQBase::updateNode(self, SU: *SUnit) {
+    self.SethiUllmanNumbers[SU.NodeNum] = 0;
+    CalcNodeSethiUllmanNumber(SU, self.SethiUllmanNumbers);
+}
+
+fn RegReductionPQBase::getNodePriority(self: *RegReductionPQBase, SU: *SUnit) -> u32 {
+    assert!(SU.NodeNum < self.SethiUllmanNumbers.len);
+    let mut Opc: u32 = if SU.getNode() { SU.getNode().getOpcode() } else { 0 };
+    if Opc == TokenFactor || Opc == CopyToReg {
+        return 0;
+    }
+    if Opc == EXTRACT_SUBREG || Opc == SUBREG_TO_REG || Opc == INSERT_SUBREG {
+        return 0;
+    }
+    if SU.NumSuccs == 0 && SU.NumPreds != 0 {
+        return 65535;
+    }
+    if SU.NumPreds == 0 && SU.NumSuccs != 0 {
+        return 0;
+    }
+    return self.SethiUllmanNumbers[SU.NodeNum];
+}
+
+fn RegReductionPQBase::dumpRegPressure(self: *RegReductionPQBase) {
+    for RC in self.TRI.regclasses() {
+        let mut Id: u32 = RC.getID();
+        let mut RP: u32 = self.RegPressure[Id];
+        if !RP {
+            continue;
+        }
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                dbgs() << self.TRI.getRegClassName(&mut RC) << ": " << RP << " / " << self.RegLimit[Id] << 10;
+            }
+        }
+            if !(false) { break; }
+        }
+    }
+}
+
+fn RegReductionPQBase::HighRegPressure(self: *RegReductionPQBase, SU: *SUnit) -> bool {
+    if !self.TLI {
+        return false;
+    }
+    for Pred in SU.Preds {
+        if Pred.isCtrl() {
+            continue;
+        }
+        let mut PredSU: *mut SUnit = Pred.getSUnit();
+        if PredSU.NumRegDefsLeft == 0 {
+            continue;
+        }
+        for let mut RegDefPos: RegDefIter = RegDefIter { PredSU, self.scheduleDAG }; RegDefPos.IsValid(); RegDefPos.Advance() {
+            let mut RCId: u32 = 0;
+            let mut Cost: u32 = 0;
+            GetCostForDef(RegDefPos, self.TLI, self.TII, self.TRI, RCId, Cost, self.MF);
+            if (self.RegPressure[RCId] + Cost) >= self.RegLimit[RCId] {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn RegReductionPQBase::MayReduceRegPressure(self: *RegReductionPQBase, SU: *mut SUnit) -> bool {
+    let mut N: *SDNode = SU.getNode();
+    if !N.isMachineOpcode() || !SU.NumSuccs {
+        return false;
+    }
+    let mut NumDefs: u32 = self.TII.get(N.getMachineOpcode()).getNumDefs();
+    for let mut i: u32 = 0; i != NumDefs; i += 1 {
+        let mut VT: MVT = N.getSimpleValueType(i);
+        if !N.hasAnyUseOfValue(i) {
+            continue;
+        }
+        let mut RCId: u32 = self.TLI.getRepRegClassFor(VT).getID();
+        if self.RegPressure[RCId] >= self.RegLimit[RCId] {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn RegReductionPQBase::RegPressureDiff(self: *RegReductionPQBase, SU: *mut SUnit, LiveUses: *mut u32) -> i32 {
+    LiveUses = 0;
+    let mut PDiff: i32 = 0;
+    for Pred in SU.Preds {
+        if Pred.isCtrl() {
+            continue;
+        }
+        let mut PredSU: *mut SUnit = Pred.getSUnit();
+        if PredSU.NumRegDefsLeft == 0 {
+            if PredSU.getNode().isMachineOpcode() {
+                LiveUses += 1;
+            }
+            continue;
+        }
+        for let mut RegDefPos: RegDefIter = RegDefIter { PredSU, self.scheduleDAG }; RegDefPos.IsValid(); RegDefPos.Advance() {
+            let mut VT: MVT = RegDefPos.GetValue();
+            let mut RCId: u32 = self.TLI.getRepRegClassFor(VT).getID();
+            if self.RegPressure[RCId] >= self.RegLimit[RCId] {
+                PDiff += 1;
+            }
+        }
+    }
+    let mut N: *SDNode = SU.getNode();
+    if !N || !N.isMachineOpcode() || !SU.NumSuccs {
+        return PDiff;
+    }
+    let mut NumDefs: u32 = self.TII.get(N.getMachineOpcode()).getNumDefs();
+    for let mut i: u32 = 0; i != NumDefs; i += 1 {
+        let mut VT: MVT = N.getSimpleValueType(i);
+        if !N.hasAnyUseOfValue(i) {
+            continue;
+        }
+        let mut RCId: u32 = self.TLI.getRepRegClassFor(VT).getID();
+        if self.RegPressure[RCId] >= self.RegLimit[RCId] {
+            PDiff -= 1;
+        }
+    }
+    return PDiff;
+}
+
+fn RegReductionPQBase::scheduledNode(self, SU: *mut SUnit) {
+    if !self.TracksRegPressure {
+        return;
+    }
+    if !SU.getNode() {
+        return;
+    }
+    for Pred in SU.Preds {
+        if Pred.isCtrl() {
+            continue;
+        }
+        let mut PredSU: *mut SUnit = Pred.getSUnit();
+        if PredSU.NumRegDefsLeft == 0 {
+            continue;
+        }
+        PredSU.NumRegDefsLeft -= 1;
+        let mut SkipRegDefs: u32 = PredSU.NumRegDefsLeft;
+        for let mut RegDefPos: RegDefIter = RegDefIter { PredSU, self.scheduleDAG }; RegDefPos.IsValid(); RegDefPos.Advance() , SkipRegDefs -= 1 {
+            if SkipRegDefs {
+                continue;
+            }
+            let mut RCId: u32 = 0;
+            let mut Cost: u32 = 0;
+            GetCostForDef(RegDefPos, self.TLI, self.TII, self.TRI, RCId, Cost, self.MF);
+            self.RegPressure[RCId] += Cost;
+            break;
+        }
+    }
+    let mut SkipRegDefs: i32 = SU.NumRegDefsLeft as i32;
+    for let mut RegDefPos: RegDefIter = RegDefIter { SU, self.scheduleDAG }; RegDefPos.IsValid(); RegDefPos.Advance() , SkipRegDefs -= 1 {
+        if SkipRegDefs > 0 {
+            continue;
+        }
+        let mut RCId: u32 = 0;
+        let mut Cost: u32 = 0;
+        GetCostForDef(RegDefPos, self.TLI, self.TII, self.TRI, RCId, Cost, self.MF);
+        if self.RegPressure[RCId] < Cost {
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                    dbgs() << "  " << *SU << " has too many regdefs\n";
+                }
+            }
+                if !(false) { break; }
+            }
+            self.RegPressure[RCId] = 0;
+        } else {
+            self.RegPressure[RCId] -= Cost;
+        }
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            self.dumpRegPressure();
+        }
+    }
+        if !(false) { break; }
+    }
+}
+
+fn RegReductionPQBase::unscheduledNode(self, SU: *mut SUnit) {
+    if !self.TracksRegPressure {
+        return;
+    }
+    let mut N: *SDNode = SU.getNode();
+    if !N {
+        return;
+    }
+    if !N.isMachineOpcode() {
+        if N.getOpcode() != CopyToReg {
+            return;
+        }
+    } else {
+        let mut Opc: u32 = N.getMachineOpcode();
+        if Opc == EXTRACT_SUBREG || Opc == INSERT_SUBREG || Opc == SUBREG_TO_REG || Opc == REG_SEQUENCE || Opc == IMPLICIT_DEF {
+            return;
+        }
+    }
+    for Pred in SU.Preds {
+        if Pred.isCtrl() {
+            continue;
+        }
+        let mut PredSU: *mut SUnit = Pred.getSUnit();
+        if PredSU.NumSuccsLeft != PredSU.Succs.len {
+            continue;
+        }
+        let mut PN: *SDNode = PredSU.getNode();
+        if !PN.isMachineOpcode() {
+            if PN.getOpcode() == CopyFromReg {
+                let mut VT: MVT = PN.getSimpleValueType(0);
+                let mut RCId: u32 = self.TLI.getRepRegClassFor(VT).getID();
+                self.RegPressure[RCId] += self.TLI.getRepRegClassCostFor(VT);
+            }
+            continue;
+        }
+        let mut POpc: u32 = PN.getMachineOpcode();
+        if POpc == IMPLICIT_DEF {
+            continue;
+        }
+        if POpc == EXTRACT_SUBREG || POpc == INSERT_SUBREG || POpc == SUBREG_TO_REG {
+            let mut VT: MVT = PN.getSimpleValueType(0);
+            let mut RCId: u32 = self.TLI.getRepRegClassFor(VT).getID();
+            self.RegPressure[RCId] += self.TLI.getRepRegClassCostFor(VT);
+            continue;
+        }
+        if POpc == REG_SEQUENCE {
+            let mut DstRCIdx: u32 = PN.getConstantOperandVal(0);
+            let mut RC: *TargetRegisterClass = self.TRI.getRegClass(DstRCIdx);
+            let mut RCId: u32 = RC.getID();
+            self.RegPressure[RCId] += RegSequenceCost;
+            continue;
+        }
+        let mut NumDefs: u32 = self.TII.get(PN.getMachineOpcode()).getNumDefs();
+        for let mut i: u32 = 0; i != NumDefs; i += 1 {
+            let mut VT: MVT = PN.getSimpleValueType(i);
+            if !PN.hasAnyUseOfValue(i) {
+                continue;
+            }
+            let mut RCId: u32 = self.TLI.getRepRegClassFor(VT).getID();
+            if self.RegPressure[RCId] < self.TLI.getRepRegClassCostFor(VT) {
+                self.RegPressure[RCId] = 0;
+            } else {
+                self.RegPressure[RCId] -= self.TLI.getRepRegClassCostFor(VT);
+            }
+        }
+    }
+    if SU.NumSuccs && N.isMachineOpcode() {
+        let mut NumDefs: u32 = self.TII.get(N.getMachineOpcode()).getNumDefs();
+        for let mut i: u32 = NumDefs;
+let mut e: u32 = N.getNumValues(); i != e; i += 1 {
+            let mut VT: MVT = N.getSimpleValueType(i);
+            if VT == Glue || VT == Other {
+                continue;
+            }
+            if !N.hasAnyUseOfValue(i) {
+                continue;
+            }
+            let mut RCId: u32 = self.TLI.getRepRegClassFor(VT).getID();
+            self.RegPressure[RCId] += self.TLI.getRepRegClassCostFor(VT);
+        }
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            self.dumpRegPressure();
+        }
+    }
+        if !(false) { break; }
+    }
+}
+
+fn closestSucc(SU: *SUnit) -> u32 {
+    let mut MaxHeight: u32 = 0;
+    for Succ in SU.Succs {
+        if Succ.isCtrl() {
+            continue;
+        }
+        let mut Height: u32 = Succ.getSUnit().getHeight();
+        if Succ.getSUnit().getNode() && Succ.getSUnit().getNode().getOpcode() == CopyToReg {
+            Height = closestSucc(Succ.getSUnit()) + 1;
+        }
+        if Height > MaxHeight {
+            MaxHeight = Height;
+        }
+    }
+    return MaxHeight;
+}
+
+fn calcMaxScratches(SU: *SUnit) -> u32 {
+    let mut Scratches: u32 = 0;
+    for Pred in SU.Preds {
+        if Pred.isCtrl() {
+            continue;
+        }
+        Scratches += 1;
+    }
+    return Scratches;
+}
+
+fn hasOnlyLiveInOpers(SU: *SUnit) -> bool {
+    let mut RetVal: bool = false;
+    for Pred in SU.Preds {
+        if Pred.isCtrl() {
+            continue;
+        }
+        let mut PredSU: *SUnit = Pred.getSUnit();
+        if PredSU.getNode() && PredSU.getNode().getOpcode() == CopyFromReg {
+            let mut Reg: Register = cast(PredSU.getNode().getOperand(1)).getReg();
+            if Reg.isVirtual() {
+                RetVal = true;
+                continue;
+            }
+        }
+        return false;
+    }
+    return RetVal;
+}
+
+fn hasOnlyLiveOutUses(SU: *SUnit) -> bool {
+    let mut RetVal: bool = false;
+    for Succ in SU.Succs {
+        if Succ.isCtrl() {
+            continue;
+        }
+        let mut SuccSU: *SUnit = Succ.getSUnit();
+        if SuccSU.getNode() && SuccSU.getNode().getOpcode() == CopyToReg {
+            let mut Reg: Register = cast(SuccSU.getNode().getOperand(1)).getReg();
+            if Reg.isVirtual() {
+                RetVal = true;
+                continue;
+            }
+        }
+        return false;
+    }
+    return RetVal;
+}
+
+fn initVRegCycle(SU: *mut SUnit) {
+    if DisableSchedVRegCycle {
+        return;
+    }
+    if !hasOnlyLiveInOpers(SU) || !hasOnlyLiveOutUses(SU) {
+        return;
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            dbgs() << "VRegCycle: " << *SU << "\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    SU.isVRegCycle = true;
+    for Pred in SU.Preds {
+        if Pred.isCtrl() {
+            continue;
+        }
+        Pred.getSUnit().isVRegCycle = true;
+    }
+}
+
+fn resetVRegCycle(SU: *mut SUnit) {
+    if !SU.isVRegCycle {
+        return;
+    }
+    for Pred in SU.Preds {
+        if Pred.isCtrl() {
+            continue;
+        }
+        let mut PredSU: *mut SUnit = Pred.getSUnit();
+        if PredSU.isVRegCycle {
+            assert!(PredSU.getNode().getOpcode() == CopyFromReg, "VRegCycle def must be CopyFromReg");
+            Pred.getSUnit().isVRegCycle = false;
+        }
+    }
+}
+
+fn hasVRegCycleUse(SU: *SUnit) -> bool {
+    if SU.isVRegCycle {
+        return false;
+    }
+    for Pred in SU.Preds {
+        if Pred.isCtrl() {
+            continue;
+        }
+        if Pred.getSUnit().isVRegCycle && Pred.getSUnit().getNode().getOpcode() == CopyFromReg {
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                    dbgs() << "  VReg cycle use: SU (" << SU.NodeNum << ")\n";
+                }
+            }
+                if !(false) { break; }
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+fn BUHasStall(SU: *mut SUnit, Height: i32, SPQ: *mut RegReductionPQBase) -> bool {
+    if SPQ.getCurCycle() as i32 < Height {
+        return true;
+    }
+    if SPQ.getHazardRec().getHazardType(SU, 0) != NoHazard {
+        return true;
+    }
+    return false;
+}
+
+fn BUCompareLatency(left: *mut SUnit, right: *mut SUnit, checkPref: bool, SPQ: *mut RegReductionPQBase) -> i32 {
+    let mut LPenalty: i32 = if hasVRegCycleUse(left) { 1 } else { 0 };
+    let mut RPenalty: i32 = if hasVRegCycleUse(right) { 1 } else { 0 };
+    let mut LHeight: i32 = left.getHeight() as i32 + LPenalty;
+    let mut RHeight: i32 = right.getHeight() as i32 + RPenalty;
+    let mut LStall: bool = (!checkPref || left.SchedulingPref == ILP) && BUHasStall(left, LHeight, SPQ);
+    let mut RStall: bool = (!checkPref || right.SchedulingPref == ILP) && BUHasStall(right, RHeight, SPQ);
+    if LStall {
+        if !RStall {
+            return 1;
+        }
+        if LHeight != RHeight {
+            return if LHeight > RHeight { 1 } else { -1 };
+        }
+    } else if RStall {
+        return -1;
+    }
+    if !checkPref || (left.SchedulingPref == ILP || right.SchedulingPref == ILP) {
+        if !SPQ.getHazardRec().isEnabled() {
+            if LHeight != RHeight {
+                return if LHeight > RHeight { 1 } else { -1 };
+            }
+        }
+        let mut LDepth: i32 = left.getDepth() - LPenalty;
+        let mut RDepth: i32 = right.getDepth() - RPenalty;
+        if LDepth != RDepth {
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                    dbgs() << "  Comparing latency of SU (" << left.NodeNum << ") depth " << LDepth << " vs SU (" << right.NodeNum << ") depth " << RDepth << "\n";
+                }
+            }
+                if !(false) { break; }
+            }
+            return if LDepth < RDepth { 1 } else { -1 };
+        }
+        if left.Latency != right.Latency {
+            return if left.Latency > right.Latency { 1 } else { -1 };
+        }
+    }
+    return 0;
+}
+
+fn BURRSort(left: *mut SUnit, right: *mut SUnit, SPQ: *mut RegReductionPQBase) -> bool {
+    if !DisableSchedPhysRegJoin {
+        let mut LHasPhysReg: bool = left.hasPhysRegDefs;
+        let mut RHasPhysReg: bool = right.hasPhysRegDefs;
+        if LHasPhysReg != RHasPhysReg {
+            let mut PhysRegMsg: [2]char *const = [" has no physreg", " defines a physreg"];
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                    dbgs() << "  SU (" << left.NodeNum << ") " << PhysRegMsg[LHasPhysReg] << " " << *right << " " << PhysRegMsg[RHasPhysReg] << "\n";
+                }
+            }
+                if !(false) { break; }
+            }
+            return LHasPhysReg < RHasPhysReg;
+        }
+    }
+    let mut LPriority: u32 = SPQ.getNodePriority(left);
+    let mut RPriority: u32 = SPQ.getNodePriority(right);
+    if left.isCall && right.isCallOp {
+        let mut RNumVals: u32 = right.getNode().getNumValues();
+        RPriority = if (RPriority > RNumVals) { (RPriority - RNumVals) } else { 0 };
+    }
+    if right.isCall && left.isCallOp {
+        let mut LNumVals: u32 = left.getNode().getNumValues();
+        LPriority = if (LPriority > LNumVals) { (LPriority - LNumVals) } else { 0 };
+    }
+    if LPriority != RPriority {
+        return LPriority > RPriority;
+    }
+    if left.isCall || right.isCall {
+        let mut LOrder: u32 = SPQ.getNodeOrdering(left);
+        let mut ROrder: u32 = SPQ.getNodeOrdering(right);
+        if (LOrder || ROrder) && LOrder != ROrder {
+            return LOrder != 0 && (LOrder < ROrder || ROrder == 0);
+        }
+    }
+    let mut LDist: u32 = closestSucc(left);
+    let mut RDist: u32 = closestSucc(right);
+    if LDist != RDist {
+        return LDist < RDist;
+    }
+    let mut LScratch: u32 = calcMaxScratches(left);
+    let mut RScratch: u32 = calcMaxScratches(right);
+    if LScratch != RScratch {
+        return LScratch > RScratch;
+    }
+    if (left.isCall && RPriority > 0) || (right.isCall && LPriority > 0) {
+        return (left.NodeQueueId > right.NodeQueueId);
+    }
+    if !DisableSchedCycles && !(left.isCall || right.isCall) {
+        let mut result: i32 = BUCompareLatency(left, right, false, SPQ);
+        if result != 0 {
+            return result > 0;
+        }
+    } else {
+        if left.getHeight() != right.getHeight() {
+            return left.getHeight() > right.getHeight();
+        }
+        if left.getDepth() != right.getDepth() {
+            return left.getDepth() < right.getDepth();
+        }
+    }
+    assert!(left.NodeQueueId && right.NodeQueueId, "NodeQueueId cannot be zero");
+    return (left.NodeQueueId > right.NodeQueueId);
+}
+
+fn bu_ls_rr_sort::operator()(self: *bu_ls_rr_sort, left: *mut SUnit, right: *mut SUnit) -> bool {
+    if checkSpecialNodes(left, right) {
+        res;
+    } else {
+        return res > 0;
+    }
+    return BURRSort(left, right, self.SPQ);
+}
+
+fn src_ls_rr_sort::operator()(self: *src_ls_rr_sort, left: *mut SUnit, right: *mut SUnit) -> bool {
+    if checkSpecialNodes(left, right) {
+        res;
+    } else {
+        return res > 0;
+    }
+    let mut LOrder: u32 = self.SPQ.getNodeOrdering(left);
+    let mut ROrder: u32 = self.SPQ.getNodeOrdering(right);
+    if (LOrder || ROrder) && LOrder != ROrder {
+        return LOrder != 0 && (LOrder < ROrder || ROrder == 0);
+    }
+    return BURRSort(left, right, self.SPQ);
+}
+
+fn hybrid_ls_rr_sort::isReady(self: *hybrid_ls_rr_sort, SU: *mut SUnit, CurCycle: u32) -> bool {
+    let mut ReadyDelay: u32 = 3;
+    if self.SPQ.MayReduceRegPressure(SU) {
+        return true;
+    }
+    if SU.getHeight() > (CurCycle + ReadyDelay) {
+        return false;
+    }
+    if self.SPQ.getHazardRec().getHazardType(SU, -ReadyDelay) != NoHazard {
+        return false;
+    }
+    return true;
+}
+
+fn hybrid_ls_rr_sort::operator()(self: *hybrid_ls_rr_sort, left: *mut SUnit, right: *mut SUnit) -> bool {
+    if checkSpecialNodes(left, right) {
+        res;
+    } else {
+        return res > 0;
+    }
+    if left.isCall || right.isCall {
+        return BURRSort(left, right, self.SPQ);
+    }
+    let mut LHigh: bool = self.SPQ.HighRegPressure(left);
+    let mut RHigh: bool = self.SPQ.HighRegPressure(right);
+    if LHigh && !RHigh {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                dbgs() << "  pressure " << *left << " > " << *right << "\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        return true;
+    } else if !LHigh && RHigh {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                dbgs() << "  pressure " << *right << " > " << *left << "\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        return false;
+    }
+    if !LHigh && !RHigh {
+        let mut result: i32 = BUCompareLatency(left, right, true, self.SPQ);
+        if result != 0 {
+            return result > 0;
+        }
+    }
+    return BURRSort(left, right, self.SPQ);
+}
+
+fn ilp_ls_rr_sort::isReady(self: *ilp_ls_rr_sort, SU: *mut SUnit, CurCycle: u32) -> bool {
+    if SU.getHeight() > CurCycle {
+        return false;
+    }
+    if self.SPQ.getHazardRec().getHazardType(SU, 0) != NoHazard {
+        return false;
+    }
+    return true;
+}
+
+fn canEnableCoalescing(SU: *mut SUnit) -> bool {
+    let mut Opc: u32 = if SU.getNode() { SU.getNode().getOpcode() } else { 0 };
+    if Opc == TokenFactor || Opc == CopyToReg {
+        return true;
+    }
+    if Opc == EXTRACT_SUBREG || Opc == SUBREG_TO_REG || Opc == INSERT_SUBREG {
+        return true;
+    }
+    if SU.NumPreds == 0 && SU.NumSuccs != 0 {
+        return true;
+    }
+    return false;
+}
+
+fn ilp_ls_rr_sort::operator()(self: *ilp_ls_rr_sort, left: *mut SUnit, right: *mut SUnit) -> bool {
+    if checkSpecialNodes(left, right) {
+        res;
+    } else {
+        return res > 0;
+    }
+    if left.isCall || right.isCall {
+        return BURRSort(left, right, self.SPQ);
+    }
+    let mut LLiveUses: u32 = 0;
+    let mut RLiveUses: u32 = 0;
+    let mut LPDiff: i32 = 0;
+    let mut RPDiff: i32 = 0;
+    if !DisableSchedRegPressure || !DisableSchedLiveUses {
+        LPDiff = self.SPQ.RegPressureDiff(left, LLiveUses);
+        RPDiff = self.SPQ.RegPressureDiff(right, RLiveUses);
+    }
+    if !DisableSchedRegPressure && LPDiff != RPDiff {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                dbgs() << "RegPressureDiff " << *left << ": " << LPDiff << " != " << *right << ": " << RPDiff << "\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        return LPDiff > RPDiff;
+    }
+    if !DisableSchedRegPressure && (LPDiff > 0 || RPDiff > 0) {
+        let mut LReduce: bool = canEnableCoalescing(left);
+        let mut RReduce: bool = canEnableCoalescing(right);
+        if LReduce && !RReduce {
+            return false;
+        }
+        if RReduce && !LReduce {
+            return true;
+        }
+    }
+    if !DisableSchedLiveUses && (LLiveUses != RLiveUses) {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                dbgs() << "Live uses " << *left << ": " << LLiveUses << " != " << *right << ": " << RLiveUses << "\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        return LLiveUses < RLiveUses;
+    }
+    if !DisableSchedStalls {
+        let mut LStall: bool = BUHasStall(left, left.getHeight(), self.SPQ);
+        let mut RStall: bool = BUHasStall(right, right.getHeight(), self.SPQ);
+        if LStall != RStall {
+            return left.getHeight() > right.getHeight();
+        }
+    }
+    if !DisableSchedCriticalPath {
+        let mut spread: i32 = left.getDepth() as i32 - right.getDepth() as i32;
+        if if spread < 0 { -spread } else { spread } > MaxReorderWindow.operator int() {
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                    dbgs() << "Depth of " << *left << ": " << left.getDepth() << " != " << *right << ": " << right.getDepth() << "\n";
+                }
+            }
+                if !(false) { break; }
+            }
+            return left.getDepth() < right.getDepth();
+        }
+    }
+    if !DisableSchedHeight && left.getHeight() != right.getHeight() {
+        let mut spread: i32 = left.getHeight() as i32 - right.getHeight() as i32;
+        if if spread < 0 { -spread } else { spread } > MaxReorderWindow.operator int() {
+            return left.getHeight() > right.getHeight();
+        }
+    }
+    return BURRSort(left, right, self.SPQ);
+}
+
+fn RegReductionPQBase::initNodes(self, sunits: *mut []SUnit) {
+    self.SUnits = &mut sunits;
+    if !Disable2AddrHack {
+        self.AddPseudoTwoAddrDeps();
+    }
+    if !self.TracksRegPressure && !self.SrcOrder {
+        self.PrescheduleNodesWithMultipleUses();
+    }
+    self.CalculateSethiUllmanNumbers();
+    if self.scheduleDAG.BB.isSuccessor(self.scheduleDAG.BB) {
+        for SU in sunits {
+            initVRegCycle(&mut SU);
+        }
+    }
+}
+
+fn RegReductionPQBase::canClobber(self, SU: *SUnit, Op: *SUnit) -> bool {
+    if SU.isTwoAddress {
+        let mut Opc: u32 = SU.getNode().getMachineOpcode();
+        let mut MCID: *MCInstrDesc = self.TII.get(Opc);
+        let mut NumRes: u32 = MCID.getNumDefs();
+        let mut NumOps: u32 = MCID.getNumOperands() - NumRes;
+        for let mut i: u32 = 0; i != NumOps; i += 1 {
+            if MCID.getOperandConstraint(i + NumRes, TIED_TO) != -1 {
+                let mut DU: *mut SDNode = SU.getNode().getOperand(i).getNode();
+                if DU.getNodeId() != -1 && Op.OrigNode == &mut (*self.SUnits)[DU.getNodeId()] {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+fn canClobberReachingPhysRegUse(DepSU: *SUnit, SU: *SUnit, scheduleDAG: *mut ScheduleDAGRRList, TII: *TargetInstrInfo, TRI: *TargetRegisterInfo) -> bool {
+    let mut ImpDefs: ArrayRef<MCPhysReg> = TII.get(SU.getNode().getMachineOpcode()).implicit_defs();
+    let mut RegMask: *u32 = getNodeRegMask(SU.getNode());
+    if ImpDefs.len == 0 && !RegMask {
+        return false;
+    }
+    for Succ in SU.Succs {
+        let mut SuccSU: *mut SUnit = Succ.getSUnit();
+        for SuccPred in SuccSU.Preds {
+            if !SuccPred.isAssignedRegDep() {
+                continue;
+            }
+            if RegMask && clobbersPhysReg(RegMask, SuccPred.getReg().operator MCRegister()) && scheduleDAG.IsReachable(DepSU, SuccPred.getSUnit()) {
+                return true;
+            }
+            for ImpDef in ImpDefs {
+                if TRI.regsOverlap(Register { Reg: ImpDef }, SuccPred.getReg()) && scheduleDAG.IsReachable(DepSU, SuccPred.getSUnit()) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+fn canClobberPhysRegDefs(SuccSU: *SUnit, SU: *SUnit, TII: *TargetInstrInfo, TRI: *TargetRegisterInfo) -> bool {
+    let mut N: *mut SDNode = SuccSU.getNode();
+    let mut NumDefs: u32 = TII.get(N.getMachineOpcode()).getNumDefs();
+    let mut ImpDefs: ArrayRef<MCPhysReg> = TII.get(N.getMachineOpcode()).implicit_defs();
+    assert!(!ImpDefs.is_empty(), "Caller should check hasPhysRegDefs");
+    for let mut SUNode: *SDNode = SU.getNode(); SUNode; SUNode = SUNode.getGluedNode() {
+        if !SUNode.isMachineOpcode() {
+            continue;
+        }
+        let mut SUImpDefs: ArrayRef<MCPhysReg> = TII.get(SUNode.getMachineOpcode()).implicit_defs();
+        let mut SURegMask: *u32 = getNodeRegMask(SUNode);
+        if SUImpDefs.len == 0 && !SURegMask {
+            continue;
+        }
+        for let mut i: u32 = NumDefs;
+let mut e: u32 = N.getNumValues(); i != e; i += 1 {
+            let mut VT: MVT = N.getSimpleValueType(i);
+            if VT == Glue || VT == Other {
+                continue;
+            }
+            if !N.hasAnyUseOfValue(i) {
+                continue;
+            }
+            let mut Reg: MCPhysReg = ImpDefs[i - NumDefs];
+            if SURegMask && clobbersPhysReg(SURegMask, MCRegister { Reg: Reg }) {
+                return true;
+            }
+            for SUReg in SUImpDefs {
+                if TRI.regsOverlap(Register { Reg: Reg }, Register { Reg: SUReg }) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+fn RegReductionPQBase::PrescheduleNodesWithMultipleUses(self) {
+    for SU in *self.SUnits {
+        if SU.NumSuccs != 0 {
+            continue;
+        }
+        if SU.NumPreds != 1 {
+            continue;
+        }
+        if SU.getNode() {
+            N;
+        } else if N.getOpcode() == CopyToReg && cast(N.getOperand(1)).getReg().isVirtual() {
+            continue;
+        }
+        let mut PredFrameSetup: *mut SDNode = null;
+        for Pred in SU.Preds {
+            if Pred.isCtrl() && Pred.getSUnit() {
+                let mut PredND: *mut SDNode = Pred.getSUnit().getNode();
+                if PredND && PredND.isMachineOpcode() && (PredND.getMachineOpcode() == self.TII.getCallFrameSetupOpcode()) {
+                    PredFrameSetup = PredND;
+                    break;
+                }
+            }
+        }
+        if PredFrameSetup != null {
+            continue;
+        }
+        let mut PredSU: *mut SUnit = null;
+        for Pred in SU.Preds {
+            if !Pred.isCtrl() {
+                PredSU = Pred.getSUnit();
+                break;
+            }
+        }
+        assert!(PredSU);
+        if PredSU.hasPhysRegDefs {
+            continue;
+        }
+        if PredSU.NumSuccs == 1 {
+            continue;
+        }
+        if SU.getNode() {
+            N;
+        } else if N.getOpcode() == CopyFromReg && cast(N.getOperand(1)).getReg().isVirtual() {
+            continue;
+        }
+        for PredSucc in PredSU.Succs {
+            let mut PredSuccSU: *mut SUnit = PredSucc.getSUnit();
+            if PredSuccSU == &mut SU {
+                continue;
+            }
+            if PredSuccSU.NumSuccs == 0 {
+                
+            }
+            if SU.hasPhysRegClobbers && PredSuccSU.hasPhysRegDefs {
+                if canClobberPhysRegDefs(PredSuccSU, &mut SU, self.TII, self.TRI) {
+                    
+                }
+            }
+            if self.scheduleDAG.IsReachable(&mut SU, PredSuccSU) {
+                
+            }
+        }
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                dbgs() << "    Prescheduling SU #" << SU.NodeNum << " next to PredSU #" << PredSU.NodeNum << " to guide scheduling in the presence of multiple uses\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        for let mut i: u32 = 0; i != PredSU.Succs.len; i += 1 {
+            let mut Edge: SDep = PredSU.Succs[i];
+            assert!(!Edge.isAssignedRegDep());
+            let mut SuccSU: *mut SUnit = Edge.getSUnit();
+            if SuccSU != &mut SU {
+                Edge.setSUnit(PredSU);
+                self.scheduleDAG.RemovePred(SuccSU, Edge);
+                self.scheduleDAG.AddPredQueued(&mut SU, Edge);
+                Edge.setSUnit(&mut SU);
+                self.scheduleDAG.AddPredQueued(SuccSU, Edge);
+                i -= 1;
+            }
+        }
+    }
+}
+
+fn RegReductionPQBase::AddPseudoTwoAddrDeps(self) {
+    for SU in *self.SUnits {
+        if !SU.isTwoAddress {
+            continue;
+        }
+        let mut Node: *mut SDNode = SU.getNode();
+        if !Node || !Node.isMachineOpcode() || SU.getNode().getGluedNode() {
+            continue;
+        }
+        let mut isLiveOut: bool = hasOnlyLiveOutUses(&mut SU);
+        let mut Opc: u32 = Node.getMachineOpcode();
+        let mut MCID: *MCInstrDesc = self.TII.get(Opc);
+        let mut NumRes: u32 = MCID.getNumDefs();
+        let mut NumOps: u32 = MCID.getNumOperands() - NumRes;
+        for let mut j: u32 = 0; j != NumOps; j += 1 {
+            if MCID.getOperandConstraint(j + NumRes, TIED_TO) == -1 {
+                continue;
+            }
+            let mut DU: *mut SDNode = SU.getNode().getOperand(j).getNode();
+            if DU.getNodeId() == -1 {
+                continue;
+            }
+            let mut DUSU: *SUnit = &mut (*self.SUnits)[DU.getNodeId()];
+            if !DUSU {
+                continue;
+            }
+            for Succ in DUSU.Succs {
+                if Succ.isCtrl() {
+                    continue;
+                }
+                let mut SuccSU: *mut SUnit = Succ.getSUnit();
+                if SuccSU == &mut SU {
+                    continue;
+                }
+                if SuccSU.getHeight() < SU.getHeight() && (SU.getHeight() - SuccSU.getHeight()) > 1 {
+                    continue;
+                }
+                while SuccSU.Succs.len == 1 && SuccSU.getNode().isMachineOpcode() && SuccSU.getNode().getMachineOpcode() == COPY_TO_REGCLASS {
+                    SuccSU = SuccSU.Succs.front().getSUnit();
+                }
+                if !SuccSU.getNode() || !SuccSU.getNode().isMachineOpcode() {
+                    continue;
+                }
+                if SuccSU.hasPhysRegDefs && SU.hasPhysRegClobbers {
+                    if canClobberPhysRegDefs(SuccSU, &mut SU, self.TII, self.TRI) {
+                        continue;
+                    }
+                }
+                let mut SuccOpc: u32 = SuccSU.getNode().getMachineOpcode();
+                if SuccOpc == EXTRACT_SUBREG || SuccOpc == INSERT_SUBREG || SuccOpc == SUBREG_TO_REG {
+                    continue;
+                }
+                if !canClobberReachingPhysRegUse(SuccSU, &mut SU, self.scheduleDAG, self.TII, self.TRI) && (!self.canClobber(SuccSU, DUSU) || (isLiveOut && !hasOnlyLiveOutUses(SuccSU)) || (!SU.isCommutable && SuccSU.isCommutable)) && !self.scheduleDAG.IsReachable(SuccSU, &mut SU) {
+                    while true {
+                        {
+                        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                            dbgs() << "    Adding a pseudo-two-addr edge from SU #" << SU.NodeNum << " to SU #" << SuccSU.NodeNum << "\n";
+                        }
+                    }
+                        if !(false) { break; }
+                    }
+                    self.scheduleDAG.AddPredQueued(&mut SU, SDep { SuccSU, Artificial });
+                }
+            }
+        }
+    }
+}
+
+fn createBURRListDAGScheduler(IS: *mut SelectionDAGISel, OptLevel: CodeGenOptLevel) -> *mut ScheduleDAGSDNodes {
+    let mut STI: *TargetSubtargetInfo = IS.MF.getSubtarget();
+    let mut TII: *TargetInstrInfo = STI.getInstrInfo();
+    let mut TRI: *TargetRegisterInfo = STI.getRegisterInfo();
+    let mut PQ: *mut BURegReductionPriorityQueue = BURegReductionPriorityQueue { *IS.MF, false, false, TII, TRI, null };
+    let mut SD: *mut ScheduleDAGRRList = ScheduleDAGRRList { *IS.MF, false, PQ, OptLevel };
+    PQ.setScheduleDAG(SD);
+    return SD;
+}
+
+fn createSourceListDAGScheduler(IS: *mut SelectionDAGISel, OptLevel: CodeGenOptLevel) -> *mut ScheduleDAGSDNodes {
+    let mut STI: *TargetSubtargetInfo = IS.MF.getSubtarget();
+    let mut TII: *TargetInstrInfo = STI.getInstrInfo();
+    let mut TRI: *TargetRegisterInfo = STI.getRegisterInfo();
+    let mut PQ: *mut SrcRegReductionPriorityQueue = SrcRegReductionPriorityQueue { *IS.MF, false, true, TII, TRI, null };
+    let mut SD: *mut ScheduleDAGRRList = ScheduleDAGRRList { *IS.MF, false, PQ, OptLevel };
+    PQ.setScheduleDAG(SD);
+    return SD;
+}
+
+fn createHybridListDAGScheduler(IS: *mut SelectionDAGISel, OptLevel: CodeGenOptLevel) -> *mut ScheduleDAGSDNodes {
+    let mut STI: *TargetSubtargetInfo = IS.MF.getSubtarget();
+    let mut TII: *TargetInstrInfo = STI.getInstrInfo();
+    let mut TRI: *TargetRegisterInfo = STI.getRegisterInfo();
+    let mut TLI: *TargetLowering = IS.TLI;
+    let mut PQ: *mut HybridBURRPriorityQueue = HybridBURRPriorityQueue { *IS.MF, true, false, TII, TRI, TLI };
+    let mut SD: *mut ScheduleDAGRRList = ScheduleDAGRRList { *IS.MF, true, PQ, OptLevel };
+    PQ.setScheduleDAG(SD);
+    return SD;
+}
+
+fn createILPListDAGScheduler(IS: *mut SelectionDAGISel, OptLevel: CodeGenOptLevel) -> *mut ScheduleDAGSDNodes {
+    let mut STI: *TargetSubtargetInfo = IS.MF.getSubtarget();
+    let mut TII: *TargetInstrInfo = STI.getInstrInfo();
+    let mut TRI: *TargetRegisterInfo = STI.getRegisterInfo();
+    let mut TLI: *TargetLowering = IS.TLI;
+    let mut PQ: *mut ILPBURRPriorityQueue = ILPBURRPriorityQueue { *IS.MF, true, false, TII, TRI, TLI };
+    let mut SD: *mut ScheduleDAGRRList = ScheduleDAGRRList { *IS.MF, true, PQ, OptLevel };
+    PQ.setScheduleDAG(SD);
+    return SD;
+}
+
+struct Closure_1 {
+    CurSU: *mut *mut SUnit,
+    cap_1: *mut ScheduleDAGRRList,
+}
+
+unsafe fn Closure_1::call(self: *mut Closure_1) {
+        while (*self.CurSU) {
+            let mut LRegs: SmallVector<unsigned int, 4> = SmallVector<unsigned int, 4> {};
+            if !self.DelayForLiveRegsBottomUp((*self.CurSU), LRegs) {
+                break;
+            }
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                    dbgs() << "    Interfering reg ";
+                    if LRegs[0] == self.TRI.getNumRegs() {
+                        dbgs() << "CallResource";
+                    } else {
+                        dbgs() << printReg(Register { Reg: LRegs[0] }, self.TRI, 0, null);
+                    }
+                    dbgs() << " SU #" << (*self.CurSU).NodeNum << 10;
+                }
+            }
+                if !(false) { break; }
+            }
+            if LRegsInserted {
+                (*self.CurSU).isPending = true;
+                self.Interferences.push((*self.CurSU));
+            } else {
+                assert!((*self.CurSU).isPending, "Interferences are pending");
+                operator(LRegsIter).second = LRegs;
+            }
+            (*self.CurSU) = self.AvailableQueue.pop();
+        }
+    }

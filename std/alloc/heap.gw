@@ -1,0 +1,188 @@
+fn mi_heap_theap(heap: *mut mi_heap_t) -> *mut mi_theap_t {
+    return _mi_heap_theap(heap);
+}
+
+fn mi_heap_set_numa_affinity(heap: *mut mi_heap_t, numa_node: i32) {
+    if heap == 0 {
+        heap = mi_heap_main();
+    }
+    heap.numa_node = (if numa_node < 0 { -1 } else { numa_node % _mi_os_numa_node_count() });
+}
+
+fn mi_heap_stats_merge_to_subproc(heap: *mut mi_heap_t) {
+    if heap == 0 {
+        heap = mi_heap_main();
+    }
+    _mi_stats_merge_into(&mut heap.subproc.stats, &mut heap.stats);
+}
+
+fn mi_heap_stats_merge_to_main(heap: *mut mi_heap_t) {
+    if heap == 0 {
+        return;
+    }
+    _mi_stats_merge_into(&mut mi_heap_get_heap_main(heap).stats, &mut heap.stats);
+}
+
+fn mi_heap_init_theap(const_heap: *mi_heap_t) -> *mut mi_theap_t {
+    let mut heap: *mut mi_heap_t = const_heap as *mut mi_heap_t;
+    (if (heap != 0) { 0 as void } else { _mi_assert_fail("heap!=NULL", "mimalloc\\src\\heap.c", 63, "mi_heap_init_theap") });
+    if !_mi_thread_is_initialized() {
+        mi_thread_init();
+    }
+    let mut theap: *mut mi_theap_t = _mi_thread_local_get(heap.theap) as *mut mi_theap_t;
+    if theap == 0 {
+        theap = _mi_theap_create(heap, mi_theap_get_default().tld);
+        if theap == 0 {
+            _mi_error_message(14, "unable to allocate memory for a thread local heap\n");
+            return 0;
+        }
+        _mi_heap_theap_set(heap, theap);
+        (if (theap == _mi_thread_local_get(heap.theap) as *mut mi_theap_t) { 0 as void } else { _mi_assert_fail("theap == (mi_theap_t*)_mi_thread_local_get(heap->theap)", "mimalloc\\src\\heap.c", 83, "mi_heap_init_theap") });
+    }
+    return theap;
+}
+
+fn mi_heap_new_in_arena(exclusive_arena_id: mi_arena_id_t) -> *mut mi_heap_t {
+    mi_thread_init();
+    return _mi_heap_new_for_subproc(_mi_subproc(), exclusive_arena_id, false);
+}
+
+fn mi_heap_new() -> *mut mi_heap_t {
+    return mi_heap_new_in_arena(0);
+}
+
+fn mi_heap_free_theaps(heap: *mut mi_heap_t) {
+    _mi_heap_detach_theaps(heap);
+    for let mut _mi_go: bool = (mi_lock_acquire(&mut heap.theaps_lock) , true); _mi_go; (mi_lock_release(&mut heap.theaps_lock) , _mi_go = false) {
+        let mut theap: *mut mi_theap_t = heap.theaps;
+        heap.theaps = 0;
+        while theap != 0 {
+            let mut next: *mut mi_theap_t = theap.hnext;
+            theap.hnext = 0;
+            theap.hprev = 0;
+            (if (theap.tld == 0) { 0 as void } else { _mi_assert_fail("theap->tld==NULL", "mimalloc\\src\\heap.c", 178, "mi_heap_free_theaps") });
+            _mi_stats_merge_into(&mut heap.stats, &mut theap.stats);
+            _mi_theap_decref(theap);
+            theap = next;
+        }
+    }
+    if !_mi_is_process_heap_main(heap) {
+        _mi_thread_local_free(heap.theap);
+        heap.theap = 0;
+    }
+}
+
+fn mi_heap_free(heap: *mut mi_heap_t, acquire_heaps_lock: bool) {
+    (if (heap != 0) { 0 as void } else { _mi_assert_fail("heap!=NULL", "mimalloc\\src\\heap.c", 196, "mi_heap_free") });
+    let mut is_main: bool = _mi_is_heap_main(heap);
+    if !is_main {
+        for let mut _mi_go: bool = (mi_lock_acquire(&mut heap.arena_pages_lock) , true); _mi_go; (mi_lock_release(&mut heap.arena_pages_lock) , _mi_go = false) {
+            for let mut i: u64 = 0; i < (160); i += 1 {
+                let mut arena_pages: *mut mi_arena_pages_t = atomic_load_explicit(&mut heap.arena_pages[i], memory_order_relaxed);
+                if arena_pages != 0 {
+                    atomic_store_explicit(&mut heap.arena_pages[i], 0 as *mut mi_arena_pages_t, memory_order_relaxed);
+                    _mi_free_subproc_safe(arena_pages);
+                }
+            }
+        }
+    }
+    if !is_main {
+        mi_heap_stats_merge_to_main(heap);
+    } else {
+        _mi_stats_merge_into(&mut heap.subproc.stats, &mut heap.stats);
+    }
+    atomic_fetch_sub_explicit(&mut heap.subproc.heap_count, 1 as u64, memory_order_relaxed);
+    __mi_stat_decrease_mt(&mut (heap.subproc).stats.heaps, 1);
+    for let mut _mi_go: bool = (if acquire_heaps_lock { (mi_lock_acquire(&mut heap.subproc.heaps_lock) , true) } else { true }); _mi_go; _mi_go = (if acquire_heaps_lock { (mi_lock_release(&mut heap.subproc.heaps_lock) , false) } else { false }) {
+        if heap.next != 0 {
+            heap.next.prev = heap.prev;
+        }
+        if heap.prev != 0 {
+            heap.prev.next = heap.next;
+        } else {
+            heap.subproc.heaps = heap.next;
+        }
+    }
+    mi_lock_done(&mut heap.theaps_lock);
+    mi_lock_done(&mut heap.os_abandoned_pages_lock);
+    mi_lock_done(&mut heap.arena_pages_lock);
+    if !_mi_is_process_heap_main(heap) {
+        _mi_free_subproc_safe(heap);
+    }
+}
+
+fn mi_heap_delete(heap: *mut mi_heap_t) {
+    if heap == 0 {
+        return;
+    }
+    let mut heap_main: *mut mi_heap_t = mi_heap_get_heap_main(heap);
+    if heap == heap_main {
+        _mi_warning_message("cannot delete the main heap\n");
+        return;
+    }
+    mi_heap_free_theaps(heap);
+    _mi_heap_move_pages(heap, heap_main);
+    mi_heap_free(heap, true);
+}
+
+fn mi_heap_destroy(heap: *mut mi_heap_t) {
+    if heap == 0 {
+        return;
+    }
+    if _mi_is_heap_main(heap) {
+        _mi_warning_message("cannot destroy the main heap\n");
+        return;
+    }
+    _mi_heap_force_destroy(heap, true);
+}
+
+fn mi_heap_of(p: *void) -> *mut mi_heap_t {
+    let mut page: mi_page_t *const = _mi_safe_ptr_page(p);
+    if page == 0 {
+        return 0;
+    }
+    return mi_page_heap(page);
+}
+
+fn mi_any_heap_contains(p: *void) -> bool {
+    let mut page: mi_page_t *const = _mi_safe_ptr_page(p);
+    return (page != 0);
+}
+
+fn mi_heap_contains(heap: *mi_heap_t, p: *void) -> bool {
+    if heap == 0 {
+        heap = mi_heap_main();
+    }
+    return (heap == mi_heap_of(p));
+}
+
+fn mi_check_owned(p: *void) -> bool {
+    return mi_any_heap_contains(p);
+}
+
+fn mi_unsafe_heap_page_is_under_utilized(heap: *mut mi_heap_t, p: *mut void, perc_threshold: u64) -> bool {
+    if p == 0 {
+        return false;
+    }
+    let mut page: mi_page_t *const = _mi_safe_ptr_page(p);
+    if page == 0 || mi_page_used(page) == page.capacity || page.capacity < page.reserved {
+        return false;
+    }
+    if page.prev == 0 {
+        return false;
+    }
+    let mut page_heap: mi_heap_t *const = mi_page_heap(page);
+    if page_heap == 0 {
+        return false;
+    }
+    if heap != 0 && page_heap != heap {
+        return false;
+    }
+    if page.capacity == 0 {
+        return false;
+    }
+    if perc_threshold >= 100 {
+        return true;
+    }
+    return (perc_threshold >= ((100 * mi_page_used(page)) / page.capacity));
+}

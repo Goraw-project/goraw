@@ -1,0 +1,498 @@
+// Внешние системные функции libc
+extern fn memcpy(dest: *mut u8, src: *u8, n: u64) -> *mut u8;
+
+fn loadu(src: *u8) -> __m128i {
+    return _mm_loadu_si128(src as *__m128i);
+}
+
+fn storeu(src: __m128i, dest: *mut u8) {
+    _mm_storeu_si128(dest as *mut __m128i, src);
+}
+
+fn addv(a: __m128i, b: __m128i) -> __m128i {
+    return _mm_add_epi32(a, b);
+}
+
+fn xorv(a: __m128i, b: __m128i) -> __m128i {
+    return _mm_xor_si128(a, b);
+}
+
+fn set1(x: u32) -> __m128i {
+    return _mm_set1_epi32(x as i32);
+}
+
+fn set4(a: u32, b: u32, c: u32, d: u32) -> __m128i {
+    return _mm_setr_epi32(a as i32, b as i32, c as i32, d as i32);
+}
+
+fn rot16(x: __m128i) -> __m128i {
+    return _mm_shufflehi_epi16(_mm_shufflelo_epi16(x, 177), 177);
+}
+
+fn rot12(x: __m128i) -> __m128i {
+    return xorv(_mm_srli_epi32(x, 12), _mm_slli_epi32(x, 32 - 12));
+}
+
+fn rot8(x: __m128i) -> __m128i {
+    return xorv(_mm_srli_epi32(x, 8), _mm_slli_epi32(x, 32 - 8));
+}
+
+fn rot7(x: __m128i) -> __m128i {
+    return xorv(_mm_srli_epi32(x, 7), _mm_slli_epi32(x, 32 - 7));
+}
+
+fn g1(row0: *mut __m128i, row1: *mut __m128i, row2: *mut __m128i, row3: *mut __m128i, m: __m128i) {
+    *row0 = addv(addv(*row0, m), *row1);
+    *row3 = xorv(*row3, *row0);
+    *row3 = rot16(*row3);
+    *row2 = addv(*row2, *row3);
+    *row1 = xorv(*row1, *row2);
+    *row1 = rot12(*row1);
+}
+
+fn g2(row0: *mut __m128i, row1: *mut __m128i, row2: *mut __m128i, row3: *mut __m128i, m: __m128i) {
+    *row0 = addv(addv(*row0, m), *row1);
+    *row3 = xorv(*row3, *row0);
+    *row3 = rot8(*row3);
+    *row2 = addv(*row2, *row3);
+    *row1 = xorv(*row1, *row2);
+    *row1 = rot7(*row1);
+}
+
+fn diagonalize(row0: *mut __m128i, row2: *mut __m128i, row3: *mut __m128i) {
+    *row0 = _mm_shuffle_epi32(*row0, (((2) << 6) | ((1) << 4) | ((0) << 2) | ((3))));
+    *row3 = _mm_shuffle_epi32(*row3, (((1) << 6) | ((0) << 4) | ((3) << 2) | ((2))));
+    *row2 = _mm_shuffle_epi32(*row2, (((0) << 6) | ((3) << 4) | ((2) << 2) | ((1))));
+}
+
+fn undiagonalize(row0: *mut __m128i, row2: *mut __m128i, row3: *mut __m128i) {
+    *row0 = _mm_shuffle_epi32(*row0, (((0) << 6) | ((3) << 4) | ((2) << 2) | ((1))));
+    *row3 = _mm_shuffle_epi32(*row3, (((1) << 6) | ((0) << 4) | ((3) << 2) | ((2))));
+    *row2 = _mm_shuffle_epi32(*row2, (((2) << 6) | ((1) << 4) | ((0) << 2) | ((3))));
+}
+
+fn blend_epi16(a: __m128i, b: __m128i, imm8: i16) -> __m128i {
+    let mut bits: __m128i = _mm_set_epi16(128, 64, 32, 16, 8, 4, 2, 1);
+    let mut mask: __m128i = _mm_set1_epi16(imm8);
+    mask = _mm_and_si128(mask, bits);
+    mask = _mm_cmpeq_epi16(mask, bits);
+    return _mm_or_si128(_mm_and_si128(mask, b), _mm_andnot_si128(mask, a));
+}
+
+fn compress_pre(rows: *mut __m128i, cv: *u32, block: *u8, block_len: u8, counter: u64, flags: u8) {
+    rows[0] = loadu(&mut cv[0] as *mut u8);
+    rows[1] = loadu(&mut cv[4] as *mut u8);
+    rows[2] = set4(IV[0], IV[1], IV[2], IV[3]);
+    rows[3] = set4(counter_low(counter), counter_high(counter), block_len as u32, flags as u32);
+    let mut m0: __m128i = loadu(&mut block[ * 0]);
+    let mut m1: __m128i = loadu(&mut block[ * 1]);
+    let mut m2: __m128i = loadu(&mut block[ * 2]);
+    let mut m3: __m128i = loadu(&mut block[ * 3]);
+    let mut t0: __m128i = __m128i {};
+    let mut t1: __m128i = __m128i {};
+    let mut t2: __m128i = __m128i {};
+    let mut t3: __m128i = __m128i {};
+    let mut tt: __m128i = __m128i {};
+    t0 = (_mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(m0), _mm_castsi128_ps(m1), ((((2) << 6) | ((0) << 4) | ((2) << 2) | ((0)))))));
+    g1(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t0);
+    t1 = (_mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(m0), _mm_castsi128_ps(m1), ((((3) << 6) | ((1) << 4) | ((3) << 2) | ((1)))))));
+    g2(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t1);
+    diagonalize(&mut rows[0], &mut rows[2], &mut rows[3]);
+    t2 = (_mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(m2), _mm_castsi128_ps(m3), ((((2) << 6) | ((0) << 4) | ((2) << 2) | ((0)))))));
+    t2 = _mm_shuffle_epi32(t2, (((2) << 6) | ((1) << 4) | ((0) << 2) | ((3))));
+    g1(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t2);
+    t3 = (_mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(m2), _mm_castsi128_ps(m3), ((((3) << 6) | ((1) << 4) | ((3) << 2) | ((1)))))));
+    t3 = _mm_shuffle_epi32(t3, (((2) << 6) | ((1) << 4) | ((0) << 2) | ((3))));
+    g2(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t3);
+    undiagonalize(&mut rows[0], &mut rows[2], &mut rows[3]);
+    m0 = t0;
+    m1 = t1;
+    m2 = t2;
+    m3 = t3;
+    t0 = (_mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(m0), _mm_castsi128_ps(m1), ((((3) << 6) | ((1) << 4) | ((1) << 2) | ((2)))))));
+    t0 = _mm_shuffle_epi32(t0, (((0) << 6) | ((3) << 4) | ((2) << 2) | ((1))));
+    g1(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t0);
+    t1 = (_mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(m2), _mm_castsi128_ps(m3), ((((3) << 6) | ((3) << 4) | ((2) << 2) | ((2)))))));
+    tt = _mm_shuffle_epi32(m0, (((0) << 6) | ((0) << 4) | ((3) << 2) | ((3))));
+    t1 = blend_epi16(tt, t1, 204);
+    g2(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t1);
+    diagonalize(&mut rows[0], &mut rows[2], &mut rows[3]);
+    t2 = _mm_unpacklo_epi64(m3, m1);
+    tt = blend_epi16(t2, m2, 192);
+    t2 = _mm_shuffle_epi32(tt, (((1) << 6) | ((3) << 4) | ((2) << 2) | ((0))));
+    g1(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t2);
+    t3 = _mm_unpackhi_epi32(m1, m3);
+    tt = _mm_unpacklo_epi32(m2, t3);
+    t3 = _mm_shuffle_epi32(tt, (((0) << 6) | ((1) << 4) | ((3) << 2) | ((2))));
+    g2(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t3);
+    undiagonalize(&mut rows[0], &mut rows[2], &mut rows[3]);
+    m0 = t0;
+    m1 = t1;
+    m2 = t2;
+    m3 = t3;
+    t0 = (_mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(m0), _mm_castsi128_ps(m1), ((((3) << 6) | ((1) << 4) | ((1) << 2) | ((2)))))));
+    t0 = _mm_shuffle_epi32(t0, (((0) << 6) | ((3) << 4) | ((2) << 2) | ((1))));
+    g1(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t0);
+    t1 = (_mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(m2), _mm_castsi128_ps(m3), ((((3) << 6) | ((3) << 4) | ((2) << 2) | ((2)))))));
+    tt = _mm_shuffle_epi32(m0, (((0) << 6) | ((0) << 4) | ((3) << 2) | ((3))));
+    t1 = blend_epi16(tt, t1, 204);
+    g2(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t1);
+    diagonalize(&mut rows[0], &mut rows[2], &mut rows[3]);
+    t2 = _mm_unpacklo_epi64(m3, m1);
+    tt = blend_epi16(t2, m2, 192);
+    t2 = _mm_shuffle_epi32(tt, (((1) << 6) | ((3) << 4) | ((2) << 2) | ((0))));
+    g1(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t2);
+    t3 = _mm_unpackhi_epi32(m1, m3);
+    tt = _mm_unpacklo_epi32(m2, t3);
+    t3 = _mm_shuffle_epi32(tt, (((0) << 6) | ((1) << 4) | ((3) << 2) | ((2))));
+    g2(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t3);
+    undiagonalize(&mut rows[0], &mut rows[2], &mut rows[3]);
+    m0 = t0;
+    m1 = t1;
+    m2 = t2;
+    m3 = t3;
+    t0 = (_mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(m0), _mm_castsi128_ps(m1), ((((3) << 6) | ((1) << 4) | ((1) << 2) | ((2)))))));
+    t0 = _mm_shuffle_epi32(t0, (((0) << 6) | ((3) << 4) | ((2) << 2) | ((1))));
+    g1(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t0);
+    t1 = (_mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(m2), _mm_castsi128_ps(m3), ((((3) << 6) | ((3) << 4) | ((2) << 2) | ((2)))))));
+    tt = _mm_shuffle_epi32(m0, (((0) << 6) | ((0) << 4) | ((3) << 2) | ((3))));
+    t1 = blend_epi16(tt, t1, 204);
+    g2(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t1);
+    diagonalize(&mut rows[0], &mut rows[2], &mut rows[3]);
+    t2 = _mm_unpacklo_epi64(m3, m1);
+    tt = blend_epi16(t2, m2, 192);
+    t2 = _mm_shuffle_epi32(tt, (((1) << 6) | ((3) << 4) | ((2) << 2) | ((0))));
+    g1(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t2);
+    t3 = _mm_unpackhi_epi32(m1, m3);
+    tt = _mm_unpacklo_epi32(m2, t3);
+    t3 = _mm_shuffle_epi32(tt, (((0) << 6) | ((1) << 4) | ((3) << 2) | ((2))));
+    g2(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t3);
+    undiagonalize(&mut rows[0], &mut rows[2], &mut rows[3]);
+    m0 = t0;
+    m1 = t1;
+    m2 = t2;
+    m3 = t3;
+    t0 = (_mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(m0), _mm_castsi128_ps(m1), ((((3) << 6) | ((1) << 4) | ((1) << 2) | ((2)))))));
+    t0 = _mm_shuffle_epi32(t0, (((0) << 6) | ((3) << 4) | ((2) << 2) | ((1))));
+    g1(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t0);
+    t1 = (_mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(m2), _mm_castsi128_ps(m3), ((((3) << 6) | ((3) << 4) | ((2) << 2) | ((2)))))));
+    tt = _mm_shuffle_epi32(m0, (((0) << 6) | ((0) << 4) | ((3) << 2) | ((3))));
+    t1 = blend_epi16(tt, t1, 204);
+    g2(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t1);
+    diagonalize(&mut rows[0], &mut rows[2], &mut rows[3]);
+    t2 = _mm_unpacklo_epi64(m3, m1);
+    tt = blend_epi16(t2, m2, 192);
+    t2 = _mm_shuffle_epi32(tt, (((1) << 6) | ((3) << 4) | ((2) << 2) | ((0))));
+    g1(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t2);
+    t3 = _mm_unpackhi_epi32(m1, m3);
+    tt = _mm_unpacklo_epi32(m2, t3);
+    t3 = _mm_shuffle_epi32(tt, (((0) << 6) | ((1) << 4) | ((3) << 2) | ((2))));
+    g2(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t3);
+    undiagonalize(&mut rows[0], &mut rows[2], &mut rows[3]);
+    m0 = t0;
+    m1 = t1;
+    m2 = t2;
+    m3 = t3;
+    t0 = (_mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(m0), _mm_castsi128_ps(m1), ((((3) << 6) | ((1) << 4) | ((1) << 2) | ((2)))))));
+    t0 = _mm_shuffle_epi32(t0, (((0) << 6) | ((3) << 4) | ((2) << 2) | ((1))));
+    g1(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t0);
+    t1 = (_mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(m2), _mm_castsi128_ps(m3), ((((3) << 6) | ((3) << 4) | ((2) << 2) | ((2)))))));
+    tt = _mm_shuffle_epi32(m0, (((0) << 6) | ((0) << 4) | ((3) << 2) | ((3))));
+    t1 = blend_epi16(tt, t1, 204);
+    g2(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t1);
+    diagonalize(&mut rows[0], &mut rows[2], &mut rows[3]);
+    t2 = _mm_unpacklo_epi64(m3, m1);
+    tt = blend_epi16(t2, m2, 192);
+    t2 = _mm_shuffle_epi32(tt, (((1) << 6) | ((3) << 4) | ((2) << 2) | ((0))));
+    g1(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t2);
+    t3 = _mm_unpackhi_epi32(m1, m3);
+    tt = _mm_unpacklo_epi32(m2, t3);
+    t3 = _mm_shuffle_epi32(tt, (((0) << 6) | ((1) << 4) | ((3) << 2) | ((2))));
+    g2(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t3);
+    undiagonalize(&mut rows[0], &mut rows[2], &mut rows[3]);
+    m0 = t0;
+    m1 = t1;
+    m2 = t2;
+    m3 = t3;
+    t0 = (_mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(m0), _mm_castsi128_ps(m1), ((((3) << 6) | ((1) << 4) | ((1) << 2) | ((2)))))));
+    t0 = _mm_shuffle_epi32(t0, (((0) << 6) | ((3) << 4) | ((2) << 2) | ((1))));
+    g1(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t0);
+    t1 = (_mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(m2), _mm_castsi128_ps(m3), ((((3) << 6) | ((3) << 4) | ((2) << 2) | ((2)))))));
+    tt = _mm_shuffle_epi32(m0, (((0) << 6) | ((0) << 4) | ((3) << 2) | ((3))));
+    t1 = blend_epi16(tt, t1, 204);
+    g2(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t1);
+    diagonalize(&mut rows[0], &mut rows[2], &mut rows[3]);
+    t2 = _mm_unpacklo_epi64(m3, m1);
+    tt = blend_epi16(t2, m2, 192);
+    t2 = _mm_shuffle_epi32(tt, (((1) << 6) | ((3) << 4) | ((2) << 2) | ((0))));
+    g1(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t2);
+    t3 = _mm_unpackhi_epi32(m1, m3);
+    tt = _mm_unpacklo_epi32(m2, t3);
+    t3 = _mm_shuffle_epi32(tt, (((0) << 6) | ((1) << 4) | ((3) << 2) | ((2))));
+    g2(&mut rows[0], &mut rows[1], &mut rows[2], &mut rows[3], t3);
+    undiagonalize(&mut rows[0], &mut rows[2], &mut rows[3]);
+}
+
+fn blake3_compress_in_place_sse2(cv: *mut u32, block: *u8, block_len: u8, counter: u64, flags: u8) {
+    let mut rows: [4]__m128i = [4]__m128i {};
+    compress_pre(rows, cv, block, block_len, counter, flags);
+    storeu(xorv(rows[0], rows[2]), &mut cv[0] as *mut u8);
+    storeu(xorv(rows[1], rows[3]), &mut cv[4] as *mut u8);
+}
+
+fn blake3_compress_xof_sse2(cv: *u32, block: *u8, block_len: u8, counter: u64, flags: u8, out: *mut u8) {
+    let mut rows: [4]__m128i = [4]__m128i {};
+    compress_pre(rows, cv, block, block_len, counter, flags);
+    storeu(xorv(rows[0], rows[2]), &mut out[0]);
+    storeu(xorv(rows[1], rows[3]), &mut out[16]);
+    storeu(xorv(rows[2], loadu(&mut cv[0] as *mut u8)), &mut out[32]);
+    storeu(xorv(rows[3], loadu(&mut cv[4] as *mut u8)), &mut out[48]);
+}
+
+fn round_fn(v: *mut __m128i, m: *mut __m128i, r: u64) {
+    v[0] = addv(v[0], m[MSG_SCHEDULE[r][0] as u64]);
+    v[1] = addv(v[1], m[MSG_SCHEDULE[r][2] as u64]);
+    v[2] = addv(v[2], m[MSG_SCHEDULE[r][4] as u64]);
+    v[3] = addv(v[3], m[MSG_SCHEDULE[r][6] as u64]);
+    v[0] = addv(v[0], v[4]);
+    v[1] = addv(v[1], v[5]);
+    v[2] = addv(v[2], v[6]);
+    v[3] = addv(v[3], v[7]);
+    v[12] = xorv(v[12], v[0]);
+    v[13] = xorv(v[13], v[1]);
+    v[14] = xorv(v[14], v[2]);
+    v[15] = xorv(v[15], v[3]);
+    v[12] = rot16(v[12]);
+    v[13] = rot16(v[13]);
+    v[14] = rot16(v[14]);
+    v[15] = rot16(v[15]);
+    v[8] = addv(v[8], v[12]);
+    v[9] = addv(v[9], v[13]);
+    v[10] = addv(v[10], v[14]);
+    v[11] = addv(v[11], v[15]);
+    v[4] = xorv(v[4], v[8]);
+    v[5] = xorv(v[5], v[9]);
+    v[6] = xorv(v[6], v[10]);
+    v[7] = xorv(v[7], v[11]);
+    v[4] = rot12(v[4]);
+    v[5] = rot12(v[5]);
+    v[6] = rot12(v[6]);
+    v[7] = rot12(v[7]);
+    v[0] = addv(v[0], m[MSG_SCHEDULE[r][1] as u64]);
+    v[1] = addv(v[1], m[MSG_SCHEDULE[r][3] as u64]);
+    v[2] = addv(v[2], m[MSG_SCHEDULE[r][5] as u64]);
+    v[3] = addv(v[3], m[MSG_SCHEDULE[r][7] as u64]);
+    v[0] = addv(v[0], v[4]);
+    v[1] = addv(v[1], v[5]);
+    v[2] = addv(v[2], v[6]);
+    v[3] = addv(v[3], v[7]);
+    v[12] = xorv(v[12], v[0]);
+    v[13] = xorv(v[13], v[1]);
+    v[14] = xorv(v[14], v[2]);
+    v[15] = xorv(v[15], v[3]);
+    v[12] = rot8(v[12]);
+    v[13] = rot8(v[13]);
+    v[14] = rot8(v[14]);
+    v[15] = rot8(v[15]);
+    v[8] = addv(v[8], v[12]);
+    v[9] = addv(v[9], v[13]);
+    v[10] = addv(v[10], v[14]);
+    v[11] = addv(v[11], v[15]);
+    v[4] = xorv(v[4], v[8]);
+    v[5] = xorv(v[5], v[9]);
+    v[6] = xorv(v[6], v[10]);
+    v[7] = xorv(v[7], v[11]);
+    v[4] = rot7(v[4]);
+    v[5] = rot7(v[5]);
+    v[6] = rot7(v[6]);
+    v[7] = rot7(v[7]);
+    v[0] = addv(v[0], m[MSG_SCHEDULE[r][8] as u64]);
+    v[1] = addv(v[1], m[MSG_SCHEDULE[r][10] as u64]);
+    v[2] = addv(v[2], m[MSG_SCHEDULE[r][12] as u64]);
+    v[3] = addv(v[3], m[MSG_SCHEDULE[r][14] as u64]);
+    v[0] = addv(v[0], v[5]);
+    v[1] = addv(v[1], v[6]);
+    v[2] = addv(v[2], v[7]);
+    v[3] = addv(v[3], v[4]);
+    v[15] = xorv(v[15], v[0]);
+    v[12] = xorv(v[12], v[1]);
+    v[13] = xorv(v[13], v[2]);
+    v[14] = xorv(v[14], v[3]);
+    v[15] = rot16(v[15]);
+    v[12] = rot16(v[12]);
+    v[13] = rot16(v[13]);
+    v[14] = rot16(v[14]);
+    v[10] = addv(v[10], v[15]);
+    v[11] = addv(v[11], v[12]);
+    v[8] = addv(v[8], v[13]);
+    v[9] = addv(v[9], v[14]);
+    v[5] = xorv(v[5], v[10]);
+    v[6] = xorv(v[6], v[11]);
+    v[7] = xorv(v[7], v[8]);
+    v[4] = xorv(v[4], v[9]);
+    v[5] = rot12(v[5]);
+    v[6] = rot12(v[6]);
+    v[7] = rot12(v[7]);
+    v[4] = rot12(v[4]);
+    v[0] = addv(v[0], m[MSG_SCHEDULE[r][9] as u64]);
+    v[1] = addv(v[1], m[MSG_SCHEDULE[r][11] as u64]);
+    v[2] = addv(v[2], m[MSG_SCHEDULE[r][13] as u64]);
+    v[3] = addv(v[3], m[MSG_SCHEDULE[r][15] as u64]);
+    v[0] = addv(v[0], v[5]);
+    v[1] = addv(v[1], v[6]);
+    v[2] = addv(v[2], v[7]);
+    v[3] = addv(v[3], v[4]);
+    v[15] = xorv(v[15], v[0]);
+    v[12] = xorv(v[12], v[1]);
+    v[13] = xorv(v[13], v[2]);
+    v[14] = xorv(v[14], v[3]);
+    v[15] = rot8(v[15]);
+    v[12] = rot8(v[12]);
+    v[13] = rot8(v[13]);
+    v[14] = rot8(v[14]);
+    v[10] = addv(v[10], v[15]);
+    v[11] = addv(v[11], v[12]);
+    v[8] = addv(v[8], v[13]);
+    v[9] = addv(v[9], v[14]);
+    v[5] = xorv(v[5], v[10]);
+    v[6] = xorv(v[6], v[11]);
+    v[7] = xorv(v[7], v[8]);
+    v[4] = xorv(v[4], v[9]);
+    v[5] = rot7(v[5]);
+    v[6] = rot7(v[6]);
+    v[7] = rot7(v[7]);
+    v[4] = rot7(v[4]);
+}
+
+fn transpose_vecs(vecs: *mut __m128i) {
+    let mut ab_01: __m128i = _mm_unpacklo_epi32(vecs[0], vecs[1]);
+    let mut ab_23: __m128i = _mm_unpackhi_epi32(vecs[0], vecs[1]);
+    let mut cd_01: __m128i = _mm_unpacklo_epi32(vecs[2], vecs[3]);
+    let mut cd_23: __m128i = _mm_unpackhi_epi32(vecs[2], vecs[3]);
+    let mut abcd_0: __m128i = _mm_unpacklo_epi64(ab_01, cd_01);
+    let mut abcd_1: __m128i = _mm_unpackhi_epi64(ab_01, cd_01);
+    let mut abcd_2: __m128i = _mm_unpacklo_epi64(ab_23, cd_23);
+    let mut abcd_3: __m128i = _mm_unpackhi_epi64(ab_23, cd_23);
+    vecs[0] = abcd_0;
+    vecs[1] = abcd_1;
+    vecs[2] = abcd_2;
+    vecs[3] = abcd_3;
+}
+
+fn transpose_msg_vecs(inputs: *uint8_t *const, block_offset: u64, out: *mut __m128i) {
+    out[0] = loadu(&mut inputs[0][block_offset + 0 * ]);
+    out[1] = loadu(&mut inputs[1][block_offset + 0 * ]);
+    out[2] = loadu(&mut inputs[2][block_offset + 0 * ]);
+    out[3] = loadu(&mut inputs[3][block_offset + 0 * ]);
+    out[4] = loadu(&mut inputs[0][block_offset + 1 * ]);
+    out[5] = loadu(&mut inputs[1][block_offset + 1 * ]);
+    out[6] = loadu(&mut inputs[2][block_offset + 1 * ]);
+    out[7] = loadu(&mut inputs[3][block_offset + 1 * ]);
+    out[8] = loadu(&mut inputs[0][block_offset + 2 * ]);
+    out[9] = loadu(&mut inputs[1][block_offset + 2 * ]);
+    out[10] = loadu(&mut inputs[2][block_offset + 2 * ]);
+    out[11] = loadu(&mut inputs[3][block_offset + 2 * ]);
+    out[12] = loadu(&mut inputs[0][block_offset + 3 * ]);
+    out[13] = loadu(&mut inputs[1][block_offset + 3 * ]);
+    out[14] = loadu(&mut inputs[2][block_offset + 3 * ]);
+    out[15] = loadu(&mut inputs[3][block_offset + 3 * ]);
+    for let mut i: u64 = 0; i < 4; i += 1 {
+        _mm_prefetch(&mut inputs[i][block_offset + 256] as *void, 1);
+    }
+    transpose_vecs(&mut out[0]);
+    transpose_vecs(&mut out[4]);
+    transpose_vecs(&mut out[8]);
+    transpose_vecs(&mut out[12]);
+}
+
+fn load_counters(counter: u64, increment_counter: bool, out_lo: *mut __m128i, out_hi: *mut __m128i) {
+    let mut mask: __m128i = _mm_set1_epi32(-increment_counter as i32);
+    let mut add0: __m128i = _mm_set_epi32(3, 2, 1, 0);
+    let mut add1: __m128i = _mm_and_si128(mask, add0);
+    let mut l: __m128i = _mm_add_epi32(_mm_set1_epi32(counter as i32), add1);
+    let mut carry: __m128i = _mm_cmpgt_epi32(_mm_xor_si128(add1, _mm_set1_epi32(2147483648)), _mm_xor_si128(l, _mm_set1_epi32(2147483648)));
+    let mut h: __m128i = _mm_sub_epi32(_mm_set1_epi32((counter >> 32) as i32), carry);
+    *out_lo = l;
+    *out_hi = h;
+}
+
+fn blake3_hash4_sse2(inputs: *uint8_t *const, blocks: u64, key: *u32, counter: u64, increment_counter: bool, flags: u8, flags_start: u8, flags_end: u8, out: *mut u8) {
+    let mut h_vecs: [8]__m128i = [set1(key[0]), set1(key[1]), set1(key[2]), set1(key[3]), set1(key[4]), set1(key[5]), set1(key[6]), set1(key[7])];
+    let mut counter_low_vec: __m128i = __m128i {};
+    let mut counter_high_vec: __m128i = __m128i {};
+    load_counters(counter, increment_counter, &mut counter_low_vec, &mut counter_high_vec);
+    let mut block_flags: u8 = flags | flags_start;
+    for let mut block: u64 = 0; block < blocks; block += 1 {
+        if block + 1 == blocks {
+            block_flags |= flags_end;
+        }
+        let mut block_len_vec: __m128i = set1(64);
+        let mut block_flags_vec: __m128i = set1(block_flags);
+        let mut msg_vecs: [16]__m128i = [16]__m128i {};
+        transpose_msg_vecs(inputs, block * 64, msg_vecs);
+        let mut v: [16]__m128i = [h_vecs[0], h_vecs[1], h_vecs[2], h_vecs[3], h_vecs[4], h_vecs[5], h_vecs[6], h_vecs[7], set1(IV[0]), set1(IV[1]), set1(IV[2]), set1(IV[3]), counter_low_vec, counter_high_vec, block_len_vec, block_flags_vec];
+        round_fn(v, msg_vecs, 0);
+        round_fn(v, msg_vecs, 1);
+        round_fn(v, msg_vecs, 2);
+        round_fn(v, msg_vecs, 3);
+        round_fn(v, msg_vecs, 4);
+        round_fn(v, msg_vecs, 5);
+        round_fn(v, msg_vecs, 6);
+        h_vecs[0] = xorv(v[0], v[8]);
+        h_vecs[1] = xorv(v[1], v[9]);
+        h_vecs[2] = xorv(v[2], v[10]);
+        h_vecs[3] = xorv(v[3], v[11]);
+        h_vecs[4] = xorv(v[4], v[12]);
+        h_vecs[5] = xorv(v[5], v[13]);
+        h_vecs[6] = xorv(v[6], v[14]);
+        h_vecs[7] = xorv(v[7], v[15]);
+        block_flags = flags;
+    }
+    transpose_vecs(&mut h_vecs[0]);
+    transpose_vecs(&mut h_vecs[4]);
+    storeu(h_vecs[0], &mut out[0 * ]);
+    storeu(h_vecs[4], &mut out[1 * ]);
+    storeu(h_vecs[1], &mut out[2 * ]);
+    storeu(h_vecs[5], &mut out[3 * ]);
+    storeu(h_vecs[2], &mut out[4 * ]);
+    storeu(h_vecs[6], &mut out[5 * ]);
+    storeu(h_vecs[3], &mut out[6 * ]);
+    storeu(h_vecs[7], &mut out[7 * ]);
+}
+
+fn hash_one_sse2(input: *u8, blocks: u64, key: *u32, counter: u64, flags: u8, flags_start: u8, flags_end: u8, out: *mut u8) {
+    let mut cv: [8]u32 = zeroed();
+    memcpy(cv, key, 32);
+    let mut block_flags: u8 = flags | flags_start;
+    while blocks > 0 {
+        if blocks == 1 {
+            block_flags |= flags_end;
+        }
+        blake3_compress_in_place_sse2(cv, input, 64, counter, block_flags);
+        input = &mut input[64];
+        blocks -= 1;
+        block_flags = flags;
+    }
+    memcpy(out, cv, 32);
+}
+
+fn blake3_hash_many_sse2(inputs: *uint8_t *const, num_inputs: u64, blocks: u64, key: *u32, counter: u64, increment_counter: bool, flags: u8, flags_start: u8, flags_end: u8, out: *mut u8) {
+    while num_inputs >= 4 {
+        blake3_hash4_sse2(inputs, blocks, key, counter, increment_counter, flags, flags_start, flags_end, out);
+        if increment_counter {
+            counter += 4;
+        }
+        inputs += 4;
+        num_inputs -= 4;
+        out = &mut out[4 * 32];
+    }
+    while num_inputs > 0 {
+        hash_one_sse2(inputs[0], blocks, key, counter, flags, flags_start, flags_end, out);
+        if increment_counter {
+            counter += 1;
+        }
+        inputs += 1;
+        num_inputs -= 1;
+        out = &mut out[32];
+    }
+}

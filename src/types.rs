@@ -193,6 +193,14 @@ impl TyCtx {
                 "f64" => Ty::F64,
                 "bool" => Ty::Bool,
                 "void" => Ty::Void,
+                "char" => Ty::I8,
+                "unsigned int" => Ty::U32,
+                "unsigned long" => Ty::U64,
+                "unsigned short" => Ty::U16,
+                "unsigned char" => Ty::U8,
+                "signed char" => Ty::I8,
+                "long long" => Ty::I64,
+                "unsigned long long" => Ty::U64,
                 // строка = срез байтов []u8 (с поддержкой строковых литералов)
                 "str" => Ty::Slice(Box::new(Ty::U8)),
                 other => {

@@ -1,0 +1,2525 @@
+static mut NumFastIselFailures: Statistic = Statistic { "isel", "NumFastIselFailures", "Number of instructions fast isel failed on" };
+
+static mut NumFastIselSuccess: Statistic = Statistic { "isel", "NumFastIselSuccess", "Number of instructions fast isel selected" };
+
+static mut NumFastIselBlocks: Statistic = Statistic { "isel", "NumFastIselBlocks", "Number of blocks selected entirely by fast isel" };
+
+static mut NumDAGBlocks: Statistic = Statistic { "isel", "NumDAGBlocks", "Number of blocks selected using DAG" };
+
+static mut NumDAGIselRetries: Statistic = Statistic { "isel", "NumDAGIselRetries", "Number of times dag isel has to try another path" };
+
+static mut NumEntryBlocks: Statistic = Statistic { "isel", "NumEntryBlocks", "Number of entry blocks encountered" };
+
+static mut NumFastIselFailLowerArguments: Statistic = Statistic { "isel", "NumFastIselFailLowerArguments", "Number of entry blocks where fast isel failed to lower arguments" };
+
+static mut EnableFastISelAbort: i32 = "fast-isel-abort";
+
+static mut EnableFastISelFallbackReport: i32 = "fast-isel-report-on-fallback";
+
+static mut UseMBPI: i32 = "use-mbpi";
+
+static mut DumpSortedDAG: i32 = "dump-sorted-dags";
+
+static mut FilterDAGBasicBlockName: i32 = "filter-view-dags";
+
+static mut ViewDAGCombine1: i32 = "view-dag-combine1-dags";
+
+static mut ViewLegalizeTypesDAGs: i32 = "view-legalize-types-dags";
+
+static mut ViewDAGCombineLT: i32 = "view-dag-combine-lt-dags";
+
+static mut ViewLegalizeDAGs: i32 = "view-legalize-dags";
+
+static mut ViewDAGCombine2: i32 = "view-dag-combine2-dags";
+
+static mut ViewISelDAGs: i32 = "view-isel-dags";
+
+static mut ViewSchedDAGs: i32 = "view-sched-dags";
+
+static mut ViewSUnitDAGs: i32 = "view-sunit-dags";
+
+static mut Registry: FunctionPassCtor> = FunctionPassCtor> {};
+
+static mut ISHeuristic: FunctionPassCtor, false, RegisterPassParser<RegisterScheduler>> = ;
+
+static mut defaultListDAGScheduler: RegisterScheduler = RegisterScheduler { "default", "Best scheduler for the target", createDefaultScheduler };
+
+fn dontUseFastISelFor(Fn: *Function) -> bool {
+    return any_of(Fn.args(), Closure_1 {});
+}
+
+fn maintainPGOProfile(TM: *TargetMachine, OptLevel: CodeGenOptLevel) -> bool {
+    if OptLevel != None {
+        return true;
+    }
+    if TM.getPGOOption() {
+        let mut Options: *PGOOptions = TM.getPGOOption();
+        return Options.Action == IRUse || Options.Action == SampleUse || Options.CSAction == CSIRUse;
+    }
+    return false;
+}
+
+struct OptLevelChanger {
+    IS: *mut SelectionDAGISel,
+    SavedOptLevel: CodeGenOptLevel,
+    SavedFastISel: bool,
+}
+
+fn OptLevelChanger::OptLevelChanger(self, ISel: *mut SelectionDAGISel, NewOptLevel: CodeGenOptLevel) {
+    self.SavedOptLevel = self.IS.OptLevel;
+    self.SavedFastISel = self.IS.TM.Options.EnableFastISel;
+    if NewOptLevel != self.SavedOptLevel {
+        self.IS.OptLevel = NewOptLevel;
+        self.IS.TM.setOptLevel(NewOptLevel);
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("isel", 1) {
+                dbgs() << "\nChanging optimization level for Function " << self.IS.MF.getFunction().getName() << "\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("isel", 1) {
+                dbgs() << "\tBefore: -O" << self.SavedOptLevel as i32 << " ; After: -O" << NewOptLevel as i32 << "\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        if NewOptLevel == None {
+            self.IS.TM.setFastISel(self.IS.TM.getO0WantsFastISel());
+        }
+    }
+    if dontUseFastISelFor(self.IS.MF.getFunction()) {
+        self.IS.TM.setFastISel(false);
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("isel", 1) {
+            dbgs() << "\tFastISel is " << (if self.IS.TM.Options.EnableFastISel { "enabled" } else { "disabled" }) << "\n";
+        }
+    }
+        if !(false) { break; }
+    }
+}
+
+fn OptLevelChanger::~OptLevelChanger(self) {
+    if self.IS.OptLevel == self.SavedOptLevel {
+        return;
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("isel", 1) {
+            dbgs() << "\nRestoring optimization level for Function " << self.IS.MF.getFunction().getName() << "\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("isel", 1) {
+            dbgs() << "\tBefore: -O" << self.IS.OptLevel as i32 << " ; After: -O" << self.SavedOptLevel as i32 << "\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    self.IS.OptLevel = self.SavedOptLevel;
+    self.IS.TM.setOptLevel(self.SavedOptLevel);
+    self.IS.TM.setFastISel(self.SavedFastISel);
+}
+
+fn createDefaultScheduler(IS: *mut SelectionDAGISel, OptLevel: CodeGenOptLevel) -> *mut ScheduleDAGSDNodes {
+    let mut TLI: *TargetLowering = IS.TLI;
+    let mut ST: *TargetSubtargetInfo = IS.MF.getSubtarget();
+    if ST.getDAGScheduler(OptLevel) {
+        SchedulerCtor;
+    } else {
+        return SchedulerCtor(IS, OptLevel);
+    }
+    if OptLevel == None || (ST.enableMachineScheduler() && ST.enableMachineSchedDefaultSched()) || TLI.getSchedulingPreference() == Source {
+        return createSourceListDAGScheduler(IS, OptLevel);
+    }
+    if TLI.getSchedulingPreference() == RegPressure {
+        return createBURRListDAGScheduler(IS, OptLevel);
+    }
+    if TLI.getSchedulingPreference() == Hybrid {
+        return createHybridListDAGScheduler(IS, OptLevel);
+    }
+    if TLI.getSchedulingPreference() == VLIW {
+        return createVLIWDAGScheduler(IS, OptLevel);
+    }
+    if TLI.getSchedulingPreference() == Fast {
+        return createFastDAGScheduler(IS, OptLevel);
+    }
+    if TLI.getSchedulingPreference() == Linearize {
+        return createDAGLinearizer(IS, OptLevel);
+    }
+    assert!(TLI.getSchedulingPreference() == ILP, "Unknown sched type!");
+    return createILPListDAGScheduler(IS, OptLevel);
+}
+
+fn TargetLowering::EmitInstrWithCustomInserter(self: *TargetLowering, MI: *mut MachineInstr, MBB: *mut MachineBasicBlock) -> *mut MachineBasicBlock {
+    match MI.getOpcode() {
+        STATEPOINT => {
+            STACKMAP;
+        },
+        _ => {
+            break;
+        },
+    }
+    dbgs() << "If a target marks an instruction with 'usesCustomInserter', it must implement TargetLowering::EmitInstrWithCustomInserter!\n";
+    llvm_unreachable_internal(null, "llvm\\lib\\CodeGen\\SelectionDAG\\SelectionDAGISel.cpp", 351);
+}
+
+fn TargetLowering::AdjustInstrPostInstrSelection(self: *TargetLowering, MI: *mut MachineInstr, Node: *mut SDNode) {
+    assert!(!MI.hasPostISelHook(IgnoreBundle), "If a target marks an instruction with 'hasPostISelHook', it must implement TargetLowering::AdjustInstrPostInstrSelection!");
+}
+
+fn SelectionDAGISelLegacy::SelectionDAGISelLegacy(self, ID: *mut i8, S: i32) {
+    initializeBranchProbabilityInfoWrapperPassPass(*getPassRegistry());
+    initializeAAResultsWrapperPassPass(*getPassRegistry());
+    initializeTargetLibraryInfoWrapperPassPass(*getPassRegistry());
+}
+
+fn SelectionDAGISelLegacy::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
+    if MF.getProperties().hasSelected() {
+        return false;
+    }
+    if EnableFastISelAbort() && !operator(self.Selector).TM.Options.EnableFastISel {
+        reportFatalUsageError("-fast-isel-abort > 0 requires -fast-isel");
+    }
+    MF.setUseDebugInstrRef(MF.shouldUseDebugInstrRef());
+    let mut NewOptLevel: CodeGenOptLevel = if self.skipFunction(MF.getFunction()) { None } else { operator(self.Selector).OptLevel };
+    operator(self.Selector).MF = &mut MF;
+    let mut OLC: OptLevelChanger = OptLevelChanger { operator(self.Selector), NewOptLevel };
+    operator(self.Selector).initializeAnalysisResults(*self);
+    return operator(self.Selector).runOnMachineFunction(MF);
+}
+
+fn SelectionDAGISel::SelectionDAGISel(self, tm: *mut TargetMachine, OL: CodeGenOptLevel) {
+    initializeBranchProbabilityInfoWrapperPassPass(*getPassRegistry());
+    initializeAAResultsWrapperPassPass(*getPassRegistry());
+    initializeTargetLibraryInfoWrapperPassPass(*getPassRegistry());
+}
+
+fn SelectionDAGISel::~SelectionDAGISel(self) {
+    self.CurDAG;
+}
+
+fn SelectionDAGISelLegacy::getAnalysisUsage(self: *SelectionDAGISelLegacy, AU: *mut AnalysisUsage) {
+    let mut OptLevel: CodeGenOptLevel = operator(self.Selector).OptLevel;
+    let mut RegisterPGOPasses: bool = maintainPGOProfile(operator(self.Selector).TM, operator(self.Selector).OptLevel);
+    if OptLevel != None {
+        AU;
+    }
+    AU;
+    AU;
+    AU;
+    AU;
+    AU;
+    AU;
+    if UseMBPI() && RegisterPGOPasses {
+        AU;
+    }
+    AU;
+    AU;
+    AU;
+    if RegisterPGOPasses {
+        getLazyBFIAnalysisUsage(AU);
+    }
+    AU;
+    self.getAnalysisUsage(AU);
+}
+
+fn SelectionDAGISelPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
+    if MF.getProperties().hasSelected() {
+        return all();
+    }
+    if EnableFastISelAbort() && !operator(self.Selector).TM.Options.EnableFastISel {
+        reportFatalUsageError("-fast-isel-abort > 0 requires -fast-isel");
+    }
+    MF.setUseDebugInstrRef(MF.shouldUseDebugInstrRef());
+    operator(self.Selector).MF = &mut MF;
+    let mut NewOptLevel: CodeGenOptLevel = if (MF.getFunction().hasOptNone() || self.shouldSkipOptimizationForOptBisect) { None } else { operator(self.Selector).OptLevel };
+    let mut OLC: OptLevelChanger = OptLevelChanger { operator(self.Selector), NewOptLevel };
+    operator(self.Selector).initializeAnalysisResults(MFAM);
+    operator(self.Selector).runOnMachineFunction(MF);
+    return getMachineFunctionPassPreservedAnalyses();
+}
+
+fn SelectionDAGISel::initializeAnalysisResults(self, MFAM: *mut MachineFunctionAnalysisManager) {
+    let mut FAM: *mut auto = MFAM();
+    let mut MAMP: *mut auto = MFAM;
+    let mut Fn: *mut Function = self.MF.getFunction();
+    self.FuncName = Fn.getName();
+    self.MatchFilterFuncName = isFunctionInPrintList(self.FuncName);
+    let mut Subtarget: *TargetSubtargetInfo = self.MF.getSubtarget();
+    let mut RegisterPGOPasses: bool = maintainPGOProfile(self.TM, self.OptLevel);
+    self.TII = Subtarget.getInstrInfo();
+    self.TLI = Subtarget.getTargetLowering();
+    self.RegInfo = &mut self.MF.getRegInfo();
+    self.LibInfo = operator&((Fn));
+    self.GFI = if Fn.hasGC() { operator&((Fn)) } else { null };
+    self.ORE = make_unique(&mut Fn);
+    self.AC = operator&((Fn));
+    let mut PSI: *mut auto = (*Fn.getParent());
+    let mut BFI: *mut BlockFrequencyInfo = null;
+    if PSI() && () && RegisterPGOPasses {
+        BFI = operator&((Fn));
+    }
+    let mut FnVarLocs: *FunctionVarLocs = null;
+    if isAssignmentTrackingEnabled(*Fn.getParent()) {
+        FnVarLocs = operator&((Fn));
+    }
+    let mut UA: *mut auto = (Fn);
+    let mut LibcallResult: *ModuleLibcallLoweringInfo = (*Fn.getParent());
+    if !LibcallResult {
+        reportFatalUsageError("'" + name() + "' analysis required");
+    }
+    self.LibcallLowering = &mut getLibcallLowering(*LibcallResult, Subtarget);
+    self.CurDAG(*self.MF, MFAM, self.LibInfo, self.LibcallLowering, BFI, FnVarLocs);
+    if UseMBPI() && RegisterPGOPasses {
+        operator(self.FuncInfo).BPI = operator&((Fn));
+    } else {
+        operator(self.FuncInfo).BPI = null;
+    }
+    if self.OptLevel != None {
+        self.BatchAA((Fn));
+    } else {
+        self.BatchAA = nullopt;
+    }
+    self.SP = operator&((Fn));
+    self.TTI = operator&((Fn));
+    self.HwMode = Subtarget.getHwMode(HwMode_Default);
+}
+
+fn SelectionDAGISel::initializeAnalysisResults(self, MFP: *mut MachineFunctionPass) {
+    let mut Fn: *mut Function = self.MF.getFunction();
+    self.FuncName = Fn.getName();
+    self.MatchFilterFuncName = isFunctionInPrintList(self.FuncName);
+    let mut Subtarget: *TargetSubtargetInfo = self.MF.getSubtarget();
+    let mut RegisterPGOPasses: bool = maintainPGOProfile(self.TM, self.OptLevel);
+    self.TII = Subtarget.getInstrInfo();
+    self.TLI = Subtarget.getTargetLowering();
+    self.RegInfo = &mut self.MF.getRegInfo();
+    self.LibInfo = operator&(MFP(Fn));
+    self.GFI = if Fn.hasGC() { operator&(MFP(Fn)) } else { null };
+    self.ORE = make_unique(&mut Fn);
+    self.AC = operator&(MFP(Fn));
+    let mut PSI: *mut auto = operator&(MFP());
+    let mut BFI: *mut BlockFrequencyInfo = null;
+    if PSI() && () && RegisterPGOPasses {
+        BFI = operator&(MFP());
+    }
+    let mut FnVarLocs: *FunctionVarLocs = null;
+    if isAssignmentTrackingEnabled(*Fn.getParent()) {
+        FnVarLocs = MFP();
+    }
+    let mut UA: *mut UniformityInfo = null;
+    if  {
+        UA = operator&();
+    }
+    self.LibcallLowering = operator&(MFP(*Fn.getParent(), Subtarget));
+    self.CurDAG(*self.MF, self.LibInfo, self.LibcallLowering, UA, BFI, FnVarLocs);
+    if UseMBPI() && RegisterPGOPasses {
+        operator(self.FuncInfo).BPI = operator&(MFP());
+    } else {
+        operator(self.FuncInfo).BPI = null;
+    }
+    if self.OptLevel != None {
+        self.BatchAA(MFP());
+    } else {
+        self.BatchAA = nullopt;
+    }
+    self.SP = operator&(MFP());
+    self.TTI = operator&(MFP(Fn));
+    self.HwMode = Subtarget.getHwMode(HwMode_Default);
+}
+
+fn SelectionDAGISel::runOnMachineFunction(self, mf: *mut MachineFunction) -> bool {
+    operator(self.SwiftError).setFunction(mf);
+    let mut Fn: *Function = mf.getFunction();
+    let mut InstrRef: bool = mf.useDebugInstrRef();
+    operator(self.FuncInfo).set(self.MF.getFunction(), *self.MF, self.CurDAG);
+    while true {
+        {
+        if DebugFlag && (isCurrentDebugType("isel", 0) || (isCurrentDebugType("isel-dump", 0) && self.MatchFilterFuncName)) {
+            dbgs() << "\n\n\n=== " << self.FuncName << 10;
+        }
+    }
+        if !(false) { break; }
+    }
+    operator(self.SDB).init(self.GFI, self.getBatchAA(), self.AC, self.LibInfo, *self.TTI);
+    self.MF.setHasInlineAsm(false);
+    operator(self.FuncInfo).SplitCSR = false;
+    if self.OptLevel != None && self.TLI.supportSplitCSR(self.MF) {
+        operator(self.FuncInfo).SplitCSR = true;
+        for BB in Fn {
+            if !succ_empty(&mut BB) {
+                continue;
+            }
+            let mut Term: *Instruction = BB.getTerminator();
+            if isa(Term) || isa(Term) {
+                continue;
+            }
+            operator(self.FuncInfo).SplitCSR = false;
+            break;
+        }
+    }
+    let mut EntryMBB: *mut MachineBasicBlock = &mut self.MF.front();
+    if operator(self.FuncInfo).SplitCSR {
+        self.TLI.initializeSplitCSR(EntryMBB);
+    }
+    self.SelectAllBasicBlocks(Fn);
+    if self.FastISelFailed &&  {
+        let mut DiagFallback: DiagnosticInfoISelFallback = DiagnosticInfoISelFallback { Fn, DS_Warning };
+        Fn.getContext().diagnose(DiagFallback);
+    }
+    let mut MRI: *mut MachineRegisterInfo = self.MF.getRegInfo();
+    for let mut I: auto = operator(self.FuncInfo).RegFixups.begin;
+let mut E: auto = operator(self.FuncInfo).RegFixups.end; I() != ;  += 1 {
+        let mut From: Register = ;
+        let mut To: Register = ;
+        while true {
+            let mut J: auto = operator(self.FuncInfo).RegFixups.find;
+            if J() ==  {
+                break;
+            }
+            To = ;
+        }
+        if From.isVirtual() && To.isVirtual() {
+            MRI.constrainRegClass(To, MRI.getRegClass(From), 0);
+        }
+        if !MRI.use_empty(To) {
+            MRI.clearKillFlags(From);
+        }
+        MRI.replaceRegWith(From, To);
+    }
+    let mut TRI: *TargetRegisterInfo = *self.MF.getSubtarget().getRegisterInfo();
+    self.RegInfo.EmitLiveInCopies(EntryMBB, TRI, *self.TII);
+    if operator(self.FuncInfo).SplitCSR {
+        let mut Returns: SmallVector<MachineBasicBlock *, 4> = SmallVector<MachineBasicBlock *, 4> {};
+        for MBB in mf {
+            if !MBB.succ_empty() {
+                continue;
+            }
+            let mut Term: iterator = MBB.getFirstTerminator();
+            if Term != MBB.end() && operator(Term).isReturn(AnyInBundle) {
+                Returns.push(&mut MBB);
+                continue;
+            }
+        }
+        self.TLI.insertCopiesSplitCSR(EntryMBB, Returns);
+    }
+    let mut LiveInMap: i32 = 0;
+    if !operator(self.FuncInfo).ArgDbgValues.is_empty() {
+        for LI in self.RegInfo.liveins() {
+            if LI.second.operator unsigned int() {
+                LiveInMap()(LI);
+            }
+        }
+    }
+    for let mut i: u32 = 0;
+let mut e: u32 = operator(self.FuncInfo).ArgDbgValues.len; i != e; i += 1 {
+        let mut MI: *mut MachineInstr = operator(self.FuncInfo).ArgDbgValues[e - i - 1];
+        assert!(MI.getOpcode() != DBG_VALUE_LIST, "Function parameters should not be described by DBG_VALUE_LIST.");
+        let mut hasFI: bool = MI.getDebugOperand(0).isFI();
+        let mut Reg: Register = if hasFI { TRI.getFrameRegister(*self.MF) } else { MI.getDebugOperand(0).getReg() };
+        if Reg.isPhysical() {
+            EntryMBB.insert(EntryMBB.begin(), MI);
+        } else {
+            let mut Def: *mut MachineInstr = self.RegInfo.getVRegDef(Reg);
+            if Def {
+                let mut InsertPos: iterator = iterator { Def };
+                Def.getParent()(next(InsertPos), MI);
+            } else {
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("isel", 1) {
+                        dbgs() << "Dropping debug info for dead vreg" << printReg(Reg, null, 0, null) << 10;
+                    }
+                }
+                    if !(false) { break; }
+                }
+            }
+        }
+        if InstrRef {
+            continue;
+        }
+        if !Reg.isPhysical() {
+            continue;
+        }
+        let mut LDI: auto = (Reg);
+        if LDI() != () {
+            assert!(!hasFI, "There's no handling of frame pointer updating here yet - add if needed");
+            let mut Def: *mut MachineInstr = self.RegInfo.getVRegDef();
+            let mut InsertPos: iterator = iterator { Def };
+            let mut Variable: *MDNode = MI.getDebugVariable();
+            let mut Expr: *MDNode = MI.getDebugExpression();
+            let mut DL: DebugLoc = MI.getDebugLoc();
+            let mut IsIndirect: bool = MI.isIndirectDebugValue();
+            if IsIndirect {
+                assert!(MI.getDebugOffset().getImm() == 0, "DBG_VALUE with nonzero offset");
+            }
+            (((operator!(operator!((cast(Variable)(DL) && "Expected inlined-at fields to agree")))) || (_wassert(L"cast<DILocalVariable>(Variable)->isValidLocationForIntrinsic(DL) && \"Expected inlined-at fields to agree\"", L"llvm\\lib\\CodeGen\\SelectionDAG\\SelectionDAGISel.cpp", (749) as u32) , 0)) as void);
+            assert!(MI.getOpcode() != DBG_VALUE_LIST, "Didn't expect to see a DBG_VALUE_LIST here");
+            BuildMI(*EntryMBB, operator(InsertPos), DL, self.TII.get(DBG_VALUE), IsIndirect, Variable, Expr);
+            let mut CopyUseMI: *mut MachineInstr = null;
+            if CopyUseMI && TRI(MRI) == TRI.getRegSizeInBits(CopyUseMI.getOperand(0).getReg(), MRI) {
+                let mut NewMI: *mut MachineInstr = BuildMI(*self.MF, DL, self.TII.get(DBG_VALUE), IsIndirect, CopyUseMI.getOperand(0).getReg(), Variable, Expr).operator llvm::MachineInstr *();
+                let mut Pos: iterator = iterator { CopyUseMI };
+                EntryMBB.insertAfter(iterator { Pos }, NewMI);
+            }
+        }
+    }
+    if self.MF.useDebugInstrRef() {
+        self.MF.finalizeDebugInstrRefs();
+    }
+    let mut MFI: *mut MachineFrameInfo = self.MF.getFrameInfo();
+    for MBB in *self.MF {
+        if MFI.hasCalls() && self.MF.hasInlineAsm() {
+            break;
+        }
+        for MI in MBB {
+            let mut MCID: *MCInstrDesc = self.TII.get(MI.getOpcode());
+            if (MCID.isCall() && !MCID.isReturn()) || MI.isStackAligningInlineAsm() {
+                MFI.setHasCalls(true);
+            }
+            if MI.isInlineAsm() {
+                self.MF.setHasInlineAsm(true);
+            }
+        }
+    }
+    operator(self.FuncInfo).clear();
+    while true {
+        {
+        if DebugFlag && (isCurrentDebugType("isel", 0) || (isCurrentDebugType("isel-dump", 0) && self.MatchFilterFuncName)) {
+            dbgs() << "*** MachineFunction at end of ISel ***\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    while true {
+        {
+        if DebugFlag && (isCurrentDebugType("isel", 0) || (isCurrentDebugType("isel-dump", 0) && self.MatchFilterFuncName)) {
+            self.MF.print(dbgs(), null);
+        }
+    }
+        if !(false) { break; }
+    }
+    return true;
+}
+
+fn reportFastISelFailure(MF: *mut MachineFunction, ORE: *mut OptimizationRemarkEmitter, R: *mut OptimizationRemarkMissed, ShouldAbort: bool) {
+    if !R.getLocation().isValid() || ShouldAbort {
+        R((" (in function: " + MF.getName() + ")"));
+    }
+    if ShouldAbort {
+        reportFatalUsageError(R.getMsg());
+    }
+    ORE.emit(R);
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("isel", 1) {
+            dbgs() << R.getMsg() << "\n";
+        }
+    }
+        if !(false) { break; }
+    }
+}
+
+fn preserveFakeUses(Begin: iterator, End: iterator) {
+    let mut I: iterator = iterator { End };
+    if operator(I) == Begin || !isa(operator(I)) {
+        return;
+    }
+    let mut HaveFakeUse: bool = false;
+    let mut HaveTailCall: bool = false;
+    while true {
+        {
+        if dyn_cast(operator(I)) {
+            CI;
+        } else if CI.isTailCall() {
+            HaveTailCall = true;
+            break;
+        }
+        if dyn_cast(I) {
+            II;
+        } else if II.getIntrinsicID() == fake_use {
+            HaveFakeUse = true;
+        }
+    }
+        if !(I != Begin) { break; }
+    }
+    if !HaveTailCall || !HaveFakeUse {
+        return;
+    }
+    let mut FakeUses: i32 = 0;
+    for let mut Inst: iterator = iterator { I }; Inst != End; operator(Inst, 0) {
+        let mut FakeUse: *mut IntrinsicInst = dyn_cast(Inst);
+        if FakeUse && FakeUse.getIntrinsicID() == fake_use {
+            let mut UsedDef: auto = dyn_cast(FakeUse.getOperand(0));
+            if operator!() || () != operator(I).getParent() || (&mut operator(I)) {
+                FakeUses()(FakeUse);
+            }
+        }
+    }
+}
+
+fn SelectionDAGISel::SelectBasicBlock(self, Begin: const_iterator, End: const_iterator, HadTailCall: *mut bool) {
+    self.CurDAG.NewNodesMustHaveLegalTypes = false;
+    for let mut I: const_iterator = const_iterator { Begin }; I != End && !operator(self.SDB).HasTailCall; operator(I) {
+        if !self.ElidedArgCopyInstrs.count(&mut operator(I)) {
+            operator(self.SDB).visit(operator(I));
+        } else {
+            operator(self.SDB).visitDbgInfo(operator(I));
+        }
+    }
+    self.CurDAG.setRoot(operator(self.SDB).getControlRoot());
+    HadTailCall = operator(self.SDB).HasTailCall;
+    operator(self.SDB).resolveOrClearDbgInfo();
+    operator(self.SDB).clear();
+    self.CodeGenAndEmitDAG();
+}
+
+fn SelectionDAGISel::ComputeLiveOutVRegInfo(self) {
+    let mut Added: SmallPtrSet<SDNode *, 16> = zeroed();
+    let mut Worklist: SmallVector<SDNode *, 128> = zeroed();
+    Worklist()(self.CurDAG.getRoot().getNode());
+    Added()(self.CurDAG.getRoot().getNode());
+    let mut Known: KnownBits = KnownBits {};
+    while true {
+        {
+        let mut N: *mut SDNode = ();
+        if N.getOpcode() != CopyToReg {
+            continue;
+        }
+        let mut DestReg: Register = cast(N.getOperand(1))();
+        if !DestReg.isVirtual() {
+            continue;
+        }
+        let mut Src: SDValue = N.getOperand(2);
+        let mut SrcVT: EVT = Src.getValueType();
+        if !SrcVT.isInteger() {
+            continue;
+        }
+        let mut NumSignBits: u32 = self.CurDAG.ComputeNumSignBits(Src, 0);
+        Known = self.CurDAG.computeKnownBits(Src, 0);
+        operator(self.FuncInfo).AddLiveOutRegInfo(DestReg, NumSignBits, Known);
+    }
+        if !(operator!()) { break; }
+    }
+}
+
+fn SelectionDAGISel::CodeGenAndEmitDAG(self) {
+    let mut GroupName: str = "sdag";
+    let mut GroupDescription: str = "Instruction Selection and Scheduling";
+    let mut BlockName: str = "";
+    let mut MatchFilterBB: bool = false;
+    MatchFilterBB as void;
+    self.CurDAG.NewNodesMustHaveLegalTypes = false;
+    MatchFilterBB = (FilterDAGBasicBlockName()() ||  == operator(self.FuncInfo).MBB.getBasicBlock().getName());
+    {
+        BlockName = (self.MF.getName() + ":" + operator(self.FuncInfo).MBB.getBasicBlock().getName());
+    }
+    while true {
+        {
+        if DebugFlag && (isCurrentDebugType("isel", 0) || (isCurrentDebugType("isel-dump", 0) && self.MatchFilterFuncName)) {
+            dbgs() << "\nInitial selection DAG: " << printMBBReference(*operator(self.FuncInfo).MBB) << " '" << BlockName << "'\n";
+            self.CurDAG();
+        }
+    }
+        if !(false) { break; }
+    }
+    if ViewDAGCombine1() && MatchFilterBB {
+        self.CurDAG;
+    }
+    {
+        let mut T: NamedRegionTimer = NamedRegionTimer { "combine1", "DAG Combining 1", GroupName, GroupDescription, TimePassesIsEnabled };
+        self.CurDAG.Combine(BeforeLegalizeTypes, self.getBatchAA(), self.OptLevel);
+    }
+    while true {
+        {
+        if DebugFlag && (isCurrentDebugType("isel", 0) || (isCurrentDebugType("isel-dump", 0) && self.MatchFilterFuncName)) {
+            dbgs() << "\nOptimized lowered selection DAG: " << printMBBReference(*operator(self.FuncInfo).MBB) << " '" << BlockName << "'\n";
+            self.CurDAG();
+        }
+    }
+        if !(false) { break; }
+    }
+    if ViewLegalizeTypesDAGs() && MatchFilterBB {
+        self.CurDAG;
+    }
+    let mut Changed: bool = false;
+    {
+        let mut T: NamedRegionTimer = NamedRegionTimer { "legalize_types", "Type Legalization", GroupName, GroupDescription, TimePassesIsEnabled };
+        Changed = self.CurDAG.LegalizeTypes();
+    }
+    while true {
+        {
+        if DebugFlag && (isCurrentDebugType("isel", 0) || (isCurrentDebugType("isel-dump", 0) && self.MatchFilterFuncName)) {
+            dbgs() << "\nType-legalized selection DAG: " << printMBBReference(*operator(self.FuncInfo).MBB) << " '" << BlockName << "'\n";
+            self.CurDAG();
+        }
+    }
+        if !(false) { break; }
+    }
+    self.CurDAG.NewNodesMustHaveLegalTypes = true;
+    if Changed {
+        if ViewDAGCombineLT() && MatchFilterBB {
+            self.CurDAG;
+        }
+        {
+            let mut T: NamedRegionTimer = NamedRegionTimer { "combine_lt", "DAG Combining after legalize types", GroupName, GroupDescription, TimePassesIsEnabled };
+            self.CurDAG.Combine(AfterLegalizeTypes, self.getBatchAA(), self.OptLevel);
+        }
+        while true {
+            {
+            if DebugFlag && (isCurrentDebugType("isel", 0) || (isCurrentDebugType("isel-dump", 0) && self.MatchFilterFuncName)) {
+                dbgs() << "\nOptimized type-legalized selection DAG: " << printMBBReference(*operator(self.FuncInfo).MBB) << " '" << BlockName << "'\n";
+                self.CurDAG();
+            }
+        }
+            if !(false) { break; }
+        }
+    }
+    {
+        let mut T: NamedRegionTimer = NamedRegionTimer { "legalize_vec", "Vector Legalization", GroupName, GroupDescription, TimePassesIsEnabled };
+        Changed = self.CurDAG.LegalizeVectors();
+    }
+    if Changed {
+        while true {
+            {
+            if DebugFlag && (isCurrentDebugType("isel", 0) || (isCurrentDebugType("isel-dump", 0) && self.MatchFilterFuncName)) {
+                dbgs() << "\nVector-legalized selection DAG: " << printMBBReference(*operator(self.FuncInfo).MBB) << " '" << BlockName << "'\n";
+                self.CurDAG();
+            }
+        }
+            if !(false) { break; }
+        }
+        {
+            let mut T: NamedRegionTimer = NamedRegionTimer { "legalize_types2", "Type Legalization 2", GroupName, GroupDescription, TimePassesIsEnabled };
+            self.CurDAG.LegalizeTypes();
+        }
+        while true {
+            {
+            if DebugFlag && (isCurrentDebugType("isel", 0) || (isCurrentDebugType("isel-dump", 0) && self.MatchFilterFuncName)) {
+                dbgs() << "\nVector/type-legalized selection DAG: " << printMBBReference(*operator(self.FuncInfo).MBB) << " '" << BlockName << "'\n";
+                self.CurDAG();
+            }
+        }
+            if !(false) { break; }
+        }
+        if ViewDAGCombineLT() && MatchFilterBB {
+            self.CurDAG;
+        }
+        {
+            let mut T: NamedRegionTimer = NamedRegionTimer { "combine_lv", "DAG Combining after legalize vectors", GroupName, GroupDescription, TimePassesIsEnabled };
+            self.CurDAG.Combine(AfterLegalizeVectorOps, self.getBatchAA(), self.OptLevel);
+        }
+        while true {
+            {
+            if DebugFlag && (isCurrentDebugType("isel", 0) || (isCurrentDebugType("isel-dump", 0) && self.MatchFilterFuncName)) {
+                dbgs() << "\nOptimized vector-legalized selection DAG: " << printMBBReference(*operator(self.FuncInfo).MBB) << " '" << BlockName << "'\n";
+                self.CurDAG();
+            }
+        }
+            if !(false) { break; }
+        }
+    }
+    if ViewLegalizeDAGs() && MatchFilterBB {
+        self.CurDAG;
+    }
+    {
+        let mut T: NamedRegionTimer = NamedRegionTimer { "legalize", "DAG Legalization", GroupName, GroupDescription, TimePassesIsEnabled };
+        self.CurDAG.Legalize();
+    }
+    while true {
+        {
+        if DebugFlag && (isCurrentDebugType("isel", 0) || (isCurrentDebugType("isel-dump", 0) && self.MatchFilterFuncName)) {
+            dbgs() << "\nLegalized selection DAG: " << printMBBReference(*operator(self.FuncInfo).MBB) << " '" << BlockName << "'\n";
+            self.CurDAG();
+        }
+    }
+        if !(false) { break; }
+    }
+    if ViewDAGCombine2() && MatchFilterBB {
+        self.CurDAG;
+    }
+    {
+        let mut T: NamedRegionTimer = NamedRegionTimer { "combine2", "DAG Combining 2", GroupName, GroupDescription, TimePassesIsEnabled };
+        self.CurDAG.Combine(AfterLegalizeDAG, self.getBatchAA(), self.OptLevel);
+    }
+    while true {
+        {
+        if DebugFlag && (isCurrentDebugType("isel", 0) || (isCurrentDebugType("isel-dump", 0) && self.MatchFilterFuncName)) {
+            dbgs() << "\nOptimized legalized selection DAG: " << printMBBReference(*operator(self.FuncInfo).MBB) << " '" << BlockName << "'\n";
+            self.CurDAG();
+        }
+    }
+        if !(false) { break; }
+    }
+    if self.OptLevel != None {
+        self.ComputeLiveOutVRegInfo();
+    }
+    if ViewISelDAGs() && MatchFilterBB {
+        self.CurDAG;
+    }
+    {
+        let mut T: NamedRegionTimer = NamedRegionTimer { "isel", "Instruction Selection", GroupName, GroupDescription, TimePassesIsEnabled };
+        self.DoInstructionSelection();
+    }
+    while true {
+        {
+        if DebugFlag && (isCurrentDebugType("isel", 0) || (isCurrentDebugType("isel-dump", 0) && self.MatchFilterFuncName)) {
+            dbgs() << "\nSelected selection DAG: " << printMBBReference(*operator(self.FuncInfo).MBB) << " '" << BlockName << "'\n";
+            self.CurDAG();
+        }
+    }
+        if !(false) { break; }
+    }
+    if ViewSchedDAGs() && MatchFilterBB {
+        self.CurDAG;
+    }
+    let mut Scheduler: *mut ScheduleDAGSDNodes = self.CreateScheduler();
+    {
+        let mut T: NamedRegionTimer = NamedRegionTimer { "sched", "Instruction Scheduling", GroupName, GroupDescription, TimePassesIsEnabled };
+        Scheduler.Run(self.CurDAG, operator(self.FuncInfo).MBB);
+    }
+    if ViewSUnitDAGs() && MatchFilterBB {
+        Scheduler.viewGraph();
+    }
+    let mut FirstMBB: *mut MachineBasicBlock = operator(self.FuncInfo).MBB;
+    let mut LastMBB: *mut MachineBasicBlock = null;
+    {
+        let mut T: NamedRegionTimer = NamedRegionTimer { "emit", "Instruction Creation", GroupName, GroupDescription, TimePassesIsEnabled };
+        LastMBB = operator(self.FuncInfo).MBB = Scheduler.EmitSchedule(operator(self.FuncInfo).InsertPt);
+    }
+    if FirstMBB != LastMBB {
+        operator(self.SDB).UpdateSplitBlock(FirstMBB, LastMBB);
+    }
+    {
+        let mut T: NamedRegionTimer = NamedRegionTimer { "cleanup", "Instruction Scheduling Cleanup", GroupName, GroupDescription, TimePassesIsEnabled };
+        Scheduler;
+    }
+    self.CurDAG.clear();
+}
+
+struct ISelUpdater {
+    ISelPosition: *mut allnodes_iterator,
+}
+
+fn ISelUpdater::NodeDeleted(self, N: *mut SDNode, E: *mut SDNode) {
+    if self.ISelPosition == allnodes_iterator { N } {
+        operator(self.ISelPosition);
+    }
+}
+
+fn ISelUpdater::NodeInserted(self, N: *mut SDNode) {
+    let mut CurNode: *mut SDNode = &mut operator(self.ISelPosition);
+    if self.DAG.getPCSections(CurNode) {
+        MD;
+    } else {
+        self.DAG.addPCSections(N, MD);
+    }
+    if self.DAG.getMMRAMetadata(CurNode) {
+        MMRA;
+    } else {
+        self.DAG.addMMRAMetadata(N, MMRA);
+    }
+}
+
+fn SelectionDAGISel::EnforceNodeIdInvariant(self, Node: *mut SDNode) {
+    let mut Nodes: SmallVector<SDNode *, 4> = zeroed();
+    Nodes()(Node);
+    while operator!() {
+        let mut N: *mut SDNode = ();
+    }
+}
+
+fn SelectionDAGISel::InvalidateNodeId(self, N: *mut SDNode) {
+    let mut InvalidId: i32 = -(N.getNodeId() + 1);
+    N.setNodeId(InvalidId);
+}
+
+fn SelectionDAGISel::getUninvalidatedNodeId(self, N: *mut SDNode) -> i32 {
+    let mut Id: i32 = N.getNodeId();
+    if Id < -1 {
+        return -(Id + 1);
+    }
+    return Id;
+}
+
+fn SelectionDAGISel::DoInstructionSelection(self) {
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("isel", 1) {
+            dbgs() << "===== Instruction selection begins: " << printMBBReference(*operator(self.FuncInfo).MBB) << " '" << operator(self.FuncInfo).MBB.getName() << "'\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    self.PreprocessISelDAG();
+    {
+        self.DAGSize = self.CurDAG.AssignTopologicalOrder();
+        let mut Dummy: HandleSDNode = HandleSDNode { self.CurDAG.getRoot() };
+        let mut ISelPosition: allnodes_iterator = allnodes_iterator { self.CurDAG.getRoot().getNode() };
+        operator(ISelPosition);
+        let mut ISU: ISelUpdater = ISelUpdater { *self.CurDAG, ISelPosition };
+        while ISelPosition != self.CurDAG.allnodes_begin() {
+            let mut Node: *mut SDNode = &mut operator(operator(ISelPosition));
+            if Node.use_empty() {
+                continue;
+            }
+            let mut Nodes: SmallVector<SDNode *, 4> = zeroed();
+            Nodes()(Node);
+            while operator!() {
+                let mut N: auto = ();
+                if N()() == TokenFactor || () < 0 {
+                    continue;
+                }
+            }
+            if !self.TLI.isStrictFPEnabled() && Node.isStrictFPOpcode() {
+                let mut ActionVT: EVT = EVT {};
+                match Node.getOpcode() {
+                    STRICT_SINT_TO_FP => {
+                        STRICT_UINT_TO_FP;
+                    },
+                    _ => {
+                        ActionVT = Node.getValueType(0);
+                    },
+                }
+                if self.TLI.getOperationAction(Node.getOpcode(), ActionVT) == Expand {
+                    Node = self.CurDAG.mutateStrictFPToFP(Node);
+                }
+            }
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("isel", 1) {
+                    dbgs() << "\nISEL: Starting selection on root node: ";
+                    Node.dump(self.CurDAG);
+                }
+            }
+                if !(false) { break; }
+            }
+            self.Select(Node);
+        }
+        self.CurDAG.setRoot(Dummy.getValue());
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("isel", 1) {
+            dbgs() << "\n===== Instruction selection ends:\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    self.PostprocessISelDAG();
+}
+
+fn hasExceptionPointerOrCodeUser(CPI: *CatchPadInst) -> bool {
+    for U in CPI.users() {
+        if dyn_cast(U) {
+            EHPtrCall;
+        } else {
+            let mut IID: ID = EHPtrCall.getIntrinsicID();
+            if IID == eh_exceptionpointer || IID == eh_exceptioncode {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn mapWasmLandingPadIndex(MBB: *mut MachineBasicBlock, CPI: *CatchPadInst) {
+    let mut MF: *mut MachineFunction = MBB.getParent();
+    let mut IsSingleCatchAllClause: bool = CPI.arg_size() == 1 && cast(CPI.getArgOperand(0))();
+    let mut IsCatchLongjmp: bool = CPI.arg_size() == 0;
+    if !IsSingleCatchAllClause && !IsCatchLongjmp {
+        let mut IntrFound: bool = false;
+        for U in CPI.users() {
+            if  {
+                let mut IID: ID = ();
+                if  {
+                    let mut IndexArg: *mut Value = (1);
+                    let mut Index: i32 = cast(IndexArg)();
+                    MF.setWasmLandingPadIndex(MBB, Index);
+                    IntrFound = true;
+                    break;
+                }
+            }
+        }
+        assert!(IntrFound, "wasm.landingpad.index intrinsic not found!");
+        IntrFound as void;
+    }
+}
+
+fn SelectionDAGISel::PrepareEHLandingPad(self) -> bool {
+    let mut MBB: *mut MachineBasicBlock = operator(self.FuncInfo).MBB;
+    let mut PersonalityFn: *Constant = operator(self.FuncInfo).Fn.getPersonalityFn();
+    let mut LLVMBB: *BasicBlock = MBB.getBasicBlock();
+    let mut PtrRC: *TargetRegisterClass = self.TLI.getRegClassFor(self.TLI.getPointerTy(self.CurDAG.getDataLayout(), 0), false);
+    let mut Pers: EHPersonality = classifyEHPersonality(PersonalityFn);
+    if isFuncletEHPersonality(Pers) {
+        if  {
+            if hasExceptionPointerOrCodeUser() {
+                let mut EHPhysReg: MCRegister = self.TLI.getExceptionPointerRegister(operator(self.FuncInfo).ExceptionModel, PersonalityFn).operator MCRegister();
+                assert!(EHPhysReg.operator unsigned int(), "target lacks exception pointer register");
+                MBB.addLiveIn(EHPhysReg, getAll());
+                let mut VReg: Register = operator(self.FuncInfo).getCatchPadExceptionPointerVReg(PtrRC);
+                BuildMI(*MBB, iterator { operator(self.FuncInfo).InsertPt }, MIMetadata { DL: operator(self.SDB).getCurDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(COPY), VReg).addReg(Register { Reg: EHPhysReg }, Kill, 0);
+            }
+        }
+        return true;
+    }
+    let mut Label: *mut MCSymbol = self.MF.addLandingPad(MBB);
+    let mut II: *MCInstrDesc = self.TII.get(EH_LABEL);
+    BuildMI(*MBB, iterator { operator(self.FuncInfo).InsertPt }, MIMetadata { DL: operator(self.SDB).getCurDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, II).addSym(Label, 0);
+    let mut TRI: *TargetRegisterInfo = *self.MF.getSubtarget().getRegisterInfo();
+    if TRI.getCustomEHPadPreservedMask(*self.MF) {
+        RegMask;
+    } else {
+        self.MF.getRegInfo().addPhysRegsUsedFromRegMask(RegMask);
+    }
+    if Pers == Wasm_CXX || Pers == Wasm_D {
+        if  {
+            mapWasmLandingPadIndex(MBB);
+        }
+    } else {
+        self.MF.setCallSiteLandingPad;
+        if self.TLI.getExceptionPointerRegister(operator(self.FuncInfo).ExceptionModel, PersonalityFn).operator MCRegister() {
+            Reg.operator unsigned int();
+        } else {
+            operator(self.FuncInfo).ExceptionPointerVirtReg = MBB.addLiveIn(Reg, PtrRC);
+        }
+        if self.TLI.getExceptionSelectorRegister(operator(self.FuncInfo).ExceptionModel, PersonalityFn).operator MCRegister() {
+            Reg.operator unsigned int();
+        } else {
+            operator(self.FuncInfo).ExceptionSelectorVirtReg = MBB.addLiveIn(Reg, PtrRC);
+        }
+    }
+    return true;
+}
+
+fn SelectionDAGISel::reportIPToStateForBlocks(self, MF: *mut MachineFunction) {
+    let mut EHInfo: *mut WinEHFuncInfo = MF.getWinEHFuncInfo();
+    if !EHInfo {
+        return;
+    }
+    for MBB in *MF {
+        let mut BB: *BasicBlock = MBB.getBasicBlock();
+        let mut State: i32 = EHInfo.BlockToStateMap[BB];
+        if BB.getFirstMayFaultInst() {
+            let mut MBBb: iterator = MBB.getFirstNonPHI();
+            if MBBb == MBB.end() {
+                continue;
+            }
+            let mut MIb: *mut MachineInstr = &mut operator(MBBb);
+            if MIb.isTerminator(AnyInBundle) {
+                continue;
+            }
+            let mut BeginLabel: *mut MCSymbol = MF.getContext().createTempSymbol();
+            let mut EndLabel: *mut MCSymbol = MF.getContext().createTempSymbol();
+            EHInfo.addIPToStateRange(State, BeginLabel, EndLabel);
+            BuildMI(MBB, iterator { MBBb }, MIMetadata { DL: operator(self.SDB).getCurDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(EH_LABEL)).addSym(BeginLabel, 0);
+            let mut MBBe: instr_iterator = MBB.instr_end();
+            let mut MIe: *mut MachineInstr = &mut operator((operator(MBBe)));
+            while MIe.isTerminator(AnyInBundle) {
+                MIe = &mut operator((operator(MBBe)));
+            }
+            operator(MBBe);
+            BuildMI(MBB, instr_iterator { MBBe }, MIMetadata { DL: operator(self.SDB).getCurDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(EH_LABEL)).addSym(EndLabel, 0);
+        }
+    }
+}
+
+fn isFoldedOrDeadInstruction(I: *Instruction, FuncInfo: *FunctionLoweringInfo) -> bool {
+    return !I.mayWriteToMemory() && !I.isTerminator() && !I.isEHPad() && !FuncInfo.isExportedInst(I);
+}
+
+fn processIfEntryValueDbgDeclare(FuncInfo: *mut FunctionLoweringInfo, Arg: *Value, Expr: *mut DIExpression, Var: *mut DILocalVariable, DbgLoc: DebugLoc) -> bool {
+    if !Expr.isEntryValue() || !isa(Arg) {
+        return false;
+    }
+    let mut ArgIt: iterator = FuncInfo.ValueMap.find(Arg);
+    if ArgIt == FuncInfo.ValueMap.end() {
+        return false;
+    }
+    let mut ArgVReg: Register = operator(ArgIt).getSecond();
+    for x in FuncInfo.RegInfo.liveins() {
+        if  {
+            Expr = append(Expr, ArrayRef<uint64_t> { DW_OP_deref });
+            FuncInfo.MF(Var, Expr, DbgLoc);
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("isel", 1) {
+                    dbgs() << "processDbgDeclare: setVariableDbgInfo Var=" << *Var << ", Expr=" << *Expr << ",  MCRegister=" <<  << ", DbgLoc=" << DbgLoc << "\n";
+                }
+            }
+                if !(false) { break; }
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+fn processDbgDeclare(FuncInfo: *mut FunctionLoweringInfo, Address: *Value, Expr: *mut DIExpression, Var: *mut DILocalVariable, DbgLoc: DebugLoc) -> bool {
+    if !Address {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("isel", 1) {
+                dbgs() << "processDbgDeclares skipping " << *Var << " (bad address)\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        return false;
+    }
+    if processIfEntryValueDbgDeclare(FuncInfo, Address, Expr, Var, DbgLoc) {
+        return true;
+    }
+    if !Address.getType().isPointerTy() {
+        return false;
+    }
+    let mut MF: *mut MachineFunction = FuncInfo.MF;
+    let mut DL: *DataLayout = MF.getDataLayout();
+    assert!(Var, "Missing variable");
+    assert!(DbgLoc, "Missing location");
+    let mut Offset: APInt = APInt { DL.getIndexTypeSizeInBits(Address.getType()), 0, false, false };
+    Address = Address.stripAndAccumulateInBoundsConstantOffsets(DL, Offset);
+    let mut FI: i32 = max();
+    if  {
+        let mut SI: auto = FuncInfo.StaticAllocaMap();
+        if SI() != FuncInfo.StaticAllocaMap.end {
+            FI = ;
+        }
+    } else if  {
+        FI = FuncInfo.getArgumentFrameIndex();
+    }
+    if FI == max() {
+        return false;
+    }
+    if Offset.getBoolValue() {
+        Expr = prepend(Expr, ApplyOffset, Offset.getZExtValue());
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("isel", 1) {
+            dbgs() << "processDbgDeclare: setVariableDbgInfo Var=" << *Var << ", Expr=" << *Expr << ",  FI=" << FI << ", DbgLoc=" << DbgLoc.operator llvm::DILocation *() << "\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    MF.setVariableDbgInfo(Var, Expr, FI, DbgLoc.operator llvm::DILocation *());
+    return true;
+}
+
+fn processDbgDeclares(FuncInfo: *mut FunctionLoweringInfo) {
+    for I in instructions(*FuncInfo.Fn) {
+        for DVR in filterDbgVars(I.getDbgRecordRange()) {
+            if DVR.Type == Declare && processDbgDeclare(FuncInfo, DVR.getVariableLocationOp(0), DVR.getExpression(), DVR.getVariable(), DVR.getDebugLoc()) {
+                FuncInfo.PreprocessedDVRDeclares.insert;
+            }
+        }
+    }
+}
+
+fn processSingleLocVars(FuncInfo: *mut FunctionLoweringInfo, FnVarLocs: *FunctionVarLocs) {
+    for let mut It: *VarLocInfo = FnVarLocs.single_locs_begin();
+let mut End: *VarLocInfo = FnVarLocs.single_locs_end(); It != End; It += 1 {
+        assert!(!It.Values.hasArgList(), "Single loc variadic ops not supported");
+        processDbgDeclare(FuncInfo, It.Values.getVariableLocationOp(0), It.Expr, FnVarLocs.getDILocalVariable(It.VariableID), It.DL);
+    }
+}
+
+fn SelectionDAGISel::SelectAllBasicBlocks(self, Fn: *Function) {
+    self.FastISelFailed = false;
+    let mut FastIS: *mut FastISel = null;
+    if self.TM.Options.EnableFastISel {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("isel", 1) {
+                dbgs() << "Enabling fast-isel\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        FastIS = self.TLI.createFastISel(operator(self.FuncInfo), self.LibInfo, self.LibcallLowering);
+    }
+    let mut RPOT: i32 = &mut Fn;
+    (((operator!(operator!((operator*() == &mut Fn.getEntryBlock())))) || (_wassert(L"*RPOT.begin() == &Fn.getEntryBlock()", L"llvm\\lib\\CodeGen\\SelectionDAG\\SelectionDAGISel.cpp", (1666) as u32) , 0)) as void);
+    operator(NumEntryBlocks);
+    operator(self.FuncInfo).MBB = operator(self.FuncInfo).getMBB(&mut Fn.getEntryBlock());
+    operator(self.FuncInfo).InsertPt = operator(self.FuncInfo).MBB.begin();
+    self.CurDAG.setFunctionLoweringInfo(self.FuncInfo.get());
+    if !FastIS {
+        self.LowerArguments(Fn);
+    } else {
+        FastIS.startNewBlock();
+        if !FastIS.lowerArguments() {
+            self.FastISelFailed = true;
+            operator(NumFastIselFailLowerArguments);
+            let mut R: OptimizationRemarkMissed = OptimizationRemarkMissed { "sdagisel", "FastISelFailure", DiagnosticLocation { Fn.getSubprogram() }, &mut Fn.getEntryBlock() };
+            R("FastISel didn't lower all arguments: ") << NV { "Prototype", Fn.getFunctionType() };
+            reportFastISelFailure(*self.MF, operator(self.ORE), R,  > 1);
+            self.LowerArguments(Fn);
+            self.CurDAG.setRoot(operator(self.SDB).getControlRoot());
+            operator(self.SDB).clear();
+            self.CodeGenAndEmitDAG();
+        }
+        if operator(self.FuncInfo).InsertPt != operator(self.FuncInfo).MBB.begin() {
+            FastIS.setLastLocalValue(operator&(operator*(prev(operator(self.FuncInfo).InsertPt))));
+        } else {
+            FastIS.setLastLocalValue(null);
+        }
+    }
+    let mut Inserted: bool = operator(self.SwiftError).createEntriesInEntryBlock(operator(self.SDB).getCurDebugLoc());
+    if FastIS && Inserted {
+        FastIS.setLastLocalValue(operator&(operator*(prev(operator(self.FuncInfo).InsertPt))));
+    }
+    if isAssignmentTrackingEnabled(*Fn.getParent()) {
+        assert!(self.CurDAG.getFunctionVarLocs(), "expected AssignmentTrackingAnalysis pass results");
+        processSingleLocVars(operator(self.FuncInfo), self.CurDAG.getFunctionVarLocs());
+    } else {
+        processDbgDeclares(operator(self.FuncInfo));
+    }
+    operator(self.FuncInfo).VisitedBBs.assign(Fn.getMaxBlockNumber(), false);
+    if Fn.getParent().getModuleFlag("eh-asynch") {
+        self.reportIPToStateForBlocks(self.MF);
+    }
+    self.SP.copyToMachineFrameInfo(self.MF.getFrameInfo());
+    operator(self.SwiftError).propagateVRegs();
+    FastIS;
+    operator(self.SDB).clearDanglingDebugInfo();
+    operator(self.SDB).SPDescriptor.resetPerFunctionState();
+}
+
+fn SelectionDAGISel::FinishBasicBlock(self) {
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("isel", 1) {
+            dbgs() << "Total amount of phi nodes to update: " << operator(self.FuncInfo).PHINodesToUpdate.len << "\n";
+            for let mut i: u32 = 0;
+let mut e: u32 = operator(self.FuncInfo).PHINodesToUpdate.len; i != e; i += 1 {
+                dbgs() << "Node " << i << " : (" << operator(self.FuncInfo).PHINodesToUpdate[i] << ", " << printReg(operator(self.FuncInfo).PHINodesToUpdate[i]) << ")\n";
+            }
+        }
+    }
+        if !(false) { break; }
+    }
+    for let mut i: u32 = 0;
+let mut e: u32 = operator(self.FuncInfo).PHINodesToUpdate.len; i != e; i += 1 {
+        let mut PHI: MachineInstrBuilder = *self.MF;
+        assert!(operator(PHI).isPHI(), "This is not a machine PHI node that we are updating!");
+        if !operator(self.FuncInfo).MBB.isSuccessor(operator(PHI).getParent()) {
+            continue;
+        }
+        PHI.addReg(operator(self.FuncInfo).PHINodesToUpdate[i])(operator(self.FuncInfo).MBB);
+    }
+    if operator(self.SDB).SPDescriptor.shouldEmitFunctionBasedCheckStackProtector() {
+        let mut ParentMBB: *mut MachineBasicBlock = operator(self.SDB).SPDescriptor.getParentMBB();
+        operator(self.FuncInfo).MBB = ParentMBB;
+        operator(self.FuncInfo).InsertPt = findSplitPointForStackProtector(ParentMBB, *self.TII);
+        operator(self.SDB).visitSPDescriptorParent(operator(self.SDB).SPDescriptor, ParentMBB);
+        self.CurDAG.setRoot(operator(self.SDB).getRoot());
+        operator(self.SDB).clear();
+        self.CodeGenAndEmitDAG();
+        operator(self.SDB).SPDescriptor.resetPerBBState();
+    } else if operator(self.SDB).SPDescriptor.shouldEmitStackProtector() {
+        let mut ParentMBB: *mut MachineBasicBlock = operator(self.SDB).SPDescriptor.getParentMBB();
+        let mut SuccessMBB: *mut MachineBasicBlock = operator(self.SDB).SPDescriptor.getSuccessMBB();
+        let mut SplitPoint: iterator = findSplitPointForStackProtector(ParentMBB, *self.TII);
+        SuccessMBB.splice(SuccessMBB.end(), ParentMBB, iterator { SplitPoint }, ParentMBB.end());
+        operator(self.FuncInfo).MBB = ParentMBB;
+        operator(self.FuncInfo).InsertPt = ParentMBB.end();
+        operator(self.SDB).visitSPDescriptorParent(operator(self.SDB).SPDescriptor, ParentMBB);
+        self.CurDAG.setRoot(operator(self.SDB).getRoot());
+        operator(self.SDB).clear();
+        self.CodeGenAndEmitDAG();
+        let mut FailureMBB: *mut MachineBasicBlock = operator(self.SDB).SPDescriptor.getFailureMBB();
+        if FailureMBB.len == 0 {
+            operator(self.FuncInfo).MBB = FailureMBB;
+            operator(self.FuncInfo).InsertPt = FailureMBB.end();
+            operator(self.SDB).visitSPDescriptorFailure(operator(self.SDB).SPDescriptor);
+            self.CurDAG.setRoot(operator(self.SDB).getRoot());
+            operator(self.SDB).clear();
+            self.CodeGenAndEmitDAG();
+        }
+        operator(self.SDB).SPDescriptor.resetPerBBState();
+    }
+    operator(operator(self.SDB).SL).BitTestCases.clear();
+    for let mut i: u32 = 0;
+let mut e: u32 = operator(operator(self.SDB).SL).JTCases.len; i != e; i += 1 {
+        if !operator(operator(self.SDB).SL).JTCases[i].first.Emitted {
+            operator(self.FuncInfo).MBB = operator(operator(self.SDB).SL).JTCases[i].first.HeaderBB;
+            operator(self.FuncInfo).InsertPt = operator(self.FuncInfo).MBB.end();
+            operator(self.SDB).visitJumpTableHeader(operator(operator(self.SDB).SL).JTCases[i].second, operator(operator(self.SDB).SL).JTCases[i].first, operator(self.FuncInfo).MBB);
+            self.CurDAG.setRoot(operator(self.SDB).getRoot());
+            operator(self.SDB).clear();
+            self.CodeGenAndEmitDAG();
+        }
+        operator(self.FuncInfo).MBB = operator(operator(self.SDB).SL).JTCases[i].second.MBB;
+        operator(self.FuncInfo).InsertPt = operator(self.FuncInfo).MBB.end();
+        operator(self.SDB).visitJumpTable(operator(operator(self.SDB).SL).JTCases[i].second);
+        self.CurDAG.setRoot(operator(self.SDB).getRoot());
+        operator(self.SDB).clear();
+        self.CodeGenAndEmitDAG();
+        for let mut pi: u32 = 0;
+let mut pe: u32 = operator(self.FuncInfo).PHINodesToUpdate.len; pi != pe; pi += 1 {
+            let mut PHI: MachineInstrBuilder = *self.MF;
+            let mut PHIBB: *mut MachineBasicBlock = operator(PHI).getParent();
+            assert!(operator(PHI).isPHI(), "This is not a machine PHI node that we are updating!");
+            if PHIBB == operator(operator(self.SDB).SL).JTCases[i].second.Default {
+                PHI.addReg(operator(self.FuncInfo).PHINodesToUpdate[pi])(operator(operator(self.SDB).SL).JTCases[i].first.HeaderBB);
+            }
+            if operator(self.FuncInfo).MBB.isSuccessor(PHIBB) {
+                PHI.addReg(operator(self.FuncInfo).PHINodesToUpdate[pi])(operator(self.FuncInfo).MBB);
+            }
+        }
+    }
+    operator(operator(self.SDB).SL).JTCases.clear();
+    for let mut i: u32 = 0;
+let mut e: u32 = operator(operator(self.SDB).SL).SwitchCases.len; i != e; i += 1 {
+        operator(self.FuncInfo).MBB = operator(operator(self.SDB).SL).SwitchCases[i].ThisBB;
+        operator(self.FuncInfo).InsertPt = operator(self.FuncInfo).MBB.end();
+        let mut Succs: SmallVector<MachineBasicBlock *, 2> = SmallVector<MachineBasicBlock *, 2> {};
+        Succs.push(operator(operator(self.SDB).SL).SwitchCases[i].TrueBB);
+        if operator(operator(self.SDB).SL).SwitchCases[i].TrueBB != operator(operator(self.SDB).SL).SwitchCases[i].FalseBB {
+            Succs.push(operator(operator(self.SDB).SL).SwitchCases[i].FalseBB);
+        }
+        operator(self.SDB).visitSwitchCase(operator(operator(self.SDB).SL).SwitchCases[i], operator(self.FuncInfo).MBB);
+        self.CurDAG.setRoot(operator(self.SDB).getRoot());
+        operator(self.SDB).clear();
+        self.CodeGenAndEmitDAG();
+        let mut ThisBB: *mut MachineBasicBlock = operator(self.FuncInfo).MBB;
+        for Succ in Succs {
+            operator(self.FuncInfo).MBB = Succ;
+            operator(self.FuncInfo).InsertPt = operator(self.FuncInfo).MBB.end();
+            if ThisBB.isSuccessor(operator(self.FuncInfo).MBB) {
+                for let mut MBBI: iterator = operator(self.FuncInfo).MBB.begin();
+let mut MBBE: iterator = operator(self.FuncInfo).MBB.end(); MBBI != MBBE && operator(MBBI).isPHI(); operator(MBBI) {
+                    let mut PHI: MachineInstrBuilder = MachineInstrBuilder { MF: *self.MF, MI: iterator { MBBI } };
+                    for let mut pn: u32 = 0; ; pn += 1 {
+                        assert!(pn != operator(self.FuncInfo).PHINodesToUpdate.len, "Didn't find PHI entry!");
+                        if operator(self.FuncInfo).PHINodesToUpdate[pn] == PHI {
+                            PHI.addReg(operator(self.FuncInfo).PHINodesToUpdate[pn])(ThisBB);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    operator(operator(self.SDB).SL).SwitchCases.clear();
+}
+
+fn SelectionDAGISel::CreateScheduler(self) -> *mut ScheduleDAGSDNodes {
+    return (self, self.OptLevel);
+}
+
+fn SelectionDAGISel::CheckAndMask(self: *SelectionDAGISel, LHS: SDValue, RHS: *mut ConstantSDNode, DesiredMaskS: i64) -> bool {
+    let mut ActualMask: *APInt = RHS.getAPIntValue();
+    let mut DesiredMask: *APInt = APInt { LHS.getValueSizeInBits().operator unsigned long long(), DesiredMaskS, false, true };
+    if ActualMask == DesiredMask {
+        return true;
+    }
+    if !ActualMask.isSubsetOf(DesiredMask) {
+        return false;
+    }
+    let mut NeededMask: APInt = DesiredMask & operator(ActualMask);
+    if self.CurDAG.MaskedValueIsZero(LHS, NeededMask, 0) {
+        return true;
+    }
+    return false;
+}
+
+fn SelectionDAGISel::CheckOrMask(self: *SelectionDAGISel, LHS: SDValue, RHS: *mut ConstantSDNode, DesiredMaskS: i64) -> bool {
+    let mut ActualMask: *APInt = RHS.getAPIntValue();
+    let mut DesiredMask: *APInt = APInt { LHS.getValueSizeInBits().operator unsigned long long(), DesiredMaskS, false, true };
+    if ActualMask == DesiredMask {
+        return true;
+    }
+    if !ActualMask.isSubsetOf(DesiredMask) {
+        return false;
+    }
+    let mut NeededMask: APInt = DesiredMask & operator(ActualMask);
+    let mut Known: KnownBits = self.CurDAG.computeKnownBits(LHS, 0);
+    if NeededMask.isSubsetOf(Known.One) {
+        return true;
+    }
+    return false;
+}
+
+fn SelectionDAGISel::SelectInlineAsmMemoryOperands(self, Ops: *mut i32, DL: *SDLoc) {
+    let mut Handles: i32 = 0;
+    Handles()([Op_InputChain]);
+    Handles()([Op_AsmString]);
+    Handles()([Op_MDNode]);
+    Handles()([Op_ExtraInfo]);
+    let mut i: u32 = Op_FirstOperand;
+    let mut e: u32 = ();
+    if Ops()[e - 1]() == Glue {
+        e -= 1;
+    }
+    while i != e {
+        let mut Flags: Flag = Ops()[i]();
+        if !Flags.isMemKind() && !Flags.isFuncKind() {
+            Handles()(() + i, () + i + Flags.getNumOperandRegisters() + 1);
+            i += Flags.getNumOperandRegisters() + 1;
+        } else {
+            assert!(Flags.getNumOperandRegisters() == 1, "Memory operand with multiple values?");
+            let mut TiedToOperand: u32 = 0;
+            if Flags.isUseOperandTiedToDef(TiedToOperand) {
+                let mut CurOp: u32 = Op_FirstOperand;
+                Flags = [CurOp]();
+                for ; TiedToOperand; TiedToOperand -= 1 {
+                    CurOp += Flags.getNumOperandRegisters() + 1;
+                    Flags = [CurOp]();
+                }
+            }
+            let mut SelOps: i32 = 0;
+            let mut ConstraintID: ConstraintCode = Flags.getMemoryConstraintID();
+            if self.SelectInlineAsmMemoryOperand([i + 1], ConstraintID) {
+                report_fatal_error("Could not match memory address.  Inline asm failure!", true);
+            }
+            Flags = if Flags.isMemKind() { Mem } else { Func };
+            Flags.setMemConstraint(ConstraintID);
+            Handles()(self.CurDAG.getTargetConstant(Flags.operator unsigned int(), DL, EVT { i32 }, false));
+            append_range();
+            i += 2;
+        }
+    }
+    if e != () {
+        Handles()();
+    }
+    Ops()();
+}
+
+fn findNonImmUse(Root: *mut SDNode, Def: *mut SDNode, ImmedUse: *mut SDNode, IgnoreChains: bool) -> bool {
+    let mut Visited: SmallPtrSet<const SDNode *, 16> = zeroed();
+    let mut WorkList: SmallVector<const SDNode *, 16> = zeroed();
+    if ImmedUse.isOnlyUserOf(Def) {
+        return false;
+    }
+    Visited()(ImmedUse);
+    for Op in ImmedUse.op_values() {
+        let mut N: *mut SDNode = Op.getNode();
+        if (Op.getValueType() == EVT { Other } && IgnoreChains) || N == Def {
+            continue;
+        }
+        if operator!((N)) {
+            continue;
+        }
+        WorkList()(N);
+    }
+    if Root != ImmedUse {
+        for Op in Root.op_values() {
+            let mut N: *mut SDNode = Op.getNode();
+            if (Op.getValueType() == EVT { Other } && IgnoreChains) || N == Def {
+                continue;
+            }
+            if operator!((N)) {
+                continue;
+            }
+            WorkList()(N);
+        }
+    }
+    return hasPredecessorHelper(Def, 0, true);
+}
+
+fn SelectionDAGISel::IsProfitableToFold(self: *SelectionDAGISel, N: SDValue, U: *mut SDNode, Root: *mut SDNode) -> bool {
+    if self.OptLevel == None {
+        return false;
+    }
+    return N.hasOneUse();
+}
+
+fn SelectionDAGISel::IsLegalToFold(self, N: SDValue, U: *mut SDNode, Root: *mut SDNode, OptLevel: CodeGenOptLevel, IgnoreChains: bool) -> bool {
+    if OptLevel == None {
+        return false;
+    }
+    let mut VT: EVT = Root.getValueType(Root.getNumValues() - 1);
+    while VT == EVT { Glue } {
+        let mut GU: *mut SDNode = Root.getGluedUser();
+        if !GU {
+            break;
+        }
+        Root = GU;
+        VT = Root.getValueType(Root.getNumValues() - 1);
+        IgnoreChains = false;
+    }
+    return !findNonImmUse(Root, N.getNode(), U, IgnoreChains);
+}
+
+fn SelectionDAGISel::Select_INLINEASM(self, N: *mut SDNode) {
+    let mut DL: SDLoc = SDLoc { N };
+    let mut Ops: i32 = N.op_begin();
+    self.SelectInlineAsmMemoryOperands(DL);
+    let mut VTs: [2]EVT = [EVT { Other }, EVT { Glue }];
+    let mut New: SDValue = self.CurDAG(N.getOpcode(), DL, VTs);
+    operator(New).setNodeId(-1);
+    self.ReplaceUses(N, New.getNode());
+    self.CurDAG.RemoveDeadNode(N);
+}
+
+fn SelectionDAGISel::Select_READ_REGISTER(self, Op: *mut SDNode) {
+    let mut dl: SDLoc = SDLoc { Op };
+    let mut MD: *mut MDNodeSDNode = cast(Op.getOperand(1));
+    let mut RegStr: *MDString = cast(MD.getMD().getOperand(0));
+    let mut VT: EVT = Op.getValueType(0);
+    let mut Ty: LLT = if VT.isSimple() { getLLTForMVT(VT.getSimpleVT()) } else { LLT {} };
+    let mut MF: *MachineFunction = self.CurDAG.getMachineFunction();
+    let mut Reg: Register = self.TLI.getRegisterByName(RegStr.getString().ptr, Ty, MF);
+    let mut New: SDValue = SDValue {};
+    if !Reg.operator unsigned int() {
+        let mut Fn: *Function = MF.getFunction();
+        Fn.getContext().diagnose(DiagnosticInfoGenericWithLoc { "invalid register \"" + RegStr.getString().ptr + "\" for llvm.read_register", Fn, DiagnosticLocation { Op.getDebugLoc() }, DS_Error });
+        New = SDValue { Node: self.CurDAG.getMachineNode(IMPLICIT_DEF, dl, VT), ResNo: 0 };
+        self.ReplaceUses(SDValue { Node: Op, ResNo: 1 }, Op.getOperand(0));
+    } else {
+        New = self.CurDAG.getCopyFromReg(Op.getOperand(0), dl, Reg, Op.getValueType(0));
+    }
+    operator(New).setNodeId(-1);
+    self.ReplaceUses(Op, New.getNode());
+    self.CurDAG.RemoveDeadNode(Op);
+}
+
+fn SelectionDAGISel::Select_WRITE_REGISTER(self, Op: *mut SDNode) {
+    let mut dl: SDLoc = SDLoc { Op };
+    let mut MD: *mut MDNodeSDNode = cast(Op.getOperand(1));
+    let mut RegStr: *MDString = cast(MD.getMD().getOperand(0));
+    let mut VT: EVT = Op.getOperand(2).getValueType();
+    let mut Ty: LLT = if VT.isSimple() { getLLTForMVT(VT.getSimpleVT()) } else { LLT {} };
+    let mut MF: *MachineFunction = self.CurDAG.getMachineFunction();
+    let mut Reg: Register = self.TLI.getRegisterByName(RegStr.getString().ptr, Ty, MF);
+    if !Reg.operator unsigned int() {
+        let mut Fn: *Function = MF.getFunction();
+        Fn.getContext().diagnose(DiagnosticInfoGenericWithLoc { "invalid register \"" + RegStr.getString().ptr + "\" for llvm.write_register", Fn, DiagnosticLocation { Op.getDebugLoc() }, DS_Error });
+        self.ReplaceUses(SDValue { Node: Op, ResNo: 0 }, Op.getOperand(0));
+    } else {
+        let mut New: SDValue = self.CurDAG.getCopyToReg(Op.getOperand(0), dl, Reg, Op.getOperand(2));
+        operator(New).setNodeId(-1);
+        self.ReplaceUses(Op, New.getNode());
+    }
+    self.CurDAG.RemoveDeadNode(Op);
+}
+
+fn SelectionDAGISel::Select_UNDEF(self, N: *mut SDNode) {
+    self.CurDAG.SelectNodeTo(N, IMPLICIT_DEF, N.getValueType(0));
+}
+
+fn SelectionDAGISel::Select_FAKE_USE(self, N: *mut SDNode) {
+    self.CurDAG.SelectNodeTo(N, FAKE_USE, N.getValueType(0), N.getOperand(1), N.getOperand(0));
+}
+
+fn SelectionDAGISel::Select_RELOC_NONE(self, N: *mut SDNode) {
+    self.CurDAG.SelectNodeTo(N, RELOC_NONE, N.getValueType(0), N.getOperand(1), N.getOperand(0));
+}
+
+fn SelectionDAGISel::Select_FREEZE(self, N: *mut SDNode) {
+    self.CurDAG.SelectNodeTo(N, COPY, N.getValueType(0), N.getOperand(0));
+}
+
+fn SelectionDAGISel::Select_ARITH_FENCE(self, N: *mut SDNode) {
+    self.CurDAG.SelectNodeTo(N, ARITH_FENCE, N.getValueType(0), N.getOperand(0));
+}
+
+fn SelectionDAGISel::Select_MEMBARRIER(self, N: *mut SDNode) {
+    self.CurDAG.SelectNodeTo(N, MEMBARRIER, N.getValueType(0), N.getOperand(0));
+}
+
+fn SelectionDAGISel::Select_CONVERGENCECTRL_ANCHOR(self, N: *mut SDNode) {
+    self.CurDAG.SelectNodeTo(N, CONVERGENCECTRL_ANCHOR, N.getValueType(0));
+}
+
+fn SelectionDAGISel::Select_CONVERGENCECTRL_ENTRY(self, N: *mut SDNode) {
+    self.CurDAG.SelectNodeTo(N, CONVERGENCECTRL_ENTRY, N.getValueType(0));
+}
+
+fn SelectionDAGISel::Select_CONVERGENCECTRL_LOOP(self, N: *mut SDNode) {
+    self.CurDAG.SelectNodeTo(N, CONVERGENCECTRL_LOOP, N.getValueType(0), N.getOperand(0));
+}
+
+fn SelectionDAGISel::pushStackMapLiveVariable(self, Ops: *mut SmallVectorImpl<SDValue>, OpVal: SDValue, DL: SDLoc) {
+    let mut OpNode: *mut SDNode = OpVal.getNode();
+    assert!(OpNode.getOpcode() != FrameIndex);
+    if OpNode.getOpcode() == Constant {
+        Ops.push(self.CurDAG.getTargetConstant(ConstantOp, DL, EVT { i64 }, false));
+        Ops.push(self.CurDAG.getTargetConstant(OpNode.getAsZExtVal(), DL, OpVal.getValueType(), false));
+    } else {
+        Ops.push(ValueParamT { OpVal });
+    }
+}
+
+fn SelectionDAGISel::Select_STACKMAP(self, N: *mut SDNode) {
+    let mut Ops: SmallVector<SDValue, 32> = SmallVector<SDValue, 32> {};
+    let mut It: *mut SDUse = N.op_begin();
+    let mut DL: SDLoc = SDLoc { N };
+    let mut Chain: SDValue = *It += 1.operator const llvm::SDValue &();
+    let mut InGlue: SDValue = *It += 1.operator const llvm::SDValue &();
+    let mut ID: SDValue = *It += 1.operator const llvm::SDValue &();
+    assert!(ID.getValueType() == EVT { i64 });
+    Ops.push(ValueParamT { ID });
+    let mut Shad: SDValue = *It += 1.operator const llvm::SDValue &();
+    assert!(Shad.getValueType() == EVT { i32 });
+    Ops.push(ValueParamT { Shad });
+    for ; It != N.op_end(); It += 1 {
+        self.pushStackMapLiveVariable(Ops, *It.operator const llvm::SDValue &(), DL);
+    }
+    Ops.push(ValueParamT { Chain });
+    Ops.push(ValueParamT { InGlue });
+    let mut NodeTys: SDVTList = self.CurDAG.getVTList(EVT { Other }, EVT { Glue });
+    self.CurDAG;
+}
+
+fn SelectionDAGISel::Select_PATCHPOINT(self, N: *mut SDNode) {
+    let mut Ops: SmallVector<SDValue, 32> = SmallVector<SDValue, 32> {};
+    let mut It: *mut SDUse = N.op_begin();
+    let mut DL: SDLoc = SDLoc { N };
+    let mut Chain: SDValue = *It += 1.operator const llvm::SDValue &();
+    let mut Glue: optional<SDValue> = zeroed();
+    if It.getValueType() == EVT { Glue } {
+        Glue() = *It += 1;
+    }
+    let mut RegMask: SDValue = *It += 1.operator const llvm::SDValue &();
+    let mut ID: SDValue = *It += 1.operator const llvm::SDValue &();
+    assert!(ID.getValueType() == EVT { i64 });
+    Ops.push(ValueParamT { ID });
+    let mut Shad: SDValue = *It += 1.operator const llvm::SDValue &();
+    assert!(Shad.getValueType() == EVT { i32 });
+    Ops.push(ValueParamT { Shad });
+    Ops.push(ValueParamT { *It += 1.operator const llvm::SDValue &() });
+    let mut NumArgs: SDValue = *It += 1.operator const llvm::SDValue &();
+    assert!(NumArgs.getValueType() == EVT { i32 });
+    Ops.push(ValueParamT { NumArgs });
+    Ops.push(ValueParamT { *It += 1.operator const llvm::SDValue &() });
+    for let mut I: u64 = operator(NumArgs).getAsZExtVal(); I != 0; I -= 1 {
+        Ops.push(ValueParamT { *It += 1.operator const llvm::SDValue &() });
+    }
+    for ; It != N.op_end(); It += 1 {
+        self.pushStackMapLiveVariable(Ops, *It.operator const llvm::SDValue &(), DL);
+    }
+    Ops.push(ValueParamT { RegMask });
+    Ops.push(ValueParamT { Chain });
+    if Glue()() {
+        Ops.push_back(operator*());
+    }
+    let mut NodeTys: SDVTList = N.getVTList();
+    self.CurDAG;
+}
+
+fn GetVBR(Val: u64, MatcherTable: *u8, Idx: *mut u64) -> u64 {
+    assert!(Val >= 128, "Not a VBR");
+    Val &= 127;
+    let mut Shift: u32 = 7;
+    let mut NextBits: u64 = 0;
+    while true {
+        {
+        NextBits = MatcherTable[Idx += 1];
+        Val |= (NextBits & 127) << Shift;
+        Shift += 7;
+    }
+        if !(NextBits & 128) { break; }
+    }
+    return Val;
+}
+
+fn GetSignedVBR(MatcherTable: *u8, Idx: *mut u64) -> i64 {
+    let mut Val: i64 = 0;
+    let mut Shift: u32 = 0;
+    let mut NextBits: u64 = 0;
+    while true {
+        {
+        NextBits = MatcherTable[Idx += 1];
+        Val |= (NextBits & 127) << Shift;
+        Shift += 7;
+    }
+        if !(NextBits & 128) { break; }
+    }
+    if Shift < 64 && (NextBits & 64) {
+        Val |= 18446744073709551615 << Shift;
+    }
+    return Val;
+}
+
+fn getSimpleVT(MatcherTable: *u8, MatcherIndex: *mut u64) -> SimpleValueType {
+    let mut SimpleVT: u32 = MatcherTable[MatcherIndex += 1];
+    if SimpleVT & 128 {
+        SimpleVT = GetVBR(SimpleVT, MatcherTable, MatcherIndex);
+    }
+    return SimpleVT as SimpleValueType;
+}
+
+fn getHwModeVT(MatcherTable: *u8, MatcherIndex: *mut u64, SDISel: *SelectionDAGISel) -> MVT {
+    let mut Index: u32 = MatcherTable[MatcherIndex += 1];
+    return SDISel.getValueTypeForHwMode(Index);
+}
+
+fn SelectionDAGISel::Select_JUMP_TABLE_DEBUG_INFO(self, N: *mut SDNode) {
+    let mut dl: SDLoc = SDLoc { N };
+    self.CurDAG.SelectNodeTo(N, JUMP_TABLE_DEBUG_INFO, EVT { Glue }, self.CurDAG.getTargetConstant(N.getConstantOperandVal(1), dl, EVT { i64 }, true));
+}
+
+fn SelectionDAGISel::UpdateChains(self, NodeToMatch: *mut SDNode, InputChain: SDValue, ChainNodesMatched: *mut SmallVectorImpl<SDNode *>, isMorphNodeTo: bool) {
+    let mut NowDeadNodes: SmallVector<SDNode *, 4> = zeroed();
+    if operator!(ChainNodesMatched()()) {
+        assert!(InputChain.getNode(), "Matched input chains but didn't produce a chain");
+        for let mut i: u32 = 0;
+let mut e: u32 = ChainNodesMatched()(); i != e; i += 1 {
+            let mut ChainNode: *mut SDNode = null;
+            if !ChainNode {
+                continue;
+            }
+            assert!(ChainNode.getOpcode() != DELETED_NODE, "Deleted node left in chain");
+            if ChainNode == NodeToMatch && isMorphNodeTo {
+                continue;
+            }
+            let mut ChainVal: SDValue = SDValue { Node: ChainNode, ResNo: ChainNode.getNumValues() - 1 };
+            if ChainVal.getValueType() == EVT { Glue } {
+                ChainVal = ChainVal.getValue(operator(ChainVal).getNumValues() - 2);
+            }
+            assert!(ChainVal.getValueType() == EVT { Other }, "Not a chain?");
+            let mut NDL: DAGNodeDeletedListener = *self.CurDAG;
+            if ChainNode.getOpcode() != TokenFactor {
+                self.ReplaceUses(ChainVal, InputChain);
+            }
+            if ChainNode != NodeToMatch && ChainNode.use_empty() && operator!(is_contained(ChainNode)) {
+                NowDeadNodes()(ChainNode);
+            }
+        }
+    }
+    if operator!() {
+        self.CurDAG();
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("isel", 1) {
+            dbgs() << "ISEL: Match complete!\n";
+        }
+    }
+        if !(false) { break; }
+    }
+}
+
+fn HandleMergeInputChains(ChainNodesMatched: *SmallVectorImpl<SDNode *>, InputGlue: SDValue, CurDAG: *mut SelectionDAG) -> SDValue {
+    let mut Visited: SmallPtrSet<const SDNode *, 16> = zeroed();
+    let mut Worklist: SmallVector<const SDNode *, 8> = SmallVector<const SDNode *, 8> {};
+    let mut InputChains: SmallVector<SDValue, 3> = zeroed();
+    let mut Max: u32 = 8192;
+    let mut AddChains: function<void (const SDValue)> = zeroed();
+    while !Worklist.is_empty() {
+        AddChains()(Worklist.pop_back_val().getOperand(0));
+    }
+    if InputChains()() == 0 {
+        return CurDAG.getEntryNode();
+    }
+    Visited()();
+    if InputChains()() == 1 {
+        return [0];
+    }
+    return CurDAG;
+}
+
+fn SelectionDAGISel::MorphNode(self, Node: *mut SDNode, TargetOpc: u32, VTList: SDVTList, Ops: ArrayRef<SDValue>, EmitNodeInfo: u32) -> *mut SDNode {
+    let mut OldGlueResultNo: i32 = -1;
+    let mut OldChainResultNo: i32 = -1;
+    let mut NTMNumResults: u32 = Node.getNumValues();
+    if Node.getValueType(NTMNumResults - 1) == EVT { Glue } {
+        OldGlueResultNo = NTMNumResults - 1;
+        if NTMNumResults != 1 && Node.getValueType(NTMNumResults - 2) == EVT { Other } {
+            OldChainResultNo = NTMNumResults - 2;
+        }
+    } else if Node.getValueType(NTMNumResults - 1) == EVT { Other } {
+        OldChainResultNo = NTMNumResults - 1;
+    }
+    let mut Res: *mut SDNode = self.CurDAG.MorphNodeTo(Node, ~TargetOpc, VTList, ArrayRef<SDValue> { Ops });
+    if Res == Node {
+        Res.setNodeId(-1);
+    }
+    let mut ResNumResults: u32 = Res.getNumValues();
+    if (EmitNodeInfo & OPFL_GlueOutput) && OldGlueResultNo != -1 && OldGlueResultNo as u32 != ResNumResults - 1 {
+        self.ReplaceUses(SDValue { Node: Node, ResNo: OldGlueResultNo }, SDValue { Node: Res, ResNo: ResNumResults - 1 });
+    }
+    if (EmitNodeInfo & OPFL_GlueOutput) != 0 {
+        ResNumResults -= 1;
+    }
+    if (EmitNodeInfo & OPFL_Chain) && OldChainResultNo != -1 && OldChainResultNo as u32 != ResNumResults - 1 {
+        self.ReplaceUses(SDValue { Node: Node, ResNo: OldChainResultNo }, SDValue { Node: Res, ResNo: ResNumResults - 1 });
+    }
+    if Res != Node {
+        self.ReplaceNode(Node, Res);
+    } else {
+        EnforceNodeIdInvariant(Res);
+    }
+    return Res;
+}
+
+fn CheckSame(MatcherTable: *u8, MatcherIndex: *mut u64, N: SDValue, RecordedNodes: *pair<SDValue, SDNode *>>) -> bool {
+    let mut RecNo: u32 = MatcherTable[MatcherIndex += 1];
+    (((operator!(operator!((RecNo < RecordedNodes()() && "Invalid CheckSame")))) || (_wassert(L"RecNo < RecordedNodes.size() && \"Invalid CheckSame\"", L"llvm\\lib\\CodeGen\\SelectionDAG\\SelectionDAGISel.cpp", (2967) as u32) , 0)) as void);
+}
+
+fn CheckChildSame(MatcherTable: *u8, MatcherIndex: *mut u64, N: SDValue, RecordedNodes: *pair<SDValue, SDNode *>>, ChildNo: u32) -> bool {
+    if ChildNo >= N.getNumOperands() {
+        return false;
+    }
+    return CheckSame(MatcherTable, MatcherIndex, N.getOperand(ChildNo), RecordedNodes);
+}
+
+fn CheckPatternPredicate(Opcode: u32, MatcherTable: *u8, MatcherIndex: *mut u64, SDISel: *SelectionDAGISel) -> bool {
+    let mut TwoBytePredNo: bool = Opcode == OPC_CheckPatternPredicateTwoByte;
+    let mut PredNo: u32 = if TwoBytePredNo || Opcode == OPC_CheckPatternPredicate { MatcherTable[MatcherIndex += 1] } else { Opcode - OPC_CheckPatternPredicate0 };
+    if TwoBytePredNo {
+        PredNo |= MatcherTable[MatcherIndex += 1] << 8;
+    }
+    return SDISel.CheckPatternPredicate(PredNo);
+}
+
+fn CheckNodePredicate(Opcode: u32, MatcherTable: *u8, MatcherIndex: *mut u64, SDISel: *SelectionDAGISel, Op: SDValue) -> bool {
+    let mut PredNo: u32 = if Opcode == OPC_CheckPredicate { MatcherTable[MatcherIndex += 1] } else { Opcode - OPC_CheckPredicate0 };
+    return SDISel.CheckNodePredicate(Op, PredNo);
+}
+
+fn CheckOpcode(MatcherTable: *u8, MatcherIndex: *mut u64, N: *mut SDNode) -> bool {
+    let mut Opc: u16 = MatcherTable[MatcherIndex += 1];
+    Opc |= MatcherTable[MatcherIndex += 1] as u16 << 8;
+    return N.getOpcode() == Opc;
+}
+
+fn CheckType(VT: SimpleValueType, N: SDValue, TLI: *TargetLowering, DL: *DataLayout) -> bool {
+    if N.getValueType() == EVT { VT } {
+        return true;
+    }
+    return VT == iPTR && N.getValueType() == EVT { TLI.getPointerTy(DL, 0) };
+}
+
+fn CheckChildType(VT: SimpleValueType, N: SDValue, TLI: *TargetLowering, DL: *DataLayout, ChildNo: u32) -> bool {
+    if ChildNo >= N.getNumOperands() {
+        return false;
+    }
+    return CheckType(VT, N.getOperand(ChildNo), TLI, DL);
+}
+
+fn CheckCondCode(MatcherTable: *u8, MatcherIndex: *mut u64, N: SDValue) -> bool {
+    return cast(N)() == MatcherTable[MatcherIndex += 1] as CondCode;
+}
+
+fn CheckChild2CondCode(MatcherTable: *u8, MatcherIndex: *mut u64, N: SDValue) -> bool {
+    if 2 >= N.getNumOperands() {
+        return false;
+    }
+    return CheckCondCode(MatcherTable, MatcherIndex, N.getOperand(2));
+}
+
+fn CheckValueType(MatcherTable: *u8, MatcherIndex: *mut u64, N: SDValue, TLI: *TargetLowering, DL: *DataLayout) -> bool {
+    let mut VT: SimpleValueType = getSimpleVT(MatcherTable, MatcherIndex);
+    if cast(N)() == VT {
+        return true;
+    }
+    return VT == iPTR && cast(N)() == TLI.getPointerTy(DL, 0);
+}
+
+fn CheckInteger(MatcherTable: *u8, MatcherIndex: *mut u64, N: SDValue) -> bool {
+    let mut Val: i64 = GetSignedVBR(MatcherTable, MatcherIndex);
+    let mut C: *mut ConstantSDNode = dyn_cast(N);
+    return C && C.getAPIntValue().trySExtValue();
+}
+
+fn CheckChildInteger(MatcherTable: *u8, MatcherIndex: *mut u64, N: SDValue, ChildNo: u32) -> bool {
+    if ChildNo >= N.getNumOperands() {
+        return false;
+    }
+    return CheckInteger(MatcherTable, MatcherIndex, N.getOperand(ChildNo));
+}
+
+fn CheckAndImm(MatcherTable: *u8, MatcherIndex: *mut u64, N: SDValue, SDISel: *SelectionDAGISel) -> bool {
+    let mut Val: i64 = MatcherTable[MatcherIndex += 1];
+    if Val & 128 {
+        Val = GetVBR(Val, MatcherTable, MatcherIndex);
+    }
+    if operator(N).getOpcode() != AND {
+        return false;
+    }
+    let mut C: *mut ConstantSDNode = dyn_cast(operator(N).getOperand(1));
+    return C && SDISel.CheckAndMask(N.getOperand(0), C, Val);
+}
+
+fn CheckOrImm(MatcherTable: *u8, MatcherIndex: *mut u64, N: SDValue, SDISel: *SelectionDAGISel) -> bool {
+    let mut Val: i64 = MatcherTable[MatcherIndex += 1];
+    if Val & 128 {
+        Val = GetVBR(Val, MatcherTable, MatcherIndex);
+    }
+    if operator(N).getOpcode() != OR {
+        return false;
+    }
+    let mut C: *mut ConstantSDNode = dyn_cast(operator(N).getOperand(1));
+    return C && SDISel.CheckOrMask(N.getOperand(0), C, Val);
+}
+
+fn IsPredicateKnownToFail(Table: *u8, Index: u64, N: SDValue, Result: *mut bool, SDISel: *SelectionDAGISel, RecordedNodes: *mut pair<SDValue, SDNode *>>) -> u64 {
+    let mut Opcode: u32 = Table[Index += 1];
+    match Opcode {
+        _ => {
+            Result = false;
+        },
+        OPC_CheckSame => {
+            Result = !CheckSame(Table, Index, N, RecordedNodes);
+        },
+        OPC_CheckChild0Same => {
+            OPC_CheckChild1Same;
+        },
+        OPC_CheckPatternPredicate => {
+            OPC_CheckPatternPredicate0;
+        },
+        OPC_CheckPredicate => {
+            OPC_CheckPredicate0;
+        },
+        OPC_CheckOpcode => {
+            Result = !CheckOpcode(Table, Index, N.getNode());
+        },
+        OPC_CheckType => {
+            OPC_CheckTypeI32;
+        },
+        OPC_CheckTypeRes => {
+            OPC_CheckTypeResByHwMode;
+        },
+        OPC_CheckChild0Type => {
+            OPC_CheckChild1Type;
+        },
+        OPC_CheckCondCode => {
+            Result = !CheckCondCode(Table, Index, N);
+        },
+        OPC_CheckChild2CondCode => {
+            Result = !CheckChild2CondCode(Table, Index, N);
+        },
+        OPC_CheckValueType => {
+            Result = !CheckValueType(Table, Index, N, SDISel.TLI, SDISel.CurDAG.getDataLayout());
+        },
+        OPC_CheckInteger => {
+            Result = !CheckInteger(Table, Index, N);
+        },
+        OPC_CheckChild0Integer => {
+            OPC_CheckChild1Integer;
+        },
+        OPC_CheckAndImm => {
+            Result = !CheckAndImm(Table, Index, N, SDISel);
+        },
+        OPC_CheckOrImm => {
+            Result = !CheckOrImm(Table, Index, N, SDISel);
+        },
+    }
+}
+
+struct MatchScope {
+    FailIndex: u32,
+    NodeStack: SmallVector<SDValue, 4>,
+    NumRecordedNodes: u32,
+    NumMatchedMemRefs: u32,
+    InputChain: SDValue,
+    InputGlue: SDValue,
+    HasChainNodesMatched: bool,
+}
+
+struct MatchStateUpdater {
+    NodeToMatch: *mut *mut SDNode,
+    RecordedNodes: *mut pair<SDValue, SDNode *>>,
+    MatchScopes: *mut SmallVectorImpl<MatchScope>,
+}
+
+fn MatchStateUpdater::NodeDeleted(self, N: *mut SDNode, E: *mut SDNode) {
+    if !E || E.isMachineOpcode() {
+        return;
+    }
+    if N == *self.NodeToMatch {
+        *self.NodeToMatch = E;
+    }
+}
+
+fn SelectionDAGISel::SelectCodeCommon(self, NodeToMatch: *mut SDNode, MatcherTable: *u8, TableSize: u32, OperandLists: *u8) {
+    match NodeToMatch.getOpcode() {
+        _ => {
+            break;
+        },
+        EntryToken => {
+            BasicBlock;
+        },
+        AssertSext => {
+            AssertZext;
+        },
+        INLINEASM => {
+            INLINEASM_BR;
+        },
+        READ_REGISTER => {
+            self.Select_READ_REGISTER(NodeToMatch);
+        },
+        WRITE_REGISTER => {
+            self.Select_WRITE_REGISTER(NodeToMatch);
+        },
+        POISON => {
+            UNDEF;
+        },
+        FAKE_USE => {
+            self.Select_FAKE_USE(NodeToMatch);
+        },
+        RELOC_NONE => {
+            self.Select_RELOC_NONE(NodeToMatch);
+        },
+        FREEZE => {
+            self.Select_FREEZE(NodeToMatch);
+        },
+        ARITH_FENCE => {
+            self.Select_ARITH_FENCE(NodeToMatch);
+        },
+        MEMBARRIER => {
+            self.Select_MEMBARRIER(NodeToMatch);
+        },
+        STACKMAP => {
+            self.Select_STACKMAP(NodeToMatch);
+        },
+        PATCHPOINT => {
+            self.Select_PATCHPOINT(NodeToMatch);
+        },
+        JUMP_TABLE_DEBUG_INFO => {
+            self.Select_JUMP_TABLE_DEBUG_INFO(NodeToMatch);
+        },
+        CONVERGENCECTRL_ANCHOR => {
+            self.Select_CONVERGENCECTRL_ANCHOR(NodeToMatch);
+        },
+        CONVERGENCECTRL_ENTRY => {
+            self.Select_CONVERGENCECTRL_ENTRY(NodeToMatch);
+        },
+        CONVERGENCECTRL_LOOP => {
+            self.Select_CONVERGENCECTRL_LOOP(NodeToMatch);
+        },
+    }
+    assert!(!NodeToMatch.isMachineOpcode(), "Node already selected!");
+    let mut NodeStack: SmallVector<SDValue, 8> = SmallVector<SDValue, 8> {};
+    let mut N: SDValue = SDValue { Node: NodeToMatch, ResNo: 0 };
+    NodeStack.push(ValueParamT { N });
+    let mut MatchScopes: SmallVector<MatchScope, 8> = zeroed();
+    let mut RecordedNodes: pair<SDValue, SDNode *>, 8> = zeroed();
+    let mut MatchedMemRefs: SmallVector<MachineMemOperand *, 2> = zeroed();
+    let mut InputChain: SDValue = SDValue {};
+    let mut InputGlue: SDValue = SDValue {};
+    let mut DeactivationSymbol: SDValue = SDValue {};
+    let mut ChainNodesMatched: SmallVector<SDNode *, 3> = zeroed();
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("isel", 1) {
+            dbgs() << "ISEL: Starting pattern match\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    let mut MatcherIndex: u64 = 0;
+    if !self.OpcodeOffset.is_empty() {
+        if N.getOpcode() < self.OpcodeOffset.len {
+            MatcherIndex = self.OpcodeOffset[N.getOpcode()];
+        }
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("isel", 1) {
+                dbgs() << "  Initial Opcode index to " << MatcherIndex << "\n";
+            }
+        }
+            if !(false) { break; }
+        }
+    } else if MatcherTable[0] == OPC_SwitchOpcode {
+        let mut Idx: u64 = 1;
+        while true {
+            let mut CaseSize: u32 = MatcherTable[Idx += 1];
+            if CaseSize & 128 {
+                CaseSize = GetVBR(CaseSize, MatcherTable, Idx);
+            }
+            if CaseSize == 0 {
+                break;
+            }
+            let mut Opc: u16 = MatcherTable[Idx += 1];
+            Opc |= MatcherTable[Idx += 1] as u16 << 8;
+            if Opc >= self.OpcodeOffset.len {
+                self.OpcodeOffset.resize((Opc + 1) * 2);
+            }
+            self.OpcodeOffset[Opc] = Idx;
+            Idx += CaseSize;
+        }
+        if N.getOpcode() < self.OpcodeOffset.len {
+            MatcherIndex = self.OpcodeOffset[N.getOpcode()];
+        }
+    }
+    while true {
+        assert!(MatcherIndex < TableSize, "Invalid index");
+        let mut CurrentOpcodeIndex: u64 = MatcherIndex;
+        let mut Opcode: BuiltinOpcodes = MatcherTable[MatcherIndex += 1] as BuiltinOpcodes;
+        match Opcode {
+            OPC_Scope => {
+                let mut FailIndex: u64 = 0;
+                while true {
+                    let mut NumToSkip: u32 = MatcherTable[MatcherIndex += 1];
+                    if NumToSkip & 128 {
+                        NumToSkip = GetVBR(NumToSkip, MatcherTable, MatcherIndex);
+                    }
+                    if NumToSkip == 0 {
+                        FailIndex = 0;
+                        break;
+                    }
+                    FailIndex = MatcherIndex + NumToSkip;
+                    let mut MatcherIndexOfPredicate: u64 = MatcherIndex;
+                    MatcherIndexOfPredicate as void;
+                    let mut Result: bool = false;
+                    MatcherIndex = IsPredicateKnownToFail(MatcherTable, MatcherIndex, N, Result, *self);
+                    if !Result {
+                        break;
+                    }
+                    while true {
+                        {
+                        if DebugFlag && isCurrentDebugType("isel", 1) {
+                            dbgs() << "  Skipped scope entry (due to false predicate) at " << "index " << MatcherIndexOfPredicate << ", continuing at " << FailIndex << "\n";
+                        }
+                    }
+                        if !(false) { break; }
+                    }
+                    operator(NumDAGIselRetries);
+                    MatcherIndex = FailIndex;
+                }
+                if FailIndex == 0 {
+                    break;
+                }
+                let mut NewEntry: *mut MatchScope = ();
+                NewEntry.FailIndex = FailIndex;
+                NewEntry.NodeStack;
+                NewEntry.NumRecordedNodes = ();
+                NewEntry.NumMatchedMemRefs = ();
+                NewEntry.InputChain = InputChain;
+                NewEntry.InputGlue = InputGlue;
+                NewEntry.HasChainNodesMatched = operator!();
+                continue;
+            },
+            OPC_RecordNode => {
+                let mut Parent: *mut SDNode = null;
+                if NodeStack.len > 1 {
+                    Parent = NodeStack[NodeStack.len - 2].getNode();
+                }
+                RecordedNodes()(N, Parent);
+                continue;
+            },
+            OPC_RecordChild0 => {
+                OPC_RecordChild1;
+            },
+            OPC_RecordMemRef => {
+                if  {
+                    append_range();
+                } else {
+                    while true {
+                        {
+                        if DebugFlag && isCurrentDebugType("isel", 1) {
+                            dbgs() << "Expected MemSDNode ";
+                            operator(N).dump(self.CurDAG);
+                            dbgs() << 10;
+                        }
+                    }
+                        if !(false) { break; }
+                    }
+                }
+            },
+            OPC_CaptureGlueInput => {
+                if operator(N).getNumOperands() != 0 && operator(N).getOperand(operator(N).getNumOperands() - 1).getValueType() == EVT { Glue } {
+                    InputGlue = operator(N).getOperand(operator(N).getNumOperands() - 1);
+                }
+            },
+            OPC_CaptureDeactivationSymbol => {
+                if operator(N).getNumOperands() != 0 && operator(N).getOperand(operator(N).getNumOperands() - 1).getOpcode() == DEACTIVATION_SYMBOL {
+                    DeactivationSymbol = operator(N).getOperand(operator(N).getNumOperands() - 1);
+                }
+            },
+            OPC_MoveChild => {
+                let mut ChildNo: u32 = MatcherTable[MatcherIndex += 1];
+                if ChildNo >= N.getNumOperands() {
+                    break;
+                }
+                N = N.getOperand(ChildNo);
+                NodeStack.push(ValueParamT { N });
+                continue;
+            },
+            OPC_MoveChild0 => {
+                OPC_MoveChild1;
+            },
+            OPC_MoveSibling => {
+                OPC_MoveSibling0;
+            },
+            OPC_MoveParent => {
+                NodeStack.pop();
+            },
+            OPC_CheckSame => {
+                if operator!(CheckSame(MatcherTable, MatcherIndex, N)) {
+                    break;
+                }
+            },
+            OPC_CheckChild0Same => {
+                OPC_CheckChild1Same;
+            },
+            OPC_CheckPatternPredicate => {
+                OPC_CheckPatternPredicate0;
+            },
+            OPC_CheckPredicate0 => {
+                OPC_CheckPredicate1;
+            },
+            OPC_CheckPredicateWithOperands => {
+                let mut OpNum: u32 = MatcherTable[MatcherIndex += 1];
+                let mut Operands: SmallVector<SDValue, 8> = SmallVector<SDValue, 8> {};
+                for let mut i: u32 = 0; i < OpNum; i += 1 {
+                    Operands.push_back([MatcherTable[MatcherIndex += 1]]);
+                }
+                let mut PredNo: u32 = MatcherTable[MatcherIndex += 1];
+                if !self.CheckNodePredicateWithOperands {
+                    break;
+                }
+                continue;
+            },
+            OPC_CheckComplexPat => {
+                OPC_CheckComplexPat0;
+            },
+            OPC_CheckOpcode => {
+                if !CheckOpcode(MatcherTable, MatcherIndex, N.getNode()) {
+                    break;
+                }
+            },
+            OPC_CheckType => {
+                OPC_CheckTypeI32;
+            },
+            OPC_CheckTypeRes => {
+                OPC_CheckTypeResByHwMode;
+            },
+            OPC_SwitchOpcode => {
+                let mut CurNodeOpcode: u32 = N.getOpcode();
+                let mut SwitchStart: u32 = MatcherIndex - 1;
+                SwitchStart as void;
+                let mut CaseSize: u32 = 0;
+                while true {
+                    CaseSize = MatcherTable[MatcherIndex += 1];
+                    if CaseSize & 128 {
+                        CaseSize = GetVBR(CaseSize, MatcherTable, MatcherIndex);
+                    }
+                    if CaseSize == 0 {
+                        break;
+                    }
+                    let mut Opc: u16 = MatcherTable[MatcherIndex += 1];
+                    Opc |= MatcherTable[MatcherIndex += 1] as u16 << 8;
+                    if CurNodeOpcode == Opc {
+                        break;
+                    }
+                    MatcherIndex += CaseSize;
+                }
+                if CaseSize == 0 {
+                    break;
+                }
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("isel", 1) {
+                        dbgs() << "  OpcodeSwitch from " << SwitchStart << " to " << MatcherIndex << "\n";
+                    }
+                }
+                    if !(false) { break; }
+                }
+                continue;
+            },
+            OPC_SwitchType => {
+                let mut CurNodeVT: MVT = N.getSimpleValueType();
+                let mut SwitchStart: u32 = MatcherIndex - 1;
+                SwitchStart as void;
+                let mut CaseSize: u32 = 0;
+                while true {
+                    CaseSize = MatcherTable[MatcherIndex += 1];
+                    if CaseSize & 128 {
+                        CaseSize = GetVBR(CaseSize, MatcherTable, MatcherIndex);
+                    }
+                    if CaseSize == 0 {
+                        break;
+                    }
+                    let mut CaseVT: MVT = MVT { SimpleTy: getSimpleVT(MatcherTable, MatcherIndex) };
+                    if CaseVT == iPTR {
+                        CaseVT = self.TLI.getPointerTy(self.CurDAG.getDataLayout(), 0);
+                    }
+                    if CurNodeVT == CaseVT {
+                        break;
+                    }
+                    MatcherIndex += CaseSize;
+                }
+                if CaseSize == 0 {
+                    break;
+                }
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("isel", 1) {
+                        dbgs() << "  TypeSwitch[" << CurNodeVT << "] from " << SwitchStart << " to " << MatcherIndex << 10;
+                    }
+                }
+                    if !(false) { break; }
+                }
+                continue;
+            },
+            OPC_CheckChild0Type => {
+                OPC_CheckChild1Type;
+            },
+            OPC_CheckChild0TypeByHwMode => {
+                OPC_CheckChild1TypeByHwMode;
+            },
+            OPC_CheckCondCode => {
+                if !CheckCondCode(MatcherTable, MatcherIndex, N) {
+                    break;
+                }
+            },
+            OPC_CheckChild2CondCode => {
+                if !CheckChild2CondCode(MatcherTable, MatcherIndex, N) {
+                    break;
+                }
+            },
+            OPC_CheckValueType => {
+                if !CheckValueType(MatcherTable, MatcherIndex, N, self.TLI, self.CurDAG.getDataLayout()) {
+                    break;
+                }
+            },
+            OPC_CheckInteger => {
+                if !CheckInteger(MatcherTable, MatcherIndex, N) {
+                    break;
+                }
+            },
+            OPC_CheckChild0Integer => {
+                OPC_CheckChild1Integer;
+            },
+            OPC_CheckAndImm => {
+                if !CheckAndImm(MatcherTable, MatcherIndex, N, *self) {
+                    break;
+                }
+            },
+            OPC_CheckOrImm => {
+                if !CheckOrImm(MatcherTable, MatcherIndex, N, *self) {
+                    break;
+                }
+            },
+            OPC_CheckImmAllOnesV => {
+                if !isConstantSplatVectorAllOnes(N.getNode(), false) {
+                    break;
+                }
+            },
+            OPC_CheckImmAllZerosV => {
+                if !isConstantSplatVectorAllZeros(N.getNode(), false) {
+                    break;
+                }
+            },
+            OPC_CheckUndef => {
+                if !N.isUndef() {
+                    break;
+                }
+            },
+            OPC_CheckFoldableChainNode => {
+                assert!(NodeStack.len != 1, "No parent node");
+                let mut HasMultipleUses: bool = false;
+                for let mut i: u32 = 1;
+let mut e: u32 = NodeStack.len - 1; i != e; i += 1 {
+                    let mut NNonChainUses: u32 = 0;
+                    let mut NS: *mut SDNode = NodeStack[i].getNode();
+                    for U in NS.uses() {
+                        if U.getValueType() != EVT { Other } {
+                            if NNonChainUses += 1 > 1 {
+                                HasMultipleUses = true;
+                                break;
+                            }
+                        }
+                    }
+                    if HasMultipleUses {
+                        break;
+                    }
+                }
+                if HasMultipleUses {
+                    break;
+                }
+                if !self.IsProfitableToFold(N, NodeStack[NodeStack.len - 2].getNode(), NodeToMatch) || !IsLegalToFold(N, NodeStack[NodeStack.len - 2].getNode(), NodeToMatch, self.OptLevel, true) {
+                    break;
+                }
+                continue;
+            },
+            OPC_EmitInteger => {
+                OPC_EmitIntegerI8;
+            },
+            OPC_EmitRegister => {
+                OPC_EmitRegisterI32;
+            },
+            OPC_EmitRegister2 => {
+                OPC_EmitRegisterByHwMode2;
+            },
+            OPC_EmitConvertToTarget => {
+                OPC_EmitConvertToTarget0;
+            },
+            OPC_EmitMergeInputChains1_0 => {
+                OPC_EmitMergeInputChains1_1;
+            },
+            OPC_EmitMergeInputChains => {
+                assert!(!InputChain.getNode(), "EmitMergeInputChains should be the first chain producing node");
+                let mut NumChains: u32 = MatcherTable[MatcherIndex += 1];
+                assert!(NumChains != 0, "Can't TF zero chains");
+                (((operator!(operator!((ChainNodesMatched()() && "Should only have one EmitMergeInputChains per match")))) || (_wassert(L"ChainNodesMatched.empty() && \"Should only have one EmitMergeInputChains per match\"", L"llvm\\lib\\CodeGen\\SelectionDAG\\SelectionDAGISel.cpp", (4152) as u32) , 0)) as void);
+                for let mut i: u32 = 0; i != NumChains; i += 1 {
+                    let mut RecNo: u32 = MatcherTable[MatcherIndex += 1];
+                    (((operator!(operator!((RecNo < RecordedNodes()() && "Invalid EmitMergeInputChains")))) || (_wassert(L"RecNo < RecordedNodes.size() && \"Invalid EmitMergeInputChains\"", L"llvm\\lib\\CodeGen\\SelectionDAG\\SelectionDAGISel.cpp", (4157) as u32) , 0)) as void);
+                    ChainNodesMatched()([RecNo]());
+                    if ChainNodesMatched()() != NodeToMatch && operator!([RecNo]()) {
+                        ChainNodesMatched()();
+                        break;
+                    }
+                }
+                if ChainNodesMatched()() {
+                    break;
+                }
+                InputChain = HandleMergeInputChains(InputGlue, self.CurDAG);
+                if !InputChain.getNode() {
+                    break;
+                }
+                continue;
+            },
+            OPC_EmitCopyToReg => {
+                OPC_EmitCopyToReg0;
+            },
+            OPC_EmitNodeXForm => {
+                let mut XFormNo: u32 = MatcherTable[MatcherIndex += 1];
+                let mut RecNo: u32 = MatcherTable[MatcherIndex += 1];
+                (((operator!(operator!((RecNo < RecordedNodes()() && "Invalid EmitNodeXForm")))) || (_wassert(L"RecNo < RecordedNodes.size() && \"Invalid EmitNodeXForm\"", L"llvm\\lib\\CodeGen\\SelectionDAG\\SelectionDAGISel.cpp", (4217) as u32) , 0)) as void);
+                let mut Res: SDValue = self.RunSDNodeXForm([RecNo], XFormNo);
+                RecordedNodes()(Res, null);
+                continue;
+            },
+            OPC_Coverage => {
+                let mut index: u32 = MatcherTable[MatcherIndex += 1];
+                index |= (MatcherTable[MatcherIndex += 1] << 8);
+                index |= (MatcherTable[MatcherIndex += 1] << 16);
+                index |= (MatcherTable[MatcherIndex += 1] << 24);
+                dbgs() << "COVERED: " << self.getPatternForIndex(index) << "\n";
+                dbgs() << "INCLUDED: " << self.getIncludePathForIndex(index) << "\n";
+                continue;
+            },
+            OPC_EmitNode => {
+                OPC_EmitNodeByHwMode;
+            },
+            OPC_CompleteMatch => {
+                let mut NumResults: u32 = MatcherTable[MatcherIndex += 1];
+                for let mut i: u32 = 0; i != NumResults; i += 1 {
+                    let mut ResSlot: u32 = MatcherTable[MatcherIndex += 1];
+                    if ResSlot & 128 {
+                        ResSlot = GetVBR(ResSlot, MatcherTable, MatcherIndex);
+                    }
+                    (((operator!(operator!((ResSlot < RecordedNodes()() && "Invalid CompleteMatch")))) || (_wassert(L"ResSlot < RecordedNodes.size() && \"Invalid CompleteMatch\"", L"llvm\\lib\\CodeGen\\SelectionDAG\\SelectionDAGISel.cpp", (4494) as u32) , 0)) as void);
+                    let mut Res: SDValue = [ResSlot];
+                    assert!(i < NodeToMatch.getNumValues() && NodeToMatch.getValueType(i) != EVT { Other } && NodeToMatch.getValueType(i) != EVT { Glue }, "Invalid number of results to complete!");
+                    assert!((NodeToMatch.getValueType(i) == Res.getValueType() || NodeToMatch.getValueType(i) == EVT { iPTR } || Res.getValueType() == EVT { iPTR } || NodeToMatch.getValueType(i).getSizeInBits() == Res.getValueSizeInBits()), "invalid replacement");
+                    self.ReplaceUses(SDValue { Node: NodeToMatch, ResNo: i }, Res);
+                }
+                self.UpdateChains(NodeToMatch, InputChain, false);
+                if NodeToMatch.getValueType(NodeToMatch.getNumValues() - 1) == EVT { Glue } && InputGlue.getNode() {
+                    self.ReplaceUses(SDValue { Node: NodeToMatch, ResNo: NodeToMatch.getNumValues() - 1 }, InputGlue);
+                }
+                assert!(NodeToMatch.use_empty(), "Didn't replace all uses of the node?");
+                self.CurDAG.RemoveDeadNode(NodeToMatch);
+                return;
+            },
+        }
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("isel", 1) {
+                dbgs() << "  Match failed at index " << CurrentOpcodeIndex << "\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        operator(NumDAGIselRetries);
+        while true {
+            if MatchScopes()() {
+                self.CannotYetSelect(NodeToMatch);
+                return;
+            }
+            let mut LastScope: *mut MatchScope = ();
+            RecordedNodes()(LastScope.NumRecordedNodes);
+            NodeStack;
+            N = NodeStack.back();
+            if LastScope.NumMatchedMemRefs != () {
+                MatchedMemRefs()(LastScope.NumMatchedMemRefs);
+            }
+            MatcherIndex = LastScope.FailIndex;
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("isel", 1) {
+                    dbgs() << "  Continuing at " << MatcherIndex << "\n";
+                }
+            }
+                if !(false) { break; }
+            }
+            InputChain = LastScope.InputChain;
+            InputGlue = LastScope.InputGlue;
+            if !LastScope.HasChainNodesMatched {
+                ChainNodesMatched()();
+            }
+            let mut NumToSkip: u32 = MatcherTable[MatcherIndex += 1];
+            if NumToSkip & 128 {
+                NumToSkip = GetVBR(NumToSkip, MatcherTable, MatcherIndex);
+            }
+            if NumToSkip != 0 {
+                LastScope.FailIndex = MatcherIndex + NumToSkip;
+                break;
+            }
+            MatchScopes()();
+        }
+    }
+}
+
+fn SelectionDAGISel::mayRaiseFPException(self: *SelectionDAGISel, N: *mut SDNode) -> bool {
+    if N.isMachineOpcode() {
+        let mut MCID: *MCInstrDesc = self.TII.get(N.getMachineOpcode());
+        return MCID.mayRaiseFPException();
+    }
+    if N.isTargetOpcode() {
+        let mut TSI: *SelectionDAGTargetInfo = self.CurDAG.getSelectionDAGInfo();
+        return TSI.mayRaiseFPException(N.getOpcode());
+    }
+    return N.isStrictFPOpcode();
+}
+
+fn SelectionDAGISel::isOrEquivalentToAdd(self: *SelectionDAGISel, N: *SDNode) -> bool {
+    assert!(N.getOpcode() == OR, "Unexpected opcode");
+    let mut C: *mut auto = dyn_cast(N.getOperand(1));
+    if operator!() {
+        return false;
+    }
+    if  {
+        let mut MFI: *mut MachineFrameInfo = self.MF.getFrameInfo();
+        let mut A: Align = MFI.getObjectAlign();
+        let mut Off: i32 = ();
+        return (Off >= 0) && (((A.value() - 1) & Off) == Off);
+    }
+    return false;
+}
+
+fn SelectionDAGISel::CannotYetSelect(self, N: *mut SDNode) {
+    let mut msg: str = "";
+    let mut Msg: raw_string_ostream = raw_string_ostream { msg };
+    Msg << "Cannot select: ";
+    Msg.enable_colors(errs().has_colors());
+    if N.getOpcode() != INTRINSIC_W_CHAIN && N.getOpcode() != INTRINSIC_WO_CHAIN && N.getOpcode() != INTRINSIC_VOID {
+        N.printrFull(Msg, self.CurDAG);
+        Msg << "\nIn function: " << self.MF.getName();
+    } else {
+        let mut HasInputChain: bool = N.getOperand(0).getValueType() == EVT { Other };
+        let mut iid: u32 = N.getConstantOperandVal(HasInputChain);
+        if iid < num_intrinsics {
+            Msg << "intrinsic %" << getBaseName(iid as ID);
+        } else {
+            Msg << "unknown intrinsic #" << iid;
+        }
+    }
+    report_fatal_error(msg, true);
+}
+
+struct Closure_1 {}
+
+fn Closure_1::call(self: *Closure_1, Arg: *Argument) -> bool {
+        return Arg.hasAttribute(SwiftAsync);
+    }

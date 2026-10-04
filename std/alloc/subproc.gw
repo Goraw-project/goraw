@@ -1,0 +1,161 @@
+static mut mi_process_subproc_main: mi_subproc_t = mi_subproc_t { , atomic<mi_meta_page_t *> {}, atomic<size_t> {}, [160]atomic<mi_arena_t *> {}, mi_lock_t { SRWLOCK {} }, atomic<int64_t> {}, atomic<mi_heap_t *> {}, mi_lock_t { SRWLOCK {} }, mi_lock_t { SRWLOCK {} }, atomic<size_t> {}, atomic<size_t> {}, atomic<size_t> {}, atomic<size_t> {}, atomic<mi_profiler_t *> {}, mi_memid_t { union (unnamed at p:\Goraw\mimalloc\include\mimalloc\types.h:349:3) { mi_memid_os_info_t { ,  } },  }, mi_stats_t { , mi_stat_count_t { ,  }, mi_stat_count_t { ,  }, mi_stat_count_t { ,  }, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_count_t { ,  }, mi_stat_count_t { ,  }, mi_stat_count_t { ,  }, mi_stat_count_t { ,  }, mi_stat_count_t { ,  }, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_count_t { ,  }, mi_stat_count_t { ,  }, mi_stat_count_t { ,  }, mi_stat_count_t { ,  }, mi_stat_count_t { ,  }, mi_stat_count_t { ,  }, mi_stat_count_t { ,  }, mi_stat_count_t { ,  }, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_counter_t {}, mi_stat_counter_t {}, [4]mi_stat_count_t {}, [4]mi_stat_counter_t {}, [74]mi_stat_count_t {}, [74]mi_stat_count_t {}, [6]mi_stat_count_t {} } };
+
+static mut mi_subprocs: *mut mi_subproc_t = 0;
+
+static mut mi_subprocs_lock: mi_lock_t = mi_lock_t { SRWLOCK { 0 } };
+
+fn mi_heap_main() -> *mut mi_heap_t {
+    return _mi_subproc_heap_main(_mi_subproc());
+}
+
+fn mi_subproc_main() -> mi_subproc_id_t {
+    return _mi_subproc_to_id(_mi_subproc_main());
+}
+
+fn mi_subproc_current() -> mi_subproc_id_t {
+    return _mi_subproc_to_id(_mi_subproc());
+}
+
+fn mi_subproc_init(subproc: *mut mi_subproc_t, parent: *mut mi_subproc_t) -> *mut mi_subproc_t {
+    let mut subproc_total_count: atomic<size_t> = atomic<size_t> {};
+    subproc.parent = parent;
+    subproc.subproc_seq = atomic_fetch_add_explicit(&mut subproc_total_count, 1 as u64, memory_order_relaxed);
+    mi_stats_header_init(&mut subproc.stats);
+    mi_lock_init(&mut subproc.arena_reserve_lock);
+    mi_lock_init(&mut subproc.heaps_lock);
+    mi_lock_init(&mut subproc.theap_meta_lock);
+    for let mut _mi_go: bool = (mi_lock_acquire(&mut mi_subprocs_lock) , true); _mi_go; (mi_lock_release(&mut mi_subprocs_lock) , _mi_go = false) {
+        subproc.next = mi_subprocs;
+        if mi_subprocs != 0 {
+            mi_subprocs.prev = subproc;
+        }
+        mi_subprocs = subproc;
+    }
+    return subproc;
+}
+
+fn mi_subproc_new() -> mi_subproc_id_t {
+    mi_thread_init();
+    let mut parent: mi_subproc_t *const = _mi_subproc();
+    let mut memid: mi_memid_t = mi_memid_t {};
+    let mut subproc: mi_subproc_t *const = _mi_meta_zalloc(parent, sizeof, &mut memid) as *mut mi_subproc_t;
+    if subproc == 0 {
+        return _mi_subproc_to_id(0);
+    }
+    subproc.memid = memid;
+    let mut theap_memid: mi_memid_t = mi_memid_t {};
+    let mut theap_meta: mi_theap_t *const = _mi_meta_zalloc(parent, sizeof, &mut theap_memid) as *mut mi_theap_t;
+    if theap_meta == 0 {
+        _mi_meta_free(parent, subproc, memid);
+        return _mi_subproc_to_id(0);
+    }
+    theap_meta.memid = memid;
+    mi_subproc_init(subproc, parent);
+    let mut heap_main: *mut mi_heap_t = _mi_heap_new_for_subproc(subproc, 0, true);
+    if heap_main == 0 {
+        _mi_meta_free(parent, theap_meta, theap_meta.memid);
+        mi_subproc_destroy(_mi_subproc_to_id(subproc));
+        return _mi_subproc_to_id(0);
+    }
+    (if (subproc.heap_main.operator mi_heap_s *() == heap_main) { 0 as void } else { _mi_assert_fail("subproc->heap_main == heap_main", "mimalloc\\src\\subproc.c", 184, "mi_subproc_new") });
+    (if (parent.theap_meta != 0) { 0 as void } else { _mi_assert_fail("parent->theap_meta!=NULL", "mimalloc\\src\\subproc.c", 187, "mi_subproc_new") });
+    (if (parent.theap_meta.tld != 0) { 0 as void } else { _mi_assert_fail("parent->theap_meta->tld!=NULL", "mimalloc\\src\\subproc.c", 188, "mi_subproc_new") });
+    (if (parent.theap_meta.tld.thread_id == (2 << (2))) { 0 as void } else { _mi_assert_fail("parent->theap_meta->tld->thread_id == MI_THREADID_DETACHED", "mimalloc\\src\\subproc.c", 189, "mi_subproc_new") });
+    _mi_theap_init(theap_meta, heap_main, parent.theap_meta.tld);
+    subproc.theap_meta = theap_meta;
+    return _mi_subproc_to_id(subproc);
+}
+
+fn mi_subproc_unsafe_destroy(subproc: *mut mi_subproc_t, acquire_subprocs_lock: bool) {
+    if subproc == 0 {
+        return;
+    }
+    for let mut _mi_go: bool = (if acquire_subprocs_lock { (mi_lock_acquire(&mut mi_subprocs_lock) , true) } else { true }); _mi_go; _mi_go = (if acquire_subprocs_lock { (mi_lock_release(&mut mi_subprocs_lock) , false) } else { false }) {
+        if subproc.next != 0 {
+            subproc.next.prev = subproc.prev;
+        }
+        if subproc.prev != 0 {
+            subproc.prev.next = subproc.next;
+        } else {
+            (if (mi_subprocs == subproc) { 0 as void } else { _mi_assert_fail("mi_subprocs==subproc", "mimalloc\\src\\subproc.c", 210, "mi_subproc_unsafe_destroy") });
+            mi_subprocs = subproc.next;
+        }
+    }
+    for let mut _mi_go: bool = (mi_lock_acquire(&mut subproc.heaps_lock) , true); _mi_go; (mi_lock_release(&mut subproc.heaps_lock) , _mi_go = false) {
+        let mut heap: *mut mi_heap_t = subproc.heaps;
+        while heap != 0 {
+            let mut next: *mut mi_heap_t = heap.next;
+            if heap != subproc.heap_main.operator mi_heap_s *() {
+                _mi_heap_force_destroy(heap, false);
+            }
+            heap = next;
+        }
+        (if (subproc.heap_main.operator mi_heap_s *() == 0 || subproc.heaps == subproc.heap_main.operator mi_heap_s *()) { 0 as void } else { _mi_assert_fail("subproc->heap_main==NULL || subproc->heaps == subproc->heap_main", "mimalloc\\src\\subproc.c", 221, "mi_subproc_unsafe_destroy") });
+        if subproc.heap_main.operator mi_heap_s *() != 0 {
+            _mi_thread_locals_thread_done();
+            if _mi_subproc_is_main(subproc) {
+                _mi_thread_locals_done();
+            }
+            _mi_heap_force_destroy(subproc.heap_main.operator mi_heap_s *(), false);
+        }
+    }
+    subproc.theap_meta = 0;
+    if !_mi_subproc_is_main(subproc) {
+        _mi_stats_merge_into(&mut mi_process_subproc_main.stats, &mut subproc.stats);
+    }
+    _mi_arenas_unsafe_destroy_all(subproc);
+    if _mi_subproc_is_main(subproc) {
+        if mi_option_is_enabled(mi_option_show_stats) || mi_option_is_enabled(mi_option_verbose) {
+            mi_subproc_stats_print_out(mi_subproc_main(), 0, 0);
+        }
+    }
+    mi_lock_done(&mut subproc.arena_reserve_lock);
+    mi_lock_done(&mut subproc.heaps_lock);
+    mi_lock_done(&mut subproc.theap_meta_lock);
+    _mi_meta_free(subproc.parent, subproc, subproc.memid);
+    if _mi_subproc_is_main(subproc) {
+        _mi_page_map_unsafe_destroy();
+    }
+}
+
+fn mi_subproc_destroy(subproc_id: mi_subproc_id_t) {
+    let mut subproc: *mut mi_subproc_t = _mi_subproc_from_id(subproc_id);
+    if subproc == 0 || subproc == &mut mi_process_subproc_main {
+        return;
+    }
+    mi_subproc_unsafe_destroy(subproc, true);
+}
+
+fn mi_subproc_add_current_thread(subproc_id: mi_subproc_id_t) {
+    let mut subproc: *mut mi_subproc_t = _mi_subproc_from_id(subproc_id);
+    (if (subproc != 0) { 0 as void } else { _mi_assert_fail("subproc!=NULL", "mimalloc\\src\\subproc.c", 286, "mi_subproc_add_current_thread") });
+    if subproc == 0 {
+        return;
+    }
+    (if (subproc.heap_main.operator mi_heap_s *() != 0) { 0 as void } else { _mi_assert_fail("subproc->heap_main!=NULL", "mimalloc\\src\\subproc.c", 288, "mi_subproc_add_current_thread") });
+    if subproc.heap_main.operator mi_heap_s *() == 0 {
+        return;
+    }
+    let mut theap: *mut mi_theap_t = _mi_theap_default();
+    if mi_theap_is_initialized(theap) {
+        if theap.tld != 0 && theap.tld.subproc != subproc {
+            _mi_warning_message("unable to add thread to the subprocess as it was already in another subprocess (at %p)\n", theap.tld.subproc);
+        }
+        return;
+    }
+    _mi_thread_init_with_heap(subproc.heap_main.operator mi_heap_s *());
+}
+
+fn mi_subproc_visit_heaps(subproc_id: mi_subproc_id_t, visitor: *mut mi_heap_visit_fun, arg: *mut void) -> bool {
+    let mut subproc: *mut mi_subproc_t = _mi_subproc_from_id(subproc_id);
+    if subproc == 0 {
+        return false;
+    }
+    let mut ok: bool = true;
+    for let mut _mi_go: bool = (mi_lock_acquire(&mut subproc.heaps_lock) , true); _mi_go; (mi_lock_release(&mut subproc.heaps_lock) , _mi_go = false) {
+        for let mut heap: *mut mi_heap_t = subproc.heaps; heap != 0 && ok; heap = heap.next {
+            ok = *visitor(heap, arg);
+        }
+    }
+    return ok;
+}

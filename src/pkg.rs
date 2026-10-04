@@ -365,6 +365,13 @@ pub fn resolve_import(dir: &Path, imp: &str) -> Option<PathBuf> {
     // Глобальный кэш
     search_dirs.push(global_pkg_dir());
 
+    // Каталог корневого проекта, бэкенда и стандартной библиотеки Goraw
+    if let Some(root) = crate::backend::find_root_dir() {
+        search_dirs.push(root.clone());
+        search_dirs.push(root.join("backend"));
+        search_dirs.push(root.join("std"));
+    }
+
     // Каталог компилятора (stdlib / builtins)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {

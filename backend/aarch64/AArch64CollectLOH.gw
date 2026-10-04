@@ -1,0 +1,368 @@
+static mut NumADRPSimpleCandidate: Statistic = Statistic { "aarch64-collect-loh", "NumADRPSimpleCandidate", "Number of simplifiable ADRP dominate by another" };
+
+static mut NumADDToSTR: Statistic = Statistic { "aarch64-collect-loh", "NumADDToSTR", "Number of simplifiable STR reachable by ADD" };
+
+static mut NumLDRToSTR: Statistic = Statistic { "aarch64-collect-loh", "NumLDRToSTR", "Number of simplifiable STR reachable by LDR" };
+
+static mut NumADDToLDR: Statistic = Statistic { "aarch64-collect-loh", "NumADDToLDR", "Number of simplifiable LDR reachable by ADD" };
+
+static mut NumLDRToLDR: Statistic = Statistic { "aarch64-collect-loh", "NumLDRToLDR", "Number of simplifiable LDR reachable by LDR" };
+
+static mut NumADRPToLDR: Statistic = Statistic { "aarch64-collect-loh", "NumADRPToLDR", "Number of simplifiable LDR reachable by ADRP" };
+
+static mut NumADRSimpleCandidate: Statistic = Statistic { "aarch64-collect-loh", "NumADRSimpleCandidate", "Number of simplifiable ADRP + ADD" };
+
+fn canAddBePartOfLOH(MI: *MachineInstr) -> bool {
+    match MI.getOperand(2).getType() {
+        _ => {
+            return false;
+        },
+        MO_GlobalAddress => {
+            MO_JumpTableIndex;
+        },
+    }
+}
+
+fn canDefBePartOfLOH(MI: *MachineInstr) -> bool {
+    match MI.getOpcode() {
+        _ => {
+            return false;
+        },
+    }
+}
+
+fn isCandidateStore(MI: *MachineInstr, MO: *MachineOperand) -> bool {
+    match MI.getOpcode() {
+        _ => {
+            return false;
+        },
+    }
+}
+
+fn isCandidateLoad(MI: *MachineInstr) -> bool {
+    match MI.getOpcode() {
+        _ => {
+            return false;
+        },
+    }
+}
+
+fn supportLoadFromLiteral(MI: *MachineInstr) -> bool {
+    match MI.getOpcode() {
+        _ => {
+            return false;
+        },
+    }
+}
+
+fn areInstructionsConsecutive(First: *MachineInstr, Second: *MachineInstr) -> bool {
+    let mut It: auto = First()();
+    let mut EndIt: auto = First.getParent()();
+    if It() ==  {
+        return false;
+    }
+    return next_nodbg() == Second()();
+}
+
+const N_GPR_REGS: u32 = 31;
+
+fn mapRegToGPRIndex(Reg: MCRegister) -> i32 {
+    if  {
+        return 29;
+    }
+    if  {
+        return 30;
+    }
+    return -1;
+}
+
+struct LOHInfo {
+    Type: MCLOHType,
+    IsCandidate: u32,
+    OneUser: u32,
+    MultiUsers: u32,
+    MI0: *MachineInstr,
+    MI1: *MachineInstr,
+    LastADRP: *MachineInstr,
+}
+
+fn LOHInfo::operator=(self, arg: *LOHInfo) -> *mut LOHInfo {
+    self.Type = .Type;
+    self.IsCandidate = .IsCandidate;
+    self.OneUser = .OneUser;
+    self.MultiUsers = .MultiUsers;
+    self.MI0 = .MI0;
+    self.MI1 = .MI1;
+    self.LastADRP = .LastADRP;
+    return *self;
+}
+
+fn handleUse(MI: *MachineInstr, MO: *MachineOperand, Info: *mut LOHInfo) {
+    if Info.MultiUsers || Info.OneUser {
+        Info.IsCandidate = false;
+        Info.MultiUsers = true;
+        return;
+    }
+    Info.OneUser = true;
+    if isCandidateLoad(MI) {
+        Info.Type = MCLOH_AdrpLdr;
+        Info.IsCandidate = true;
+        Info.MI0 = &mut MI;
+    } else if isCandidateStore(MI, MO) {
+        Info.Type = MCLOH_AdrpAddStr;
+        Info.IsCandidate = true;
+        Info.MI0 = &mut MI;
+        Info.MI1 = null;
+    } else if  {
+        Info.Type = MCLOH_AdrpAdd;
+        Info.IsCandidate = true;
+        Info.MI0 = &mut MI;
+    } else if  {
+        Info.Type = MCLOH_AdrpLdrGot;
+        Info.IsCandidate = true;
+        Info.MI0 = &mut MI;
+    }
+}
+
+fn handleClobber(Info: *mut LOHInfo) {
+    Info.IsCandidate = false;
+    Info.OneUser = false;
+    Info.MultiUsers = false;
+    Info.LastADRP = null;
+}
+
+fn handleMiddleInst(MI: *MachineInstr, DefInfo: *mut LOHInfo, OpInfo: *mut LOHInfo) -> bool {
+    if !DefInfo.IsCandidate || (&mut DefInfo != &mut OpInfo && OpInfo.OneUser) {
+        return false;
+    }
+    if &mut DefInfo != &mut OpInfo {
+        OpInfo = DefInfo;
+        handleClobber(DefInfo);
+    } else {
+        DefInfo.LastADRP = null;
+    }
+    assert!(OpInfo.IsCandidate, "Expect valid state");
+    if  {
+        if OpInfo.Type == MCLOH_AdrpLdr {
+            OpInfo.Type = MCLOH_AdrpAddLdr;
+            OpInfo.IsCandidate = true;
+            OpInfo.MI1 = &mut MI;
+            return true;
+        } else if OpInfo.Type == MCLOH_AdrpAddStr && OpInfo.MI1 == null {
+            OpInfo.Type = MCLOH_AdrpAddStr;
+            OpInfo.IsCandidate = true;
+            OpInfo.MI1 = &mut MI;
+            return true;
+        }
+    } else {
+        assert!((MI.getOperand(2).getTargetFlags() & MO_GOT), "Expected GOT relocation");
+        if OpInfo.Type == MCLOH_AdrpAddStr && OpInfo.MI1 == null {
+            OpInfo.Type = MCLOH_AdrpLdrGotStr;
+            OpInfo.IsCandidate = true;
+            OpInfo.MI1 = &mut MI;
+            return true;
+        } else if OpInfo.Type == MCLOH_AdrpLdr {
+            OpInfo.Type = MCLOH_AdrpLdrGotLdr;
+            OpInfo.IsCandidate = true;
+            OpInfo.MI1 = &mut MI;
+            return true;
+        }
+    }
+    return false;
+}
+
+fn handleADRP(MI: *MachineInstr, AFI: *mut AArch64FunctionInfo, Info: *mut LOHInfo, LOHInfos: *mut LOHInfo) {
+    if Info.LastADRP != null {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("aarch64-collect-loh", 1) {
+                dbgs() << "Adding MCLOH_AdrpAdrp:\n" << 9 << MI << 9 << *Info.LastADRP;
+            }
+        }
+            if !(false) { break; }
+        }
+        AFI.addLOHDirective;
+        operator(NumADRPSimpleCandidate);
+    }
+    if Info.IsCandidate {
+        match Info.Type {
+            MCLOH_AdrpAdd => {
+                let mut AddMI: *MachineInstr = Info.MI0;
+                let mut DefIdx: i32 = mapRegToGPRIndex(MI.getOperand(0).getReg().operator MCRegister());
+                let mut OpIdx: i32 = mapRegToGPRIndex(AddMI.getOperand(0).getReg().operator MCRegister());
+                let mut DefInfo: LOHInfo = LOHInfos[OpIdx];
+                if DefIdx != OpIdx && (DefInfo.OneUser || DefInfo.MultiUsers) {
+                    break;
+                }
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("aarch64-collect-loh", 1) {
+                        dbgs() << "Adding MCLOH_AdrpAdd:\n" << 9 << MI << 9 << *Info.MI0;
+                    }
+                }
+                    if !(false) { break; }
+                }
+                AFI.addLOHDirective;
+                operator(NumADRSimpleCandidate);
+                break;
+            },
+            MCLOH_AdrpLdr => {
+                if supportLoadFromLiteral(*Info.MI0) {
+                    while true {
+                        {
+                        if DebugFlag && isCurrentDebugType("aarch64-collect-loh", 1) {
+                            dbgs() << "Adding MCLOH_AdrpLdr:\n" << 9 << MI << 9 << *Info.MI0;
+                        }
+                    }
+                        if !(false) { break; }
+                    }
+                    AFI.addLOHDirective;
+                    operator(NumADRPToLDR);
+                }
+            },
+            MCLOH_AdrpAddLdr => {
+                if !areInstructionsConsecutive(Info.MI1, Info.MI0) {
+                    break;
+                }
+            },
+            MCLOH_AdrpAddStr => {
+                if !Info.MI1 {
+                    break;
+                }
+            },
+            MCLOH_AdrpLdrGotLdr => {
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("aarch64-collect-loh", 1) {
+                        dbgs() << "Adding MCLOH_AdrpLdrGotLdr:\n" << 9 << MI << 9 << *Info.MI1 << 9 << *Info.MI0;
+                    }
+                }
+                    if !(false) { break; }
+                }
+            },
+            MCLOH_AdrpLdrGotStr => {
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("aarch64-collect-loh", 1) {
+                        dbgs() << "Adding MCLOH_AdrpLdrGotStr:\n" << 9 << MI << 9 << *Info.MI1 << 9 << *Info.MI0;
+                    }
+                }
+                    if !(false) { break; }
+                }
+            },
+            MCLOH_AdrpLdrGot => {
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("aarch64-collect-loh", 1) {
+                        dbgs() << "Adding MCLOH_AdrpLdrGot:\n" << 9 << MI << 9 << *Info.MI0;
+                    }
+                }
+                    if !(false) { break; }
+                }
+            },
+            MCLOH_AdrpAdrp => {
+                llvm_unreachable_internal("MCLOH_AdrpAdrp not used in state machine", "llvm\\lib\\Target\\AArch64\\AArch64CollectLOH.cpp", 458);
+            },
+        }
+    }
+    handleClobber(Info);
+    Info.LastADRP = &mut MI;
+}
+
+fn handleRegMaskClobber(RegMask: *u32, Reg: MCPhysReg, LOHInfos: *mut LOHInfo) {
+    if !clobbersPhysReg(RegMask, Reg) {
+        return;
+    }
+    let mut Idx: i32 = mapRegToGPRIndex(Reg);
+    if Idx >= 0 {
+        handleClobber(LOHInfos[Idx]);
+    }
+}
+
+fn handleNormalInst(MI: *MachineInstr, LOHInfos: *mut LOHInfo) {
+    let mut UsesSeen: i32 = 0;
+}
+
+fn runAArch64CollectLOH(MF: *mut MachineFunction) {
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("aarch64-collect-loh", 1) {
+            dbgs() << "********** AArch64 Collect LOH **********\n" << "Looking in function " << MF.getName() << 10;
+        }
+    }
+        if !(false) { break; }
+    }
+    let mut LOHInfos: [31]LOHInfo = [31]LOHInfo {};
+    let mut AFI: *mut AArch64FunctionInfo = operator*(MF);
+}
+
+struct AArch64CollectLOHLegacy {
+    Resolver: *mut AnalysisResolver,
+    PassID: *void,
+    Kind: PassKind,
+    RequiredProperties: MachineFunctionProperties,
+    SetProperties: MachineFunctionProperties,
+    ClearedProperties: MachineFunctionProperties,
+}
+
+fn AArch64CollectLOHLegacy::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
+    if self.skipFunction {
+        return false;
+    }
+    runAArch64CollectLOH(MF);
+    return false;
+}
+
+fn AArch64CollectLOHLegacy::getRequiredProperties(self: *AArch64CollectLOHLegacy) -> MachineFunctionProperties {
+    return MachineFunctionProperties {}.setNoVRegs();
+}
+
+fn AArch64CollectLOHLegacy::getPassName(self: *AArch64CollectLOHLegacy) -> str {
+    return "AArch64 Collect Linker Optimization Hint (LOH)";
+}
+
+fn AArch64CollectLOHLegacy::getAnalysisUsage(self: *AArch64CollectLOHLegacy, AU: *mut AnalysisUsage) {
+    self.getAnalysisUsage;
+    AU.setPreservesAll();
+}
+
+fn AArch64CollectLOHLegacy::getPassKind(self: *AArch64CollectLOHLegacy) -> PassKind {
+    return self.Kind;
+}
+
+fn AArch64CollectLOHLegacy::getPassID(self: *AArch64CollectLOHLegacy) -> AnalysisID {
+    return self.PassID;
+}
+
+fn AArch64CollectLOHLegacy::doInitialization(self, arg: *mut Module) -> bool {
+    return false;
+}
+
+fn AArch64CollectLOHLegacy::doFinalization(self, arg: *mut Module) -> bool {
+    return false;
+}
+
+fn AArch64CollectLOHLegacy::assignPassManager(self, arg: *mut PMStack, arg: PassManagerType) {}
+
+fn AArch64CollectLOHLegacy::getResolver(self: *AArch64CollectLOHLegacy) -> *mut AnalysisResolver {
+    return self.Resolver;
+}
+
+fn AArch64CollectLOHLegacy::getSetProperties(self: *AArch64CollectLOHLegacy) -> MachineFunctionProperties {
+    return MachineFunctionProperties {};
+}
+
+fn AArch64CollectLOHLegacy::getClearedProperties(self: *AArch64CollectLOHLegacy) -> MachineFunctionProperties {
+    return MachineFunctionProperties {};
+}
+
+static mut ID: i8 = 0;
+
+fn AArch64CollectLOHPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
+    runAArch64CollectLOH(MF);
+    return all();
+}
+
+fn createAArch64CollectLOHPass() -> *mut FunctionPass {
+    return AArch64CollectLOHLegacy {};
+}

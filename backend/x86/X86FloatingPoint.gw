@@ -1,0 +1,1031 @@
+static mut NumFXCH: Statistic = Statistic { "x86-fp-stackifier", "NumFXCH", "Number of fxch instructions inserted" };
+
+static mut NumFP: Statistic = Statistic { "x86-fp-stackifier", "NumFP", "Number of floating point instructions" };
+
+const ScratchFPReg: u32 = 7;
+
+struct FPS {
+    TII: *TargetInstrInfo,
+    LiveBundles: SmallVector<LiveBundle, 8>,
+    Bundles: *mut EdgeBundles,
+    MBB: *mut MachineBasicBlock,
+    Stack: [8]u32,
+    StackTop: u32,
+    RegMap: [8]u32,
+}
+
+fn FPS::calcLiveInMask(self, MBB: *mut MachineBasicBlock, RemoveFPs: bool) -> u32 {
+    let mut Mask: u32 = 0;
+    for let mut I: livein_iterator = MBB.livein_begin(); !I == MBB.livein_end();  {
+        let mut Reg: MCPhysReg = operator(I).PhysReg.operator unsigned int();
+        if  {
+            if RemoveFPs {
+                I = MBB.removeLiveIn(livein_iterator { I });
+                continue;
+            }
+        }
+        operator(I);
+    }
+    return Mask;
+}
+
+fn FPS::dumpStack(self: *FPS) {
+    dbgs() << "Stack contents:";
+    for let mut i: u32 = 0; i != self.StackTop; i += 1 {
+        dbgs() << " FP" << self.Stack[i];
+        assert!(self.RegMap[self.Stack[i]] == i, "Stack[] doesn't match RegMap[]!");
+    }
+}
+
+fn FPS::getSlot(self: *FPS, RegNo: u32) -> u32 {
+    assert!(RegNo < NumFPRegs, "Regno out of range!");
+    return self.RegMap[RegNo];
+}
+
+fn FPS::isLive(self: *FPS, RegNo: u32) -> bool {
+    let mut Slot: u32 = self.getSlot(RegNo);
+    return Slot < self.StackTop && self.Stack[Slot] == RegNo;
+}
+
+fn FPS::getStackEntry(self: *FPS, STi: u32) -> u32 {
+    if STi >= self.StackTop {
+        report_fatal_error("Access past stack top!", true);
+    }
+    return self.Stack[self.StackTop - 1 - STi];
+}
+
+fn FPS::getSTReg(self: *FPS, RegNo: u32) -> u32 {}
+
+fn FPS::pushReg(self, Reg: u32) {
+    assert!(Reg < NumFPRegs, "Register number out of range!");
+    if self.StackTop >= 8 {
+        report_fatal_error("Stack overflow!", true);
+    }
+    self.Stack[self.StackTop] = Reg;
+    self.RegMap[Reg] = self.StackTop += 1;
+}
+
+fn FPS::popReg(self) {
+    if self.StackTop == 0 {
+        report_fatal_error("Cannot pop empty stack!", true);
+    }
+    self.RegMap[self.Stack[self.StackTop -= 1]] = ~0;
+}
+
+fn FPS::isAtTop(self: *FPS, RegNo: u32) -> bool {
+    return self.getSlot(RegNo) == self.StackTop - 1;
+}
+
+fn FPS::moveToTop(self, RegNo: u32, I: iterator) {
+    let mut dl: DebugLoc = if I == self.MBB.end() { DebugLoc { Loc: null } } else { operator(I).getDebugLoc() };
+    if self.isAtTop(RegNo) {
+        return;
+    }
+    let mut STReg: u32 = self.getSTReg(RegNo);
+    let mut RegOnTop: u32 = self.getStackEntry(0);
+    swap(self.RegMap[RegNo], self.RegMap[RegOnTop]);
+    if self.RegMap[RegOnTop] >= self.StackTop {
+        report_fatal_error("Access past stack top!", true);
+    }
+    swap(self.Stack[self.RegMap[RegOnTop]], self.Stack[self.StackTop - 1]);
+    BuildMI(*self.MBB, I, dl, self.TII.get)(STReg);
+    operator(NumFXCH);
+}
+
+fn FPS::duplicateToTop(self, RegNo: u32, AsReg: u32, I: iterator) {
+    let mut dl: DebugLoc = if I == self.MBB.end() { DebugLoc { Loc: null } } else { operator(I).getDebugLoc() };
+    let mut STReg: u32 = self.getSTReg(RegNo);
+    self.pushReg(AsReg);
+    BuildMI(*self.MBB, I, dl, self.TII.get)(STReg);
+}
+
+fn FPS::isFPCopy(self, MI: *mut MachineInstr) -> bool {
+    let mut DstReg: Register = MI.getOperand(0).getReg();
+    let mut SrcReg: Register = MI.getOperand(1).getReg();
+}
+
+struct X86FPStackifierLegacy {
+    Resolver: *mut AnalysisResolver,
+    PassID: *void,
+    Kind: PassKind,
+    RequiredProperties: MachineFunctionProperties,
+    SetProperties: MachineFunctionProperties,
+    ClearedProperties: MachineFunctionProperties,
+}
+
+fn X86FPStackifierLegacy::getAnalysisUsage(self: *X86FPStackifierLegacy, AU: *mut AnalysisUsage) {
+    AU.setPreservesCFG();
+    AU;
+    AU.addPreservedID(MachineLoopInfoID);
+    AU.addPreservedID(MachineDominatorsID);
+    self.getAnalysisUsage(AU);
+}
+
+fn X86FPStackifierLegacy::getRequiredProperties(self: *X86FPStackifierLegacy) -> MachineFunctionProperties {
+    return MachineFunctionProperties {}.setNoVRegs();
+}
+
+fn X86FPStackifierLegacy::getPassName(self: *X86FPStackifierLegacy) -> str {
+    return "X86 FP Stackifier";
+}
+
+fn X86FPStackifierLegacy::getPassKind(self: *X86FPStackifierLegacy) -> PassKind {
+    return self.Kind;
+}
+
+fn X86FPStackifierLegacy::getPassID(self: *X86FPStackifierLegacy) -> AnalysisID {
+    return self.PassID;
+}
+
+fn X86FPStackifierLegacy::doInitialization(self, arg: *mut Module) -> bool {
+    return false;
+}
+
+fn X86FPStackifierLegacy::doFinalization(self, arg: *mut Module) -> bool {
+    return false;
+}
+
+fn X86FPStackifierLegacy::assignPassManager(self, arg: *mut PMStack, arg: PassManagerType) {}
+
+fn X86FPStackifierLegacy::getResolver(self: *X86FPStackifierLegacy) -> *mut AnalysisResolver {
+    return self.Resolver;
+}
+
+fn X86FPStackifierLegacy::getSetProperties(self: *X86FPStackifierLegacy) -> MachineFunctionProperties {
+    return MachineFunctionProperties {};
+}
+
+fn X86FPStackifierLegacy::getClearedProperties(self: *X86FPStackifierLegacy) -> MachineFunctionProperties {
+    return MachineFunctionProperties {};
+}
+
+static mut ID: i8 = 0;
+
+fn createX86FPStackifierLegacyPass() -> *mut FunctionPass {
+    return X86FPStackifierLegacy {};
+}
+
+fn getFPReg(MO: *MachineOperand) -> u32 {
+    assert!(MO.isReg(), "Expected an FP register!");
+    let mut Reg: Register = MO.getReg();
+}
+
+fn FPS::shouldRun(self, MF: *mut MachineFunction) -> bool {
+    let mut MRI: *MachineRegisterInfo = MF.getRegInfo();
+    for let mut I: u32 = 0; I <= 6; I += 1 {
+        if operator!(MRI.reg_nodbg_empty) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn FPS::run(self, MF: *mut MachineFunction, FunctionBundles: *mut EdgeBundles) -> bool {
+    self.Bundles = FunctionBundles;
+    self.TII = MF.getSubtarget().getInstrInfo();
+    self.bundleCFGRecomputeKillFlags(MF);
+    self.StackTop = 0;
+    let mut Processed: i32 = 0;
+    let mut Entry: *mut MachineBasicBlock = &mut MF.front();
+    let mut Bundle: *mut LiveBundle = null;
+    if (Entry.getParent().getFunction().getCallingConv() == X86_RegCall) && (Bundle.Mask && !Bundle.FixCount) {
+        assert!((Bundle.Mask & 254) == 0, "Only FP0 could be passed as an argument");
+        Bundle.FixCount = 1;
+        Bundle.FixStack[0] = 0;
+    }
+    let mut Changed: bool = false;
+    if MF.len != () {
+        for BB in MF {
+            if Processed()(&mut BB) {
+                Changed |= self.processBasicBlock(MF, BB);
+            }
+        }
+    }
+    return Changed;
+}
+
+fn FPS::bundleCFGRecomputeKillFlags(self, MF: *mut MachineFunction) {
+    for MBB in MF {
+        self.setKillFlags(MBB);
+        let mut Mask: u32 = calcLiveInMask(&mut MBB, false);
+        if !Mask {
+            continue;
+        }
+    }
+}
+
+fn FPS::processBasicBlock(self, MF: *mut MachineFunction, BB: *mut MachineBasicBlock) -> bool {
+    let mut Changed: bool = false;
+    self.MBB = &mut BB;
+    self.setupBlockStack();
+    for let mut I: iterator = BB.begin(); I != BB.end(); operator(I) {
+        let mut MI: *mut MachineInstr = operator(I);
+        let mut Flags: u64 = MI.getDesc().TSFlags;
+        let mut FPInstClass: u32 = Flags & FPTypeMask;
+        if MI.isInlineAsm() {
+            FPInstClass = SpecialFP;
+        }
+        if MI.isCopy() && isFPCopy(MI) {
+            FPInstClass = SpecialFP;
+        }
+        if  {
+            FPInstClass = SpecialFP;
+        }
+        if MI.isCall(AnyInBundle) {
+            FPInstClass = SpecialFP;
+        }
+        if MI.isFakeUse() {
+            let mut MO: *MachineOperand = MI.getOperand(0);
+            if  {
+                if MO.isKill() {
+                    FPInstClass = SpecialFP;
+                } else {
+                    MI.removeOperand(0);
+                }
+            }
+        }
+        if FPInstClass == NotFP {
+            continue;
+        }
+        let mut PrevMI: *mut MachineInstr = null;
+        if I != BB.begin() {
+            PrevMI = operator&(operator*(prev(I)));
+        }
+        operator(NumFP);
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
+                dbgs() << "\nFPInst:\t" << MI;
+            }
+        }
+            if !(false) { break; }
+        }
+        let mut DeadRegs: SmallVector<Register, 8> = zeroed();
+        for MO in MI.operands() {
+            if MO.isReg() && MO.isDead() {
+                DeadRegs()(MO.getReg());
+            }
+        }
+        match FPInstClass {
+            ZeroArgFP => {
+                self.handleZeroArgFP(I);
+            },
+            OneArgFP => {
+                self.handleOneArgFP(I);
+            },
+            OneArgFPRW => {
+                self.handleOneArgFPRW(I);
+            },
+            TwoArgFP => {
+                self.handleTwoArgFP(I);
+            },
+            CompareFP => {
+                self.handleCompareFP(I);
+            },
+            CondMovFP => {
+                self.handleCondMovFP(I);
+            },
+            SpecialFP => {
+                self.handleSpecialFP(I);
+            },
+            _ => {
+                llvm_unreachable_internal("Unknown FP Type!", "llvm\\lib\\Target\\X86\\X86FloatingPoint.cpp", 502);
+            },
+        }
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
+                {
+                    let mut PrevI: iterator = iterator { PrevMI };
+                    if I == PrevI {
+                        dbgs() << "Just deleted pseudo instruction\n";
+                    } else {
+                        let mut Start: iterator = iterator { I };
+                        while Start != BB.begin() && prev(Start) != PrevI {
+                            operator(Start);
+                        }
+                        dbgs() << "Inserted instructions:\n\t";
+                        operator(Start).print(dbgs(), true, false, false, true, null);
+                        while operator(Start) != next(I) {}
+                    }
+                    self.dumpStack();
+                }
+            }
+        }
+            if !(false) { break; }
+        }
+        PrevMI as void;
+        Changed = true;
+    }
+    self.finishBlockStack();
+    return Changed;
+}
+
+fn FPS::setupBlockStack(self) {
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
+            dbgs() << "\nSetting up live-ins for " << printMBBReference(*self.MBB) << " derived from " << self.MBB.getName() << ".\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    self.StackTop = 0;
+    let mut Bundle: *LiveBundle = null;
+    if !Bundle.Mask {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
+                dbgs() << "Block has no FP live-ins.\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        return;
+    }
+    assert!(Bundle.isFixed(), "Reached block before any predecessors");
+    for let mut i: u32 = Bundle.FixCount; i > 0; i -= 1 {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
+                dbgs() << "Live-in st(" << (i - 1) << "): %fp" << Bundle.FixStack[i - 1] << 10;
+            }
+        }
+            if !(false) { break; }
+        }
+        self.pushReg(Bundle.FixStack[i - 1]);
+    }
+    let mut Mask: u32 = calcLiveInMask(self.MBB, true);
+    self.adjustLiveRegs(Mask, self.MBB.begin());
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
+            self.MBB.dump();
+        }
+    }
+        if !(false) { break; }
+    }
+}
+
+fn FPS::finishBlockStack(self) {
+    if self.MBB.succ_empty() {
+        return;
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
+            dbgs() << "Setting up live-outs for " << printMBBReference(*self.MBB) << " derived from " << self.MBB.getName() << ".\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    let mut BundleIdx: u32 = self.Bundles.getBundle(self.MBB.getNumber(), true);
+    let mut Bundle: *mut LiveBundle = null;
+    let mut Term: iterator = self.MBB.getFirstTerminator();
+    self.adjustLiveRegs(Bundle.Mask, iterator { Term });
+    if !Bundle.Mask {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
+                dbgs() << "No live-outs.\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        return;
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
+            dbgs() << "LB#" << BundleIdx << ": ";
+        }
+    }
+        if !(false) { break; }
+    }
+    if Bundle.isFixed() {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
+                dbgs() << "Shuffling stack to match.\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        self.shuffleStackTop(Bundle.FixStack, Bundle.FixCount, iterator { Term });
+    } else {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
+                dbgs() << "Fixing stack order now.\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        Bundle.FixCount = self.StackTop;
+        for let mut i: u32 = 0; i < self.StackTop; i += 1 {
+            Bundle.FixStack[i] = self.getStackEntry(i);
+        }
+    }
+}
+
+struct TableEntry {
+    from: u16,
+    to: u16,
+}
+
+fn TableEntry::operator<(self: *TableEntry, TE: *TableEntry) -> bool {
+    return self.from < TE.from;
+}
+
+fn Lookup(Table: ArrayRef<TableEntry>, Opcode: u32) -> i32 {
+    let mut I: *TableEntry = lower_bound(Opcode);
+    if I != () && I.from == Opcode {
+        return I.to;
+    }
+    return -1;
+}
+
+const OpcodeTable: []TableEntry = zeroed();
+
+fn getConcreteOpcode(Opcode: u32) -> u32 {
+    {
+        let mut OpcodeTableChecked: atomic<bool> = atomic<bool> { false };
+        if !OpcodeTableChecked.load(memory_order_relaxed) {
+            assert!(is_sorted(OpcodeTable), "All lookup tables must be sorted for efficient access!");
+            OpcodeTableChecked.store(true, memory_order_relaxed);
+        }
+    }
+    let mut Opc: i32 = Lookup(OpcodeTable, Opcode);
+    assert!(Opc != -1, "FP Stack instruction not in OpcodeTable!");
+    return Opc;
+}
+
+const PopTable: []TableEntry = zeroed();
+
+fn doesInstructionSetFPSW(MI: *mut MachineInstr) -> bool {
+    if MI {
+        MO;
+    } else if !MO.isDead() {
+        return true;
+    }
+    return false;
+}
+
+fn getNextFPInstruction(I: iterator) -> iterator {
+    let mut MBB: *mut MachineBasicBlock = *operator(I).getParent();
+    while operator(I) != MBB.end() {
+        let mut MI: *mut MachineInstr = operator(I);
+        if isX87Instruction(MI) {
+            return I;
+        }
+    }
+    return MBB.end();
+}
+
+fn FPS::popStackAfter(self, I: *mut iterator) {
+    let mut MI: *mut MachineInstr = operator(I);
+    let mut dl: *DebugLoc = MI.getDebugLoc();
+    {
+        let mut PopTableChecked: atomic<bool> = atomic<bool> { false };
+        if !PopTableChecked.load(memory_order_relaxed) {
+            assert!(is_sorted(PopTable), "All lookup tables must be sorted for efficient access!");
+            PopTableChecked.store(true, memory_order_relaxed);
+        }
+    }
+    self.popReg();
+    let mut Opcode: i32 = Lookup(PopTable, operator(I).getOpcode());
+    if Opcode != -1 {
+        operator(I).setDesc(self.TII.get);
+        if  {
+            operator(I).removeOperand(0);
+        }
+        MI.dropDebugNumber();
+    } else {
+        if doesInstructionSetFPSW(MI) {
+            let mut MBB: *mut MachineBasicBlock = *MI.getParent();
+            let mut Next: iterator = getNextFPInstruction(iterator { I });
+            if Next != MBB.end() && operator(Next).readsRegister {
+                I = Next;
+            }
+        }
+        I = BuildMI(*self.MBB, operator(I), dl, self.TII.get);
+    }
+}
+
+fn FPS::freeStackSlotAfter(self, I: *mut iterator, FPRegNo: u32) {
+    if self.getStackEntry(0) == FPRegNo {
+        self.popStackAfter(I);
+        return;
+    }
+    I = self.freeStackSlotBefore(iterator { operator(I) }, FPRegNo);
+}
+
+fn FPS::freeStackSlotBefore(self, I: iterator, FPRegNo: u32) -> iterator {
+    let mut STReg: u32 = self.getSTReg(FPRegNo);
+    let mut OldSlot: u32 = self.getSlot(FPRegNo);
+    let mut TopReg: u32 = self.Stack[self.StackTop - 1];
+    self.Stack[OldSlot] = TopReg;
+    self.RegMap[TopReg] = OldSlot;
+    self.RegMap[FPRegNo] = ~0;
+    self.Stack[self.StackTop -= 1] = ~0;
+    return BuildMI(*self.MBB, I, DebugLoc { Loc: null }, self.TII.get)(STReg)();
+}
+
+fn FPS::adjustLiveRegs(self, Mask: u32, I: iterator) {
+    let mut Defs: u32 = Mask;
+    let mut Kills: u32 = 0;
+    for let mut i: u32 = 0; i < self.StackTop; i += 1 {
+        let mut RegNo: u32 = self.Stack[i];
+        if !(Defs & (1 << RegNo)) {
+            Kills |= (1 << RegNo);
+        } else {
+            Defs &= ~(1 << RegNo);
+        }
+    }
+    assert!((Kills & Defs) == 0, "Register needs killing and def'ing?");
+    while Kills && Defs {
+        let mut KReg: u32 = countr_zero(Kills);
+        let mut DReg: u32 = countr_zero(Defs);
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
+                dbgs() << "Renaming %fp" << KReg << " as imp %fp" << DReg << "\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        swap(self.Stack[self.getSlot(KReg)], self.Stack[self.getSlot(DReg)]);
+        swap(self.RegMap[KReg], self.RegMap[DReg]);
+        Kills &= ~(1 << KReg);
+        Defs &= ~(1 << DReg);
+    }
+    if Kills && I != self.MBB.begin() {
+        let mut I2: iterator = prev(I);
+        while self.StackTop {
+            let mut KReg: u32 = self.getStackEntry(0);
+            if !(Kills & (1 << KReg)) {
+                break;
+            }
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
+                    dbgs() << "Popping %fp" << KReg << "\n";
+                }
+            }
+                if !(false) { break; }
+            }
+            self.popStackAfter(I2);
+            Kills &= ~(1 << KReg);
+        }
+    }
+    while Kills {
+        let mut KReg: u32 = countr_zero(Kills);
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
+                dbgs() << "Killing %fp" << KReg << "\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        self.freeStackSlotBefore(iterator { I }, KReg);
+        Kills &= ~(1 << KReg);
+    }
+    while Defs {
+        let mut DReg: u32 = countr_zero(Defs);
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
+                dbgs() << "Defining %fp" << DReg << " as 0\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        BuildMI(*self.MBB, I, DebugLoc { Loc: null }, self.TII.get);
+        self.pushReg(DReg);
+        Defs &= ~(1 << DReg);
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
+            self.dumpStack();
+        }
+    }
+        if !(false) { break; }
+    }
+    assert!(self.StackTop == popcount(Mask) as u32, "Live count mismatch");
+}
+
+fn FPS::shuffleStackTop(self, FixStack: *u8, FixCount: u32, I: iterator) {
+    while FixCount -= 1 {
+        let mut OldReg: u32 = self.getStackEntry(FixCount);
+        let mut Reg: u32 = FixStack[FixCount];
+        if Reg == OldReg {
+            continue;
+        }
+        self.moveToTop(Reg, iterator { I });
+        if FixCount > 0 {
+            self.moveToTop(OldReg, iterator { I });
+        }
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
+            self.dumpStack();
+        }
+    }
+        if !(false) { break; }
+    }
+}
+
+fn FPS::handleCall(self, I: *mut iterator) {
+    let mut MI: *mut MachineInstr = operator(I);
+    let mut STReturns: u32 = 0;
+    let mut ClobbersFPStack: bool = false;
+    for let mut i: u32 = 0;
+let mut e: u32 = MI.getNumOperands(); i != e; i += 1 {
+        let mut Op: *mut MachineOperand = MI.getOperand(i);
+        if Op.isRegMask() {
+            let mut ClobbersFP0: bool = Op;
+            for let mut i: u32 = 1; i != 8; i += 1 {
+                (((operator!(operator!((Op == ClobbersFP0 && "Inconsistent FP register clobber")))) || (_wassert(L"Op.clobbersPhysReg(X86::FP0 + i) == ClobbersFP0 && \"Inconsistent FP register clobber\"", L"llvm\\lib\\Target\\X86\\X86FloatingPoint.cpp", (1052) as u32) , 0)) as void);
+            }
+            if ClobbersFP0 {
+                ClobbersFPStack = true;
+            }
+        }
+        if  {
+            continue;
+        }
+        assert!(Op.isImplicit(), "Expected implicit def/use");
+        if Op.isDef() {
+            STReturns |= 1 << getFPReg(Op);
+        }
+        MI.removeOperand(i);
+        i -= 1;
+        e -= 1;
+    }
+    assert!((ClobbersFPStack || STReturns == 0), "ST returns without FP stack clobber");
+    if !ClobbersFPStack {
+        return;
+    }
+    let mut N: u32 = countr_one(STReturns);
+    assert!(STReturns == 0 || (isMask_32(STReturns) && N <= 2);
+    while self.StackTop > 0 {
+        self.popReg();
+    }
+    for let mut I: u32 = 0; I < N; I += 1 {
+        self.pushReg(N - I - 1);
+    }
+    if STReturns {
+        operator(I).dropDebugNumber();
+    }
+}
+
+fn FPS::handleReturn(self, I: *mut iterator) {
+    let mut MI: *mut MachineInstr = operator(I);
+    let mut FirstFPRegOp: u32 = ~0;
+    let mut SecondFPRegOp: u32 = ~0;
+    let mut LiveMask: u32 = 0;
+    for let mut i: u32 = 0;
+let mut e: u32 = MI.getNumOperands(); i != e; i += 1 {
+        let mut Op: *mut MachineOperand = MI.getOperand(i);
+        if  {
+            continue;
+        }
+        assert!(Op.isUse() && (Op.isKill() || getFPReg(Op) == FirstFPRegOp || MI.killsRegister(Op.getReg(), null)), "Ret only defs operands, and values aren't live beyond it");
+        if FirstFPRegOp == ~0 {
+            FirstFPRegOp = getFPReg(Op);
+        } else {
+            assert!(SecondFPRegOp == ~0, "More than two fp operands!");
+            SecondFPRegOp = getFPReg(Op);
+        }
+        LiveMask |= (1 << getFPReg(Op));
+        MI.removeOperand(i);
+        i -= 1;
+        e -= 1;
+    }
+    if FirstFPRegOp != ~0 {
+        MI(CreateReg(false, true));
+    }
+    if SecondFPRegOp != ~0 {
+        MI(CreateReg(false, true));
+    }
+    self.adjustLiveRegs(LiveMask, iterator { MI });
+    if !LiveMask {
+        return;
+    }
+    if SecondFPRegOp == ~0 {
+        assert!(self.StackTop == 1 && FirstFPRegOp == self.getStackEntry(0), "Top of stack not the right register for RET!");
+        self.StackTop = 0;
+        return;
+    }
+    if self.StackTop == 1 {
+        assert!(FirstFPRegOp == SecondFPRegOp && FirstFPRegOp == self.getStackEntry(0), "Stack misconfiguration for RET!");
+        let mut NewReg: u32 = ScratchFPReg;
+        self.duplicateToTop(FirstFPRegOp, NewReg, iterator { MI });
+        FirstFPRegOp = NewReg;
+    }
+    assert!(self.StackTop == 2, "Must have two values live!");
+    if self.getStackEntry(0) == SecondFPRegOp {
+        assert!(self.getStackEntry(1) == FirstFPRegOp, "Unknown regs live");
+        self.moveToTop(FirstFPRegOp, iterator { MI });
+    }
+    assert!(self.getStackEntry(0) == FirstFPRegOp, "Unknown regs live");
+    assert!(self.getStackEntry(1) == SecondFPRegOp, "Unknown regs live");
+    self.StackTop = 0;
+}
+
+fn FPS::handleZeroArgFP(self, I: *mut iterator) {
+    let mut MI: *mut MachineInstr = operator(I);
+    let mut DestReg: u32 = getFPReg(MI.getOperand(0));
+    MI.removeOperand(0);
+    MI.setDesc(self.TII.get);
+    MI(CreateReg(true, true));
+    self.pushReg(DestReg);
+    MI.dropDebugNumber();
+}
+
+fn FPS::handleOneArgFP(self, I: *mut iterator) {
+    let mut MI: *mut MachineInstr = operator(I);
+    let mut NumOps: u32 = MI.getDesc().getNumOperands();
+    assert!((NumOps == AddrNumOperands + 1 || NumOps == 1), "Can only handle fst* & ftst instructions!");
+    let mut Reg: u32 = getFPReg(MI.getOperand(NumOps - 1));
+    let mut KillsSrc: bool = MI.killsRegister;
+    if  {
+        self.duplicateToTop(Reg, ScratchFPReg, iterator { I });
+    } else {
+        self.moveToTop(Reg, iterator { I });
+    }
+    MI.removeOperand(NumOps - 1);
+    MI.setDesc(self.TII.get);
+    MI(CreateReg(false, true));
+    if  {
+        if self.StackTop == 0 {
+            report_fatal_error("Stack empty??", true);
+        }
+        self.StackTop -= 1;
+    } else if KillsSrc {
+        self.popStackAfter(I);
+    }
+    MI.dropDebugNumber();
+}
+
+fn FPS::handleOneArgFPRW(self, I: *mut iterator) {
+    let mut MI: *mut MachineInstr = operator(I);
+    let mut NumOps: u32 = MI.getDesc().getNumOperands();
+    assert!(NumOps >= 2, "FPRW instructions must have 2 ops!!");
+    let mut Reg: u32 = getFPReg(MI.getOperand(1));
+    let mut KillsSrc: bool = MI.killsRegister;
+    if KillsSrc {
+        self.moveToTop(Reg, iterator { I });
+        if self.StackTop == 0 {
+            report_fatal_error("Stack cannot be empty!", true);
+        }
+        self.StackTop -= 1;
+        self.pushReg(getFPReg(MI.getOperand(0)));
+    } else {
+        self.duplicateToTop(Reg, getFPReg(MI.getOperand(0)), iterator { I });
+    }
+    MI.removeOperand(1);
+    MI.removeOperand(0);
+    MI.setDesc(self.TII.get);
+    MI.dropDebugNumber();
+}
+
+const ForwardST0Table: []TableEntry = zeroed();
+
+const ReverseST0Table: []TableEntry = zeroed();
+
+const ForwardSTiTable: []TableEntry = zeroed();
+
+const ReverseSTiTable: []TableEntry = zeroed();
+
+fn FPS::handleTwoArgFP(self, I: *mut iterator) {
+    {
+        let mut ForwardST0TableChecked: atomic<bool> = atomic<bool> { false };
+        if !ForwardST0TableChecked.load(memory_order_relaxed) {
+            assert!(is_sorted(ForwardST0Table), "All lookup tables must be sorted for efficient access!");
+            ForwardST0TableChecked.store(true, memory_order_relaxed);
+        }
+    }
+    {
+        let mut ReverseST0TableChecked: atomic<bool> = atomic<bool> { false };
+        if !ReverseST0TableChecked.load(memory_order_relaxed) {
+            assert!(is_sorted(ReverseST0Table), "All lookup tables must be sorted for efficient access!");
+            ReverseST0TableChecked.store(true, memory_order_relaxed);
+        }
+    }
+    {
+        let mut ForwardSTiTableChecked: atomic<bool> = atomic<bool> { false };
+        if !ForwardSTiTableChecked.load(memory_order_relaxed) {
+            assert!(is_sorted(ForwardSTiTable), "All lookup tables must be sorted for efficient access!");
+            ForwardSTiTableChecked.store(true, memory_order_relaxed);
+        }
+    }
+    {
+        let mut ReverseSTiTableChecked: atomic<bool> = atomic<bool> { false };
+        if !ReverseSTiTableChecked.load(memory_order_relaxed) {
+            assert!(is_sorted(ReverseSTiTable), "All lookup tables must be sorted for efficient access!");
+            ReverseSTiTableChecked.store(true, memory_order_relaxed);
+        }
+    }
+    let mut MI: *mut MachineInstr = operator(I);
+    let mut NumOperands: u32 = MI.getDesc().getNumOperands();
+    assert!(NumOperands == 3, "Illegal TwoArgFP instruction!");
+    let mut Dest: u32 = getFPReg(MI.getOperand(0));
+    let mut Op0: u32 = getFPReg(MI.getOperand(NumOperands - 2));
+    let mut Op1: u32 = getFPReg(MI.getOperand(NumOperands - 1));
+    let mut KillsOp0: bool = MI.killsRegister;
+    let mut KillsOp1: bool = MI.killsRegister;
+    let mut dl: *DebugLoc = MI.getDebugLoc();
+    let mut TOS: u32 = self.getStackEntry(0);
+    if Op0 != TOS && Op1 != TOS {
+        if KillsOp0 {
+            self.moveToTop(Op0, iterator { I });
+            TOS = Op0;
+        } else if KillsOp1 {
+            self.moveToTop(Op1, iterator { I });
+            TOS = Op1;
+        } else {
+            self.duplicateToTop(Op0, Dest, iterator { I });
+            Op0 = TOS = Dest;
+            KillsOp0 = true;
+        }
+    } else if !KillsOp0 && !KillsOp1 {
+        self.duplicateToTop(Op0, Dest, iterator { I });
+        Op0 = TOS = Dest;
+        KillsOp0 = true;
+    }
+    assert!((TOS == Op0 || TOS == Op1) && (KillsOp0 || KillsOp1), "Stack conditions not set up right!");
+    let mut InstTable: ArrayRef<TableEntry> = zeroed();
+    let mut isForward: bool = TOS == Op0;
+    let mut updateST0: bool = (TOS == Op0 && !KillsOp1) || (TOS == Op1 && !KillsOp0);
+    if updateST0 {
+        if isForward {
+            InstTable() = ForwardST0Table;
+        } else {
+            InstTable() = ReverseST0Table;
+        }
+    } else {
+        if isForward {
+            InstTable() = ForwardSTiTable;
+        } else {
+            InstTable() = ReverseSTiTable;
+        }
+    }
+    let mut Opcode: i32 = Lookup(MI.getOpcode());
+    assert!(Opcode != -1, "Unknown TwoArgFP pseudo instruction!");
+    let mut NotTOS: u32 = if (TOS == Op0) { Op1 } else { Op0 };
+    self.MBB.remove(&mut operator(operator(I, 0)));
+    I = BuildMI(*self.MBB, I, dl, self.TII.get)(self.getSTReg(NotTOS));
+    if !MI.mayRaiseFPException() {
+        operator(I).setFlag(NoFPExcept);
+    }
+    if KillsOp0 && KillsOp1 && Op0 != Op1 {
+        assert!(!updateST0, "Should have updated other operand!");
+        self.popStackAfter(I);
+    }
+    let mut UpdatedSlot: u32 = self.getSlot(if updateST0 { TOS } else { NotTOS });
+    assert!(UpdatedSlot < self.StackTop && Dest < 7);
+    self.Stack[UpdatedSlot] = Dest;
+    self.RegMap[Dest] = UpdatedSlot;
+    self.MBB.getParent().deleteMachineInstr(&mut MI);
+}
+
+fn FPS::handleCompareFP(self, I: *mut iterator) {
+    let mut MI: *mut MachineInstr = operator(I);
+    let mut NumOperands: u32 = MI.getDesc().getNumOperands();
+    assert!(NumOperands == 2, "Illegal FUCOM* instruction!");
+    let mut Op0: u32 = getFPReg(MI.getOperand(NumOperands - 2));
+    let mut Op1: u32 = getFPReg(MI.getOperand(NumOperands - 1));
+    let mut KillsOp0: bool = MI.killsRegister;
+    let mut KillsOp1: bool = MI.killsRegister;
+    self.moveToTop(Op0, iterator { I });
+    MI.getOperand(0).setReg(Register { Reg: self.getSTReg(Op1) });
+    MI.removeOperand(1);
+    MI.setDesc(self.TII.get);
+    MI.dropDebugNumber();
+    if KillsOp0 {
+        self.freeStackSlotAfter(I, Op0);
+    }
+    if KillsOp1 && Op0 != Op1 {
+        self.freeStackSlotAfter(I, Op1);
+    }
+}
+
+fn FPS::handleCondMovFP(self, I: *mut iterator) {
+    let mut MI: *mut MachineInstr = operator(I);
+    let mut Op0: u32 = getFPReg(MI.getOperand(0));
+    let mut Op1: u32 = getFPReg(MI.getOperand(2));
+    let mut KillsOp1: bool = MI.killsRegister;
+    self.moveToTop(Op0, iterator { I });
+    MI.removeOperand(0);
+    MI.removeOperand(1);
+    MI.getOperand(0).setReg(Register { Reg: self.getSTReg(Op1) });
+    MI.setDesc(self.TII.get);
+    MI.dropDebugNumber();
+    if Op0 != Op1 && KillsOp1 {
+        self.freeStackSlotAfter(I, Op1);
+    }
+}
+
+fn FPS::handleSpecialFP(self, Inst: *mut iterator) {
+    let mut MI: *mut MachineInstr = operator(Inst);
+    if MI.isCall(AnyInBundle) {
+        self.handleCall(Inst);
+        return;
+    }
+    if MI.isReturn(AnyInBundle) {
+        self.handleReturn(Inst);
+        return;
+    }
+    match MI.getOpcode() {
+        _ => {
+            llvm_unreachable_internal("Unknown SpecialFP instruction!", "llvm\\lib\\Target\\X86\\X86FloatingPoint.cpp", 1555);
+        },
+        COPY => {
+            let mut MO1: *MachineOperand = MI.getOperand(1);
+            let mut MO0: *MachineOperand = MI.getOperand(0);
+            let mut KillsSrc: bool = MI.killsRegister(MO1.getReg(), null);
+            let mut DstFP: u32 = getFPReg(MO0);
+            let mut SrcFP: u32 = getFPReg(MO1);
+            assert!(self.isLive(SrcFP), "Cannot copy dead register");
+            if KillsSrc {
+                let mut Slot: u32 = self.getSlot(SrcFP);
+                self.Stack[Slot] = DstFP;
+                self.RegMap[DstFP] = Slot;
+            } else {
+                self.duplicateToTop(SrcFP, DstFP, iterator { Inst });
+            }
+            break;
+        },
+        IMPLICIT_DEF => {
+            let mut Reg: u32 = 0;
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
+                    dbgs() << "Emitting LD_F0 for implicit FP" << Reg << 10;
+                }
+            }
+                if !(false) { break; }
+            }
+            BuildMI(*self.MBB, Inst, MI.getDebugLoc(), self.TII.get);
+            self.pushReg(Reg);
+            break;
+        },
+        INLINEASM => {
+            INLINEASM_BR;
+        },
+        FAKE_USE => {
+            assert!(MI.getNumExplicitOperands() == 1, "FAKE_USE must have exactly one operand");
+            if MI.getOperand(0).isKill() {
+                self.freeStackSlotBefore(iterator { Inst }, getFPReg(MI.getOperand(0)));
+            }
+            MI.removeOperand(0);
+            return;
+        },
+    }
+    Inst = self.MBB.erase(iterator { Inst });
+    if Inst == self.MBB.begin() {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
+                dbgs() << "Inserting dummy KILL\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        Inst = BuildMI(*self.MBB, Inst, DebugLoc { Loc: null }, self.TII.get);
+    } else {
+        operator(Inst);
+    }
+}
+
+fn FPS::setKillFlags(self: *FPS, MBB: *mut MachineBasicBlock) {
+    let mut TRI: *TargetRegisterInfo = *MBB.getParent().getSubtarget().getRegisterInfo();
+    let mut LPR: LiveRegUnits = LiveRegUnits { TRI };
+    LPR.addLiveOuts(MBB);
+}
+
+fn X86FPStackifierLegacy::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
+    let mut Impl: FPS = FPS {};
+    if !Impl.shouldRun(MF) {
+        return false;
+    }
+    let mut Bundles: *mut EdgeBundles = operator&();
+    return FPS {}.run(MF, Bundles);
+}
+
+fn X86FPStackifierPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
+    let mut Impl: FPS = FPS {};
+    if !Impl.shouldRun(MF) {
+        return all();
+    }
+    let mut Bundles: *mut EdgeBundles = operator&(MFAM);
+    let mut Changed: bool = Impl.run(MF, Bundles);
+    if !Changed {
+        return all();
+    }
+    return getMachineFunctionPassPreservedAnalyses();
+}

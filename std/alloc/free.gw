@@ -1,0 +1,455 @@
+fn mi_free_block_local(page: *mut mi_page_t, block: *mut mi_block_t, was_guarded: bool, check_full: bool) {
+    let mut usable_size: u64 = 0;
+    if __builtin_expect(!!(!mi_check_padding_on_free(page, block, was_guarded, &mut usable_size)), false) {
+        return;
+    }
+    if __builtin_expect(!!(!mi_check_double_free(page, block)), false) {
+        return;
+    }
+    let mut dbgsize: u64 = (if usable_size > ((1024) * (1024)) { ((1024) * (1024)) } else { usable_size });
+    _mi_memset_aligned(block, (223), dbgsize);
+    let mut xused: mi_used_t = page.xused;
+    xused.used_alloc -= 1;
+    mi_block_set_next(page, block, page.local_free);
+    page.xused = xused;
+    page.local_free = block;
+    (if (mi_page_alloc_count(page) + mi_page_last_used(page) >= mi_page_used(page)) { 0 as void } else { _mi_assert_fail("mi_page_alloc_count(page) + mi_page_last_used(page) >= mi_page_used(page)", "mimalloc\\src\\free.c", 48, "mi_free_block_local") });
+    if __builtin_expect(!!(mi_xused_used_count(xused) == 0), false) {
+        if page.retire_expire == 0 {
+            _mi_page_retire(page);
+        }
+    } else if __builtin_expect(!!(check_full && mi_page_is_in_full(page)), false) {
+        _mi_page_unfull(page);
+    }
+}
+
+fn mi_free_block_mt(page: *mut mi_page_t, block: *mut mi_block_t, was_guarded: bool, allow_reclaim: bool) {
+    let mut usable_size: u64 = 0;
+    if __builtin_expect(!!(!mi_check_padding_on_free(page, block, was_guarded, &mut usable_size)), false) {
+        return;
+    }
+    if !was_guarded {
+        let mut dbgsize: u64 = (if usable_size > ((1024) * (1024)) { ((1024) * (1024)) } else { usable_size });
+        _mi_memset_aligned(block, (223), dbgsize);
+    }
+    let mut tf_new: mi_thread_free_t = zeroed();
+    let mut tf_old: mi_thread_free_t = atomic_load_explicit(&mut page.xthread_free, memory_order_relaxed);
+    while true {
+        {
+        mi_block_set_next(page, block, mi_tf_block(tf_old));
+        tf_new = mi_tf_create(block, true);
+    }
+        if !(!atomic_compare_exchange_weak_explicit(&mut page.xthread_free, &mut tf_old, tf_new, memory_order_acq_rel, memory_order_acquire)) { break; }
+    }
+    let mut is_newly_owned: bool = mi_tf_is_owned(tf_new) && !mi_tf_is_owned(tf_old);
+    if is_newly_owned {
+        (if (mi_page_is_abandoned(page)) { 0 as void } else { _mi_assert_fail("mi_page_is_abandoned(page)", "mimalloc\\src\\free.c", 92, "mi_free_block_mt") });
+        mi_free_try_collect_mt(page, block, allow_reclaim);
+    }
+}
+
+fn mi_page_ptr_unalign_ex(page: *mi_page_t, p: *void, poffset: *mut u64) -> *mut mi_block_t {
+    (if (page != 0 && p != 0) { 0 as void } else { _mi_assert_fail("page!=NULL && p!=NULL", "mimalloc\\src\\free.c", 104, "mi_page_ptr_unalign_ex") });
+    let mut diff: u64 = p as *mut u8 - mi_page_start(page);
+    let mut block_size: u64 = mi_page_block_size(page);
+    let mut adjust: u64 = diff & (block_size - 1);
+    if __builtin_expect(!!(!_mi_is_power_of_two(block_size)), false) {
+        adjust = diff % block_size;
+    }
+    if poffset != 0 {
+        *poffset = adjust;
+    }
+    return (p as u64 - adjust) as *mut mi_block_t;
+}
+
+fn mi_validate_block_from_ptr(page: *mi_page_t, p: *void) -> *mut mi_block_t {
+    (if (_mi_page_ptr_unalign(page, p) == p as *mut mi_block_t) { 0 as void } else { _mi_assert_fail("_mi_page_ptr_unalign(page,p) == (mi_block_t*)p", "mimalloc\\src\\free.c", 121, "mi_validate_block_from_ptr") });
+    (page) as void;
+    return p as *mut mi_block_t;
+}
+
+fn mi_page_ptr_block_check(page: *mut mi_page_t, p: *mut void, was_guarded: *mut bool) -> *mut mi_block_t {
+    (was_guarded) as void;
+    if __builtin_expect(!!(!mi_page_has_interior_pointers(page)), true) {
+        return mi_validate_block_from_ptr(page, p);
+    } else {
+        let mut offset: u64 = 0;
+        let mut block: mi_block_t *const = mi_page_ptr_unalign_ex(page, p, &mut offset);
+        if offset >=  {
+            if block.next == ((1) as mi_encoded_t) {
+                _mi_page_profile_on_free(page, block, p);
+            } else if block.next == (~((0) as mi_encoded_t)) {
+                _mi_page_block_unguard(page, block, p);
+                *was_guarded = true;
+            } else {}
+        }
+        return block;
+    }
+}
+
+fn mi_free_generic_local(page: *mut mi_page_t, p: *mut void) {
+    (if (p != 0 && page != 0) { 0 as void } else { _mi_assert_fail("p!=NULL && page != NULL", "mimalloc\\src\\free.c", 163, "mi_free_generic_local") });
+    let mut was_guarded: bool = false;
+    let mut block: *mut mi_block_t = mi_page_ptr_block_check(page, p, &mut was_guarded);
+    mi_free_block_local(page, block, was_guarded, true);
+}
+
+fn mi_free_generic_mt(page: *mut mi_page_t, p: *mut void, allow_reclaim: bool) {
+    (if (p != 0 && page != 0) { 0 as void } else { _mi_assert_fail("p!=NULL && page != NULL", "mimalloc\\src\\free.c", 174, "mi_free_generic_mt") });
+    let mut was_guarded: bool = false;
+    let mut block: *mut mi_block_t = mi_page_ptr_block_check(page, p, &mut was_guarded);
+    mi_free_block_mt(page, block, was_guarded, allow_reclaim);
+}
+
+fn mi_ptr_page_is_valid_ex(p: *void, msg: *u8, free_small: bool, check_p_for_null: bool, ppage: *mut *mut mi_page_t) -> bool {
+    (free_small) as void;
+    if __builtin_expect(!!(!_mi_is_aligned(p, (1 << (3))) && !mi_option_is_enabled(mi_option_guarded_precise)), false) {
+        _mi_error_message(22, "%s: invalid (unaligned) pointer: %p\n", msg, p);
+        return false;
+    }
+    let mut page: *mut mi_page_t = null;
+    {
+        {
+            page = _mi_aligned_ptr_page0(p);
+        }
+        if __builtin_expect(!!(page == 0 && check_p_for_null), false) {
+            if p != 0 {
+                _mi_error_message(22, "%s: invalid pointer: %p\n", msg, p);
+            }
+            return false;
+        }
+    }
+    let mut cpage: mi_page_t *const = _mi_checked_ptr_page(p);
+    if __builtin_expect(!!(cpage == 0), false) {
+        _mi_error_message(22, "%s: invalid pointer: %p\n", msg, p);
+    }
+    {
+        page = atomic_load_explicit(&mut page.self, memory_order_acquire);
+    }
+    (if (page != 0) { 0 as void } else { _mi_assert_fail("page!=NULL", "mimalloc\\src\\free.c", 241, "mi_ptr_page_is_valid_ex") });
+    (if (cpage == page) { 0 as void } else { _mi_assert_fail("cpage==page", "mimalloc\\src\\free.c", 242, "mi_ptr_page_is_valid_ex") });
+    *ppage = page;
+    return true;
+}
+
+fn mi_ptr_page_is_valid(p: *void, msg: *u8, ppage: *mut *mut mi_page_t) -> bool {
+    return mi_ptr_page_is_valid_ex(p, msg, false, true, ppage);
+}
+
+fn mi_ptr_page_validate(p: *void, msg: *u8) -> *mut mi_page_t {
+    let mut page: *mut mi_page_t = null;
+    return (if mi_ptr_page_is_valid(p, msg, &mut page) { page } else { 0 });
+}
+
+fn mi_free_nonnull(p: *mut void, page: *mut mi_page_t, pblock_size: *mut u64, allow_reclaim: bool) {
+    (if (p != 0 && page != 0) { 0 as void } else { _mi_assert_fail("p!=NULL && page!=NULL", "mimalloc\\src\\free.c", 263, "mi_free_nonnull") });
+    if pblock_size != 0 {
+        *pblock_size = mi_page_block_size(page);
+    }
+    let mut ptid: mi_threadid_t = mi_page_xthread_id(page);
+    let mut xtid: mi_threadid_t = (_mi_prim_thread_id() ^ ptid);
+    if __builtin_expect(!!(xtid == 0), true) {
+        let mut block: mi_block_t *const = mi_validate_block_from_ptr(page, p);
+        mi_free_block_local(page, block, false, false);
+    } else if xtid <= 3 {
+        mi_free_generic_local(page, p);
+    } else if (xtid & 3) == 0 {
+        let mut block: mi_block_t *const = mi_validate_block_from_ptr(page, p);
+        mi_free_block_mt(page, block, false, allow_reclaim);
+    } else {
+        mi_free_generic_mt(page, p, allow_reclaim);
+    }
+}
+
+fn mi_free(p: *mut void) {
+    let mut page: *mut mi_page_t = null;
+    if __builtin_expect(!!(mi_ptr_page_is_valid(p, "mi_free", &mut page)), true) {
+        mi_free_nonnull(p, page, 0, true);
+    }
+}
+
+fn mi_ufree(p: *mut void, pblock_size: *mut u64) {
+    let mut page: *mut mi_page_t = null;
+    if __builtin_expect(!!(mi_ptr_page_is_valid(p, "mi_ufree", &mut page)), true) {
+        mi_free_nonnull(p, page, pblock_size, true);
+    } else {
+        if pblock_size != 0 {
+            *pblock_size = 0;
+        }
+    }
+}
+
+fn mi_free_small(p: *mut void) {
+    let mut page: *mut mi_page_t = null;
+    if __builtin_expect(!!(mi_ptr_page_is_valid_ex(p, "mi_free_small", true, true, &mut page)), true) {
+        mi_free_nonnull(p, page, 0, true);
+    }
+}
+
+fn mi_free_small_nonnull(p: *mut void) {
+    (if (p != 0) { 0 as void } else { _mi_assert_fail("p!=NULL", "mimalloc\\src\\free.c", 314, "mi_free_small_nonnull") });
+    let mut page: *mut mi_page_t = null;
+    if __builtin_expect(!!(mi_ptr_page_is_valid_ex(p, "mi_free_small_nonnull", true, false, &mut page)), true) {
+        mi_free_nonnull(p, page, 0, true);
+    }
+}
+
+fn mi_free_size(p: *mut void, size: u64) {
+    let mut page: mi_page_t *const = mi_ptr_page_validate(p, "mi_free_size");
+    if page == 0 {
+        return;
+    }
+    (if (p != 0) { 0 as void } else { _mi_assert_fail("p!=NULL", "mimalloc\\src\\free.c", 339, "mi_free_size") });
+    let mut block: *mi_block_t = _mi_page_ptr_unalign(page, p);
+    let mut usable: u64 = _mi_page_usable_size(page, p);
+    if __builtin_expect(!!(size > usable), false) {
+        let mut is_guarded: bool = mi_block_ptr_is_guarded(block, p);
+        if !is_guarded {
+            _mi_error_message(22, "pointer %p is freed with mi_free_size but the size %zu is greater than the usable size %zu\n", p, size, usable);
+            mi_free(p);
+            return;
+        }
+    }
+    if __builtin_expect(!!(size <= (128 * )), true) {
+        mi_free_small(p);
+    } else {
+        mi_free(p);
+    }
+}
+
+fn mi_free_size_aligned(p: *mut void, size: u64, alignment: u64) {
+    (if ((p as u64 % alignment) == 0) { 0 as void } else { _mi_assert_fail("((uintptr_t)p % alignment) == 0", "mimalloc\\src\\free.c", 372, "mi_free_size_aligned") });
+    if __builtin_expect(!!(alignment <= size), true) {
+        mi_free_size(p, size);
+    } else {
+        mi_free(p);
+    }
+}
+
+fn mi_free_aligned(p: *mut void, alignment: u64) {
+    (if ((p as u64 % alignment) == 0) { 0 as void } else { _mi_assert_fail("((uintptr_t)p % alignment) == 0", "mimalloc\\src\\free.c", 386, "mi_free_aligned") });
+    mi_free(p);
+}
+
+fn mi_cfree(p: *mut void) -> bool {
+    let mut page: mi_page_t *const = _mi_checked_ptr_page(p);
+    if __builtin_expect(!!(page != 0), true) {
+        mi_free_nonnull(p, page, 0, true);
+        return true;
+    } else {
+        return false;
+    }
+}
+
+fn mi_abandoned_page_try_free(page: *mut mi_page_t) -> bool {
+    if !mi_page_all_free(page) {
+        return false;
+    }
+    _mi_arenas_page_unabandon(page, 0);
+    _mi_arenas_page_free(page, 0);
+    return true;
+}
+
+fn mi_abandoned_page_try_reabandon_to_mapped(page: *mut mi_page_t) -> bool {
+    if mi_page_is_mostly_used(page) {
+        return false;
+    }
+    if page.memid.memkind != MI_MEM_ARENA || mi_page_is_abandoned_mapped(page) {
+        return false;
+    }
+    (if (!mi_page_is_full(page)) { 0 as void } else { _mi_assert_fail("!mi_page_is_full(page)", "mimalloc\\src\\free.c", 428, "mi_abandoned_page_try_reabandon_to_mapped") });
+    return _mi_arenas_page_try_reabandon_to_mapped(page);
+}
+
+fn mi_abandoned_page_unown_from_free(page: *mut mi_page_t, page_thread_free: *mut mi_block_t) {
+    (if (mi_page_is_owned(page)) { 0 as void } else { _mi_assert_fail("mi_page_is_owned(page)", "mimalloc\\src\\free.c", 436, "mi_abandoned_page_unown_from_free") });
+    (if (mi_page_is_abandoned(page)) { 0 as void } else { _mi_assert_fail("mi_page_is_abandoned(page)", "mimalloc\\src\\free.c", 437, "mi_abandoned_page_unown_from_free") });
+    (if (!mi_page_all_free(page)) { 0 as void } else { _mi_assert_fail("!mi_page_all_free(page)", "mimalloc\\src\\free.c", 438, "mi_abandoned_page_unown_from_free") });
+    let mut tf_expect: mi_thread_free_t = mi_tf_create(page_thread_free, true);
+    let mut tf_new: mi_thread_free_t = mi_tf_set_owned(tf_expect, false);
+    while __builtin_expect(!!(!atomic_compare_exchange_strong_explicit(&mut page.xthread_free, &mut tf_expect, tf_new, memory_order_acq_rel, memory_order_acquire)), false) {
+        (if (mi_tf_is_owned(tf_expect)) { 0 as void } else { _mi_assert_fail("mi_tf_is_owned(tf_expect)", "mimalloc\\src\\free.c", 443, "mi_abandoned_page_unown_from_free") });
+        while mi_tf_block(tf_expect) != 0 {
+            _mi_page_free_collect(page, false);
+            if mi_abandoned_page_try_free(page) {
+                return;
+            }
+            if mi_abandoned_page_try_reabandon_to_mapped(page) {
+                return;
+            }
+            tf_expect = atomic_load_explicit(&mut page.xthread_free, memory_order_acquire);
+        }
+        __mi_stat_counter_increase_mt(&mut (mi_page_subproc(page)).stats.pages_unabandon_busy_wait, 1);
+        (if (mi_tf_block(tf_expect) == 0) { 0 as void } else { _mi_assert_fail("mi_tf_block(tf_expect)==NULL", "mimalloc\\src\\free.c", 455, "mi_abandoned_page_unown_from_free") });
+        tf_new = mi_tf_create(0, false);
+    }
+}
+
+fn mi_page_queue_len_is_atmost(theap: *mut mi_theap_t, block_size: u64, atmost: i64) -> bool {
+    if atmost < 0 {
+        return false;
+    }
+    let mut pq: mi_page_queue_t *const = mi_page_queue(theap, block_size);
+    (if (pq != 0) { 0 as void } else { _mi_assert_fail("pq!=NULL", "mimalloc\\src\\free.c", 463, "mi_page_queue_len_is_atmost") });
+    return (pq.count <= atmost as u64);
+}
+
+fn mi_abandoned_page_try_reclaim(page: *mut mi_page_t, reclaim_on_free: i64) -> bool {
+    (if (mi_page_is_owned(page)) { 0 as void } else { _mi_assert_fail("mi_page_is_owned(page)", "mimalloc\\src\\free.c", 476, "mi_abandoned_page_try_reclaim") });
+    (if (mi_page_is_abandoned(page)) { 0 as void } else { _mi_assert_fail("mi_page_is_abandoned(page)", "mimalloc\\src\\free.c", 477, "mi_abandoned_page_try_reclaim") });
+    (if (!mi_page_all_free(page)) { 0 as void } else { _mi_assert_fail("!mi_page_all_free(page)", "mimalloc\\src\\free.c", 478, "mi_abandoned_page_try_reclaim") });
+    (if (page.block_size <= (((8 * ((1) * (1 << (13 + (3))))) - (4 * (1024))) / 6)) { 0 as void } else { _mi_assert_fail("page->block_size <= MI_MEDIUM_MAX_OBJ_SIZE", "mimalloc\\src\\free.c", 479, "mi_abandoned_page_try_reclaim") });
+    (if (reclaim_on_free >= 0) { 0 as void } else { _mi_assert_fail("reclaim_on_free >= 0", "mimalloc\\src\\free.c", 480, "mi_abandoned_page_try_reclaim") });
+    if !_mi_thread_is_initialized() {
+        return false;
+    }
+    let mut theap: mi_theap_t *const = _mi_page_associated_theap_peek(page);
+    if theap == 0 || theap.tld == 0 || !theap.allow_page_reclaim {
+        return false;
+    }
+    let mut max_reclaim: i64 = 0;
+    if __builtin_expect(!!(theap == page.theap), true) {
+        max_reclaim = _mi_option_get_fast(if theap.tld.is_in_threadpool { mi_option_page_cross_thread_max_reclaim } else { mi_option_page_max_reclaim });
+    } else if reclaim_on_free == 1 && !theap.tld.is_in_threadpool && !mi_page_is_mostly_used(page) && _mi_arena_memid_is_suitable(page.memid, _mi_theap_heap(theap).exclusive_arena) {
+        max_reclaim = _mi_option_get_fast(mi_option_page_cross_thread_max_reclaim);
+    }
+    if max_reclaim >= 0 && !mi_page_queue_len_is_atmost(theap, page.block_size, max_reclaim) {
+        return false;
+    }
+    _mi_arenas_page_unabandon(page, theap);
+    _mi_theap_page_reclaim(theap, page);
+    __mi_stat_counter_increase(&mut (theap).stats.pages_reclaim_on_free, 1);
+    return true;
+}
+
+fn mi_free_try_collect_mt(page: *mut mi_page_t, mt_free: *mut mi_block_t, allow_reclaim: bool) {
+    (if (mi_page_is_owned(page)) { 0 as void } else { _mi_assert_fail("mi_page_is_owned(page)", "mimalloc\\src\\free.c", 522, "mi_free_try_collect_mt") });
+    (if (mi_page_is_abandoned(page)) { 0 as void } else { _mi_assert_fail("mi_page_is_abandoned(page)", "mimalloc\\src\\free.c", 523, "mi_free_try_collect_mt") });
+    (if (mt_free != 0) { 0 as void } else { _mi_assert_fail("mt_free != NULL", "mimalloc\\src\\free.c", 524, "mi_free_try_collect_mt") });
+    if page.block_size <= (128 * ) {
+        (if (page.reserved >= 16) { 0 as void } else { _mi_assert_fail("page->reserved>=16", "mimalloc\\src\\free.c", 532, "mi_free_try_collect_mt") });
+        mt_free = _mi_page_free_collect_partly(page, mt_free);
+    } else {
+        _mi_page_free_collect(page, false);
+        mt_free = 0;
+    }
+    let mut reclaim_on_free: i64 = allow_reclaim && _mi_option_get_fast(mi_option_page_reclaim_on_free);
+    if mi_page_is_singleton(page) {
+        (if (mi_page_all_free(page)) { 0 as void } else { _mi_assert_fail("mi_page_all_free(page)", "mimalloc\\src\\free.c", 542, "mi_free_try_collect_mt") });
+    }
+    if mi_page_is_full(page) {
+        (if (mi_page_is_mostly_used(page)) { 0 as void } else { _mi_assert_fail("mi_page_is_mostly_used(page)", "mimalloc\\src\\free.c", 543, "mi_free_try_collect_mt") });
+    }
+    if mi_abandoned_page_try_free(page) {
+        return;
+    }
+    if page.block_size <= (((8 * ((1) * (1 << (13 + (3))))) - (4 * (1024))) / 6) && reclaim_on_free >= 0 {
+        if mi_abandoned_page_try_reclaim(page, reclaim_on_free) {
+            return;
+        }
+    }
+    if mi_abandoned_page_try_reabandon_to_mapped(page) {
+        return;
+    }
+    mi_abandoned_page_unown_from_free(page, mt_free);
+}
+
+fn mi_page_usable_aligned_size_of(page: *mi_page_t, p: *void, block: *mi_block_t) -> u64 {
+    let mut is_guarded: bool = mi_block_ptr_is_guarded(block, p);
+    let mut size: u64 = mi_page_usable_size_of(page, block, is_guarded);
+    (if (p as *mut void >= block as *mut void) { 0 as void } else { _mi_assert_fail("(void*)p >= (void*)block", "mimalloc\\src\\free.c", 567, "mi_page_usable_aligned_size_of") });
+    let mut adjust: u64 = p as *mut u8 - block as *mut u8;
+    (if (adjust <= size) { 0 as void } else { _mi_assert_fail("adjust <= size", "mimalloc\\src\\free.c", 569, "mi_page_usable_aligned_size_of") });
+    let mut aligned_size: u64 = (if adjust <= size { size - adjust } else { 0 });
+    return aligned_size;
+}
+
+fn mi_usable_size(p: *void) -> u64 {
+    let mut page: mi_page_t *const = mi_ptr_page_validate(p, "mi_usable_size");
+    return _mi_page_usable_size(page, p);
+}
+
+fn mi_check_double_free(page: *mi_page_t, block: *mi_block_t) -> bool {
+    (page) as void;
+    (block) as void;
+    return true;
+}
+
+fn mi_page_decode_padding(page: *mi_page_t, block: *mi_block_t, delta: *mut u64, bsize: *mut u64, double_free: *mut bool) -> bool {
+    *bsize = mi_page_usable_block_size(page);
+    let mut padding: mi_padding_t *const = (block as *mut u8 + *bsize) as *mut mi_padding_t;
+    *delta = padding.delta;
+    let mut canary: u32 = padding.canary;
+    let mut ok: bool = (mi_ptr_encode_canary(page, block, page.keys) == canary && *delta <= *bsize);
+    if double_free != 0 {
+        if __builtin_expect(!!(!ok), false) {
+            *double_free = mi_ptr_decode_canary_is_freed(canary);
+        } else {
+            padding.canary = mi_ptr_encode_canary_freed();
+        }
+    }
+    return ok;
+}
+
+fn mi_page_usable_size_of(page: *mi_page_t, block: *mi_block_t, is_guarded: bool) -> u64 {
+    if __builtin_expect(!!(is_guarded), false) {
+        let mut bsize: u64 = mi_page_block_size(page);
+        return (bsize - _mi_os_page_size());
+    } else {
+        let mut bsize: u64 = 0;
+        let mut delta: u64 = 0;
+        let mut ok: bool = mi_page_decode_padding(page, block, &mut delta, &mut bsize, 0);
+        (if (ok) { 0 as void } else { _mi_assert_fail("ok", "mimalloc\\src\\free.c", 685, "mi_page_usable_size_of") });
+        (if (delta <= bsize) { 0 as void } else { _mi_assert_fail("delta <= bsize", "mimalloc\\src\\free.c", 685, "mi_page_usable_size_of") });
+        return (if ok { bsize - delta } else { 0 });
+    }
+}
+
+fn mi_verify_padding(page: *mi_page_t, block: *mi_block_t, size: *mut u64, wrong: *mut u64, is_double_free: *mut bool) -> bool {
+    let mut bsize: u64 = 0;
+    let mut delta: u64 = 0;
+    let mut ok: bool = mi_page_decode_padding(page, block, &mut delta, &mut bsize, is_double_free);
+    *size = *wrong = bsize;
+    if !ok {
+        return false;
+    }
+    (if (bsize >= delta) { 0 as void } else { _mi_assert_fail("bsize >= delta", "mimalloc\\src\\free.c", 735, "mi_verify_padding") });
+    *size = bsize - delta;
+    if !mi_page_is_huge(page) {
+        let mut fill: *mut u8 = block as *mut u8 + bsize - delta;
+        let mut maxpad: u64 = (if delta > 16 { 16 } else { delta });
+        for let mut i: u64 = 0; i < maxpad; i += 1 {
+            if fill[i] != (222) {
+                *wrong = bsize - delta + i;
+                ok = false;
+                break;
+            }
+        }
+    }
+    return ok;
+}
+
+fn mi_check_padding_on_free(page: *mi_page_t, block: *mi_block_t, is_guarded: bool, usable_size: *mut u64) -> bool {
+    if __builtin_expect(!!(is_guarded), false) {
+        let mut bsize: u64 = mi_page_block_size(page);
+        *usable_size = (bsize - _mi_os_page_size());
+        return true;
+    } else {
+        let mut wrong: u64 = 0;
+        let mut is_double_free: bool = false;
+        if __builtin_expect(!!(!mi_verify_padding(page, block, usable_size, &mut wrong, &mut is_double_free)), false) {
+            if is_double_free {
+                _mi_error_message(11, "double free detected of heap block %p with size %zu\n", block, *usable_size);
+            } else {
+                _mi_error_message(14, "buffer overflow in heap block %p of size %zu: write after %zu bytes\n", block, *usable_size, wrong);
+            }
+            return false;
+        }
+        return true;
+    }
+}
+
+fn mi_stat_free(page: *mi_page_t, block: *mi_block_t) {
+    (page) as void;
+    (block) as void;
+}

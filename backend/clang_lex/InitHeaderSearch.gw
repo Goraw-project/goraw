@@ -1,0 +1,269 @@
+struct DirectoryLookupInfo {
+    Group: IncludeDirGroup,
+    Lookup: DirectoryLookup,
+    UserEntryIdx: optional<unsigned int>,
+}
+
+struct InitHeaderSearch {
+    IncludePath: i32,
+    SystemHeaderPrefixes: i32,
+    Headers: *mut HeaderSearch,
+    Verbose: bool,
+    IncludeSysroot: str,
+    HasSysroot: bool,
+}
+
+fn InitHeaderSearch::AddSystemHeaderPrefix(self, Prefix: str, IsSystemHeader: bool) {}
+
+fn CanPrefixSysroot(Path: str) -> bool {
+    return !Path.is_empty() && is_separator(Path[0], native);
+}
+
+fn InitHeaderSearch::AddPath(self, Path: str, Group: IncludeDirGroup, isFramework: bool, UserEntryIdx: optional<unsigned int>) -> bool {
+    if self.HasSysroot {
+        let mut MappedPathStorage: str = zeroed();
+        let mut MappedPathStr: str = Path.toStringRef();
+        if CanPrefixSysroot(MappedPathStr) {
+            return self.AddUnmappedPath(self.IncludeSysroot + Path, Group, isFramework, UserEntryIdx);
+        }
+    }
+    return self.AddUnmappedPath(Path, Group, isFramework, UserEntryIdx);
+}
+
+fn InitHeaderSearch::AddUnmappedPath(self, Path: str, Group: IncludeDirGroup, isFramework: bool, UserEntryIdx: optional<unsigned int>) -> bool {
+    assert!(!Path.isTriviallyEmpty(), "can't handle empty path here");
+    let mut FM: *mut FileManager = self.Headers.getFileMgr();
+    let mut MappedPathStorage: str = zeroed();
+    let mut MappedPathStr: str = Path.toStringRef();
+    if self.HasSysroot && (MappedPathStr.starts_with("/usr/include") || MappedPathStr.starts_with("/usr/local/include")) {
+        self.Headers.getDiags() << MappedPathStr;
+    }
+    let mut Type: CharacteristicKind = zeroed();
+    if Group == Quoted || Group == Angled {
+        Type = C_User;
+    } else if Group == ExternCSystem {
+        Type = C_ExternCSystem;
+    } else {
+        Type = C_System;
+    }
+    if  {
+        return true;
+    }
+    if !isFramework {
+        if  {
+            if self.Headers.CreateHeaderMap(*) {
+                HM;
+            } else {
+                return true;
+            }
+        }
+    }
+    if self.Verbose {
+        errs() << "ignoring nonexistent directory \"" << MappedPathStr << "\"\n";
+    }
+    return false;
+}
+
+fn InitHeaderSearch::AddDefaultCIncludePaths(self, triple: *Triple, HSOpts: *HeaderSearchOptions) {
+    if !self.ShouldAddDefaultIncludePaths(triple) {
+        llvm_unreachable_internal("Include management is handled in the driver.", "clang\\lib\\Lex\\InitHeaderSearch.cpp", 176);
+    }
+    if HSOpts.UseStandardSystemIncludes {
+        self.AddPath("/usr/local/include", System, false, nullopt);
+    }
+    if HSOpts.UseBuiltinIncludes {
+        let mut P: str = zeroed();
+        append("include");
+        self.AddUnmappedPath(ExternCSystem, false);
+    }
+    if !HSOpts.UseStandardSystemIncludes {
+        return;
+    }
+    if CIncludeDirs() != "" {
+        let mut dirs: SmallVector<StringRef, 5> = zeroed();
+        CIncludeDirs()(":");
+        return;
+    }
+    self.AddPath("/usr/include", ExternCSystem, false, nullopt);
+}
+
+fn InitHeaderSearch::ShouldAddDefaultIncludePaths(self, triple: *Triple) -> bool {
+    match triple.getOS() {
+        AIX => {
+            DragonFly;
+        },
+        UnknownOS => {
+            if triple.isWasm() || triple.isAppleMachO() {
+                return false;
+            }
+        },
+        _ => {
+            break;
+        },
+    }
+    if triple.isOSDarwin() {
+        return false;
+    }
+    if triple.getArch() == hexagon {
+        return false;
+    }
+    return true;
+}
+
+fn InitHeaderSearch::AddDefaultIncludePaths(self, Lang: *LangOptions, triple: *Triple, HSOpts: *HeaderSearchOptions) {
+    if !self.ShouldAddDefaultIncludePaths(triple) {
+        return;
+    }
+    if Lang.CPlusPlus && !Lang.AsmPreprocessor && HSOpts.UseStandardCXXIncludes && HSOpts.UseStandardSystemIncludes {
+        if HSOpts.UseLibcxx {
+            self.AddPath("/usr/include/c++/v1", CXXSystem, false, nullopt);
+        }
+    }
+    self.AddDefaultCIncludePaths(triple, HSOpts);
+}
+
+fn RemoveDuplicates(SearchList: *mut i32, First: u32, Verbose: bool) -> u32 {
+    let mut SeenDirs: SmallPtrSet<const DirectoryEntry *, 8> = zeroed();
+    let mut SeenFrameworkDirs: SmallPtrSet<const DirectoryEntry *, 8> = zeroed();
+    let mut SeenHeaderMaps: SmallPtrSet<const HeaderMap *, 8> = zeroed();
+    let mut NonSystemRemoved: u32 = 0;
+    for let mut i: u32 = First; i != (); i += 1 {
+        let mut DirToRemove: u32 = i;
+        let mut CurEntry: *DirectoryLookup = [i];
+        if CurEntry.isNormalDir() {
+            if SeenDirs()(CurEntry.getDir()) {
+                continue;
+            }
+        } else if CurEntry.isFramework() {
+            if SeenFrameworkDirs()(CurEntry.getFrameworkDir()) {
+                continue;
+            }
+        } else {
+            assert!(CurEntry.isHeaderMap(), "Not a headermap or normal dir?");
+            if SeenHeaderMaps()(CurEntry.getHeaderMap()) {
+                continue;
+            }
+        }
+        if CurEntry.getDirCharacteristic() != C_User {
+            let mut FirstDir: u32 = 0;
+            for FirstDir = First; ; FirstDir += 1 {
+                assert!(FirstDir != i, "Didn't find dupe?");
+                let mut SearchEntry: *DirectoryLookup = [FirstDir];
+                if SearchEntry.getLookupType() != CurEntry.getLookupType() {
+                    continue;
+                }
+                let mut isSame: bool = false;
+                if CurEntry.isNormalDir() {
+                    isSame = SearchEntry.getDir() == CurEntry.getDir();
+                } else if CurEntry.isFramework() {
+                    isSame = SearchEntry.getFrameworkDir() == CurEntry.getFrameworkDir();
+                } else {
+                    assert!(CurEntry.isHeaderMap(), "Not a headermap or normal dir?");
+                    isSame = SearchEntry.getHeaderMap() == CurEntry.getHeaderMap();
+                }
+                if isSame {
+                    break;
+                }
+            }
+            if SearchList()[FirstDir]() == C_User {
+                DirToRemove = FirstDir;
+            }
+        }
+        if Verbose {
+            errs() << "ignoring duplicate directory \"" << CurEntry.getName() << "\"\n";
+            if DirToRemove != i {
+                errs() << "  as it is a non-system directory that duplicates " << "a system directory\n";
+            }
+        }
+        if DirToRemove != i {
+            NonSystemRemoved += 1;
+        }
+        SearchList()(() + DirToRemove);
+        i -= 1;
+    }
+    return NonSystemRemoved;
+}
+
+fn extractLookups(Infos: i32) -> i32 {
+    let mut Lookups: i32 = 0;
+    Lookups()();
+    transform(back_inserter(), Closure_1 {});
+    return ;
+}
+
+fn mapToUserEntries(Infos: i32) -> i32 {
+    let mut LookupsToUserEntries: i32 = 0;
+    for let mut I: u32 = 0;
+let mut E: u32 = (); I < E; I += 1 {
+        if Infos()[I] {
+            LookupsToUserEntries()(void { I, *[I] });
+        }
+    }
+    return ;
+}
+
+fn InitHeaderSearch::Realize(self, Lang: *LangOptions) {
+    let mut SearchList: i32 = 0;
+    SearchList();
+    RemoveDuplicates(0, self.Verbose);
+    let mut NumQuoted: u32 = ();
+    RemoveDuplicates(NumQuoted, self.Verbose);
+    let mut NumAngled: u32 = ();
+    let mut NonSystemRemoved: u32 = 0;
+    NumAngled -= NonSystemRemoved;
+    self.Headers;
+    self.Headers.SetSystemHeaderPrefixes;
+    if self.Verbose {
+        errs() << "#include \"...\" search starts here:\n";
+        for let mut i: u32 = 0;
+let mut e: u32 = (); i != e; i += 1 {
+            if i == NumQuoted {
+                errs() << "#include <...> search starts here:\n";
+            }
+            let mut Name: str = [i]();
+            let mut Suffix: *u8 = null;
+            if SearchList()[i]() {
+                Suffix = "";
+            } else if SearchList()[i]() {
+                Suffix = " (framework directory)";
+            } else {
+                assert!(SearchList()[i](), "Unknown DirectoryLookup");
+                Suffix = " (headermap)";
+            }
+            errs() << " " << Name << Suffix << "\n";
+        }
+        errs() << "End of search list.\n";
+    }
+}
+
+fn ApplyHeaderSearchOptions(HS: *mut HeaderSearch, HSOpts: *HeaderSearchOptions, Lang: *LangOptions, Triple: *Triple) {
+    let mut Init: InitHeaderSearch = InitHeaderSearch { HS, HSOpts.Verbose, HSOpts.Sysroot };
+    for let mut i: u32 = 0;
+let mut e: u32 = HSOpts()(); i != e; i += 1 {
+        let mut E: *Entry = HSOpts()[i];
+        if E.IgnoreSysRoot {
+            Init.AddUnmappedPath;
+        } else {
+            Init.AddPath;
+        }
+    }
+    Init.AddDefaultIncludePaths(Lang, Triple, HSOpts);
+    for let mut i: u32 = 0;
+let mut e: u32 = HSOpts()(); i != e; i += 1 {
+        Init.AddSystemHeaderPrefix(HSOpts()[i], HSOpts()[i]);
+    }
+    if HSOpts.UseBuiltinIncludes {
+        let mut P: str = zeroed();
+        append("include");
+        if  {
+            HS.getModuleMap().setBuiltinIncludeDir(*);
+        }
+    }
+    Init.Realize(Lang);
+}
+
+struct Closure_1 {}
+
+fn Closure_1::call(self: *Closure_1, Info: *DirectoryLookupInfo) -> DirectoryLookup {
+        return Info.Lookup;
+    }

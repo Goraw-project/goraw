@@ -1,0 +1,3965 @@
+static mut NumLoadMoved: Statistic = Statistic { "x86-isel", "NumLoadMoved", "Number of loads moved below TokenFactor" };
+
+static mut AndImmShrink: i32 = "x86-and-imm-shrink";
+
+static mut EnablePromoteAnyextLoad: i32 = "x86-promote-anyext-load";
+
+static mut IndirectBranchTracking: i32 = 0;
+
+struct X86ISelAddressMode {
+    BaseType: (unnamed at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:62:5),
+    Base_Reg: SDValue,
+    Base_FrameIndex: i32,
+    Scale: u32,
+    IndexReg: SDValue,
+    Disp: i32,
+    Segment: SDValue,
+    GV: *GlobalValue,
+    CP: *Constant,
+    BlockAddr: *BlockAddress,
+    ES: *u8,
+    MCSym: *mut MCSymbol,
+    JT: i32,
+    Alignment: Align,
+    SymbolFlags: u8,
+    NegateIndex: bool,
+    IsForLEA: bool,
+}
+
+fn X86ISelAddressMode::hasSymbolicDisplacement(self: *X86ISelAddressMode) -> bool {
+    return self.GV != null || self.CP != null || self.ES != null || self.MCSym != null || self.JT != -1 || self.BlockAddr != null;
+}
+
+fn X86ISelAddressMode::hasBaseOrIndexReg(self: *X86ISelAddressMode) -> bool {
+    return self.BaseType == FrameIndexBase || self.IndexReg.getNode() != null || self.Base_Reg.getNode() != null;
+}
+
+fn X86ISelAddressMode::isRIPRelative(self: *X86ISelAddressMode) -> bool {
+    if self.BaseType != RegBase {
+        return false;
+    }
+    return false;
+}
+
+fn X86ISelAddressMode::setBaseReg(self, Reg: SDValue) {
+    self.BaseType = RegBase;
+    self.Base_Reg = Reg;
+}
+
+fn X86ISelAddressMode::dump(self, DAG: *mut SelectionDAG) {
+    dbgs() << "X86ISelAddressMode " << self << 10;
+    dbgs() << "Base_Reg ";
+    if self.Base_Reg.getNode() {
+        self.Base_Reg.getNode().dump(DAG);
+    } else {
+        dbgs() << "nul\n";
+    }
+    if self.BaseType == FrameIndexBase {
+        dbgs() << " Base.FrameIndex " << self.Base_FrameIndex << 10;
+    }
+    dbgs() << " Scale " << self.Scale << 10 << "IndexReg ";
+    if self.NegateIndex {
+        dbgs() << "negate ";
+    }
+    if self.IndexReg.getNode() {
+        self.IndexReg.getNode().dump(DAG);
+    } else {
+        dbgs() << "nul\n";
+    }
+    dbgs() << " Disp " << self.Disp << 10 << "GV ";
+    if self.GV {
+        self.GV.dump();
+    } else {
+        dbgs() << "nul";
+    }
+    dbgs() << " CP ";
+    if self.CP {
+        self.CP.dump();
+    } else {
+        dbgs() << "nul";
+    }
+    dbgs() << 10 << "ES ";
+    if self.ES {
+        dbgs() << self.ES;
+    } else {
+        dbgs() << "nul";
+    }
+    dbgs() << " MCSym ";
+    if self.MCSym {
+        dbgs() << self.MCSym;
+    } else {
+        dbgs() << "nul";
+    }
+    dbgs() << " JT" << self.JT << " Align" << self.Alignment.value() << 10;
+}
+
+fn X86ISelAddressMode::operator=(self, arg: *X86ISelAddressMode) -> *mut X86ISelAddressMode {
+    self.BaseType = .BaseType;
+    self.Base_Reg.operator=(.Base_Reg);
+    self.Base_FrameIndex = .Base_FrameIndex;
+    self.Scale = .Scale;
+    self.IndexReg.operator=(.IndexReg);
+    self.Disp = .Disp;
+    self.Segment.operator=(.Segment);
+    self.GV = .GV;
+    self.CP = .CP;
+    self.BlockAddr = .BlockAddr;
+    self.ES = .ES;
+    self.MCSym = .MCSym;
+    self.JT = .JT;
+    self.Alignment.operator=(.Alignment);
+    self.SymbolFlags = .SymbolFlags;
+    self.NegateIndex = .NegateIndex;
+    self.IsForLEA = .IsForLEA;
+    return *self;
+}
+
+struct X86DAGToDAGISel {
+    TM: *mut TargetMachine,
+    LibInfo: *TargetLibraryInfo,
+    LibcallLowering: *LibcallLoweringInfo,
+    FuncInfo: unique_ptr<FunctionLoweringInfo>,
+    SwiftError: unique_ptr<SwiftErrorValueTracking>,
+    MF: *mut MachineFunction,
+    RegInfo: *mut MachineRegisterInfo,
+    CurDAG: *mut SelectionDAG,
+    SDB: unique_ptr<SelectionDAGBuilder>,
+    BatchAA: optional<BatchAAResults>,
+    AC: *mut AssumptionCache,
+    GFI: *mut GCFunctionInfo,
+    SP: *mut SSPLayoutInfo,
+    TTI: *TargetTransformInfo,
+    OptLevel: CodeGenOptLevel,
+    TII: *TargetInstrInfo,
+    TLI: *TargetLowering,
+    FastISelFailed: bool,
+    ElidedArgCopyInstrs: SmallPtrSet<const Instruction *, 4>,
+    ORE: unique_ptr<OptimizationRemarkEmitter>,
+    MatchFilterFuncName: bool,
+    FuncName: str,
+    HwMode: u32,
+    DAGSize: u32,
+    OpcodeOffset: []u32,
+    Subtarget: *X86Subtarget,
+    OptForMinSize: bool,
+    IndirectTlsSegRefs: bool,
+}
+
+fn X86DAGToDAGISel::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
+    self.Subtarget = operator&(MF);
+    self.IndirectTlsSegRefs = MF.getFunction().hasFnAttribute("indirect-tls-seg-refs");
+    self.OptForMinSize = MF.getFunction().hasMinSize();
+    return self.runOnMachineFunction(MF);
+}
+
+fn X86DAGToDAGISel::tryFoldLoad(self, P: *mut SDNode, N: SDValue, Base: *mut SDValue, Scale: *mut SDValue, Index: *mut SDValue, Disp: *mut SDValue, Segment: *mut SDValue) -> bool {
+    return self.tryFoldLoad(P, P, N, Base, Scale, Index, Disp, Segment);
+}
+
+fn X86DAGToDAGISel::getAddressOperands(self, AM: *mut X86ISelAddressMode, DL: *SDLoc, VT: MVT, Base: *mut SDValue, Scale: *mut SDValue, Index: *mut SDValue, Disp: *mut SDValue, Segment: *mut SDValue) {
+    if AM.BaseType == FrameIndexBase {
+        Base = self.CurDAG.getTargetFrameIndex(AM.Base_FrameIndex, self.TLI.getPointerTy);
+    } else if AM.Base_Reg.getNode() {
+        Base = AM.Base_Reg;
+    } else {
+        Base = self.CurDAG.getRegister(Register { Reg: 0 }, EVT { VT });
+    }
+    Scale = self.getI8Imm(AM.Scale, DL);
+    if AM.NegateIndex {
+        let mut NegOpc: u32 = 0;
+        match VT.SimpleTy {
+            _ => {
+                llvm_unreachable_internal("Unsupported VT!", "llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", 292);
+            },
+            i64 => {
+                
+            },
+            i32 => {
+                
+            },
+            i16 => {
+                
+            },
+            i8 => {
+                
+            },
+        }
+        let mut Neg: SDValue = SDValue { Node: self.CurDAG.getMachineNode(NegOpc, DL, EVT { VT }, EVT { i32 }, ArrayRef<SDValue> { AM.IndexReg }), ResNo: 0 };
+        AM.IndexReg = Neg;
+    }
+    if AM.IndexReg.getNode() {
+        Index = AM.IndexReg;
+    } else {
+        Index = self.CurDAG.getRegister(Register { Reg: 0 }, EVT { VT });
+    }
+    if AM.GV {
+        Disp = self.CurDAG.getTargetGlobalAddress(AM.GV, SDLoc {}, EVT { i32 }, AM.Disp, AM.SymbolFlags);
+    } else if AM.CP {
+        Disp = self.CurDAG.getTargetConstantPool(AM.CP, EVT { i32 }, MaybeAlign { AM.Alignment }, AM.Disp, AM.SymbolFlags);
+    } else if AM.ES {
+        assert!(!AM.Disp, "Non-zero displacement is ignored with ES.");
+        Disp = self.CurDAG.getTargetExternalSymbol(AM.ES, EVT { i32 }, AM.SymbolFlags);
+    } else if AM.MCSym {
+        assert!(!AM.Disp, "Non-zero displacement is ignored with MCSym.");
+        assert!(AM.SymbolFlags == 0, "oo");
+        Disp = self.CurDAG.getMCSymbol(AM.MCSym, EVT { i32 });
+    } else if AM.JT != -1 {
+        assert!(!AM.Disp, "Non-zero displacement is ignored with JT.");
+        Disp = self.CurDAG.getTargetJumpTable(AM.JT, EVT { i32 }, AM.SymbolFlags);
+    } else if AM.BlockAddr {
+        Disp = self.CurDAG.getTargetBlockAddress(AM.BlockAddr, EVT { i32 }, AM.Disp, AM.SymbolFlags);
+    } else {
+        Disp = self.CurDAG.getSignedTargetConstant(AM.Disp, DL, EVT { i32 }, false);
+    }
+    if AM.Segment.getNode() {
+        Segment = AM.Segment;
+    } else {
+        Segment = self.CurDAG.getRegister(Register { Reg: 0 }, EVT { i16 });
+    }
+}
+
+fn X86DAGToDAGISel::isAMXSDNode(self: *X86DAGToDAGISel, N: *mut SDNode) -> bool {
+    for let mut Idx: u32 = 0;
+let mut E: u32 = N.getNumValues(); Idx != E; Idx += 1 {
+        if N.getValueType(Idx) == EVT { x86amx } {
+            return true;
+        }
+    }
+    for let mut Idx: u32 = 0;
+let mut E: u32 = N.getNumOperands(); Idx != E; Idx += 1 {
+        let mut Op: SDValue = N.getOperand(Idx);
+        if Op.getValueType() == EVT { x86amx } {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn X86DAGToDAGISel::shouldAvoidImmediateInstFormsForSize(self: *X86DAGToDAGISel, N: *mut SDNode) -> bool {
+    let mut UseCount: u32 = 0;
+    if !self.CurDAG.shouldOptForSize() {
+        return false;
+    }
+    for User in N.users() {
+        if UseCount >= 2 {
+            break;
+        }
+        if User.isMachineOpcode() {
+            UseCount += 1;
+            continue;
+        }
+        if User.getOpcode() == STORE && User.getOperand(1).getNode() == N {
+            UseCount += 1;
+            continue;
+        }
+        if User.getNumOperands() != 2 {
+            continue;
+        }
+        let mut C: *mut auto = dyn_cast(N);
+        if C() && isInt() {
+            continue;
+        }
+        if  {
+            let mut OtherOp: SDValue = User.getOperand(0);
+            if OtherOp.getNode() == N {
+                OtherOp = User.getOperand(1);
+            }
+            let mut RegNode: *mut RegisterSDNode = null;
+            if operator(OtherOp).getOpcode() == CopyFromReg && (RegNode = dyn_cast_or_null(operator(OtherOp).getOperand(1).getNode())) {
+                if  {
+                    continue;
+                }
+            }
+        }
+        UseCount += 1;
+    }
+    return (UseCount > 1);
+}
+
+fn X86DAGToDAGISel::getI8Imm(self, Imm: u32, DL: *SDLoc) -> SDValue {
+    return self.CurDAG.getTargetConstant(Imm, DL, EVT { i8 }, false);
+}
+
+fn X86DAGToDAGISel::getI32Imm(self, Imm: u32, DL: *SDLoc) -> SDValue {
+    return self.CurDAG.getTargetConstant(Imm, DL, EVT { i32 }, false);
+}
+
+fn X86DAGToDAGISel::getI64Imm(self, Imm: u64, DL: *SDLoc) -> SDValue {
+    return self.CurDAG.getTargetConstant(Imm, DL, EVT { i64 }, false);
+}
+
+fn X86DAGToDAGISel::getExtractVEXTRACTImmediate(self, N: *mut SDNode, VecWidth: u32, DL: *SDLoc) -> SDValue {
+    assert!((VecWidth == 128 || VecWidth == 256), "Unexpected vector width");
+    let mut Index: u64 = N.getConstantOperandVal(1);
+    let mut VecVT: MVT = N.getOperand(0).getSimpleValueType();
+    return self.getI8Imm((Index * VecVT.getScalarSizeInBits()) / VecWidth, DL);
+}
+
+fn X86DAGToDAGISel::getInsertVINSERTImmediate(self, N: *mut SDNode, VecWidth: u32, DL: *SDLoc) -> SDValue {
+    assert!((VecWidth == 128 || VecWidth == 256), "Unexpected vector width");
+    let mut Index: u64 = N.getConstantOperandVal(2);
+    let mut VecVT: MVT = N.getSimpleValueType(0);
+    return self.getI8Imm((Index * VecVT.getScalarSizeInBits()) / VecWidth, DL);
+}
+
+fn X86DAGToDAGISel::getPermuteVINSERTCommutedImmediate(self, N: *mut SDNode, VecWidth: u32, DL: *SDLoc) -> SDValue {
+    assert!(VecWidth == 128, "Unexpected vector width");
+    let mut Index: u64 = N.getConstantOperandVal(2);
+    let mut VecVT: MVT = N.getSimpleValueType(0);
+    let mut InsertIdx: u64 = (Index * VecVT.getScalarSizeInBits()) / VecWidth;
+    assert!((InsertIdx == 0 || InsertIdx == 1), "Bad insertf128 index");
+    return self.getI8Imm(if InsertIdx { 2 } else { 48 }, DL);
+}
+
+fn X86DAGToDAGISel::getSBBZero(self, N: *mut SDNode) -> SDValue {
+    let mut dl: SDLoc = SDLoc { N };
+    let mut VT: MVT = N.getSimpleValueType(0);
+    let mut VTs: SDVTList = self.CurDAG.getVTList(EVT { i32 }, EVT { i32 });
+    let mut Zero: SDValue = self.CurDAG;
+    if VT == i64 {
+        Zero = self.CurDAG(SUBREG_TO_REG, dl, i64, Zero, self.CurDAG);
+    }
+    let mut Opcode: u32 = N.getOpcode();
+    let mut FlagOpIndex: u32 = 0;
+    let mut EFLAGS: SDValue = self.CurDAG;
+    let mut Opc: u32 = 0;
+    let mut SBBVT: MVT = MVT { SimpleTy: if VT == i64 {} else { i32 } };
+    VTs = self.CurDAG.getVTList(EVT { SBBVT }, EVT { i32 });
+    return SDValue { Node: self.CurDAG.getMachineNode(Opc, dl, VTs, ArrayRef<SDValue> { [Zero, Zero, EFLAGS, EFLAGS.getValue(1)] }), ResNo: 0 };
+}
+
+fn X86DAGToDAGISel::isUnneededShiftMask(self: *X86DAGToDAGISel, N: *mut SDNode, Width: u32) -> bool {
+    assert!(N.getOpcode() == AND, "Unexpected opcode");
+    let mut Val: *APInt = N.getConstantOperandAPInt(1);
+    if Val.countr_one() >= Width {
+        return true;
+    }
+    let mut Mask: APInt = Val | self.CurDAG.computeKnownBits(N.getOperand(0), 0).Zero;
+    return Mask.countr_one() >= Width;
+}
+
+fn X86DAGToDAGISel::isDef32(self: *X86DAGToDAGISel, N: *mut SDNode) -> bool {
+    let mut Opc: u32 = N.getOpcode();
+}
+
+fn X86DAGToDAGISel::getTargetMachine(self: *X86DAGToDAGISel) -> *X86TargetMachine {}
+
+fn X86DAGToDAGISel::getInstrInfo(self: *X86DAGToDAGISel) -> *X86InstrInfo {
+    return self.Subtarget.getInstrInfo();
+}
+
+fn X86DAGToDAGISel::ComplexPatternFuncMutatesDAG(self: *X86DAGToDAGISel) -> bool {
+    return true;
+}
+
+fn X86DAGToDAGISel::useNonTemporalLoad(self: *X86DAGToDAGISel, N: *mut LoadSDNode) -> bool {
+    if !N.isNonTemporal() {
+        return false;
+    }
+    let mut StoreSize: u32 = N.getMemoryVT().getStoreSize().operator unsigned long long();
+    if N.getAlign().value() < StoreSize {
+        return false;
+    }
+    match StoreSize {
+        _ => {
+            llvm_unreachable_internal("Unsupported store size", "llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", 595);
+        },
+        4 => {
+            8;
+        },
+        16 => {
+            return self.Subtarget.hasSSE41();
+        },
+        32 => {
+            return self.Subtarget.hasAVX2();
+        },
+        64 => {
+            return self.Subtarget.hasAVX512();
+        },
+    }
+}
+
+fn X86DAGToDAGISel::getBatchAA(self: *X86DAGToDAGISel) -> *mut BatchAAResults {
+    if self.BatchAA.has_value() {
+        return &mut self.BatchAA.value();
+    }
+    return null;
+}
+
+fn X86DAGToDAGISel::getTargetLowering(self: *X86DAGToDAGISel) -> *TargetLowering {
+    return self.TLI;
+}
+
+fn X86DAGToDAGISel::getNumFixedFromVariadicInfo(self, Flags: u32) -> i32 {
+    return ((Flags & OPFL_VariadicInfo) >> 4) - 1;
+}
+
+fn X86DAGToDAGISel::ReplaceUses(self, F: SDValue, T: SDValue) {
+    self.CurDAG.ReplaceAllUsesOfValueWith(F, T);
+    EnforceNodeIdInvariant(T.getNode());
+}
+
+fn X86DAGToDAGISel::ReplaceNode(self, F: *mut SDNode, T: *mut SDNode) {
+    self.CurDAG.ReplaceAllUsesWith(F, T);
+    EnforceNodeIdInvariant(T);
+    self.CurDAG.RemoveDeadNode(F);
+}
+
+fn X86DAGToDAGISel::getPatternForIndex(self, index: u32) -> str {
+    llvm_unreachable_internal("Tblgen should generate the implementation of this!", "llvm\\include\\llvm/CodeGen/SelectionDAGISel.h", 423);
+}
+
+fn X86DAGToDAGISel::getIncludePathForIndex(self, index: u32) -> str {
+    llvm_unreachable_internal("Tblgen should generate the implementation of this!", "llvm\\include\\llvm/CodeGen/SelectionDAGISel.h", 428);
+}
+
+fn X86DAGToDAGISel::shouldOptForSize(self: *X86DAGToDAGISel, MF: *MachineFunction) -> bool {
+    return self.CurDAG.shouldOptForSize();
+}
+
+fn X86DAGToDAGISel::CheckPatternPredicate(self: *X86DAGToDAGISel, PredNo: u32) -> bool {
+    llvm_unreachable_internal("Tblgen should generate the implementation of this!", "llvm\\include\\llvm/CodeGen/SelectionDAGISel.h", 448);
+}
+
+fn X86DAGToDAGISel::CheckNodePredicate(self: *X86DAGToDAGISel, Op: SDValue, PredNo: u32) -> bool {
+    llvm_unreachable_internal("Tblgen should generate the implementation of this!", "llvm\\include\\llvm/CodeGen/SelectionDAGISel.h", 456);
+}
+
+fn X86DAGToDAGISel::CheckNodePredicateWithOperands(self: *X86DAGToDAGISel, Op: SDValue, PredNo: u32, Operands: ArrayRef<SDValue>) -> bool {
+    llvm_unreachable_internal("Tblgen should generate the implementation of this!", "llvm\\include\\llvm/CodeGen/SelectionDAGISel.h", 467);
+}
+
+fn X86DAGToDAGISel::CheckComplexPattern(self, Root: *mut SDNode, Parent: *mut SDNode, N: SDValue, PatternNo: u32, Result: *mut pair<SDValue, SDNode *>>) -> bool {
+    llvm_unreachable_internal("Tblgen should generate the implementation of this!", "llvm\\include\\llvm/CodeGen/SelectionDAGISel.h", 473);
+}
+
+fn X86DAGToDAGISel::RunSDNodeXForm(self, V: SDValue, XFormNo: u32) -> SDValue {
+    llvm_unreachable_internal("Tblgen should generate this!", "llvm\\include\\llvm/CodeGen/SelectionDAGISel.h", 477);
+}
+
+fn X86DAGToDAGISel::getValueTypeForHwMode(self: *X86DAGToDAGISel, Index: u32) -> MVT {
+    llvm_unreachable_internal("Tblgen should generate the implementation of this!", "llvm\\include\\llvm/CodeGen/SelectionDAGISel.h", 481);
+}
+
+struct X86DAGToDAGISelLegacy {
+    Resolver: *mut AnalysisResolver,
+    PassID: *void,
+    Kind: PassKind,
+    RequiredProperties: MachineFunctionProperties,
+    SetProperties: MachineFunctionProperties,
+    ClearedProperties: MachineFunctionProperties,
+    Selector: unique_ptr<SelectionDAGISel>,
+}
+
+fn X86DAGToDAGISelLegacy::getPassKind(self: *X86DAGToDAGISelLegacy) -> PassKind {
+    return self.Kind;
+}
+
+fn X86DAGToDAGISelLegacy::getPassID(self: *X86DAGToDAGISelLegacy) -> AnalysisID {
+    return self.PassID;
+}
+
+fn X86DAGToDAGISelLegacy::doInitialization(self, arg: *mut Module) -> bool {
+    return false;
+}
+
+fn X86DAGToDAGISelLegacy::doFinalization(self, arg: *mut Module) -> bool {
+    return false;
+}
+
+fn X86DAGToDAGISelLegacy::assignPassManager(self, arg: *mut PMStack, arg: PassManagerType) {}
+
+fn X86DAGToDAGISelLegacy::getResolver(self: *X86DAGToDAGISelLegacy) -> *mut AnalysisResolver {
+    return self.Resolver;
+}
+
+fn X86DAGToDAGISelLegacy::getRequiredProperties(self: *X86DAGToDAGISelLegacy) -> MachineFunctionProperties {
+    return MachineFunctionProperties {};
+}
+
+fn X86DAGToDAGISelLegacy::getSetProperties(self: *X86DAGToDAGISelLegacy) -> MachineFunctionProperties {
+    return MachineFunctionProperties {};
+}
+
+fn X86DAGToDAGISelLegacy::getClearedProperties(self: *X86DAGToDAGISelLegacy) -> MachineFunctionProperties {
+    return MachineFunctionProperties {};
+}
+
+static mut ID: i8 = 0;
+
+fn isLegalMaskCompare(N: *mut SDNode, Subtarget: *X86Subtarget) -> bool {
+    let mut Opcode: u32 = N.getOpcode();
+    if  {
+        let mut OpVT: EVT = N.getOperand(0).getValueType();
+        if  {
+            OpVT = N.getOperand(1).getValueType();
+        }
+        if OpVT.is256BitVector() || OpVT.is128BitVector() {
+            return Subtarget()();
+        }
+        return true;
+    }
+    if  {
+        return true;
+    }
+    return false;
+}
+
+fn X86DAGToDAGISel::isMaskZeroExtended(self: *X86DAGToDAGISel, N: *mut SDNode) -> bool {
+    if N.getOpcode() == AND {
+        return isLegalMaskCompare(N.getOperand(0).getNode(), self.Subtarget) || isLegalMaskCompare(N.getOperand(1).getNode(), self.Subtarget);
+    }
+    return isLegalMaskCompare(N, self.Subtarget);
+}
+
+fn X86DAGToDAGISel::IsProfitableToFold(self: *X86DAGToDAGISel, N: SDValue, U: *mut SDNode, Root: *mut SDNode) -> bool {
+    if self.OptLevel == None {
+        return false;
+    }
+    if !N.hasOneUse() {
+        return false;
+    }
+    if N.getOpcode() != LOAD {
+        return true;
+    }
+    if self.useNonTemporalLoad(cast(N)) {
+        return false;
+    }
+    if U == Root {
+        match U.getOpcode() {
+            _ => {
+                break;
+            },
+            ADD => {
+                UADDO_CARRY;
+            },
+            SHL => {
+                SRA;
+            },
+        }
+    }
+    if Root.getOpcode() == INSERT_SUBVECTOR && isNullConstant(Root.getOperand(2)) && (Root.getOperand(0).isUndef() || isBuildVectorAllZeros(Root.getOperand(0).getNode())) {
+        return false;
+    }
+    return true;
+}
+
+fn X86DAGToDAGISel::isProfitableToFormMaskedOp(self: *X86DAGToDAGISel, N: *mut SDNode) -> bool {
+    return N.getOperand(1).hasOneUse();
+}
+
+fn moveBelowOrigChain(CurDAG: *mut SelectionDAG, Load: SDValue, Call: SDValue, OrigChain: SDValue) {
+    let mut Ops: SmallVector<SDValue, 8> = zeroed();
+    let mut Chain: SDValue = OrigChain.getOperand(0);
+    if Chain.getNode() == Load.getNode() {
+        Ops()(Load.getOperand(0));
+    } else {
+        assert!(Chain.getOpcode() == TokenFactor, "Unexpected chain operand");
+        for let mut i: u32 = 0;
+let mut e: u32 = Chain.getNumOperands(); i != e; i += 1 {
+            if Chain.getOperand(i).getNode() == Load.getNode() {
+                Ops()(Load.getOperand(0));
+            } else {
+                Ops()(Chain.getOperand(i));
+            }
+        }
+        let mut NewChain: SDValue = CurDAG(TokenFactor, SDLoc { Load }, Other);
+        Ops()();
+        Ops()(NewChain);
+    }
+    Ops()(operator(OrigChain).op_begin() + 1, operator(OrigChain).op_end());
+    CurDAG(OrigChain.getNode());
+    CurDAG.UpdateNodeOperands(Load.getNode(), Call.getOperand(0), Load.getOperand(1), Load.getOperand(2));
+    Ops()();
+    Ops()(SDValue { Node: Load.getNode(), ResNo: 1 });
+    Ops()(operator(Call).op_begin() + 1, operator(Call).op_end());
+    CurDAG(Call.getNode());
+}
+
+fn isCalleeLoad(Callee: SDValue, Chain: *mut SDValue, HasCallSeq: bool) -> bool {
+    if Callee.getNode() == Chain.getNode() || !Callee.hasOneUse() {
+        return false;
+    }
+    let mut LD: *mut auto = dyn_cast(Callee.getNode());
+    if operator!() || operator!() || () != UNINDEXED || () != NON_EXTLOAD {
+        return false;
+    }
+    if !Callee.getValue(1).hasOneUse() {
+        return false;
+    }
+    while HasCallSeq && Chain.getOpcode() != CALLSEQ_START {
+        if !Chain.hasOneUse() {
+            return false;
+        }
+        Chain = Chain.getOperand(0);
+    }
+    while true {
+        if !Chain.getNumOperands() {
+            return false;
+        }
+        match Chain.getNode().getOpcode() {
+            CALLSEQ_START => {
+                CopyToReg;
+            },
+            _ => {
+                return false;
+            },
+        }
+        if Chain.getOperand(0).getNode() == Callee.getNode() {
+            return true;
+        }
+        if Chain.getOperand(0).getOpcode() == TokenFactor && Chain.getOperand(0).getValue(0).hasOneUse() && Callee.getValue(1).isOperandOf(Chain.getOperand(0).getNode()) && Callee.getValue(1).hasOneUse() {
+            return true;
+        }
+        if Chain.getOperand(0).getOpcode() == CopyToReg && Chain.getOperand(0).getValue(0).hasOneUse() {
+            Chain = Chain.getOperand(0);
+            continue;
+        }
+        return false;
+    }
+}
+
+fn isEndbrImm(Imm: u64, BitWidth: u32) -> bool {
+    if BitWidth > 64 || BitWidth % 8 != 0 {
+        return false;
+    }
+    let mut NumBytes: u32 = BitWidth / 8;
+    if NumBytes < 4 {
+        return false;
+    }
+    let mut OptionalPrefixBytes: [10]u8 = [38, 46, 54, 62, 100, 101, 102, 103, 240, 242];
+    let mut Bytes: [8]u8 = zeroed();
+    for let mut I: u32 = 0; I != NumBytes; I += 1 {
+        Bytes[I] = (Imm >> (I * 8)) & 255;
+    }
+    for let mut I: u32 = 0; I + 3 < NumBytes; I += 1 {
+        if Bytes[I] != 243 {
+            continue;
+        }
+        let mut J: u32 = I + 1;
+        while J < NumBytes && is_contained(OptionalPrefixBytes, Bytes[J]) {
+            J += 1;
+        }
+        if J + 2 < NumBytes && Bytes[J] == 15 && Bytes[J + 1] == 30 && (Bytes[J + 2] == 250 || Bytes[J + 2] == 251) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn needBWI(VT: MVT) -> bool {
+    return (VT == v32i16 || VT == v32f16 || VT == v64i8);
+}
+
+fn X86DAGToDAGISel::PreprocessISelDAG(self) {
+    let mut MadeChange: bool = false;
+    for let mut I: allnodes_iterator = self.CurDAG.allnodes_begin();
+let mut E: allnodes_iterator = self.CurDAG.allnodes_end(); I != E;  {
+        let mut N: *mut SDNode = &mut operator(operator(I, 0));
+        if N.getOpcode() == Constant {
+            let mut VT: MVT = N.getSimpleValueType(0);
+            assert!(VT.isScalarInteger(), "ISD::Constant must have a scalar integer type");
+            if !VT.isScalarInteger() || VT.getSizeInBits().operator unsigned long long() > 64 {
+                continue;
+            }
+            let mut Imm: u64 = cast(N)();
+            if isEndbrImm(Imm, VT.getSizeInBits().operator unsigned long long()) {
+                let mut CFProtectionBranch: *mut Metadata = self.MF.getFunction().getParent().getModuleFlag("cf-protection-branch");
+                if CFProtectionBranch ||  {
+                    let mut dl: SDLoc = SDLoc { N };
+                    let mut ComplementImm: u64 = (~Imm) & maskTrailingOnes(VT.getSizeInBits());
+                    let mut Complement: SDValue = self.CurDAG.getConstant(ComplementImm, dl, EVT { VT }, false, true);
+                    Complement = self.CurDAG.getNOT(dl, Complement, EVT { VT });
+                    operator(I);
+                    self.CurDAG.ReplaceAllUsesOfValueWith(SDValue { Node: N, ResNo: 0 }, Complement);
+                    operator(I);
+                    MadeChange = true;
+                    continue;
+                }
+            }
+        }
+        if  {
+            let mut Res: SDValue = self.CurDAG.getNode(AND, SDLoc { N }, N.getValueType(0), N.getOperand(0), N.getOperand(1));
+            operator(I);
+            self.CurDAG.ReplaceAllUsesOfValueWith(SDValue { Node: N, ResNo: 0 }, Res);
+            operator(I);
+            MadeChange = true;
+            continue;
+        }
+        let mut mayPreventLoadFold: Closure_1 = Closure_1 { N: &mut N, cap_1: self };
+        if (N.getOpcode() == ADD || N.getOpcode() == SUB) && N.getSimpleValueType(0).isVector() && !mayPreventLoadFold.call() {
+            let mut SplatVal: APInt = APInt {};
+            if !isBuildVectorOfConstantSDNodes(peekThroughBitcasts(N.getOperand(0)).getNode()) && isConstantSplat(N.getOperand(1), SplatVal, true) && SplatVal.isOne() {
+                let mut DL: SDLoc = SDLoc { N };
+                let mut VT: MVT = N.getSimpleValueType(0);
+                let mut NumElts: u32 = VT.getSizeInBits().operator unsigned long long() / 32;
+                let mut AllOnes: SDValue = self.CurDAG.getAllOnesConstant(DL, EVT { getVectorVT(MVT { SimpleTy: i32 }, NumElts) }, false, false);
+                AllOnes = self.CurDAG.getBitcast(EVT { VT }, AllOnes);
+                let mut NewOpcode: u32 = if N.getOpcode() == ADD { SUB } else { ADD };
+                let mut Res: SDValue = self.CurDAG.getNode(NewOpcode, DL, EVT { VT }, N.getOperand(0), AllOnes);
+                operator(I);
+                self.CurDAG.ReplaceAllUsesWith(N, Res.getNode());
+                operator(I);
+                MadeChange = true;
+                continue;
+            }
+        }
+        match N.getOpcode() {
+            LOAD => {
+                let mut Ld: *mut auto = cast(N);
+                let mut VT: MVT = N.getSimpleValueType(0);
+                if operator!(isNormalLoad()) || operator!() || !(VT.is128BitVector() || VT.is256BitVector()) {
+                    break;
+                }
+                let mut MaxVT: MVT = VT;
+                let mut MaxLd: *mut SDNode = null;
+                let mut Ptr: SDValue = ();
+                let mut Chain: SDValue = ();
+                if MaxLd {
+                    let mut dl: SDLoc = SDLoc { N };
+                    let mut NumSubElts: u32 = VT.getSizeInBits().operator unsigned long long() / MaxVT.getScalarSizeInBits();
+                    let mut SubVT: MVT = getVectorVT(MaxVT.getScalarType(), NumSubElts);
+                    let mut Extract: SDValue = self.CurDAG.getNode(EXTRACT_SUBVECTOR, dl, EVT { SubVT }, SDValue { Node: MaxLd, ResNo: 0 }, self.CurDAG.getIntPtrConstant(0, dl, false));
+                    let mut Res: SDValue = self.CurDAG.getBitcast(EVT { VT }, Extract);
+                    operator(I);
+                    let mut To: [2]SDValue = [Res, SDValue { Node: MaxLd, ResNo: 1 }];
+                    self.CurDAG.ReplaceAllUsesWith(N, To);
+                    operator(I);
+                    MadeChange = true;
+                    continue;
+                }
+                break;
+            },
+            VSELECT => {
+                let mut EleVT: EVT = N.getOperand(0).getValueType().getVectorElementType();
+                if EleVT == EVT { i1 } {
+                    break;
+                }
+                assert!(self.Subtarget.hasSSE41(), "Expected SSE4.1 support!");
+                assert!(N.getValueType(0).getVectorElementType() != EVT { i16 }, "We can't replace VSELECT with BLENDV in vXi16!");
+                let mut R: SDValue = SDValue {};
+                if self.Subtarget() && self.CurDAG.ComputeNumSignBits(N.getOperand(0), 0) == EleVT.getSizeInBits().operator unsigned long long() {
+                    R = self.CurDAG;
+                } else {
+                    R = self.CurDAG;
+                }
+                operator(I);
+                self.CurDAG.ReplaceAllUsesWith(N, R.getNode());
+                operator(I);
+                MadeChange = true;
+                continue;
+            },
+            FP_ROUND => {
+                STRICT_FP_ROUND;
+            },
+            SHL => {
+                SRA;
+            },
+            ANY_EXTEND => {
+                ANY_EXTEND_VECTOR_INREG;
+            },
+            FCEIL => {
+                STRICT_FCEIL;
+            },
+        }
+        if  {
+            let mut HasCallSeq: bool = ;
+            let mut Chain: SDValue = N.getOperand(0);
+            let mut Load: SDValue = N.getOperand(1);
+            if !isCalleeLoad(Load, Chain, HasCallSeq) {
+                continue;
+            }
+            if  {
+                continue;
+            }
+            moveBelowOrigChain(self.CurDAG, Load, SDValue { Node: N, ResNo: 0 }, Chain);
+            operator(NumLoadMoved);
+            MadeChange = true;
+            continue;
+        }
+        match N.getOpcode() {
+            _ => {
+                continue;
+            },
+            FP_ROUND => {
+                FP_EXTEND;
+            },
+            STRICT_FP_ROUND => {
+                STRICT_FP_EXTEND;
+            },
+        }
+        operator(I);
+        MadeChange = true;
+    }
+    if MadeChange {
+        self.CurDAG.RemoveDeadNodes();
+    }
+}
+
+fn X86DAGToDAGISel::tryOptimizeRem8Extend(self, N: *mut SDNode) -> bool {
+    let mut Opc: u32 = N.getMachineOpcode();
+    if  {
+        return false;
+    }
+    let mut N0: SDValue = N.getOperand(0);
+    if  {
+        return false;
+    }
+    let mut ExpectedOpc: u32 = 0;
+    let mut N00: SDValue = N0.getOperand(0);
+    if !N00.isMachineOpcode() || N00.getMachineOpcode() != ExpectedOpc {
+        return false;
+    }
+    if  {
+        let mut Extend: *mut MachineSDNode = self.CurDAG;
+        self.ReplaceUses(N, Extend);
+    } else {
+        self.ReplaceUses(N, N00.getNode());
+    }
+    return true;
+}
+
+fn X86DAGToDAGISel::PostprocessISelDAG(self) {
+    if self.TM.getOptLevel() == None {
+        return;
+    }
+    let mut Position: allnodes_iterator = self.CurDAG.allnodes_end();
+    let mut MadeChange: bool = false;
+    while Position != self.CurDAG.allnodes_begin() {
+        let mut N: *mut SDNode = &mut operator(operator(Position));
+        if N.use_empty() || !N.isMachineOpcode() {
+            continue;
+        }
+        if self.tryOptimizeRem8Extend(N) {
+            MadeChange = true;
+            continue;
+        }
+        let mut Opc: u32 = N.getMachineOpcode();
+        match Opc {
+            _ => {
+                continue;
+            },
+            SUBREG_TO_REG => {
+                let mut SubRegIdx: u32 = N.getConstantOperandVal(1);
+                if  {
+                    continue;
+                }
+                let mut Move: SDValue = N.getOperand(0);
+                if !Move.isMachineOpcode() {
+                    continue;
+                }
+                match Move.getMachineOpcode() {
+                    _ => {
+                        continue;
+                    },
+                }
+                let mut In: SDValue = Move.getOperand(0);
+                if !In.isMachineOpcode() || In.getMachineOpcode() <= GENERIC_OP_END {
+                    continue;
+                }
+                let mut TSFlags: u64 = self.getInstrInfo()(In.getMachineOpcode());
+                if (TSFlags & EncodingMask) != VEX && (TSFlags & EncodingMask) != EVEX && (TSFlags & EncodingMask) != XOP {
+                    continue;
+                }
+                self.CurDAG.UpdateNodeOperands(N, In, N.getOperand(1));
+                MadeChange = true;
+            },
+        }
+    }
+    if MadeChange {
+        self.CurDAG.RemoveDeadNodes();
+    }
+}
+
+fn X86DAGToDAGISel::emitSpecialCodeForMain(self) {
+    if self.Subtarget.isTargetCygMing() {
+        let mut Args: i32 = 0;
+        let mut DL: *DataLayout = self.CurDAG.getDataLayout();
+        let mut CLI: CallLoweringInfo = CallLoweringInfo { *self.CurDAG };
+        CLI.setChain(self.CurDAG.getRoot())(C, getVoidTy(*self.CurDAG.getContext()), self.CurDAG("__main", self.TLI.getPointerTy), move());
+        let mut TLI: *TargetLowering = self.CurDAG.getTargetLoweringInfo();
+        let mut Result: pair<SDValue, SDValue> = TLI.LowerCallTo(CLI);
+        self.CurDAG.setRoot(Result.second);
+    }
+}
+
+fn X86DAGToDAGISel::emitFunctionEntryCode(self) {
+    let mut F: *Function = self.MF.getFunction();
+    if F.hasExternalLinkage() && F.getName() == "main" {
+        self.emitSpecialCodeForMain();
+    }
+}
+
+fn isDispSafeForFrameIndexOrRegBase(Val: i64) -> bool {
+    return isInt(Val);
+}
+
+fn X86DAGToDAGISel::foldOffsetIntoAddress(self, Offset: u64, AM: *mut X86ISelAddressMode) -> bool {
+    let mut Val: i64 = AM.Disp + Offset;
+    if Val != 0 && (AM.ES || AM.MCSym) {
+        return true;
+    }
+    let mut M: Model = self.TM.getCodeModel();
+    if self.Subtarget() {
+        if Val != 0 && !isOffsetSuitableForCodeModel(Val, M, AM.hasSymbolicDisplacement()) {
+            return true;
+        }
+        if AM.BaseType == FrameIndexBase && !isDispSafeForFrameIndexOrRegBase(Val) {
+            return true;
+        }
+        if self.Subtarget.isTarget64BitILP32() && !isDispSafeForFrameIndexOrRegBase(Val as u32) && !AM.hasBaseOrIndexReg() {
+            return true;
+        }
+    } else if self.Subtarget() {
+        if Val < -65535 as i64 || Val > 65535 as i64 {
+            return true;
+        }
+    } else if AM.hasBaseOrIndexReg() && !isDispSafeForFrameIndexOrRegBase(Val) {
+        return true;
+    }
+    AM.Disp = Val;
+    return false;
+}
+
+fn X86DAGToDAGISel::matchLoadInAddress(self, N: *mut LoadSDNode, AM: *mut X86ISelAddressMode, AllowSegmentRegForX32: bool) -> bool {
+    let mut Address: SDValue = N.getOperand(1);
+    if isNullConstant(Address) && AM.Segment.getNode() == null && !self.IndirectTlsSegRefs && (self.Subtarget.isTargetGlibc() || self.Subtarget.isTargetMusl() || self.Subtarget.isTargetAndroid() || self.Subtarget.isTargetFuchsia()) {
+        if self.Subtarget.isTarget64BitILP32() && !AllowSegmentRegForX32 {
+            return true;
+        }
+        match N.getPointerInfo().getAddrSpace() {
+            GS => {
+                AM.Segment = self.CurDAG.getRegister;
+            },
+            FS => {
+                AM.Segment = self.CurDAG.getRegister;
+            },
+        }
+    }
+    return true;
+}
+
+fn X86DAGToDAGISel::matchWrapper(self, N: SDValue, AM: *mut X86ISelAddressMode) -> bool {
+    if AM.hasSymbolicDisplacement() {
+        return true;
+    }
+    let mut IsRIPRelTLS: bool = false;
+    let mut IsRIPRel: bool = false;
+    if IsRIPRel {
+        let mut Val: SDValue = N.getOperand(0);
+        if Val.getOpcode() == TargetGlobalTLSAddress {
+            IsRIPRelTLS = true;
+        }
+    }
+    let mut M: Model = self.TM.getCodeModel();
+    if self.Subtarget() && M == Large && !IsRIPRelTLS {
+        return true;
+    }
+    if IsRIPRel && AM.hasBaseOrIndexReg() {
+        return true;
+    }
+    let mut Backup: X86ISelAddressMode = AM;
+    let mut Offset: i64 = 0;
+    let mut N0: SDValue = N.getOperand(0);
+    if  {
+        AM.GV = ();
+        AM.SymbolFlags = ();
+        Offset = ();
+    } else if  {
+        AM.CP = ();
+        AM.Alignment = ();
+        AM.SymbolFlags = ();
+        Offset = ();
+    } else if  {
+        AM.ES = ();
+        AM.SymbolFlags = ();
+    } else if  {
+        AM.MCSym = ();
+    } else if  {
+        AM.JT = ();
+        AM.SymbolFlags = ();
+    } else if  {
+        AM.BlockAddr = ();
+        AM.SymbolFlags = ();
+        Offset = ();
+    } else {
+        llvm_unreachable_internal("Unhandled symbol reference node.", "llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", 2030);
+    }
+    if self.Subtarget() && !IsRIPRel && AM.GV && self.TM.isLargeGlobalValue(AM.GV) {
+        AM = Backup;
+        return true;
+    }
+    if self.foldOffsetIntoAddress(Offset, AM) {
+        AM = Backup;
+        return true;
+    }
+    if IsRIPRel {
+        AM.setBaseReg(self.CurDAG.getRegister);
+    }
+    return false;
+}
+
+fn X86DAGToDAGISel::matchAddress(self, N: SDValue, AM: *mut X86ISelAddressMode) -> bool {
+    if self.matchAddressRecursively(N, AM, 0) {
+        return true;
+    }
+    if self.Subtarget.isTarget64BitILP32() && AM.BaseType == RegBase && AM.Base_Reg.getNode() != null && AM.IndexReg.getNode() == null {
+        let mut Save_Base_Reg: SDValue = AM.Base_Reg;
+        if  {
+            AM.Base_Reg = SDValue {};
+            if self.matchLoadInAddress(AM, true) {
+                AM.Base_Reg = Save_Base_Reg;
+            }
+        }
+    }
+    if AM.Scale == 2 && !AM.NegateIndex && AM.BaseType == RegBase && AM.Base_Reg.getNode() == null {
+        AM.Base_Reg = AM.IndexReg;
+        AM.Scale = 1;
+    }
+    if self.TM.getCodeModel() != Large && (!AM.GV || !self.TM.isLargeGlobalValue(AM.GV)) && self.Subtarget() && AM.Scale == 1 && AM.BaseType == RegBase && AM.Base_Reg.getNode() == null && AM.IndexReg.getNode() == null && AM.SymbolFlags == MO_NO_FLAG && AM.hasSymbolicDisplacement() {
+        if isa_and_nonnull(AM.GV) && AM.Disp < -16 * 1024 * 1024 {
+            return true;
+        }
+        AM.Base_Reg = self.CurDAG.getRegister;
+    }
+    return false;
+}
+
+fn X86DAGToDAGISel::hasMaterializingUse(self: *X86DAGToDAGISel, V: SDValue) -> bool {
+    let mut TII: *TargetInstrInfo = self.Subtarget.getInstrInfo();
+    for U in operator(V).uses() {
+        if U.getResNo() != V.getResNo() {
+            continue;
+        }
+        let mut User: *mut SDNode = U.getUser();
+        if User.getOpcode() == CopyToReg {
+            return true;
+        }
+        if  {
+            if St()() == V {
+                return true;
+            }
+            continue;
+        }
+        if !User.isMachineOpcode() {
+            continue;
+        }
+        let mut Desc: *MCInstrDesc = TII.get;
+        if !Desc.mayStore() {
+            continue;
+        }
+        let mut MemRefBegin: i32 = getMemoryOperandNo(Desc.TSFlags);
+        if MemRefBegin < 0 {
+            continue;
+        }
+        let mut MemRefEnd: u32 = MemRefBegin + AddrNumOperands;
+        for let mut I: u32 = 0;
+let mut E: u32 = User.getNumOperands(); I != E; I += 1 {
+            if I >= MemRefBegin as u32 && I < MemRefEnd {
+                continue;
+            }
+            let mut Opnd: SDValue = User.getOperand(I);
+            if Opnd.getValueType() == EVT { Other } || Opnd.getValueType() == EVT { Glue } {
+                continue;
+            }
+            if Opnd == V {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn X86DAGToDAGISel::matchAdd(self, N: *mut SDValue, AM: *mut X86ISelAddressMode, Depth: u32) -> bool {
+    let mut Handle: HandleSDNode = HandleSDNode { N };
+    let mut IsAddOrAddLike: Closure_2 = Closure_2 { cap_0: self };
+    let mut SplitsMaterializedValue: Closure_3 = Closure_3 { AM: &mut AM, cap_1: self, IsAddOrAddLike: &mut IsAddOrAddLike };
+    let mut MatchOperand: Closure_4 = Closure_4 { SplitsMaterializedValue: &mut SplitsMaterializedValue, AM: &mut AM, cap_2: self, Depth: &mut Depth };
+    let mut Backup: X86ISelAddressMode = AM;
+    if !MatchOperand.call(N.getOperand(0)) && !MatchOperand.call(Handle.getValue().getOperand(1)) {
+        return false;
+    }
+    AM = Backup;
+    if !MatchOperand.call(Handle.getValue().getOperand(1)) && !MatchOperand.call(Handle.getValue().getOperand(0)) {
+        return false;
+    }
+    AM = Backup;
+    if AM.BaseType == RegBase && !AM.Base_Reg.getNode() && !AM.IndexReg.getNode() {
+        N = Handle.getValue();
+        AM.Base_Reg = N.getOperand(0);
+        AM.IndexReg = N.getOperand(1);
+        AM.Scale = 1;
+        return false;
+    }
+    N = Handle.getValue();
+    return true;
+}
+
+fn insertDAGNode(DAG: *mut SelectionDAG, Pos: SDValue, N: SDValue) {
+    if operator(N).getNodeId() == -1 || (getUninvalidatedNodeId(N.getNode()) > getUninvalidatedNodeId(Pos.getNode())) {
+        DAG.RepositionNode(operator(Pos).getIterator(), N.getNode());
+        operator(N).setNodeId(operator(Pos).getNodeId());
+        InvalidateNodeId(N.getNode());
+    }
+}
+
+fn foldMaskAndShiftToExtract(DAG: *mut SelectionDAG, N: SDValue, Mask: u64, Shift: SDValue, X: SDValue, AM: *mut X86ISelAddressMode) -> bool {
+    if Shift.getOpcode() != SRL || !isa(Shift.getOperand(1)) || !Shift.hasOneUse() {
+        return true;
+    }
+    let mut ScaleLog: i32 = 8 - Shift.getConstantOperandVal(1);
+    if ScaleLog <= 0 || ScaleLog >= 4 || Mask != (255 << ScaleLog) {
+        return true;
+    }
+    let mut XVT: MVT = X.getSimpleValueType();
+    let mut VT: MVT = N.getSimpleValueType();
+    let mut DL: SDLoc = SDLoc { N };
+    let mut Eight: SDValue = DAG.getConstant(8, DL, EVT { i8 }, false, false);
+    let mut NewMask: SDValue = DAG.getConstant(255, DL, EVT { XVT }, false, false);
+    let mut Srl: SDValue = DAG.getNode(SRL, DL, EVT { XVT }, X, Eight);
+    let mut And: SDValue = DAG.getNode(AND, DL, EVT { XVT }, Srl, NewMask);
+    let mut Ext: SDValue = DAG.getZExtOrTrunc(And, DL, EVT { VT });
+    let mut ShlCount: SDValue = DAG.getConstant(ScaleLog, DL, EVT { i8 }, false, false);
+    let mut Shl: SDValue = DAG.getNode(SHL, DL, EVT { VT }, Ext, ShlCount);
+    insertDAGNode(DAG, N, Eight);
+    insertDAGNode(DAG, N, NewMask);
+    insertDAGNode(DAG, N, Srl);
+    insertDAGNode(DAG, N, And);
+    insertDAGNode(DAG, N, Ext);
+    insertDAGNode(DAG, N, ShlCount);
+    insertDAGNode(DAG, N, Shl);
+    DAG.ReplaceAllUsesWith(N, Shl);
+    DAG.RemoveDeadNode(N.getNode());
+    AM.IndexReg = Ext;
+    AM.Scale = (1 << ScaleLog);
+    return false;
+}
+
+fn foldMaskedShiftToScaledMask(DAG: *mut SelectionDAG, N: SDValue, AM: *mut X86ISelAddressMode) -> bool {
+    let mut Shift: SDValue = N.getOperand(0);
+    let mut Mask: i64 = cast(operator(N).getOperand(1))();
+    let mut FoundAnyExtend: bool = false;
+    if Shift.getOpcode() == ANY_EXTEND && Shift.hasOneUse() && Shift.getOperand(0).getSimpleValueType() == i32 && isUInt(Mask) {
+        FoundAnyExtend = true;
+        Shift = Shift.getOperand(0);
+    }
+    if Shift.getOpcode() != SHL || !isa(Shift.getOperand(1)) {
+        return true;
+    }
+    let mut X: SDValue = Shift.getOperand(0);
+    if !N.hasOneUse() || !Shift.hasOneUse() {
+        return true;
+    }
+    let mut ShiftAmt: u32 = Shift.getConstantOperandVal(1);
+    if ShiftAmt != 1 && ShiftAmt != 2 && ShiftAmt != 3 {
+        return true;
+    }
+    let mut VT: MVT = N.getSimpleValueType();
+    let mut DL: SDLoc = SDLoc { N };
+    if FoundAnyExtend {
+        let mut NewX: SDValue = DAG.getNode(ANY_EXTEND, DL, EVT { VT }, X);
+        insertDAGNode(DAG, N, NewX);
+        X = NewX;
+    }
+    let mut NewMask: SDValue = DAG.getSignedConstant(Mask >> ShiftAmt, DL, EVT { VT }, false, false);
+    let mut NewAnd: SDValue = DAG.getNode(AND, DL, EVT { VT }, X, NewMask);
+    let mut NewShift: SDValue = DAG.getNode(SHL, DL, EVT { VT }, NewAnd, Shift.getOperand(1));
+    insertDAGNode(DAG, N, NewMask);
+    insertDAGNode(DAG, N, NewAnd);
+    insertDAGNode(DAG, N, NewShift);
+    DAG.ReplaceAllUsesWith(N, NewShift);
+    DAG.RemoveDeadNode(N.getNode());
+    AM.Scale = 1 << ShiftAmt;
+    AM.IndexReg = NewAnd;
+    return false;
+}
+
+fn foldMaskAndShiftToScale(DAG: *mut SelectionDAG, N: SDValue, Mask: u64, Shift: SDValue, X: SDValue, AM: *mut X86ISelAddressMode) -> bool {
+    if Shift.getOpcode() != SRL || !Shift.hasOneUse() || !isa(Shift.getOperand(1)) {
+        return true;
+    }
+    let mut MaskIdx: u32 = 0;
+    let mut MaskLen: u32 = 0;
+    if !isShiftedMask_64(Mask, MaskIdx, MaskLen) {
+        return true;
+    }
+    let mut MaskLZ: u32 = 64 - (MaskIdx + MaskLen);
+    let mut ShiftAmt: u32 = Shift.getConstantOperandVal(1);
+    let mut AMShiftAmt: u32 = MaskIdx;
+    if AMShiftAmt == 0 || AMShiftAmt > 3 {
+        return true;
+    }
+    let mut ScaleDown: u32 = (64 - X.getSimpleValueType().getSizeInBits().operator unsigned long long()) + ShiftAmt;
+    if MaskLZ < ScaleDown {
+        return true;
+    }
+    MaskLZ -= ScaleDown;
+    let mut ReplacingAnyExtend: bool = false;
+    if X.getOpcode() == ANY_EXTEND {
+        let mut ExtendBits: u32 = X.getSimpleValueType().getSizeInBits() - X.getOperand(0).getSimpleValueType().getSizeInBits().operator unsigned long long();
+        X = X.getOperand(0);
+        MaskLZ = if ExtendBits > MaskLZ { 0 } else { MaskLZ - ExtendBits };
+        ReplacingAnyExtend = true;
+    }
+    let mut MaskedHighBits: APInt = getHighBitsSet(X.getSimpleValueType().getSizeInBits().operator unsigned long long(), MaskLZ);
+    if !DAG.MaskedValueIsZero(X, MaskedHighBits, 0) {
+        return true;
+    }
+    let mut VT: MVT = N.getSimpleValueType();
+    if ReplacingAnyExtend {
+        assert!(X.getValueType() != EVT { VT });
+        let mut NewX: SDValue = DAG.getNode(ZERO_EXTEND, SDLoc { X }, EVT { VT }, X);
+        insertDAGNode(DAG, N, NewX);
+        X = NewX;
+    }
+    let mut XVT: MVT = X.getSimpleValueType();
+    let mut DL: SDLoc = SDLoc { N };
+    let mut NewSRLAmt: SDValue = DAG.getConstant(ShiftAmt + AMShiftAmt, DL, EVT { i8 }, false, false);
+    let mut NewSRL: SDValue = DAG.getNode(SRL, DL, EVT { XVT }, X, NewSRLAmt);
+    let mut NewExt: SDValue = DAG.getZExtOrTrunc(NewSRL, DL, EVT { VT });
+    let mut NewSHLAmt: SDValue = DAG.getConstant(AMShiftAmt, DL, EVT { i8 }, false, false);
+    let mut NewSHL: SDValue = DAG.getNode(SHL, DL, EVT { VT }, NewExt, NewSHLAmt);
+    insertDAGNode(DAG, N, NewSRLAmt);
+    insertDAGNode(DAG, N, NewSRL);
+    insertDAGNode(DAG, N, NewExt);
+    insertDAGNode(DAG, N, NewSHLAmt);
+    insertDAGNode(DAG, N, NewSHL);
+    DAG.ReplaceAllUsesWith(N, NewSHL);
+    DAG.RemoveDeadNode(N.getNode());
+    AM.Scale = 1 << AMShiftAmt;
+    AM.IndexReg = NewExt;
+    return false;
+}
+
+fn foldMaskedShiftToBEXTR(DAG: *mut SelectionDAG, N: SDValue, Mask: u64, Shift: SDValue, X: SDValue, AM: *mut X86ISelAddressMode, Subtarget: *X86Subtarget) -> bool {
+    if Shift.getOpcode() != SRL || !isa(Shift.getOperand(1)) || !Shift.hasOneUse() || !N.hasOneUse() {
+        return true;
+    }
+    if operator!(Subtarget()()) && operator!((Subtarget()() && Subtarget()())) {
+        return true;
+    }
+    let mut MaskIdx: u32 = 0;
+    let mut MaskLen: u32 = 0;
+    if !isShiftedMask_64(Mask, MaskIdx, MaskLen) {
+        return true;
+    }
+    let mut ShiftAmt: u32 = Shift.getConstantOperandVal(1);
+    let mut AMShiftAmt: u32 = MaskIdx;
+    if AMShiftAmt == 0 || AMShiftAmt > 3 {
+        return true;
+    }
+    let mut XVT: MVT = X.getSimpleValueType();
+    let mut VT: MVT = N.getSimpleValueType();
+    let mut DL: SDLoc = SDLoc { N };
+    let mut NewSRLAmt: SDValue = DAG.getConstant(ShiftAmt + AMShiftAmt, DL, EVT { i8 }, false, false);
+    let mut NewSRL: SDValue = DAG.getNode(SRL, DL, EVT { XVT }, X, NewSRLAmt);
+    let mut NewMask: SDValue = DAG.getConstant(Mask >> AMShiftAmt, DL, EVT { XVT }, false, false);
+    let mut NewAnd: SDValue = DAG.getNode(AND, DL, EVT { XVT }, NewSRL, NewMask);
+    let mut NewExt: SDValue = DAG.getZExtOrTrunc(NewAnd, DL, EVT { VT });
+    let mut NewSHLAmt: SDValue = DAG.getConstant(AMShiftAmt, DL, EVT { i8 }, false, false);
+    let mut NewSHL: SDValue = DAG.getNode(SHL, DL, EVT { VT }, NewExt, NewSHLAmt);
+    insertDAGNode(DAG, N, NewSRLAmt);
+    insertDAGNode(DAG, N, NewSRL);
+    insertDAGNode(DAG, N, NewMask);
+    insertDAGNode(DAG, N, NewAnd);
+    insertDAGNode(DAG, N, NewExt);
+    insertDAGNode(DAG, N, NewSHLAmt);
+    insertDAGNode(DAG, N, NewSHL);
+    DAG.ReplaceAllUsesWith(N, NewSHL);
+    DAG.RemoveDeadNode(N.getNode());
+    AM.Scale = 1 << AMShiftAmt;
+    AM.IndexReg = NewExt;
+    return false;
+}
+
+fn X86DAGToDAGISel::matchIndexRecursively(self, N: SDValue, AM: *mut X86ISelAddressMode, Depth: u32) -> SDValue {
+    assert!(AM.IndexReg.getNode() == null, "IndexReg already matched");
+    assert!((AM.Scale == 1 || AM.Scale == 2 || AM.Scale == 4 || AM.Scale == 8), "Illegal index scale");
+    if Depth >= MaxRecursionDepth {
+        return N;
+    }
+    let mut VT: EVT = N.getValueType();
+    let mut Opc: u32 = N.getOpcode();
+    if self.CurDAG.isBaseWithConstantOffset(N) {
+        let mut AddVal: *mut auto = cast(N.getOperand(1));
+        let mut Offset: u64 = () as u64 * AM.Scale;
+        if !self.foldOffsetIntoAddress(Offset, AM) {
+            return self.matchIndexRecursively(N.getOperand(0), AM, Depth + 1);
+        }
+    }
+    if Opc == ADD && N.getOperand(0) == N.getOperand(1) {
+        if AM.Scale <= 4 {
+            AM.Scale *= 2;
+            return self.matchIndexRecursively(N.getOperand(0), AM, Depth + 1);
+        }
+    }
+    if  {
+        let mut ShiftAmt: u64 = N.getConstantOperandVal(1);
+        let mut ScaleAmt: u64 = 1 << ShiftAmt;
+        if (AM.Scale * ScaleAmt) <= 8 {
+            AM.Scale *= ScaleAmt;
+            return self.matchIndexRecursively(N.getOperand(0), AM, Depth + 1);
+        }
+    }
+    if Opc == SIGN_EXTEND && !VT.isVector() && N.hasOneUse() {
+        let mut Src: SDValue = N.getOperand(0);
+        if Src.getOpcode() == ADD && operator(Src).getFlags().hasNoSignedWrap() && Src.hasOneUse() {
+            if self.CurDAG.isBaseWithConstantOffset(Src) {
+                let mut AddSrc: SDValue = Src.getOperand(0);
+                let mut AddVal: *mut auto = cast(Src.getOperand(1));
+                let mut Offset: i64 = ();
+                if !self.foldOffsetIntoAddress(Offset as u64 * AM.Scale, AM) {
+                    let mut DL: SDLoc = SDLoc { N };
+                    let mut ExtSrc: SDValue = self.CurDAG.getNode(Opc, DL, VT, AddSrc);
+                    let mut ExtVal: SDValue = self.CurDAG.getSignedConstant(Offset, DL, VT, false, false);
+                    let mut ExtAdd: SDValue = self.CurDAG.getNode(ADD, DL, VT, ExtSrc, ExtVal);
+                    insertDAGNode(*self.CurDAG, N, ExtSrc);
+                    insertDAGNode(*self.CurDAG, N, ExtVal);
+                    insertDAGNode(*self.CurDAG, N, ExtAdd);
+                    self.CurDAG.ReplaceAllUsesWith(N, ExtAdd);
+                    self.CurDAG.RemoveDeadNode(N.getNode());
+                    return ExtSrc;
+                }
+            }
+        }
+    }
+    if Opc == ZERO_EXTEND && !VT.isVector() && N.hasOneUse() {
+        let mut Src: SDValue = N.getOperand(0);
+        let mut SrcOpc: u32 = Src.getOpcode();
+        if ((SrcOpc == ADD && operator(Src).getFlags().hasNoUnsignedWrap()) || self.CurDAG.isADDLike(Src, true)) && Src.hasOneUse() {
+            if self.CurDAG.isBaseWithConstantOffset(Src) {
+                let mut AddSrc: SDValue = Src.getOperand(0);
+                let mut Offset: u64 = Src.getConstantOperandVal(1);
+                if !self.foldOffsetIntoAddress(Offset * AM.Scale, AM) {
+                    let mut DL: SDLoc = SDLoc { N };
+                    let mut Res: SDValue = SDValue {};
+                    if AddSrc.getOpcode() == SHL && isa(AddSrc.getOperand(1)) {
+                        let mut ShVal: SDValue = AddSrc.getOperand(0);
+                        let mut ShAmt: u64 = AddSrc.getConstantOperandVal(1);
+                        let mut HiBits: APInt = getHighBitsSet(AddSrc.getScalarValueSizeInBits(), ShAmt);
+                        let mut ScaleAmt: u64 = 1 << ShAmt;
+                        if (AM.Scale * ScaleAmt) <= 8 && (operator(AddSrc).getFlags().hasNoUnsignedWrap() || self.CurDAG.MaskedValueIsZero(ShVal, HiBits, 0)) {
+                            AM.Scale *= ScaleAmt;
+                            let mut ExtShVal: SDValue = self.CurDAG.getNode(Opc, DL, VT, ShVal);
+                            let mut ExtShift: SDValue = self.CurDAG.getNode(SHL, DL, VT, ExtShVal, AddSrc.getOperand(1));
+                            insertDAGNode(*self.CurDAG, N, ExtShVal);
+                            insertDAGNode(*self.CurDAG, N, ExtShift);
+                            AddSrc = ExtShift;
+                            Res = ExtShVal;
+                        }
+                    }
+                    let mut ExtSrc: SDValue = self.CurDAG.getNode(Opc, DL, VT, AddSrc);
+                    let mut ExtVal: SDValue = self.CurDAG.getConstant(Offset, DL, VT, false, false);
+                    let mut ExtAdd: SDValue = self.CurDAG.getNode(SrcOpc, DL, VT, ExtSrc, ExtVal);
+                    insertDAGNode(*self.CurDAG, N, ExtSrc);
+                    insertDAGNode(*self.CurDAG, N, ExtVal);
+                    insertDAGNode(*self.CurDAG, N, ExtAdd);
+                    self.CurDAG.ReplaceAllUsesWith(N, ExtAdd);
+                    self.CurDAG.RemoveDeadNode(N.getNode());
+                    return if Res {} else { ExtSrc };
+                }
+            }
+        }
+    }
+    return N;
+}
+
+fn X86DAGToDAGISel::matchAddressRecursively(self, N: SDValue, AM: *mut X86ISelAddressMode, Depth: u32) -> bool {
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("x86-isel", 1) {
+            {
+                dbgs() << "MatchAddress: ";
+                AM.dump(self.CurDAG);
+            }
+        }
+    }
+        if !(false) { break; }
+    }
+    if Depth >= MaxRecursionDepth {
+        return self.matchAddressBase(N, AM);
+    }
+    if AM.isRIPRelative() {
+        if !(AM.ES || AM.MCSym) && AM.JT != -1 {
+            return true;
+        }
+        if  {
+            if operator!(self.foldOffsetIntoAddress(AM)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    match N.getOpcode() {
+        _ => {
+            break;
+        },
+        LOCAL_RECOVER => {
+            if !AM.hasSymbolicDisplacement() && AM.Disp == 0 {
+                if  {
+                    AM.MCSym = ();
+                    return false;
+                }
+            }
+            break;
+        },
+        Constant => {
+            let mut Val: u64 = cast(N)();
+            if !self.foldOffsetIntoAddress(Val, AM) {
+                return false;
+            }
+            break;
+        },
+        LOAD => {
+            if operator!(self.matchLoadInAddress(cast(N), AM)) {
+                return false;
+            }
+        },
+        FrameIndex => {
+            if AM.BaseType == RegBase && AM.Base_Reg.getNode() == null && (operator!(self.Subtarget()) || isDispSafeForFrameIndexOrRegBase(AM.Disp)) {
+                AM.BaseType = FrameIndexBase;
+                AM.Base_FrameIndex = cast(N)();
+                return false;
+            }
+        },
+        SHL => {
+            if AM.IndexReg.getNode() != null || AM.Scale != 1 {
+                break;
+            }
+        },
+        SRL => {
+            if AM.IndexReg.getNode() != null || AM.Scale != 1 {
+                break;
+            }
+            assert!(N.getSimpleValueType().getSizeInBits().operator unsigned long long() <= 64, "Unexpected value size!");
+            let mut And: SDValue = N.getOperand(0);
+            if And.getOpcode() != AND {
+                break;
+            }
+            let mut X: SDValue = And.getOperand(0);
+            if !isa(N.getOperand(1)) || !isa(And.getOperand(1)) {
+                break;
+            }
+            let mut Mask: u64 = And.getConstantOperandVal(1) >> N.getConstantOperandVal(1);
+            if !foldMaskAndShiftToScale(*self.CurDAG, N, Mask, N, X, AM) {
+                return false;
+            }
+            break;
+        },
+        SMUL_LOHI => {
+            UMUL_LOHI;
+        },
+        MUL => {
+            if AM.BaseType == RegBase && AM.Base_Reg.getNode() == null && AM.IndexReg.getNode() == null {
+                if  {
+                    if CN()() == 3 || () == 5 || () == 9 {
+                        AM.Scale = () - 1;
+                        let mut MulVal: SDValue = N.getOperand(0);
+                        let mut Reg: SDValue = SDValue {};
+                        if MulVal.getNode().getOpcode() == ADD && MulVal.hasOneUse() && isa(MulVal.getOperand(1)) {
+                            Reg = MulVal.getOperand(0);
+                            let mut AddVal: *mut auto = cast(MulVal.getOperand(1));
+                            let mut Disp: u64 = () * ();
+                            if self.foldOffsetIntoAddress(Disp, AM) {
+                                Reg = N.getOperand(0);
+                            }
+                        } else {
+                            Reg = N.getOperand(0);
+                        }
+                        AM.IndexReg = AM.Base_Reg = Reg;
+                        return false;
+                    }
+                }
+            }
+        },
+        SUB => {
+            let mut Handle: HandleSDNode = HandleSDNode { N };
+            let mut Backup: X86ISelAddressMode = AM;
+            if self.matchAddressRecursively(N.getOperand(0), AM, Depth + 1) {
+                N = Handle.getValue();
+                AM = Backup;
+                break;
+            }
+            N = Handle.getValue();
+            if AM.IndexReg.getNode() || AM.isRIPRelative() {
+                AM = Backup;
+                break;
+            }
+            let mut Cost: i32 = 0;
+            let mut RHS: SDValue = N.getOperand(1);
+            let mut NegScale: optional<unsigned int> = optional<unsigned int> {};
+            if RHS.getOpcode() == SHL && RHS.hasOneUse() {
+                if  {
+                    let mut ShVal: u64 = ();
+                    if ShVal >= 1 && ShVal <= 3 {
+                        NegScale(1 << ShVal);
+                        RHS = RHS.getOperand(0);
+                        Cost -= 1;
+                    }
+                }
+            }
+            if !RHS.getNode().hasOneUse() || (!NegScale && RHS.getNode().getOpcode() == CopyFromReg) || RHS.getNode().getOpcode() == TRUNCATE || RHS.getNode().getOpcode() == ANY_EXTEND || (RHS.getNode().getOpcode() == ZERO_EXTEND && RHS.getOperand(0).getValueType() == EVT { i32 }) {
+                Cost += 1;
+            }
+            let mut BaseIsNegatedValue: bool = NegScale && AM.BaseType == RegBase && AM.Base_Reg == RHS;
+            if ((AM.BaseType == RegBase && AM.Base_Reg.getNode() && !AM.Base_Reg.getNode().hasOneUse()) || AM.BaseType == FrameIndexBase) && !BaseIsNegatedValue {
+                Cost -= 1;
+            }
+            if (AM.hasSymbolicDisplacement() && !Backup.hasSymbolicDisplacement()) + ((AM.Disp != 0) && (Backup.Disp == 0)) + (AM.Segment.getNode() && !Backup.Segment.getNode()) >= 2 {
+                Cost -= 1;
+            }
+            if Cost >= 0 {
+                AM = Backup;
+                break;
+            }
+            AM.IndexReg = RHS;
+            AM.NegateIndex = true;
+            AM.Scale = NegScale;
+            return false;
+        },
+        OR => {
+            XOR;
+        },
+        ADD => {
+            if !self.matchAdd(N, AM, Depth) {
+                return false;
+            }
+        },
+        AND => {
+            if AM.IndexReg.getNode() != null || AM.Scale != 1 {
+                break;
+            }
+            assert!(N.getSimpleValueType().getSizeInBits().operator unsigned long long() <= 64, "Unexpected value size!");
+            if !isa(N.getOperand(1)) {
+                break;
+            }
+            if N.getOperand(0).getOpcode() == SRL {
+                let mut Shift: SDValue = N.getOperand(0);
+                let mut X: SDValue = Shift.getOperand(0);
+                let mut Mask: u64 = N.getConstantOperandVal(1);
+                if !foldMaskAndShiftToExtract(*self.CurDAG, N, Mask, Shift, X, AM) {
+                    return false;
+                }
+                if !foldMaskAndShiftToScale(*self.CurDAG, N, Mask, Shift, X, AM) {
+                    return false;
+                }
+                if !foldMaskedShiftToBEXTR(*self.CurDAG, N, Mask, Shift, X, AM, *self.Subtarget) {
+                    return false;
+                }
+            }
+            if !foldMaskedShiftToScaledMask(*self.CurDAG, N, AM) {
+                return false;
+            }
+            break;
+        },
+        ZERO_EXTEND => {
+            if AM.IndexReg.getNode() != null || AM.Scale != 1 {
+                break;
+            }
+            let mut Src: SDValue = N.getOperand(0);
+            if Src.getOpcode() == ADD || Src.getOpcode() == OR {
+                if self.matchIndexRecursively(N, AM, Depth + 1) {
+                    Index;
+                } else if Index != N {
+                    AM.IndexReg = Index;
+                    return false;
+                }
+            }
+            let mut Mask: APInt = getAllOnes(Src.getScalarValueSizeInBits());
+            if Src.getOpcode() == AND && Src.hasOneUse() {
+                if  {
+                    Mask = ();
+                    Src = Src.getOperand(0);
+                }
+            }
+            if Src.getOpcode() == SHL && Src.hasOneUse() && operator(N).hasOneUse() {
+                let mut ShlSrc: SDValue = Src.getOperand(0);
+                let mut ShlAmt: SDValue = Src.getOperand(1);
+                let mut ShAmtC: *mut auto = dyn_cast(ShlAmt);
+                if operator!() {
+                    break;
+                }
+                let mut ShAmtV: u32 = ();
+                if ShAmtV > 3 {
+                    break;
+                }
+                let mut HighZeros: APInt = getHighBitsSet(ShlSrc.getValueSizeInBits().operator unsigned long long(), ShAmtV);
+                if !operator(Src).getFlags().hasNoUnsignedWrap() && !self.CurDAG.MaskedValueIsZero(ShlSrc, HighZeros & Mask, 0) {
+                    break;
+                }
+                let mut SrcVT: MVT = ShlSrc.getSimpleValueType();
+                let mut VT: MVT = N.getSimpleValueType();
+                let mut DL: SDLoc = SDLoc { N };
+                let mut Res: SDValue = ShlSrc;
+                if !Mask.isAllOnes() {
+                    Res = self.CurDAG.getConstant(Mask.lshr(ShAmtV), DL, EVT { SrcVT }, false, false);
+                    insertDAGNode(*self.CurDAG, N, Res);
+                    Res = self.CurDAG.getNode(AND, DL, EVT { SrcVT }, ShlSrc, Res);
+                    insertDAGNode(*self.CurDAG, N, Res);
+                }
+                let mut Zext: SDValue = self.CurDAG.getNode(ZERO_EXTEND, DL, EVT { VT }, Res);
+                insertDAGNode(*self.CurDAG, N, Zext);
+                let mut NewShl: SDValue = self.CurDAG.getNode(SHL, DL, EVT { VT }, Zext, ShlAmt);
+                insertDAGNode(*self.CurDAG, N, NewShl);
+                self.CurDAG.ReplaceAllUsesWith(N, NewShl);
+                self.CurDAG.RemoveDeadNode(N.getNode());
+                AM.Scale = 1 << ShAmtV;
+                AM.IndexReg = self.matchIndexRecursively(Zext, AM, Depth + 1);
+                return false;
+            }
+            if Src.getOpcode() == SRL && !Mask.isAllOnes() {
+                if !foldMaskAndShiftToExtract(*self.CurDAG, N, Mask.getZExtValue(), Src, Src.getOperand(0), AM) {
+                    return false;
+                }
+                if !foldMaskAndShiftToScale(*self.CurDAG, N, Mask.getZExtValue(), Src, Src.getOperand(0), AM) {
+                    return false;
+                }
+                if !foldMaskedShiftToBEXTR(*self.CurDAG, N, Mask.getZExtValue(), Src, Src.getOperand(0), AM, *self.Subtarget) {
+                    return false;
+                }
+            }
+            break;
+        },
+    }
+    return self.matchAddressBase(N, AM);
+}
+
+fn X86DAGToDAGISel::matchAddressBase(self, N: SDValue, AM: *mut X86ISelAddressMode) -> bool {
+    if AM.BaseType != RegBase || AM.Base_Reg.getNode() {
+        if !AM.IndexReg.getNode() {
+            AM.IndexReg = N;
+            AM.Scale = 1;
+            return false;
+        }
+        return true;
+    }
+    AM.BaseType = RegBase;
+    AM.Base_Reg = N;
+    return false;
+}
+
+fn X86DAGToDAGISel::matchVectorAddressRecursively(self, N: SDValue, AM: *mut X86ISelAddressMode, Depth: u32) -> bool {
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("x86-isel", 1) {
+            {
+                dbgs() << "MatchVectorAddress: ";
+                AM.dump(self.CurDAG);
+            }
+        }
+    }
+        if !(false) { break; }
+    }
+    if Depth >= MaxRecursionDepth {
+        return self.matchAddressBase(N, AM);
+    }
+    match N.getOpcode() {
+        Constant => {
+            let mut Val: u64 = cast(N)();
+            if !self.foldOffsetIntoAddress(Val, AM) {
+                return false;
+            }
+            break;
+        },
+        ADD => {
+            let mut Handle: HandleSDNode = HandleSDNode { N };
+            let mut Backup: X86ISelAddressMode = AM;
+            if !self.matchVectorAddressRecursively(N.getOperand(0), AM, Depth + 1) && !self.matchVectorAddressRecursively(Handle.getValue().getOperand(1), AM, Depth + 1) {
+                return false;
+            }
+            AM = Backup;
+            if !self.matchVectorAddressRecursively(Handle.getValue().getOperand(1), AM, Depth + 1) && !self.matchVectorAddressRecursively(Handle.getValue().getOperand(0), AM, Depth + 1) {
+                return false;
+            }
+            AM = Backup;
+            N = Handle.getValue();
+            break;
+        },
+    }
+    return self.matchAddressBase(N, AM);
+}
+
+fn X86DAGToDAGISel::matchVectorAddress(self, N: SDValue, AM: *mut X86ISelAddressMode) -> bool {
+    return self.matchVectorAddressRecursively(N, AM, 0);
+}
+
+fn X86DAGToDAGISel::selectVectorAddr(self, Parent: *mut MemSDNode, BasePtr: SDValue, IndexOp: SDValue, ScaleOp: SDValue, Base: *mut SDValue, Scale: *mut SDValue, Index: *mut SDValue, Disp: *mut SDValue, Segment: *mut SDValue) -> bool {
+    let mut AM: X86ISelAddressMode = X86ISelAddressMode {};
+    AM.Scale = operator(ScaleOp).getAsZExtVal();
+    if IndexOp.getScalarValueSizeInBits() == BasePtr.getScalarValueSizeInBits() {
+        AM.IndexReg = self.matchIndexRecursively(IndexOp, AM, 0);
+    } else {
+        AM.IndexReg = IndexOp;
+    }
+    let mut AddrSpace: u32 = Parent.getPointerInfo().getAddrSpace();
+    if AddrSpace == GS {
+        AM.Segment = self.CurDAG.getRegister;
+    }
+    if AddrSpace == FS {
+        AM.Segment = self.CurDAG.getRegister;
+    }
+    if AddrSpace == SS {
+        AM.Segment = self.CurDAG.getRegister;
+    }
+    let mut DL: SDLoc = SDLoc { BasePtr };
+    let mut VT: MVT = BasePtr.getSimpleValueType();
+    if self.matchVectorAddress(BasePtr, AM) {
+        return false;
+    }
+    self.getAddressOperands(AM, DL, VT, Base, Scale, Index, Disp, Segment);
+    return true;
+}
+
+fn X86DAGToDAGISel::selectAddr(self, Parent: *mut SDNode, N: SDValue, Base: *mut SDValue, Scale: *mut SDValue, Index: *mut SDValue, Disp: *mut SDValue, Segment: *mut SDValue, HasNDDM: bool) -> bool {
+    let mut AM: X86ISelAddressMode = X86ISelAddressMode {};
+    if  {
+        let mut AddrSpace: u32 = cast(Parent)()();
+        if AddrSpace == GS {
+            AM.Segment = self.CurDAG.getRegister;
+        }
+        if AddrSpace == FS {
+            AM.Segment = self.CurDAG.getRegister;
+        }
+        if AddrSpace == SS {
+            AM.Segment = self.CurDAG.getRegister;
+        }
+    }
+    let mut DL: SDLoc = SDLoc { N };
+    let mut VT: MVT = N.getSimpleValueType();
+    if self.matchAddress(N, AM) {
+        return false;
+    }
+    if !HasNDDM && !AM.isRIPRelative() {
+        return false;
+    }
+    self.getAddressOperands(AM, DL, VT, Base, Scale, Index, Disp, Segment);
+    return true;
+}
+
+fn X86DAGToDAGISel::selectNDDAddr(self, Parent: *mut SDNode, N: SDValue, Base: *mut SDValue, Scale: *mut SDValue, Index: *mut SDValue, Disp: *mut SDValue, Segment: *mut SDValue) -> bool {
+    return self.selectAddr(Parent, N, Base, Scale, Index, Disp, Segment, self.Subtarget());
+}
+
+fn X86DAGToDAGISel::selectMOV64Imm32(self, N: SDValue, Imm: *mut SDValue) -> bool {
+    if self.TM.getCodeModel() == Kernel || self.TM.getCodeModel() == Large {
+        return false;
+    }
+    if  {
+        return false;
+    }
+    N = N.getOperand(0);
+    if operator(N).getOpcode() == TargetGlobalTLSAddress {
+        return false;
+    }
+    Imm = N;
+    if operator(N).getOpcode() != TargetGlobalAddress {
+        return self.TM.getCodeModel() == Small || self.TM.getCodeModel() == Medium;
+    }
+    let mut GV: *GlobalValue = cast(N)();
+    if GV.getAbsoluteSymbolRange() {
+        CR;
+    } else {
+        return operator(CR).getUnsignedMax().ult(1 << 32);
+    }
+    return !self.TM.isLargeGlobalValue(GV);
+}
+
+fn X86DAGToDAGISel::selectLEA64_Addr(self, N: SDValue, Base: *mut SDValue, Scale: *mut SDValue, Index: *mut SDValue, Disp: *mut SDValue, Segment: *mut SDValue) -> bool {
+    let mut DL: SDLoc = SDLoc { N };
+    if !self.selectLEAAddr(N, Base, Scale, Index, Disp, Segment) {
+        return false;
+    }
+    let mut BaseType: EVT = Base.getValueType();
+    let mut SubReg: u32 = 0;
+    let mut RN: *mut auto = dyn_cast(Base);
+    if RN() && () == 0 {
+        Base = self.CurDAG.getRegister(Register { Reg: 0 }, EVT { i64 });
+    } else if (BaseType == EVT { i8 } || BaseType == EVT { i16 } || BaseType == EVT { i32 }) && !isa(Base) {
+        let mut ImplDef: SDValue = self.CurDAG;
+        Base = self.CurDAG.getTargetInsertSubreg(SubReg, DL, EVT { i64 }, ImplDef, Base);
+    }
+    let mut IndexType: EVT = Index.getValueType();
+    RN() = dyn_cast(Index);
+    if RN() && () == 0 {
+        Index = self.CurDAG.getRegister(Register { Reg: 0 }, EVT { i64 });
+    } else {
+        assert!((IndexType == BaseType), "Expect to be extending 8/16/32-bit registers for use in LEA");
+        let mut ImplDef: SDValue = self.CurDAG;
+        Index = self.CurDAG.getTargetInsertSubreg(SubReg, DL, EVT { i64 }, ImplDef, Index);
+    }
+    return true;
+}
+
+fn X86DAGToDAGISel::selectLEAAddr(self, N: SDValue, Base: *mut SDValue, Scale: *mut SDValue, Index: *mut SDValue, Disp: *mut SDValue, Segment: *mut SDValue) -> bool {
+    let mut AM: X86ISelAddressMode = X86ISelAddressMode {};
+    AM.IsForLEA = true;
+    let mut DL: SDLoc = SDLoc { N };
+    let mut VT: MVT = N.getSimpleValueType();
+    let mut Copy: SDValue = AM.Segment;
+    let mut T: SDValue = self.CurDAG.getRegister(Register { Reg: 0 }, EVT { i32 });
+    AM.Segment = T;
+    if self.matchAddress(N, AM) {
+        return false;
+    }
+    assert!(T == AM.Segment);
+    AM.Segment = Copy;
+    let mut Complexity: u32 = 0;
+    if AM.BaseType == RegBase && AM.Base_Reg.getNode() {
+        Complexity = 1;
+    } else if AM.BaseType == FrameIndexBase {
+        Complexity = 4;
+    }
+    if AM.IndexReg.getNode() {
+        Complexity += 1;
+    }
+    if AM.Scale > 1 {
+        Complexity += 1;
+    }
+    if AM.hasSymbolicDisplacement() {
+        if self.Subtarget() {
+            Complexity = 4;
+        } else {
+            Complexity += 2;
+        }
+    }
+    if N.getOpcode() == ADD {
+        let mut isMathWithFlags: Closure_5 = Closure_5 {};
+        if isMathWithFlags.call(N.getOperand(0)) || isMathWithFlags.call(N.getOperand(1)) {
+            Complexity += 1;
+        }
+    }
+    if AM.Disp {
+        Complexity += 1;
+    }
+    if Complexity <= 2 {
+        return false;
+    }
+    self.getAddressOperands(AM, DL, VT, Base, Scale, Index, Disp, Segment);
+    return true;
+}
+
+fn X86DAGToDAGISel::selectTLSADDRAddr(self, N: SDValue, Base: *mut SDValue, Scale: *mut SDValue, Index: *mut SDValue, Disp: *mut SDValue, Segment: *mut SDValue) -> bool {
+    assert!(N.getOpcode() == TargetGlobalTLSAddress || N.getOpcode() == TargetExternalSymbol);
+    let mut AM: X86ISelAddressMode = X86ISelAddressMode {};
+    if  {
+        AM.GV = ();
+        operator+=(AM.Disp);
+        AM.SymbolFlags = ();
+    } else {
+        let mut SA: *mut auto = cast(N);
+        AM.ES = ();
+        AM.SymbolFlags = ();
+    }
+    if self.Subtarget() {
+        AM.Scale = 1;
+        AM.IndexReg = self.CurDAG.getRegister;
+    }
+    let mut VT: MVT = N.getSimpleValueType();
+    self.getAddressOperands(AM, SDLoc { N }, VT, Base, Scale, Index, Disp, Segment);
+    return true;
+}
+
+fn X86DAGToDAGISel::selectRelocImm(self, N: SDValue, Op: *mut SDValue) -> bool {
+    let mut VT: EVT = N.getValueType();
+    let mut WasTruncated: bool = false;
+    if N.getOpcode() == TRUNCATE {
+        WasTruncated = true;
+        N = N.getOperand(0);
+    }
+    if  {
+        return false;
+    }
+    let mut Opc: u32 = operator(N.getOperand(0)).getOpcode();
+    if Opc != TargetGlobalAddress || !WasTruncated {
+        Op = N.getOperand(0);
+        return !WasTruncated;
+    }
+    let mut GA: *mut auto = cast(N.getOperand(0));
+    let mut CR: optional<ConstantRange> = ()();
+    if !CR || operator(CR).getUnsignedMax().uge(1 << VT.getSizeInBits().operator unsigned long long()) {
+        return false;
+    }
+    Op = self.CurDAG.getTargetGlobalAddress(SDLoc { N }, VT);
+    return true;
+}
+
+fn X86DAGToDAGISel::tryFoldLoad(self, Root: *mut SDNode, P: *mut SDNode, N: SDValue, Base: *mut SDValue, Scale: *mut SDValue, Index: *mut SDValue, Disp: *mut SDValue, Segment: *mut SDValue) -> bool {
+    assert!(Root && P, "Unknown root/parent nodes");
+    if !isNON_EXTLoad(N.getNode()) || !self.IsProfitableToFold(N, P, Root) || !IsLegalToFold(N, P, Root, self.OptLevel, false) {
+        return false;
+    }
+    return self.selectAddr(N.getNode(), N.getOperand(1), Base, Scale, Index, Disp, Segment, true);
+}
+
+fn X86DAGToDAGISel::tryFoldBroadcast(self, Root: *mut SDNode, P: *mut SDNode, N: SDValue, Base: *mut SDValue, Scale: *mut SDValue, Index: *mut SDValue, Disp: *mut SDValue, Segment: *mut SDValue) -> bool {
+    assert!(Root && P, "Unknown root/parent nodes");
+    if  {
+        return false;
+    }
+    return self.selectAddr(N.getNode(), N.getOperand(1), Base, Scale, Index, Disp, Segment, true);
+}
+
+fn X86DAGToDAGISel::getGlobalBaseReg(self) -> *mut SDNode {
+    let mut GlobalBaseReg: Register = self.getInstrInfo().getGlobalBaseReg(self.MF);
+    let mut DL: *DataLayout = self.MF.getDataLayout();
+    return self.CurDAG.getRegister(GlobalBaseReg, self.TLI.getPointerTy)();
+}
+
+fn X86DAGToDAGISel::isSExtAbsoluteSymbolRef(self: *X86DAGToDAGISel, Width: u32, N: *mut SDNode) -> bool {
+    if N.getOpcode() == TRUNCATE {
+        N = N.getOperand(0).getNode();
+    }
+    if  {
+        return false;
+    }
+    let mut GA: *mut auto = dyn_cast(N.getOperand(0));
+    if operator!() {
+        return false;
+    }
+    let mut GV: *mut auto = ();
+    let mut CR: optional<ConstantRange> = ();
+    if CR {
+        return operator(CR).getSignedMin().sge(-1 << Width) && operator(CR).getSignedMax().slt(1 << Width);
+    }
+    return self.TM.getCodeModel() != Large && Width == 32 && operator!(self.TM.isLargeGlobalValue());
+}
+
+fn X86DAGToDAGISel::getCondFromNode(self: *X86DAGToDAGISel, N: *mut SDNode) -> CondCode {
+    assert!(N.isMachineOpcode(), "Unexpected node");
+    let mut Opc: u32 = N.getMachineOpcode();
+    let mut MCID: *MCInstrDesc = self.getInstrInfo()(Opc);
+    let mut CondNo: i32 = getCondSrcNoFromDesc(MCID);
+    if CondNo < 0 {
+        return COND_INVALID;
+    }
+    return N.getConstantOperandVal(CondNo) as CondCode;
+}
+
+fn X86DAGToDAGISel::onlyUsesZeroFlag(self: *X86DAGToDAGISel, Flags: SDValue) -> bool {
+    for Use in operator(Flags).uses() {
+        if Use.getResNo() != Flags.getResNo() {
+            continue;
+        }
+        let mut User: *mut SDNode = Use.getUser();
+        if  {
+            return false;
+        }
+        for FlagUse in User.uses() {
+            if FlagUse.getResNo() != 1 {
+                continue;
+            }
+            if !FlagUse.getUser().isMachineOpcode() {
+                return false;
+            }
+            let mut CC: CondCode = self.getCondFromNode(FlagUse.getUser());
+            match CC {
+                COND_E => {
+                    COND_NE;
+                },
+                _ => {
+                    return false;
+                },
+            }
+        }
+    }
+    return true;
+}
+
+fn X86DAGToDAGISel::hasNoSignFlagUses(self: *X86DAGToDAGISel, Flags: SDValue) -> bool {
+    for Use in operator(Flags).uses() {
+        if Use.getResNo() != Flags.getResNo() {
+            continue;
+        }
+        let mut User: *mut SDNode = Use.getUser();
+        if  {
+            return false;
+        }
+        for FlagUse in User.uses() {
+            if FlagUse.getResNo() != 1 {
+                continue;
+            }
+            if !FlagUse.getUser().isMachineOpcode() {
+                return false;
+            }
+            let mut CC: CondCode = self.getCondFromNode(FlagUse.getUser());
+            match CC {
+                COND_A => {
+                    COND_AE;
+                },
+                _ => {
+                    return false;
+                },
+            }
+        }
+    }
+    return true;
+}
+
+fn mayUseCarryFlag(CC: CondCode) -> bool {
+    match CC {
+        COND_O => {
+            COND_NO;
+        },
+        _ => {
+            return true;
+        },
+    }
+}
+
+fn X86DAGToDAGISel::hasNoCarryFlagUses(self: *X86DAGToDAGISel, Flags: SDValue) -> bool {
+    for Use in operator(Flags).uses() {
+        if Use.getResNo() != Flags.getResNo() {
+            continue;
+        }
+        let mut User: *mut SDNode = Use.getUser();
+        let mut UserOpc: u32 = User.getOpcode();
+        if UserOpc == CopyToReg {
+            if  {
+                return false;
+            }
+            for FlagUse in User.uses() {
+                if FlagUse.getResNo() != 1 {
+                    continue;
+                }
+                if !FlagUse.getUser().isMachineOpcode() {
+                    return false;
+                }
+                let mut CC: CondCode = self.getCondFromNode(FlagUse.getUser());
+                if mayUseCarryFlag(CC) {
+                    return false;
+                }
+            }
+            continue;
+        }
+        let mut CCOpNo: u32 = 0;
+        match UserOpc {
+            _ => {
+                return false;
+            },
+        }
+        let mut CC: CondCode = User.getConstantOperandVal(CCOpNo) as CondCode;
+        if mayUseCarryFlag(CC) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn addrMayUseNonFixedFrameIndex(Addr: SDValue, MFI: *MachineFrameInfo, Depth: u32) -> bool {
+    if  {
+        return operator!(MFI.isFixedObjectIndex());
+    }
+    if Depth >= MaxRecursionDepth {
+        return true;
+    }
+    match Addr.getOpcode() {
+        ADD => {
+            OR;
+        },
+        SUB => {
+            return addrMayUseNonFixedFrameIndex(Addr.getOperand(0), MFI, Depth + 1);
+        },
+        _ => {
+            return false;
+        },
+    }
+}
+
+fn X86DAGToDAGISel::checkTCRetEnoughRegs(self: *X86DAGToDAGISel, N: *mut SDNode) -> bool {
+    let mut BasePtr: *SDValue = cast(N.getOperand(1))();
+    if addrMayUseNonFixedFrameIndex(BasePtr, self.MF.getFrameInfo(), 0) {
+        return false;
+    }
+    let mut RI: *X86RegisterInfo = self.Subtarget.getRegisterInfo();
+    let mut AvailGPRs: u32 = 0;
+    if self.Subtarget() {
+        let mut TCGPRs: *TargetRegisterClass = null;
+        (((operator!(operator!((TCGPRs)))) || (_wassert(L"TCGPRs->contains(X86::RSP)", L"llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", (3749) as u32) , 0)) as void);
+        (((operator!(operator!((TCGPRs)))) || (_wassert(L"TCGPRs->contains(X86::RIP)", L"llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", (3750) as u32) , 0)) as void);
+        AvailGPRs = TCGPRs.getNumRegs() - 2;
+    } else {
+        let mut TCGPRs: *TargetRegisterClass = null;
+        (((operator!(operator!((TCGPRs)))) || (_wassert(L"TCGPRs->contains(X86::ESP)", L"llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", (3758) as u32) , 0)) as void);
+        AvailGPRs = TCGPRs.getNumRegs() - 1;
+    }
+    let mut LoadGPRs: u32 = 2;
+    if self.Subtarget() {
+        if isa(BasePtr) {
+            LoadGPRs -= 2;
+        } else if  {
+            if self.getTargetMachine().isPositionIndependent {
+                return false;
+            }
+            LoadGPRs -= 1;
+        }
+    }
+    let mut ArgGPRs: u32 = 0;
+    for let mut I: u32 = 3;
+let mut E: u32 = N.getNumOperands(); I != E; I += 1 {
+        if  {
+            if operator!(RI()(*self.MF)) {
+                continue;
+            }
+            if ArgGPRs += 1 + LoadGPRs > AvailGPRs {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+fn isFusableLoadOpStorePattern(StoreNode: *mut StoreSDNode, StoredVal: SDValue, CurDAG: *mut SelectionDAG, LoadOpNo: u32, LoadNode: *mut *mut LoadSDNode, InputChain: *mut SDValue) -> bool {
+    if StoredVal.getResNo() != 0 {
+        return false;
+    }
+    if !StoredVal.getNode().hasNUsesOfValue(1, 0) {
+        return false;
+    }
+    if !isNormalStore(StoreNode) || StoreNode.isNonTemporal() {
+        return false;
+    }
+    let mut Load: SDValue = operator(StoredVal).getOperand(LoadOpNo);
+    if !isNormalLoad(Load.getNode()) {
+        return false;
+    }
+    LoadNode = cast(Load);
+    if !Load.hasOneUse() {
+        return false;
+    }
+    if LoadNode.getBasePtr() != StoreNode.getBasePtr() || LoadNode.getOffset() != StoreNode.getOffset() {
+        return false;
+    }
+    let mut FoundLoad: bool = false;
+    let mut ChainOps: SmallVector<SDValue, 4> = SmallVector<SDValue, 4> {};
+    let mut LoopWorklist: SmallVector<const SDNode *, 4> = zeroed();
+    let mut Visited: SmallPtrSet<const SDNode *, 16> = zeroed();
+    let mut Max: u32 = 1024;
+    let mut Chain: SDValue = StoreNode.getChain();
+    if Chain == Load.getValue(1) {
+        FoundLoad = true;
+        ChainOps.push(ValueParamT { Load.getOperand(0) });
+    } else if Chain.getOpcode() == TokenFactor {
+        for let mut i: u32 = 0;
+let mut e: u32 = Chain.getNumOperands(); i != e; i += 1 {
+            let mut Op: SDValue = Chain.getOperand(i);
+            if Op == Load.getValue(1) {
+                FoundLoad = true;
+                ChainOps.push(ValueParamT { Load.getOperand(0) });
+                continue;
+            }
+            LoopWorklist()(Op.getNode());
+            ChainOps.push(ValueParamT { Op });
+        }
+    }
+    if !FoundLoad {
+        return false;
+    }
+    for Op in operator(StoredVal).ops() {
+        if Op.getNode() != LoadNode {
+            LoopWorklist()(Op.getNode());
+        }
+    }
+    if hasPredecessorHelper(Load.getNode(), Max, true) {
+        return false;
+    }
+    InputChain = CurDAG;
+    return true;
+}
+
+fn X86DAGToDAGISel::foldLoadStoreIntoMemOperand(self, Node: *mut SDNode) -> bool {
+    let mut StoreNode: *mut auto = cast(Node);
+    let mut StoredVal: SDValue = (1);
+    let mut Opc: u32 = operator(StoredVal).getOpcode();
+    let mut MemVT: EVT = ();
+    if MemVT != EVT { i64 } && MemVT != EVT { i32 } && MemVT != EVT { i16 } && MemVT != EVT { i8 } {
+        return false;
+    }
+    let mut IsCommutable: bool = false;
+    let mut IsNegate: bool = false;
+    match Opc {
+        _ => {
+            return false;
+        },
+    }
+    let mut LoadOpNo: u32 = if IsNegate { 1 } else { 0 };
+    let mut LoadNode: *mut LoadSDNode = null;
+    let mut InputChain: SDValue = SDValue {};
+    if operator!(isFusableLoadOpStorePattern(StoredVal, self.CurDAG, LoadOpNo, LoadNode, InputChain)) {
+        if !IsCommutable {
+            return false;
+        }
+        LoadOpNo = 1;
+        if operator!(isFusableLoadOpStorePattern(StoredVal, self.CurDAG, LoadOpNo, LoadNode, InputChain)) {
+            return false;
+        }
+    }
+    let mut Base: SDValue = SDValue {};
+    let mut Scale: SDValue = SDValue {};
+    let mut Index: SDValue = SDValue {};
+    let mut Disp: SDValue = SDValue {};
+    let mut Segment: SDValue = SDValue {};
+    if !self.selectAddr(LoadNode, LoadNode.getBasePtr(), Base, Scale, Index, Disp, Segment, true) {
+        return false;
+    }
+    let mut SelectOpcode: Closure_6 = Closure_6 { MemVT: &mut MemVT };
+    let mut Result: *mut MachineSDNode = null;
+    match Opc {
+        _ => {
+            llvm_unreachable_internal("Invalid opcode!", "llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", 4127);
+        },
+    }
+    let mut MemOps: []*mut MachineMemOperand = void { (), LoadNode.getMemOperand() };
+    self.CurDAG.setNodeMemRefs(Result, MemOps);
+    self.ReplaceUses(SDValue { Node: LoadNode, ResNo: 1 }, SDValue { Node: Result, ResNo: 1 });
+    self.ReplaceUses(SDValue { Node: Result, ResNo: 1 });
+    self.ReplaceUses(SDValue { Node: StoredVal.getNode(), ResNo: 1 }, SDValue { Node: Result, ResNo: 0 });
+    self.CurDAG.RemoveDeadNode(Node);
+    return true;
+}
+
+fn X86DAGToDAGISel::matchBitExtract(self, Node: *mut SDNode) -> bool {
+    assert!((Node.getOpcode() == ADD || Node.getOpcode() == AND || Node.getOpcode() == XOR || Node.getOpcode() == SRL), "Should be either an and-mask, a standalone low-bits mask, or right-shift after clearing high bits.");
+    if operator!(self.Subtarget()) && operator!(self.Subtarget()) {
+        return false;
+    }
+    let mut NVT: MVT = Node.getSimpleValueType(0);
+    if NVT != i32 && NVT != i64 {
+        return false;
+    }
+    let mut NBits: SDValue = SDValue {};
+    let mut NegateNBits: bool = false;
+    let mut AllowExtraUsesByDefault: bool = self.Subtarget();
+    let mut checkUses: Closure_7 = Closure_7 { AllowExtraUsesByDefault: AllowExtraUsesByDefault };
+    let mut checkOneUse: Closure_8 = Closure_8 { cap_0: checkUses };
+    let mut checkTwoUse: Closure_9 = Closure_9 { cap_0: checkUses };
+    let mut peekThroughOneUseTruncation: Closure_10 = Closure_10 { cap_0: checkOneUse };
+    let mut matchPatternA: Closure_11 = Closure_11 { cap_0: checkOneUse, cap_1: peekThroughOneUseTruncation, NBits: &mut NBits, NegateNBits: &mut NegateNBits };
+    let mut isAllOnes: Closure_12 = Closure_12 { cap_0: self, cap_1: peekThroughOneUseTruncation, cap_2: NVT };
+    let mut matchPatternB: Closure_13 = Closure_13 { cap_0: checkOneUse, cap_1: isAllOnes, cap_2: peekThroughOneUseTruncation, NBits: &mut NBits, NegateNBits: &mut NegateNBits };
+    let mut canonicalizeShiftAmt: Closure_14 = Closure_14 { NBits: &mut NBits, NegateNBits: &mut NegateNBits };
+    let mut matchPatternC: Closure_15 = Closure_15 { cap_0: checkOneUse, cap_1: peekThroughOneUseTruncation, NegateNBits: &mut NegateNBits, cap_3: canonicalizeShiftAmt };
+    let mut X: SDValue = SDValue {};
+    let mut matchPatternD: Closure_16 = Closure_16 { cap_0: checkOneUse, cap_1: checkTwoUse, cap_2: canonicalizeShiftAmt, AllowExtraUsesByDefault: AllowExtraUsesByDefault, NegateNBits: &mut NegateNBits, X: &mut X };
+    let mut matchLowBitMask: Closure_17 = Closure_17 { cap_0: matchPatternA, cap_1: matchPatternB, cap_2: matchPatternC };
+    if Node.getOpcode() == AND {
+        X = Node.getOperand(0);
+        let mut Mask: SDValue = Node.getOperand(1);
+        if matchLowBitMask.call(Mask) {} else {
+            swap(X, Mask);
+            if !matchLowBitMask.call(Mask) {
+                return false;
+            }
+        }
+    } else if matchLowBitMask.call(SDValue { Node: Node, ResNo: 0 }) {
+        X = self.CurDAG.getAllOnesConstant(SDLoc { Node }, EVT { NVT }, false, false);
+    } else if !matchPatternD.call(Node) {
+        return false;
+    }
+    if NegateNBits && operator!(self.Subtarget()) {
+        return false;
+    }
+    let mut DL: SDLoc = SDLoc { Node };
+    if NBits.getSimpleValueType() != i8 {
+        NBits = self.CurDAG.getNode(TRUNCATE, DL, EVT { i8 }, NBits);
+        insertDAGNode(*self.CurDAG, SDValue { Node: Node, ResNo: 0 }, NBits);
+    }
+    let mut Imm: *mut ConstantSDNode = null;
+    if operator(NBits).getOpcode() == AND {
+        if (Imm = dyn_cast(operator(NBits).getOperand(1))) {
+            NBits = operator(NBits).getOperand(0);
+        }
+    }
+    let mut ImplDef: SDValue = SDValue { Node: self.CurDAG.getMachineNode(IMPLICIT_DEF, DL, EVT { i32 }), ResNo: 0 };
+    insertDAGNode(*self.CurDAG, SDValue { Node: Node, ResNo: 0 }, ImplDef);
+    let mut SRIdxVal: SDValue = self.CurDAG;
+    insertDAGNode(*self.CurDAG, SDValue { Node: Node, ResNo: 0 }, SRIdxVal);
+    NBits = SDValue { Node: self.CurDAG.getMachineNode(INSERT_SUBREG, DL, EVT { i32 }, ImplDef, NBits, SRIdxVal), ResNo: 0 };
+    insertDAGNode(*self.CurDAG, SDValue { Node: Node, ResNo: 0 }, NBits);
+    if Imm {
+        NBits = self.CurDAG.getNode(AND, DL, EVT { i32 }, NBits, self.CurDAG.getConstant(Imm.getZExtValue(), DL, EVT { i32 }, false, false));
+        insertDAGNode(*self.CurDAG, SDValue { Node: Node, ResNo: 0 }, NBits);
+    }
+    if NegateNBits {
+        let mut BitWidthC: SDValue = self.CurDAG.getConstant(NVT.getSizeInBits().operator unsigned long long(), DL, EVT { i32 }, false, false);
+        insertDAGNode(*self.CurDAG, SDValue { Node: Node, ResNo: 0 }, BitWidthC);
+        NBits = self.CurDAG.getNode(SUB, DL, EVT { i32 }, BitWidthC, NBits);
+        insertDAGNode(*self.CurDAG, SDValue { Node: Node, ResNo: 0 }, NBits);
+    }
+    if self.Subtarget() {
+        if NVT != i32 {
+            NBits = self.CurDAG.getNode(ANY_EXTEND, DL, EVT { NVT }, NBits);
+            insertDAGNode(*self.CurDAG, SDValue { Node: Node, ResNo: 0 }, NBits);
+        }
+        let mut Extract: SDValue = self.CurDAG;
+        self.ReplaceNode(Node, Extract.getNode());
+        SelectCode(Extract.getNode());
+        return true;
+    }
+    {
+        let mut RealX: SDValue = peekThroughOneUseTruncation.call(X);
+        if RealX != X && RealX.getOpcode() == SRL {
+            X = RealX;
+        }
+    }
+    let mut XVT: MVT = X.getSimpleValueType();
+    let mut C8: SDValue = self.CurDAG.getConstant(8, DL, EVT { i8 }, false, false);
+    insertDAGNode(*self.CurDAG, SDValue { Node: Node, ResNo: 0 }, C8);
+    let mut Control: SDValue = self.CurDAG.getNode(SHL, DL, EVT { i32 }, NBits, C8);
+    insertDAGNode(*self.CurDAG, SDValue { Node: Node, ResNo: 0 }, Control);
+    if X.getOpcode() == SRL {
+        let mut ShiftAmt: SDValue = X.getOperand(1);
+        X = X.getOperand(0);
+        assert!(ShiftAmt.getValueType() == EVT { i8 }, "Expected shift amount to be i8");
+        let mut OrigShiftAmt: SDValue = ShiftAmt;
+        ShiftAmt = self.CurDAG.getNode(ZERO_EXTEND, DL, EVT { i32 }, ShiftAmt);
+        insertDAGNode(*self.CurDAG, OrigShiftAmt, ShiftAmt);
+        Control = self.CurDAG.getNode(OR, DL, EVT { i32 }, Control, ShiftAmt);
+        insertDAGNode(*self.CurDAG, SDValue { Node: Node, ResNo: 0 }, Control);
+    }
+    if XVT != i32 {
+        Control = self.CurDAG.getNode(ANY_EXTEND, DL, EVT { XVT }, Control);
+        insertDAGNode(*self.CurDAG, SDValue { Node: Node, ResNo: 0 }, Control);
+    }
+    let mut Extract: SDValue = self.CurDAG;
+    if XVT != NVT {
+        insertDAGNode(*self.CurDAG, SDValue { Node: Node, ResNo: 0 }, Extract);
+        Extract = self.CurDAG.getNode(TRUNCATE, DL, EVT { NVT }, Extract);
+    }
+    self.ReplaceNode(Node, Extract.getNode());
+    SelectCode(Extract.getNode());
+    return true;
+}
+
+fn X86DAGToDAGISel::matchBEXTRFromAndImm(self, Node: *mut SDNode) -> *mut MachineSDNode {
+    let mut NVT: MVT = Node.getSimpleValueType(0);
+    let mut dl: SDLoc = SDLoc { Node };
+    let mut N0: SDValue = Node.getOperand(0);
+    let mut N1: SDValue = Node.getOperand(1);
+    let mut PreferBEXTR: bool = self.Subtarget() || (self.Subtarget() && self.Subtarget());
+    if !PreferBEXTR && operator!(self.Subtarget()) {
+        return null;
+    }
+    if operator(N0).getOpcode() != SRL && operator(N0).getOpcode() != SRA {
+        return null;
+    }
+    if !operator(N0).hasOneUse() {
+        return null;
+    }
+    if NVT != i32 && NVT != i64 {
+        return null;
+    }
+    let mut MaskCst: *mut auto = dyn_cast(N1);
+    let mut ShiftCst: *mut auto = dyn_cast(operator(N0).getOperand(1));
+    if operator!() || operator!() {
+        return null;
+    }
+    let mut Mask: u64 = ();
+    if !isMask_64(Mask) {
+        return null;
+    }
+    let mut Shift: u64 = ();
+    let mut MaskSize: u64 = popcount(Mask);
+    if Shift == 8 && MaskSize == 8 {
+        return null;
+    }
+    if Shift + MaskSize > NVT.getSizeInBits().operator unsigned long long() {
+        return null;
+    }
+    if !PreferBEXTR && MaskSize <= 32 {
+        return null;
+    }
+    let mut Control: SDValue = SDValue {};
+    let mut ROpc: u32 = 0;
+    let mut MOpc: u32 = 0;
+    if !PreferBEXTR {
+        (((operator!(operator!((self.Subtarget() && "We must have BMI2's BZHI then.")))) || (_wassert(L"Subtarget->hasBMI2() && \"We must have BMI2's BZHI then.\"", L"llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", (4540) as u32) , 0)) as void);
+        Control = self.CurDAG.getTargetConstant(Shift + MaskSize, dl, EVT { NVT }, false);
+        let mut NewOpc: u32 = 0;
+        Control = SDValue { Node: self.CurDAG.getMachineNode(NewOpc, dl, EVT { NVT }, Control), ResNo: 0 };
+    } else {
+        Control = self.CurDAG.getTargetConstant(Shift | (MaskSize << 8), dl, EVT { NVT }, false);
+        if self.Subtarget() {} else {
+            (((operator!(operator!((self.Subtarget() && "We must have BMI1's BEXTR then.")))) || (_wassert(L"Subtarget->hasBMI() && \"We must have BMI1's BEXTR then.\"", L"llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", (4561) as u32) , 0)) as void);
+            let mut NewOpc: u32 = 0;
+            Control = SDValue { Node: self.CurDAG.getMachineNode(NewOpc, dl, EVT { NVT }, Control), ResNo: 0 };
+        }
+    }
+    let mut NewNode: *mut MachineSDNode = null;
+    let mut Input: SDValue = operator(N0).getOperand(0);
+    let mut Tmp0: SDValue = SDValue {};
+    let mut Tmp1: SDValue = SDValue {};
+    let mut Tmp2: SDValue = SDValue {};
+    let mut Tmp3: SDValue = SDValue {};
+    let mut Tmp4: SDValue = SDValue {};
+    if self.tryFoldLoad(Node, N0.getNode(), Input, Tmp0, Tmp1, Tmp2, Tmp3, Tmp4) {
+        let mut Ops: [7]SDValue = [Tmp0, Tmp1, Tmp2, Tmp3, Tmp4, Control, Input.getOperand(0)];
+        let mut VTs: SDVTList = self.CurDAG.getVTList(EVT { NVT }, EVT { i32 }, EVT { Other });
+        NewNode = self.CurDAG;
+        self.ReplaceUses(Input.getValue(1), SDValue { Node: NewNode, ResNo: 2 });
+        self.CurDAG.setNodeMemRefs(NewNode, void { cast(Input)() });
+    } else {
+        NewNode = self.CurDAG.getMachineNode(ROpc, dl, EVT { NVT }, EVT { i32 }, Input, Control);
+    }
+    if !PreferBEXTR {
+        let mut ShAmt: SDValue = self.CurDAG.getTargetConstant(Shift, dl, EVT { NVT }, false);
+        let mut NewOpc: u32 = 0;
+        NewNode = self.CurDAG.getMachineNode(NewOpc, dl, EVT { NVT }, SDValue { Node: NewNode, ResNo: 0 }, ShAmt);
+    }
+    return NewNode;
+}
+
+fn X86DAGToDAGISel::emitPCMPISTR(self, ROpc: u32, MOpc: u32, MayFoldLoad: bool, dl: *SDLoc, VT: MVT, Node: *mut SDNode) -> *mut MachineSDNode {
+    let mut N0: SDValue = Node.getOperand(0);
+    let mut N1: SDValue = Node.getOperand(1);
+    let mut Imm: SDValue = Node.getOperand(2);
+    let mut Val: *mut auto = cast(Imm)();
+    Imm = self.CurDAG(operator*(), SDLoc { Node }, Imm.getValueType());
+    let mut Tmp0: SDValue = SDValue {};
+    let mut Tmp1: SDValue = SDValue {};
+    let mut Tmp2: SDValue = SDValue {};
+    let mut Tmp3: SDValue = SDValue {};
+    let mut Tmp4: SDValue = SDValue {};
+    if MayFoldLoad && self.tryFoldLoad(Node, N1, Tmp0, Tmp1, Tmp2, Tmp3, Tmp4) {
+        let mut Ops: [8]SDValue = [N0, Tmp0, Tmp1, Tmp2, Tmp3, Tmp4, Imm, N1.getOperand(0)];
+        let mut VTs: SDVTList = self.CurDAG.getVTList(EVT { VT }, EVT { i32 }, EVT { Other });
+        let mut CNode: *mut MachineSDNode = self.CurDAG;
+        self.ReplaceUses(N1.getValue(1), SDValue { Node: CNode, ResNo: 2 });
+        self.CurDAG.setNodeMemRefs(CNode, void { cast(N1)() });
+        return CNode;
+    }
+    let mut Ops: [3]SDValue = [N0, N1, Imm];
+    let mut VTs: SDVTList = self.CurDAG.getVTList(EVT { VT }, EVT { i32 });
+    let mut CNode: *mut MachineSDNode = self.CurDAG;
+    return CNode;
+}
+
+fn X86DAGToDAGISel::emitPCMPESTR(self, ROpc: u32, MOpc: u32, MayFoldLoad: bool, dl: *SDLoc, VT: MVT, Node: *mut SDNode, InGlue: *mut SDValue) -> *mut MachineSDNode {
+    let mut N0: SDValue = Node.getOperand(0);
+    let mut N2: SDValue = Node.getOperand(2);
+    let mut Imm: SDValue = Node.getOperand(4);
+    let mut Val: *mut auto = cast(Imm)();
+    Imm = self.CurDAG(operator*(), SDLoc { Node }, Imm.getValueType());
+    let mut Tmp0: SDValue = SDValue {};
+    let mut Tmp1: SDValue = SDValue {};
+    let mut Tmp2: SDValue = SDValue {};
+    let mut Tmp3: SDValue = SDValue {};
+    let mut Tmp4: SDValue = SDValue {};
+    if MayFoldLoad && self.tryFoldLoad(Node, N2, Tmp0, Tmp1, Tmp2, Tmp3, Tmp4) {
+        let mut Ops: [9]SDValue = [N0, Tmp0, Tmp1, Tmp2, Tmp3, Tmp4, Imm, N2.getOperand(0), InGlue];
+        let mut VTs: SDVTList = self.CurDAG.getVTList(EVT { VT }, EVT { i32 }, EVT { Other }, EVT { Glue });
+        let mut CNode: *mut MachineSDNode = self.CurDAG;
+        InGlue = SDValue { Node: CNode, ResNo: 3 };
+        self.ReplaceUses(N2.getValue(1), SDValue { Node: CNode, ResNo: 2 });
+        self.CurDAG.setNodeMemRefs(CNode, void { cast(N2)() });
+        return CNode;
+    }
+    let mut Ops: [4]SDValue = [N0, N2, Imm, InGlue];
+    let mut VTs: SDVTList = self.CurDAG.getVTList(EVT { VT }, EVT { i32 }, EVT { Glue });
+    let mut CNode: *mut MachineSDNode = self.CurDAG;
+    InGlue = SDValue { Node: CNode, ResNo: 2 };
+    return CNode;
+}
+
+fn X86DAGToDAGISel::tryShiftAmountMod(self, N: *mut SDNode) -> bool {
+    let mut VT: EVT = N.getValueType(0);
+    if VT.isVector() {
+        return false;
+    }
+    let mut Size: u32 = if VT == EVT { i64 } { 64 } else { 32 };
+    let mut OrigShiftAmt: SDValue = N.getOperand(1);
+    let mut ShiftAmt: SDValue = OrigShiftAmt;
+    let mut DL: SDLoc = SDLoc { N };
+    if operator(ShiftAmt).getOpcode() == TRUNCATE {
+        ShiftAmt = operator(ShiftAmt).getOperand(0);
+    }
+    let mut NewShiftAmt: SDValue = SDValue {};
+    if operator(ShiftAmt).getOpcode() == ADD || operator(ShiftAmt).getOpcode() == SUB || operator(ShiftAmt).getOpcode() == XOR {
+        let mut Add0: SDValue = operator(ShiftAmt).getOperand(0);
+        let mut Add1: SDValue = operator(ShiftAmt).getOperand(1);
+        let mut Add0C: *mut auto = dyn_cast(Add0);
+        let mut Add1C: *mut auto = dyn_cast(Add1);
+        if Add1C() && ()(Size) == 0 {
+            NewShiftAmt = Add0;
+        } else if operator(ShiftAmt).getOpcode() != ADD && ShiftAmt.hasOneUse() && ((Add0C() && ()(Size) == Size - 1) || (Add1C() && ()(Size) == Size - 1)) {
+            (((operator!(operator!((Add0C() == null ||  == null)))) || (_wassert(L"Add0C == nullptr || Add1C == nullptr", L"llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", (4704) as u32) , 0)) as void);
+            if operator(ShiftAmt).getOpcode() == SUB &&  == null {
+                return false;
+            }
+            let mut OpVT: EVT = ShiftAmt.getValueType();
+            let mut AllOnes: SDValue = self.CurDAG.getAllOnesConstant(DL, OpVT, false, false);
+            NewShiftAmt = self.CurDAG(XOR, DL, OpVT, if  == null { Add0 } else { Add1 }, AllOnes);
+            insertDAGNode(*self.CurDAG, OrigShiftAmt, AllOnes);
+            insertDAGNode(*self.CurDAG, OrigShiftAmt, NewShiftAmt);
+        } else if operator(ShiftAmt).getOpcode() == SUB &&  && () != 0 {
+            let mut SubVT: EVT = ShiftAmt.getValueType();
+            let mut X: SDValue = SDValue {};
+            if Add0C()() % Size == 0 {
+                X = Add1;
+            } else if ShiftAmt.hasOneUse() && Size == 64 && () % 32 == 0 {
+                if Add1.getOpcode() == TRUNCATE {
+                    Add1 = Add1.getOperand(0);
+                    SubVT = Add1.getValueType();
+                }
+                if Add0.getValueType() != SubVT {
+                    Add0 = self.CurDAG.getZExtOrTrunc(Add0, DL, SubVT);
+                    insertDAGNode(*self.CurDAG, OrigShiftAmt, Add0);
+                }
+                X = self.CurDAG.getNode(ADD, DL, SubVT, Add1, Add0);
+                insertDAGNode(*self.CurDAG, OrigShiftAmt, X);
+            } else {
+                return false;
+            }
+            let mut Zero: SDValue = self.CurDAG.getConstant(0, DL, SubVT, false, false);
+            let mut Neg: SDValue = self.CurDAG.getNode(SUB, DL, SubVT, Zero, X);
+            NewShiftAmt = Neg;
+            insertDAGNode(*self.CurDAG, OrigShiftAmt, Zero);
+            insertDAGNode(*self.CurDAG, OrigShiftAmt, Neg);
+        } else {
+            return false;
+        }
+    } else {
+        return false;
+    }
+    if NewShiftAmt.getValueType() != EVT { i8 } {
+        NewShiftAmt = self.CurDAG.getNode(TRUNCATE, DL, EVT { i8 }, NewShiftAmt);
+        insertDAGNode(*self.CurDAG, OrigShiftAmt, NewShiftAmt);
+    }
+    NewShiftAmt = self.CurDAG.getNode(AND, DL, EVT { i8 }, NewShiftAmt, self.CurDAG.getConstant(Size - 1, DL, EVT { i8 }, false, false));
+    insertDAGNode(*self.CurDAG, OrigShiftAmt, NewShiftAmt);
+    let mut UpdatedNode: *mut SDNode = self.CurDAG.UpdateNodeOperands(N, N.getOperand(0), NewShiftAmt);
+    if UpdatedNode != N {
+        self.ReplaceNode(N, UpdatedNode);
+        return true;
+    }
+    if OrigShiftAmt.getNode().use_empty() {
+        self.CurDAG.RemoveDeadNode(OrigShiftAmt.getNode());
+    }
+    SelectCode(N);
+    return true;
+}
+
+fn X86DAGToDAGISel::tryShrinkShlLogicImm(self, N: *mut SDNode) -> bool {
+    let mut NVT: MVT = N.getSimpleValueType(0);
+    let mut Opcode: u32 = N.getOpcode();
+    let mut dl: SDLoc = SDLoc { N };
+    let mut Shift: SDValue = N.getOperand(0);
+    let mut N1: SDValue = N.getOperand(1);
+    let mut Cst: *mut auto = dyn_cast(N1);
+    if operator!() {
+        return false;
+    }
+    let mut Val: i64 = ();
+    let mut FoundAnyExtend: bool = false;
+    if Shift.getOpcode() == ANY_EXTEND && Shift.hasOneUse() && Shift.getOperand(0).getSimpleValueType() == i32 && isUInt(Val) {
+        FoundAnyExtend = true;
+        Shift = Shift.getOperand(0);
+    }
+    if Shift.getOpcode() != SHL || !Shift.hasOneUse() {
+        return false;
+    }
+    if NVT != i32 && NVT != i64 {
+        return false;
+    }
+    let mut ShlCst: *mut auto = dyn_cast(Shift.getOperand(1));
+    if operator!() {
+        return false;
+    }
+    let mut ShAmt: u64 = ();
+    let mut RemovedBitsMask: u64 = (1 << ShAmt) - 1;
+    if Opcode != AND && (Val & RemovedBitsMask) != 0 {
+        return false;
+    }
+    let mut CanShrinkImmediate: Closure_18 = Closure_18 { Opcode: &mut Opcode, Val: &mut Val, ShAmt: &mut ShAmt, NVT: &mut NVT };
+    let mut ShiftedVal: i64 = 0;
+    if !CanShrinkImmediate.call(ShiftedVal) {
+        return false;
+    }
+    if Opcode == AND {
+        let mut ZExtWidth: u32 = ()();
+        ZExtWidth = bit_ceil(max(ZExtWidth, 8));
+        let mut NeededMask: APInt = getLowBitsSet(NVT.getSizeInBits().operator unsigned long long(), ZExtWidth);
+        operator&=(NeededMask, operator~());
+        if self.CurDAG.MaskedValueIsZero(N.getOperand(0), NeededMask, 0) {
+            return false;
+        }
+    }
+    let mut X: SDValue = Shift.getOperand(0);
+    if FoundAnyExtend {
+        let mut NewX: SDValue = self.CurDAG.getNode(ANY_EXTEND, dl, EVT { NVT }, X);
+        insertDAGNode(*self.CurDAG, SDValue { Node: N, ResNo: 0 }, NewX);
+        X = NewX;
+    }
+    let mut NewCst: SDValue = self.CurDAG.getSignedConstant(ShiftedVal, dl, EVT { NVT }, false, false);
+    insertDAGNode(*self.CurDAG, SDValue { Node: N, ResNo: 0 }, NewCst);
+    let mut NewBinOp: SDValue = self.CurDAG.getNode(Opcode, dl, EVT { NVT }, X, NewCst);
+    insertDAGNode(*self.CurDAG, SDValue { Node: N, ResNo: 0 }, NewBinOp);
+    let mut NewSHL: SDValue = self.CurDAG.getNode(SHL, dl, EVT { NVT }, NewBinOp, Shift.getOperand(1));
+    self.ReplaceNode(N, NewSHL.getNode());
+    SelectCode(NewSHL.getNode());
+    return true;
+}
+
+fn X86DAGToDAGISel::matchVPTERNLOG(self, Root: *mut SDNode, ParentA: *mut SDNode, ParentB: *mut SDNode, ParentC: *mut SDNode, A: SDValue, B: SDValue, C: SDValue, Imm: u8) -> bool {
+    assert!(A.isOperandOf(ParentA) && B.isOperandOf(ParentB) && C.isOperandOf(ParentC), "Incorrect parent node");
+    let mut tryFoldLoadOrBCast: Closure_19 = Closure_19 { cap_0: self };
+    let mut FoldedLoad: bool = false;
+    let mut Tmp0: SDValue = SDValue {};
+    let mut Tmp1: SDValue = SDValue {};
+    let mut Tmp2: SDValue = SDValue {};
+    let mut Tmp3: SDValue = SDValue {};
+    let mut Tmp4: SDValue = SDValue {};
+    if tryFoldLoadOrBCast.call(Root, ParentC, C, Tmp0, Tmp1, Tmp2, Tmp3, Tmp4) {
+        FoldedLoad = true;
+    } else if tryFoldLoadOrBCast.call(Root, ParentA, A, Tmp0, Tmp1, Tmp2, Tmp3, Tmp4) {
+        FoldedLoad = true;
+        swap(A, C);
+        let mut OldImm: u8 = Imm;
+        Imm = OldImm & 165;
+        if OldImm & 2 {
+            Imm |= 16;
+        }
+        if OldImm & 16 {
+            Imm |= 2;
+        }
+        if OldImm & 8 {
+            Imm |= 64;
+        }
+        if OldImm & 64 {
+            Imm |= 8;
+        }
+    } else if tryFoldLoadOrBCast.call(Root, ParentB, B, Tmp0, Tmp1, Tmp2, Tmp3, Tmp4) {
+        FoldedLoad = true;
+        swap(B, C);
+        let mut OldImm: u8 = Imm;
+        Imm = OldImm & 153;
+        if OldImm & 2 {
+            Imm |= 4;
+        }
+        if OldImm & 4 {
+            Imm |= 2;
+        }
+        if OldImm & 32 {
+            Imm |= 64;
+        }
+        if OldImm & 64 {
+            Imm |= 32;
+        }
+    }
+    let mut DL: SDLoc = SDLoc { Root };
+    let mut TImm: SDValue = self.CurDAG.getTargetConstant(Imm, DL, EVT { i8 }, false);
+    let mut NVT: MVT = Root.getSimpleValueType(0);
+    let mut MNode: *mut MachineSDNode = null;
+    if FoldedLoad {
+        let mut VTs: SDVTList = self.CurDAG.getVTList(EVT { NVT }, EVT { Other });
+        let mut Opc: u32 = 0;
+        if  {
+            let mut MemIntr: *mut auto = cast(C);
+            let mut EltSize: u32 = ()();
+            assert!((EltSize == 32 || EltSize == 64), "Unexpected broadcast size!");
+            let mut UseD: bool = EltSize == 32;
+            if NVT.is128BitVector() {
+                
+            } else if NVT.is256BitVector() {
+                
+            } else if NVT.is512BitVector() {
+                
+            } else {
+                llvm_unreachable_internal("Unexpected vector size!", "llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", 4988);
+            }
+        } else {
+            let mut UseD: bool = NVT.getVectorElementType() == i32;
+            if NVT.is128BitVector() {
+                
+            } else if NVT.is256BitVector() {
+                
+            } else if NVT.is512BitVector() {
+                
+            } else {
+                llvm_unreachable_internal("Unexpected vector size!", "llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", 4998);
+            }
+        }
+        let mut Ops: [9]SDValue = [A, B, Tmp0, Tmp1, Tmp2, Tmp3, Tmp4, TImm, C.getOperand(0)];
+        MNode = self.CurDAG;
+        self.ReplaceUses(C.getValue(1), SDValue { Node: MNode, ResNo: 1 });
+        self.CurDAG.setNodeMemRefs(MNode, void { cast(C)() });
+    } else {
+        let mut UseD: bool = NVT.getVectorElementType() == i32;
+        let mut Opc: u32 = 0;
+        if NVT.is128BitVector() {
+            
+        } else if NVT.is256BitVector() {
+            
+        } else if NVT.is512BitVector() {
+            
+        } else {
+            llvm_unreachable_internal("Unexpected vector size!", "llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", 5018);
+        }
+        MNode = self.CurDAG.getMachineNode(Opc, DL, EVT { NVT }, ArrayRef<SDValue> { [A, B, C, TImm] });
+    }
+    self.ReplaceUses(SDValue { Node: Root, ResNo: 0 }, SDValue { Node: MNode, ResNo: 0 });
+    self.CurDAG.RemoveDeadNode(Root);
+    return true;
+}
+
+fn X86DAGToDAGISel::tryVPTERNLOG(self, N: *mut SDNode) -> bool {
+    let mut NVT: MVT = N.getSimpleValueType(0);
+    if !NVT.isVector() || !self.Subtarget.hasAVX512() || NVT.getVectorElementType() == i1 {
+        return false;
+    }
+    if operator!((self.Subtarget() || NVT.is512BitVector())) {
+        return false;
+    }
+    let mut getFoldableLogicOp: Closure_20 = Closure_20 {};
+    let mut N0: SDValue = SDValue {};
+    let mut N1: SDValue = SDValue {};
+    let mut A: SDValue = SDValue {};
+    let mut FoldableOp: SDValue = SDValue {};
+    let mut tryPeelOuterNotWrappingLogic: Closure_21 = Closure_21 { getFoldableLogicOp: &mut getFoldableLogicOp, N0: &mut N0, N1: &mut N1, FoldableOp: &mut FoldableOp, A: &mut A };
+    let mut PeeledOuterNot: bool = false;
+    let mut OriN: *mut SDNode = N;
+    if tryPeelOuterNotWrappingLogic.call(N) {
+        InnerOp;
+    } else {
+        PeeledOuterNot = true;
+        N = InnerOp.getNode();
+    }
+    let mut B: SDValue = FoldableOp.getOperand(0);
+    let mut C: SDValue = FoldableOp.getOperand(1);
+    let mut ParentA: *mut SDNode = N;
+    let mut ParentB: *mut SDNode = FoldableOp.getNode();
+    let mut ParentC: *mut SDNode = FoldableOp.getNode();
+    let mut TernlogMagicA: u8 = 240;
+    let mut TernlogMagicB: u8 = 204;
+    let mut TernlogMagicC: u8 = 170;
+    let mut PeekThroughNot: Closure_22 = Closure_22 {};
+    PeekThroughNot.call(A, ParentA, TernlogMagicA);
+    PeekThroughNot.call(B, ParentB, TernlogMagicB);
+    PeekThroughNot.call(C, ParentC, TernlogMagicC);
+    let mut Imm: u8 = 0;
+    match FoldableOp.getOpcode() {
+        _ => {
+            llvm_unreachable_internal("Unexpected opcode!", "llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", 5130);
+        },
+        AND => {
+            Imm = TernlogMagicB & TernlogMagicC;
+        },
+        OR => {
+            Imm = TernlogMagicB | TernlogMagicC;
+        },
+        XOR => {
+            Imm = TernlogMagicB ^ TernlogMagicC;
+        },
+    }
+    match N.getOpcode() {
+        _ => {
+            llvm_unreachable_internal("Unexpected opcode!", "llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", 5138);
+        },
+        AND => {
+            Imm &= TernlogMagicA;
+        },
+        OR => {
+            Imm |= TernlogMagicA;
+        },
+        XOR => {
+            Imm ^= TernlogMagicA;
+        },
+    }
+    if PeeledOuterNot {
+        Imm = ~Imm;
+    }
+    return self.matchVPTERNLOG(OriN, ParentA, ParentB, ParentC, A, B, C, Imm);
+}
+
+fn X86DAGToDAGISel::shrinkAndImmediate(self, And: *mut SDNode) -> bool {
+    let mut VT: MVT = And.getSimpleValueType(0);
+    if VT != i32 && VT != i64 {
+        return false;
+    }
+    let mut And1C: *mut auto = dyn_cast(And.getOperand(1));
+    if operator!() {
+        return false;
+    }
+    let mut MaskVal: APInt = ();
+    let mut MaskLZ: u32 = MaskVal.countl_zero();
+    if !MaskLZ || (VT == i64 && MaskLZ == 32) {
+        return false;
+    }
+    if VT == i64 && MaskLZ >= 32 {
+        MaskLZ -= 32;
+        MaskVal = MaskVal.trunc(32);
+    }
+    let mut And0: SDValue = And.getOperand(0);
+    let mut HighZeros: APInt = getHighBitsSet(MaskVal.getBitWidth(), MaskLZ);
+    let mut NegMaskVal: APInt = MaskVal | HighZeros;
+    let mut MinWidth: u32 = NegMaskVal.getSignificantBits();
+    if MinWidth > 32 || (MinWidth > 8 && MaskVal.getSignificantBits() <= 32) {
+        return false;
+    }
+    if VT == i64 && MaskVal.getBitWidth() < 64 {
+        NegMaskVal = NegMaskVal.zext(64);
+        HighZeros = HighZeros.zext(64);
+    }
+    let mut Known0: KnownBits = self.CurDAG.computeKnownBits(And0, 0);
+    if Known0.isConstant() || !HighZeros.isSubsetOf(Known0.Zero) {
+        return false;
+    }
+    if NegMaskVal.isAllOnes() {
+        if VT == i32 && !self.isDef32(And0.getNode()) {
+            return false;
+        }
+        self.ReplaceNode(And, And0.getNode());
+        return true;
+    }
+    let mut NewMask: SDValue = self.CurDAG.getConstant(NegMaskVal, SDLoc { And }, EVT { VT }, false, false);
+    insertDAGNode(*self.CurDAG, SDValue { Node: And, ResNo: 0 }, NewMask);
+    let mut NewAnd: SDValue = self.CurDAG.getNode(AND, SDLoc { And }, EVT { VT }, And0, NewMask);
+    self.ReplaceNode(And, NewAnd.getNode());
+    SelectCode(NewAnd.getNode());
+    return true;
+}
+
+fn getVPTESTMOpc(TestVT: MVT, IsTestN: bool, FoldedLoad: bool, FoldedBCast: bool, Masked: bool) -> u32 {
+    if FoldedBCast {
+        match TestVT.SimpleTy {
+            _ => {
+                llvm_unreachable_internal("Unexpected VT!", "llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", 5262);
+            },
+            v4i32 => {
+                
+            },
+            v2i64 => {
+                
+            },
+            v8i32 => {
+                
+            },
+            v4i64 => {
+                
+            },
+            v16i32 => {
+                
+            },
+            v8i64 => {
+                
+            },
+        }
+    }
+    if FoldedLoad {
+        match TestVT.SimpleTy {
+            _ => {
+                llvm_unreachable_internal("Unexpected VT!", "llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", 5268);
+            },
+            v4i32 => {
+                
+            },
+            v2i64 => {
+                
+            },
+            v8i32 => {
+                
+            },
+            v4i64 => {
+                
+            },
+            v16i32 => {
+                
+            },
+            v8i64 => {
+                
+            },
+            v16i8 => {
+                
+            },
+            v8i16 => {
+                
+            },
+            v32i8 => {
+                
+            },
+            v16i16 => {
+                
+            },
+            v64i8 => {
+                
+            },
+            v32i16 => {
+                
+            },
+        }
+    }
+    match TestVT.SimpleTy {
+        _ => {
+            llvm_unreachable_internal("Unexpected VT!", "llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", 5273);
+        },
+        v4i32 => {
+            
+        },
+        v2i64 => {
+            
+        },
+        v8i32 => {
+            
+        },
+        v4i64 => {
+            
+        },
+        v16i32 => {
+            
+        },
+        v8i64 => {
+            
+        },
+        v16i8 => {
+            
+        },
+        v8i16 => {
+            
+        },
+        v32i8 => {
+            
+        },
+        v16i16 => {
+            
+        },
+        v64i8 => {
+            
+        },
+        v32i16 => {
+            
+        },
+    }
+}
+
+fn orderRegForMul(N0: *mut SDValue, N1: *mut SDValue, LoReg: u32, MRI: *MachineRegisterInfo) {
+    let mut GetPhysReg: Closure_23 = Closure_23 { MRI: &mut MRI };
+    if GetPhysReg.call(N1) == LoReg && GetPhysReg.call(N0) != LoReg {
+        swap(N0, N1);
+    }
+}
+
+fn X86DAGToDAGISel::tryVPTESTM(self, Root: *mut SDNode, Setcc: SDValue, InMask: SDValue) -> bool {
+    assert!(self.Subtarget.hasAVX512(), "Expected AVX512!");
+    assert!(Setcc.getSimpleValueType().getVectorElementType() == i1, "Unexpected VT!");
+    let mut CC: CondCode = cast(Setcc.getOperand(2))();
+    if CC != SETEQ && CC != SETNE {
+        return false;
+    }
+    let mut SetccOp0: SDValue = Setcc.getOperand(0);
+    let mut SetccOp1: SDValue = Setcc.getOperand(1);
+    if isBuildVectorAllZeros(SetccOp0.getNode()) {
+        swap(SetccOp0, SetccOp1);
+    }
+    if !isBuildVectorAllZeros(SetccOp1.getNode()) {
+        return false;
+    }
+    let mut N0: SDValue = SetccOp0;
+    let mut CmpVT: MVT = N0.getSimpleValueType();
+    let mut CmpSVT: MVT = CmpVT.getVectorElementType();
+    let mut Src0: SDValue = N0;
+    let mut Src1: SDValue = N0;
+    {
+        let mut N0Temp: SDValue = N0;
+        if N0Temp.getOpcode() == BITCAST && N0Temp.hasOneUse() {
+            N0Temp = N0.getOperand(0);
+        }
+        if N0Temp.getOpcode() == AND && N0Temp.hasOneUse() {
+            Src0 = N0Temp.getOperand(0);
+            Src1 = N0Temp.getOperand(1);
+        }
+    }
+    let mut Widen: bool = operator!(self.Subtarget()) && !CmpVT.is512BitVector();
+    let mut tryFoldLoadOrBCast: Closure_24 = Closure_24 { Widen: &mut Widen, cap_1: self, CmpSVT: &mut CmpSVT };
+    let mut CanFoldLoads: bool = Src0 != Src1;
+    let mut FoldedLoad: bool = false;
+    let mut Tmp0: SDValue = SDValue {};
+    let mut Tmp1: SDValue = SDValue {};
+    let mut Tmp2: SDValue = SDValue {};
+    let mut Tmp3: SDValue = SDValue {};
+    let mut Tmp4: SDValue = SDValue {};
+    if CanFoldLoads {
+        FoldedLoad = tryFoldLoadOrBCast.call(Root, N0.getNode(), Src1, Tmp0, Tmp1, Tmp2, Tmp3, Tmp4);
+        if !FoldedLoad {
+            FoldedLoad = tryFoldLoadOrBCast.call(Root, N0.getNode(), Src0, Tmp0, Tmp1, Tmp2, Tmp3, Tmp4);
+            if FoldedLoad {
+                swap(Src0, Src1);
+            }
+        }
+    }
+    let mut FoldedBCast: bool = false;
+    let mut IsMasked: bool = InMask.getNode() != null;
+    let mut dl: SDLoc = SDLoc { Root };
+    let mut ResVT: MVT = Setcc.getSimpleValueType();
+    let mut MaskVT: MVT = ResVT;
+    if Widen {
+        let mut Scale: u32 = if CmpVT.is128BitVector() { 4 } else { 2 };
+        let mut SubReg: u32 = 0;
+        let mut NumElts: u32 = CmpVT.getVectorNumElements() * Scale;
+        CmpVT = getVectorVT(CmpSVT, NumElts);
+        MaskVT = getVectorVT(MVT { SimpleTy: i1 }, NumElts);
+        let mut ImplDef: SDValue = self.CurDAG;
+        Src0 = self.CurDAG.getTargetInsertSubreg(SubReg, dl, EVT { CmpVT }, ImplDef, Src0);
+        if !FoldedBCast {
+            Src1 = self.CurDAG.getTargetInsertSubreg(SubReg, dl, EVT { CmpVT }, ImplDef, Src1);
+        }
+        if IsMasked {
+            let mut RegClass: u32 = self.TLI.getRegClassFor();
+            let mut RC: SDValue = self.CurDAG.getTargetConstant(RegClass, dl, EVT { i32 }, false);
+            InMask = SDValue { Node: self.CurDAG.getMachineNode(COPY_TO_REGCLASS, dl, EVT { MaskVT }, InMask, RC), ResNo: 0 };
+        }
+    }
+    let mut IsTestN: bool = CC == SETEQ;
+    let mut Opc: u32 = getVPTESTMOpc(CmpVT, IsTestN, FoldedLoad, FoldedBCast, IsMasked);
+    let mut CNode: *mut MachineSDNode = null;
+    if FoldedLoad {
+        let mut VTs: SDVTList = self.CurDAG.getVTList(EVT { MaskVT }, EVT { Other });
+        if IsMasked {
+            let mut Ops: [8]SDValue = [InMask, Src0, Tmp0, Tmp1, Tmp2, Tmp3, Tmp4, Src1.getOperand(0)];
+            CNode = self.CurDAG;
+        } else {
+            let mut Ops: [7]SDValue = [Src0, Tmp0, Tmp1, Tmp2, Tmp3, Tmp4, Src1.getOperand(0)];
+            CNode = self.CurDAG;
+        }
+        self.ReplaceUses(Src1.getValue(1), SDValue { Node: CNode, ResNo: 1 });
+        self.CurDAG.setNodeMemRefs(CNode, void { cast(Src1)() });
+    } else {
+        if IsMasked {
+            CNode = self.CurDAG.getMachineNode(Opc, dl, EVT { MaskVT }, InMask, Src0, Src1);
+        } else {
+            CNode = self.CurDAG.getMachineNode(Opc, dl, EVT { MaskVT }, Src0, Src1);
+        }
+    }
+    if Widen {
+        let mut RegClass: u32 = self.TLI.getRegClassFor();
+        let mut RC: SDValue = self.CurDAG.getTargetConstant(RegClass, dl, EVT { i32 }, false);
+        CNode = self.CurDAG.getMachineNode(COPY_TO_REGCLASS, dl, EVT { ResVT }, SDValue { Node: CNode, ResNo: 0 }, RC);
+    }
+    self.ReplaceUses(SDValue { Node: Root, ResNo: 0 }, SDValue { Node: CNode, ResNo: 0 });
+    self.CurDAG.RemoveDeadNode(Root);
+    return true;
+}
+
+fn X86DAGToDAGISel::tryMatchBitSelect(self, N: *mut SDNode) -> bool {
+    assert!(N.getOpcode() == OR, "Unexpected opcode!");
+    let mut NVT: MVT = N.getSimpleValueType(0);
+    if !NVT.isVector() || !self.Subtarget.hasAVX512() {
+        return false;
+    }
+    if operator!((self.Subtarget() || NVT.is512BitVector())) {
+        return false;
+    }
+    let mut N0: SDValue = N.getOperand(0);
+    let mut N1: SDValue = N.getOperand(1);
+    if N1.getOpcode() == AND {
+        swap(N0, N1);
+    }
+    if  {
+        return false;
+    }
+    let mut A: SDValue = N1.getOperand(0);
+    let mut C: SDValue = N1.getOperand(1);
+    let mut B: SDValue = SDValue {};
+    if N0.getOperand(0) == A {
+        B = N0.getOperand(1);
+    } else if N0.getOperand(1) == A {
+        B = N0.getOperand(0);
+    } else {
+        return false;
+    }
+    let mut dl: SDLoc = SDLoc { N };
+    let mut Imm: SDValue = self.CurDAG.getTargetConstant(202, dl, EVT { i8 }, false);
+    let mut Ternlog: SDValue = self.CurDAG;
+    self.ReplaceNode(N, Ternlog.getNode());
+    return self.matchVPTERNLOG(Ternlog.getNode(), Ternlog.getNode(), Ternlog.getNode(), Ternlog.getNode(), A, B, C, 202);
+}
+
+fn X86DAGToDAGISel::Select(self, Node: *mut SDNode) {
+    let mut NVT: MVT = Node.getSimpleValueType(0);
+    let mut Opcode: u32 = Node.getOpcode();
+    let mut dl: SDLoc = SDLoc { Node };
+    if Node.isMachineOpcode() {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-isel", 1) {
+                dbgs() << "== ";
+                Node.dump(self.CurDAG);
+                dbgs() << 10;
+            }
+        }
+            if !(false) { break; }
+        }
+        Node.setNodeId(-1);
+        return;
+    }
+    match Opcode {
+        _ => {
+            break;
+        },
+        INTRINSIC_W_CHAIN => {
+            let mut IntNo: u32 = Node.getConstantOperandVal(1);
+            match IntNo {
+                _ => {
+                    break;
+                },
+            }
+            break;
+        },
+        INTRINSIC_VOID => {
+            let mut IntNo: u32 = Node.getConstantOperandVal(1);
+            match IntNo {
+                _ => {
+                    break;
+                },
+            }
+            break;
+        },
+        BRIND => {
+            if self.Subtarget.isTarget64BitILP32() {
+                let mut Target: SDValue = Node.getOperand(1);
+                assert!(Target.getValueType() == EVT { i32 }, "Unexpected VT!");
+                let mut ZextTarget: SDValue = self.CurDAG.getZExtOrTrunc(Target, dl, EVT { i64 });
+                let mut Brind: SDValue = self.CurDAG.getNode(Opcode, dl, EVT { Other }, Node.getOperand(0), ZextTarget);
+                self.ReplaceNode(Node, Brind.getNode());
+                SelectCode(ZextTarget.getNode());
+                SelectCode(Brind.getNode());
+                return;
+            }
+            break;
+        },
+        GlobalBaseReg => {
+            self.ReplaceNode(Node, self.getGlobalBaseReg());
+        },
+        BITCAST => {
+            if NVT.is512BitVector() || NVT.is256BitVector() || NVT.is128BitVector() || NVT == f128 {
+                self.ReplaceUses(SDValue { Node: Node, ResNo: 0 }, Node.getOperand(0));
+                self.CurDAG.RemoveDeadNode(Node);
+                return;
+            }
+        },
+        SRL => {
+            if self.matchBitExtract(Node) {
+                return;
+            }
+        },
+        SRA => {
+            SHL;
+        },
+        AND => {
+            if NVT.isVectorOf(MVT { SimpleTy: i1 }) {
+                let mut N0: SDValue = Node.getOperand(0);
+                let mut N1: SDValue = Node.getOperand(1);
+                if N0.getOpcode() == SETCC && N0.hasOneUse() && self.tryVPTESTM(Node, N0, N1) {
+                    return;
+                }
+                if N1.getOpcode() == SETCC && N1.hasOneUse() && self.tryVPTESTM(Node, N1, N0) {
+                    return;
+                }
+            }
+        },
+        XOR => {
+            if Opcode == XOR && self.Subtarget() && self.matchBitExtract(Node) {
+                return;
+            }
+        },
+        OR => {
+            if self.tryShrinkShlLogicImm(Node) {
+                return;
+            }
+        },
+        ADD => {
+            if Opcode == ADD && self.matchBitExtract(Node) {
+                return;
+            }
+        },
+        SUB => {
+            if !self.CurDAG.shouldOptForSize() {
+                break;
+            }
+            if NVT != i8 && NVT != i16 && NVT != i32 && NVT != i64 {
+                break;
+            }
+            let mut N0: SDValue = Node.getOperand(0);
+            let mut N1: SDValue = Node.getOperand(1);
+            let mut Cst: *mut auto = dyn_cast(N1);
+            if operator!() {
+                break;
+            }
+            let mut Val: i64 = ();
+            if !isInt(Val) && !isInt(Val) {
+                break;
+            }
+            if Opcode == ADD && (Val == 1 || Val == -1) {
+                break;
+            }
+            if !self.shouldAvoidImmediateInstFormsForSize(N1.getNode()) {
+                break;
+            }
+            let mut ROpc: u32 = 0;
+            let mut MOpc: u32 = 0;
+            match NVT.SimpleTy {
+                _ => {
+                    llvm_unreachable_internal("Unexpected VT!", "llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", 5878);
+                },
+                i8 => {
+                    match Opcode {
+                        _ => {
+                            llvm_unreachable_internal("Unexpected opcode!", "llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", 5881);
+                        },
+                        ADD => {
+                            
+                        },
+                        SUB => {
+                            
+                        },
+                        AND => {
+                            
+                        },
+                        OR => {
+                            
+                        },
+                        XOR => {
+                            
+                        },
+                    }
+                },
+                i16 => {
+                    match Opcode {
+                        _ => {
+                            llvm_unreachable_internal("Unexpected opcode!", "llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", 5906);
+                        },
+                        ADD => {
+                            
+                        },
+                        SUB => {
+                            
+                        },
+                        AND => {
+                            
+                        },
+                        OR => {
+                            
+                        },
+                        XOR => {
+                            
+                        },
+                    }
+                },
+                i32 => {
+                    match Opcode {
+                        _ => {
+                            llvm_unreachable_internal("Unexpected opcode!", "llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", 5931);
+                        },
+                        ADD => {
+                            
+                        },
+                        SUB => {
+                            
+                        },
+                        AND => {
+                            
+                        },
+                        OR => {
+                            
+                        },
+                        XOR => {
+                            
+                        },
+                    }
+                },
+                i64 => {
+                    match Opcode {
+                        _ => {
+                            llvm_unreachable_internal("Unexpected opcode!", "llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", 5956);
+                        },
+                        ADD => {
+                            
+                        },
+                        SUB => {
+                            
+                        },
+                        AND => {
+                            
+                        },
+                        OR => {
+                            
+                        },
+                        XOR => {
+                            
+                        },
+                    }
+                },
+            }
+            if Opcode != SUB {
+                let mut Tmp0: SDValue = SDValue {};
+                let mut Tmp1: SDValue = SDValue {};
+                let mut Tmp2: SDValue = SDValue {};
+                let mut Tmp3: SDValue = SDValue {};
+                let mut Tmp4: SDValue = SDValue {};
+                if self.tryFoldLoad(Node, N0, Tmp0, Tmp1, Tmp2, Tmp3, Tmp4) {
+                    let mut Ops: [7]SDValue = [N1, Tmp0, Tmp1, Tmp2, Tmp3, Tmp4, N0.getOperand(0)];
+                    let mut VTs: SDVTList = self.CurDAG.getVTList(EVT { NVT }, EVT { i32 }, EVT { Other });
+                    let mut CNode: *mut MachineSDNode = self.CurDAG;
+                    self.ReplaceUses(N0.getValue(1), SDValue { Node: CNode, ResNo: 2 });
+                    self.CurDAG.setNodeMemRefs(CNode, void { cast(N0)() });
+                    self.ReplaceUses(SDValue { Node: Node, ResNo: 0 }, SDValue { Node: CNode, ResNo: 0 });
+                    self.CurDAG.RemoveDeadNode(Node);
+                    return;
+                }
+            }
+            self.CurDAG.SelectNodeTo(Node, ROpc, EVT { NVT }, EVT { i32 }, N0, N1);
+            return;
+        },
+        SMUL_LOHI => {
+            UMUL_LOHI;
+        },
+        SDIVREM => {
+            UDIVREM;
+        },
+        PCMPISTR => {
+            if !self.Subtarget.hasSSE42() {
+                break;
+            }
+            let mut NeedIndex: bool = !SDValue { Node: Node, ResNo: 0 }.use_empty();
+            let mut NeedMask: bool = !SDValue { Node: Node, ResNo: 1 }.use_empty();
+            let mut MayFoldLoad: bool = !NeedIndex || !NeedMask;
+            let mut CNode: *mut MachineSDNode = null;
+            if NeedMask {
+                let mut ROpc: u32 = 0;
+                let mut MOpc: u32 = 0;
+                CNode = self.emitPCMPISTR(ROpc, MOpc, MayFoldLoad, dl, MVT { SimpleTy: v16i8 }, Node);
+                self.ReplaceUses(SDValue { Node: Node, ResNo: 1 }, SDValue { Node: CNode, ResNo: 0 });
+            }
+            if NeedIndex || !NeedMask {
+                let mut ROpc: u32 = 0;
+                let mut MOpc: u32 = 0;
+                CNode = self.emitPCMPISTR(ROpc, MOpc, MayFoldLoad, dl, MVT { SimpleTy: i32 }, Node);
+                self.ReplaceUses(SDValue { Node: Node, ResNo: 0 }, SDValue { Node: CNode, ResNo: 0 });
+            }
+            self.ReplaceUses(SDValue { Node: Node, ResNo: 2 }, SDValue { Node: CNode, ResNo: 1 });
+            self.CurDAG.RemoveDeadNode(Node);
+            return;
+        },
+        PCMPESTR => {
+            if !self.Subtarget.hasSSE42() {
+                break;
+            }
+            let mut InGlue: SDValue = self.CurDAG(1);
+            InGlue = self.CurDAG(1);
+            let mut NeedIndex: bool = !SDValue { Node: Node, ResNo: 0 }.use_empty();
+            let mut NeedMask: bool = !SDValue { Node: Node, ResNo: 1 }.use_empty();
+            let mut MayFoldLoad: bool = !NeedIndex || !NeedMask;
+            let mut CNode: *mut MachineSDNode = null;
+            if NeedMask {
+                let mut ROpc: u32 = 0;
+                let mut MOpc: u32 = 0;
+                CNode = self.emitPCMPESTR(ROpc, MOpc, MayFoldLoad, dl, MVT { SimpleTy: v16i8 }, Node, InGlue);
+                self.ReplaceUses(SDValue { Node: Node, ResNo: 1 }, SDValue { Node: CNode, ResNo: 0 });
+            }
+            if NeedIndex || !NeedMask {
+                let mut ROpc: u32 = 0;
+                let mut MOpc: u32 = 0;
+                CNode = self.emitPCMPESTR(ROpc, MOpc, MayFoldLoad, dl, MVT { SimpleTy: i32 }, Node, InGlue);
+                self.ReplaceUses(SDValue { Node: Node, ResNo: 0 }, SDValue { Node: CNode, ResNo: 0 });
+            }
+            self.ReplaceUses(SDValue { Node: Node, ResNo: 2 }, SDValue { Node: CNode, ResNo: 1 });
+            self.CurDAG.RemoveDeadNode(Node);
+            return;
+        },
+        SETCC => {
+            if NVT.isVector() && self.tryVPTESTM(Node, SDValue { Node: Node, ResNo: 0 }, SDValue {}) {
+                return;
+            }
+            break;
+        },
+        STORE => {
+            if self.foldLoadStoreIntoMemOperand(Node) {
+                return;
+            }
+        },
+        MGATHER => {
+            let mut Mgt: *mut auto = cast(Node);
+            let mut IndexOp: SDValue = ();
+            let mut Mask: SDValue = ();
+            let mut IndexVT: MVT = IndexOp.getSimpleValueType();
+            let mut ValueVT: MVT = Node.getSimpleValueType(0);
+            let mut MaskVT: MVT = Mask.getSimpleValueType();
+            if !ValueVT.isVector() || !MaskVT.isVector() {
+                break;
+            }
+            let mut NumElts: u32 = ValueVT.getVectorNumElements();
+            let mut ValueSVT: MVT = ValueVT.getVectorElementType();
+            let mut IsFP: bool = ValueSVT.isFloatingPoint();
+            let mut EltSize: u32 = ValueSVT.getSizeInBits().operator unsigned long long();
+            let mut Opc: u32 = 0;
+            let mut AVX512Gather: bool = MaskVT.getVectorElementType() == i1;
+            if AVX512Gather {} else {
+                assert!(EVT { MaskVT } == EVT { ValueVT }.changeVectorElementTypeToInteger(), "Unexpected mask VT!");
+            }
+            if !Opc {
+                break;
+            }
+            let mut Base: SDValue = SDValue {};
+            let mut Scale: SDValue = SDValue {};
+            let mut Index: SDValue = SDValue {};
+            let mut Disp: SDValue = SDValue {};
+            let mut Segment: SDValue = SDValue {};
+            if operator!(self.selectVectorAddr(IndexOp, Base, Scale, Index, Disp, Segment)) {
+                break;
+            }
+            let mut PassThru: SDValue = ();
+            let mut Chain: SDValue = ();
+            let mut VTs: SDVTList = self.CurDAG.getVTList(EVT { ValueVT }, EVT { MaskVT }, EVT { Other });
+            let mut NewNode: *mut MachineSDNode = null;
+            if AVX512Gather {
+                let mut Ops: [8]SDValue = [PassThru, Mask, Base, Scale, Index, Disp, Segment, Chain];
+                NewNode = self.CurDAG;
+            } else {
+                let mut Ops: [8]SDValue = [PassThru, Base, Scale, Index, Disp, Segment, Mask, Chain];
+                NewNode = self.CurDAG;
+            }
+            self.CurDAG.setNodeMemRefs(NewNode, void { () });
+            self.ReplaceUses(SDValue { Node: Node, ResNo: 0 }, SDValue { Node: NewNode, ResNo: 0 });
+            self.ReplaceUses(SDValue { Node: Node, ResNo: 1 }, SDValue { Node: NewNode, ResNo: 2 });
+            self.CurDAG.RemoveDeadNode(Node);
+            return;
+        },
+        MSCATTER => {
+            let mut Sc: *mut auto = cast(Node);
+            let mut Value: SDValue = ();
+            let mut IndexOp: SDValue = ();
+            let mut IndexVT: MVT = IndexOp.getSimpleValueType();
+            let mut ValueVT: MVT = Value.getSimpleValueType();
+            if !ValueVT.isVector() {
+                break;
+            }
+            let mut NumElts: u32 = ValueVT.getVectorNumElements();
+            let mut ValueSVT: MVT = ValueVT.getVectorElementType();
+            let mut IsFP: bool = ValueSVT.isFloatingPoint();
+            let mut EltSize: u32 = ValueSVT.getSizeInBits().operator unsigned long long();
+            let mut Opc: u32 = 0;
+            if IndexVT == v4i32 && NumElts == 4 && EltSize == 32 {
+                
+            } else if IndexVT == v8i32 && NumElts == 8 && EltSize == 32 {
+                
+            } else if IndexVT == v16i32 && NumElts == 16 && EltSize == 32 {
+                
+            } else if IndexVT == v4i32 && NumElts == 2 && EltSize == 64 {
+                
+            } else if IndexVT == v4i32 && NumElts == 4 && EltSize == 64 {
+                
+            } else if IndexVT == v8i32 && NumElts == 8 && EltSize == 64 {
+                
+            } else if IndexVT == v2i64 && NumElts == 4 && EltSize == 32 {
+                
+            } else if IndexVT == v4i64 && NumElts == 4 && EltSize == 32 {
+                
+            } else if IndexVT == v8i64 && NumElts == 8 && EltSize == 32 {
+                
+            } else if IndexVT == v2i64 && NumElts == 2 && EltSize == 64 {
+                
+            } else if IndexVT == v4i64 && NumElts == 4 && EltSize == 64 {
+                
+            } else if IndexVT == v8i64 && NumElts == 8 && EltSize == 64 {
+                
+            } else {
+                break;
+            }
+            let mut Base: SDValue = SDValue {};
+            let mut Scale: SDValue = SDValue {};
+            let mut Index: SDValue = SDValue {};
+            let mut Disp: SDValue = SDValue {};
+            let mut Segment: SDValue = SDValue {};
+            if operator!(self.selectVectorAddr(IndexOp, Base, Scale, Index, Disp, Segment)) {
+                break;
+            }
+            let mut Mask: SDValue = ();
+            let mut Chain: SDValue = ();
+            let mut VTs: SDVTList = self.CurDAG.getVTList(Mask.getValueType(), EVT { Other });
+            let mut Ops: [8]SDValue = [Base, Scale, Index, Disp, Segment, Mask, Value, Chain];
+            let mut NewNode: *mut MachineSDNode = self.CurDAG;
+            self.CurDAG.setNodeMemRefs(NewNode, void { () });
+            self.ReplaceUses(SDValue { Node: Node, ResNo: 0 }, SDValue { Node: NewNode, ResNo: 1 });
+            self.CurDAG.RemoveDeadNode(Node);
+            return;
+        },
+        PREALLOCATED_SETUP => {
+            let mut MFI: *mut auto = self.CurDAG.getMachineFunction();
+            let mut CallId: auto = (cast(Node.getOperand(1))());
+            let mut Chain: SDValue = Node.getOperand(0);
+            let mut CallIdValue: SDValue = self.CurDAG(dl, i32);
+            let mut New: *mut MachineSDNode = self.CurDAG.getMachineNode(PREALLOCATED_SETUP, dl, EVT { Other }, CallIdValue, Chain);
+            self.ReplaceUses(SDValue { Node: Node, ResNo: 0 }, SDValue { Node: New, ResNo: 0 });
+            self.CurDAG.RemoveDeadNode(Node);
+            return;
+        },
+        PREALLOCATED_ARG => {
+            let mut MFI: *mut auto = self.CurDAG.getMachineFunction();
+            let mut CallId: auto = (cast(Node.getOperand(1))());
+            let mut Chain: SDValue = Node.getOperand(0);
+            let mut CallIdValue: SDValue = self.CurDAG(dl, i32);
+            let mut ArgIndex: SDValue = Node.getOperand(2);
+            let mut Ops: [3]SDValue = [3]SDValue {};
+            Ops[0] = CallIdValue;
+            Ops[1] = ArgIndex;
+            Ops[2] = Chain;
+            let mut New: *mut MachineSDNode = self.CurDAG(PREALLOCATED_ARG, dl, self.CurDAG(self.TLI.getPointerTy, Other), Ops);
+            self.ReplaceUses(SDValue { Node: Node, ResNo: 0 }, SDValue { Node: New, ResNo: 0 });
+            self.ReplaceUses(SDValue { Node: Node, ResNo: 1 }, SDValue { Node: New, ResNo: 1 });
+            self.CurDAG.RemoveDeadNode(Node);
+            return;
+        },
+        AESENCWIDE128KL => {
+            AESDECWIDE128KL;
+        },
+        POP_FROM_X87_REG => {
+            let mut Chain: SDValue = Node.getOperand(0);
+            let mut Reg: Register = cast(Node.getOperand(1))();
+            let mut Glue: SDValue = SDValue {};
+            if Node.getNumValues() == 3 {
+                Glue = Node.getOperand(2);
+            }
+            let mut Copy: SDValue = self.CurDAG.getCopyFromReg(Chain, dl, Reg, Node.getValueType(0), Glue);
+            self.ReplaceNode(Node, Copy.getNode());
+            return;
+        },
+    }
+    SelectCode(Node);
+}
+
+fn X86DAGToDAGISel::SelectInlineAsmMemoryOperand(self, Op: *SDValue, ConstraintID: ConstraintCode, OutOps: *mut i32) -> bool {
+    let mut Op0: SDValue = SDValue {};
+    let mut Op1: SDValue = SDValue {};
+    let mut Op2: SDValue = SDValue {};
+    let mut Op3: SDValue = SDValue {};
+    let mut Op4: SDValue = SDValue {};
+    match ConstraintID {
+        _ => {
+            llvm_unreachable_internal("Unexpected asm memory constraint", "llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", 7097);
+        },
+        o => {
+            v;
+        },
+    }
+    OutOps()(Op0);
+    OutOps()(Op1);
+    OutOps()(Op2);
+    OutOps()(Op3);
+    OutOps()(Op4);
+    return false;
+}
+
+fn createX86ISelDag(TM: *mut X86TargetMachine, OptLevel: CodeGenOptLevel) -> *mut FunctionPass {
+    return X86DAGToDAGISelLegacy { TM, OptLevel };
+}
+
+struct Closure_1 {
+    N: *mut *mut SDNode,
+    cap_1: *mut X86DAGToDAGISel,
+}
+
+unsafe fn Closure_1::call(self: *mut Closure_1) -> bool {
+            return mayFoldLoad((*self.N).getOperand(0), *self.Subtarget, false, false) && (*self.N).getOpcode() == ADD && self.Subtarget.hasAVX() && !(*self.N).getOperand(1).hasOneUse();
+        }
+
+struct Closure_2 {
+    cap_0: *mut X86DAGToDAGISel,
+}
+
+fn Closure_2::call(self: *Closure_2, V: SDValue) -> bool {
+        return V.getOpcode() == ADD || self.CurDAG.isADDLike(V, false);
+    }
+
+struct Closure_3 {
+    AM: *mut X86ISelAddressMode,
+    cap_1: *mut X86DAGToDAGISel,
+    IsAddOrAddLike: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:2164:25),
+}
+
+unsafe fn Closure_3::call(self: *mut Closure_3, Op: SDValue) -> bool {
+        if !(*self.AM).IsForLEA || !self.hasMaterializingUse(Op) {
+            return false;
+        }
+        if (*self.IsAddOrAddLike).call(Op) {
+            return (*self.IsAddOrAddLike).call(Op.getOperand(0)) || (*self.IsAddOrAddLike).call(Op.getOperand(1));
+        }
+    }
+
+struct Closure_4 {
+    SplitsMaterializedValue: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:2174:34),
+    AM: *mut X86ISelAddressMode,
+    cap_2: *mut X86DAGToDAGISel,
+    Depth: *mut u32,
+}
+
+unsafe fn Closure_4::call(self: *mut Closure_4, Op: SDValue) -> bool {
+        if (*self.SplitsMaterializedValue)(Op) && !(*self.AM).isRIPRelative() {
+            return self.matchAddressBase(Op, (*self.AM));
+        }
+        return self.matchAddressRecursively(Op, (*self.AM), (*self.Depth) + 1);
+    }
+
+struct Closure_5 {}
+
+fn Closure_5::call(self: *Closure_5, V: SDValue) -> bool {
+            match V.getOpcode() {
+                _ => {
+                    return false;
+                },
+            }
+        }
+
+struct Closure_6 {
+    MemVT: *mut EVT,
+}
+
+unsafe fn Closure_6::call(self: *mut Closure_6, Opc64: u32, Opc32: u32, Opc16: u32, Opc8: u32) -> u32 {
+        match (*self.MemVT).getSimpleVT().SimpleTy {
+            i64 => {
+                return Opc64;
+            },
+            i32 => {
+                return Opc32;
+            },
+            i16 => {
+                return Opc16;
+            },
+            i8 => {
+                return Opc8;
+            },
+            _ => {
+                llvm_unreachable_internal("Invalid size!", "llvm\\lib\\Target\\X86\\X86ISelDAGToDAG.cpp", 3989);
+            },
+        }
+    }
+
+struct Closure_7 {
+    AllowExtraUsesByDefault: bool,
+}
+
+fn Closure_7::call(self: *Closure_7, Op: SDValue, NUses: u32, AllowExtraUses: optional<bool>) -> auto {}
+
+struct Closure_8 {
+    cap_0: (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:4172:20),
+}
+
+fn Closure_8::call(self: *Closure_8, Op: SDValue, AllowExtraUses: optional<bool>) -> auto {}
+
+struct Closure_9 {
+    cap_0: (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:4172:20),
+}
+
+fn Closure_9::call(self: *Closure_9, Op: SDValue, AllowExtraUses: optional<bool>) -> auto {}
+
+struct Closure_10 {
+    cap_0: (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:4178:22),
+}
+
+fn Closure_10::call(self: *Closure_10, V: SDValue) -> SDValue {
+        if operator(V).getOpcode() == TRUNCATE && checkOneUse(V) {
+            assert!(V.getSimpleValueType() == i32 && V.getOperand(0).getSimpleValueType() == i64, "Expected i64 -> i32 truncation");
+            V = V.getOperand(0);
+        }
+        return V;
+    }
+
+struct Closure_11 {
+    cap_0: (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:4178:22),
+    cap_1: (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:4189:38),
+    NBits: *mut SDValue,
+    NegateNBits: *mut bool,
+}
+
+unsafe fn Closure_11::call(self: *mut Closure_11, Mask: SDValue) -> auto {
+        if operator(Mask).getOpcode() != ADD || operator!(checkOneUse(Mask)) {
+            return false;
+        }
+        if !isAllOnesConstant(operator(Mask).getOperand(1)) {
+            return false;
+        }
+        let mut M0: SDValue = peekThroughOneUseTruncation.call(operator(Mask).getOperand(0));
+        if operator(M0).getOpcode() != SHL || operator!(checkOneUse(M0)) {
+            return false;
+        }
+        if !isOneConstant(operator(M0).getOperand(0)) {
+            return false;
+        }
+        (*self.NBits) = operator(M0).getOperand(1);
+        (*self.NegateNBits) = false;
+        return true;
+    }
+
+struct Closure_12 {
+    cap_0: *mut X86DAGToDAGISel,
+    cap_1: (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:4189:38),
+    cap_2: MVT,
+}
+
+fn Closure_12::call(self: *Closure_12, V: SDValue) -> bool {
+        V = peekThroughOneUseTruncation.call(V);
+        return self.CurDAG.MaskedValueIsAllOnes(V, getLowBitsSet(V.getSimpleValueType().getSizeInBits().operator unsigned long long(), NVT.getSizeInBits().operator unsigned long long()), 0);
+    }
+
+struct Closure_13 {
+    cap_0: (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:4178:22),
+    cap_1: (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:4219:20),
+    cap_2: (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:4189:38),
+    NBits: *mut SDValue,
+    NegateNBits: *mut bool,
+}
+
+unsafe fn Closure_13::call(self: *mut Closure_13, Mask: SDValue) -> auto {
+        if Mask.getOpcode() != XOR || operator!(checkOneUse(Mask)) {
+            return false;
+        }
+        if !isAllOnes.call(operator(Mask).getOperand(1)) {
+            return false;
+        }
+        let mut M0: SDValue = peekThroughOneUseTruncation.call(operator(Mask).getOperand(0));
+        if operator(M0).getOpcode() != SHL || operator!(checkOneUse(M0)) {
+            return false;
+        }
+        if !isAllOnes.call(operator(M0).getOperand(0)) {
+            return false;
+        }
+        (*self.NBits) = operator(M0).getOperand(1);
+        (*self.NegateNBits) = false;
+        return true;
+    }
+
+struct Closure_14 {
+    NBits: *mut SDValue,
+    NegateNBits: *mut bool,
+}
+
+unsafe fn Closure_14::call(self: *mut Closure_14, ShiftAmt: SDValue, Bitwidth: u32) {
+        (*self.NBits) = ShiftAmt;
+        (*self.NegateNBits) = true;
+        if (*self.NBits).getOpcode() == TRUNCATE {
+            (*self.NBits) = (*self.NBits).getOperand(0);
+        }
+        if (*self.NBits).getOpcode() != SUB {
+            return;
+        }
+        let mut V0: *mut auto = dyn_cast((*self.NBits).getOperand(0));
+        if operator!() || () != Bitwidth {
+            return;
+        }
+        (*self.NBits) = (*self.NBits).getOperand(1);
+        (*self.NegateNBits) = false;
+    }
+
+struct Closure_15 {
+    cap_0: (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:4178:22),
+    cap_1: (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:4189:38),
+    NegateNBits: *mut bool,
+    cap_3: (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:4249:31),
+}
+
+unsafe fn Closure_15::call(self: *mut Closure_15, Mask: SDValue) -> auto {
+        Mask = peekThroughOneUseTruncation.call(Mask);
+        let mut Bitwidth: u32 = Mask.getSimpleValueType().getSizeInBits().operator unsigned long long();
+        if Mask.getOpcode() != SRL || operator!(checkOneUse(Mask)) {
+            return false;
+        }
+        if !isAllOnesConstant(Mask.getOperand(0)) {
+            return false;
+        }
+        let mut M1: SDValue = Mask.getOperand(1);
+        if operator!(checkOneUse(M1)) {
+            return false;
+        }
+        canonicalizeShiftAmt.call(M1, Bitwidth);
+        return !(*self.NegateNBits);
+    }
+
+struct Closure_16 {
+    cap_0: (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:4178:22),
+    cap_1: (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:4183:22),
+    cap_2: (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:4249:31),
+    AllowExtraUsesByDefault: bool,
+    NegateNBits: *mut bool,
+    X: *mut SDValue,
+}
+
+unsafe fn Closure_16::call(self: *mut Closure_16, Node: *mut SDNode) -> auto {
+        if Node.getOpcode() != SRL {
+            return false;
+        }
+        let mut N0: SDValue = Node.getOperand(0);
+        if operator(N0).getOpcode() != SHL {
+            return false;
+        }
+        let mut Bitwidth: u32 = N0.getSimpleValueType().getSizeInBits().operator unsigned long long();
+        let mut N1: SDValue = Node.getOperand(1);
+        let mut N01: SDValue = operator(N0).getOperand(1);
+        if N1 != N01 {
+            return false;
+        }
+        canonicalizeShiftAmt.call(N1, Bitwidth);
+        let mut AllowExtraUses: bool = self.AllowExtraUsesByDefault && !(*self.NegateNBits);
+        if operator!(checkOneUse(N0, AllowExtraUses)) || operator!(checkTwoUse(N1, AllowExtraUses)) {
+            return false;
+        }
+        (*self.X) = operator(N0).getOperand(0);
+        return true;
+    }
+
+struct Closure_17 {
+    cap_0: (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:4200:24),
+    cap_1: (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:4227:24),
+    cap_2: (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:4270:24),
+}
+
+fn Closure_17::call(self: *mut Closure_17, Mask: SDValue) -> auto {
+        return matchPatternA.call(Mask) || matchPatternB.call(Mask) || matchPatternC.call(Mask);
+    }
+
+struct Closure_18 {
+    Opcode: *mut u32,
+    Val: *mut i64,
+    ShAmt: *mut u64,
+    NVT: *mut MVT,
+}
+
+unsafe fn Closure_18::call(self: *mut Closure_18, ShiftedVal: *mut i64) -> bool {
+        if (*self.Opcode) == AND {
+            ShiftedVal = (*self.Val) as u64 >> (*self.ShAmt);
+            if (*self.NVT) == i64 && !isUInt((*self.Val)) && isUInt(ShiftedVal) {
+                return true;
+            }
+            if ShiftedVal == 255 || ShiftedVal == 65535 {
+                return true;
+            }
+        }
+        ShiftedVal = (*self.Val) >> (*self.ShAmt);
+        if (!isInt((*self.Val)) && isInt(ShiftedVal)) || (!isInt((*self.Val)) && isInt(ShiftedVal)) {
+            return true;
+        }
+        if (*self.Opcode) != AND {
+            ShiftedVal = (*self.Val) as u64 >> (*self.ShAmt);
+            if (*self.NVT) == i64 && !isUInt((*self.Val)) && isUInt(ShiftedVal) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+struct Closure_19 {
+    cap_0: *mut X86DAGToDAGISel,
+}
+
+fn Closure_19::call(self: *Closure_19, Root: *mut SDNode, P: *mut SDNode, L: *mut SDValue, Base: *mut SDValue, Scale: *mut SDValue, Index: *mut SDValue, Disp: *mut SDValue, Segment: *mut SDValue) -> bool {
+        if self.tryFoldLoad(Root, P, L, Base, Scale, Index, Disp, Segment) {
+            return true;
+        }
+        if L.getOpcode() == BITCAST && L.hasOneUse() {
+            P = L.getNode();
+            L = L.getOperand(0);
+        }
+        if  {
+            return false;
+        }
+        let mut MemIntr: *mut auto = cast(L);
+        let mut Size: u32 = ()();
+        if Size != 32 && Size != 64 {
+            return false;
+        }
+        return self.tryFoldBroadcast(Root, P, L, Base, Scale, Index, Disp, Segment);
+    }
+
+struct Closure_20 {}
+
+fn Closure_20::call(self: *Closure_20, Op: SDValue) -> SDValue {
+        if Op.getOpcode() == BITCAST && Op.hasOneUse() {
+            Op = Op.getOperand(0);
+        }
+        if !Op.hasOneUse() {
+            return SDValue {};
+        }
+        let mut Opc: u32 = Op.getOpcode();
+        if  {
+            return Op;
+        }
+        return SDValue {};
+    }
+
+struct Closure_21 {
+    getFoldableLogicOp: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86ISelDAGToDAG.cpp:5042:29),
+    N0: *mut SDValue,
+    N1: *mut SDValue,
+    FoldableOp: *mut SDValue,
+    A: *mut SDValue,
+}
+
+unsafe fn Closure_21::call(self: *mut Closure_21, Op: *mut SDNode) -> SDValue {
+        if Op.getOpcode() == XOR && Op.hasOneUse() && isBuildVectorAllOnes(Op.getOperand(1).getNode()) {
+            let mut InnerOp: SDValue = (*self.getFoldableLogicOp).call(Op.getOperand(0));
+            if !InnerOp {
+                return SDValue {};
+            }
+            (*self.N0) = InnerOp.getOperand(0);
+            (*self.N1) = InnerOp.getOperand(1);
+            if ((*self.FoldableOp) = (*self.getFoldableLogicOp).call((*self.N1))) {
+                (*self.A) = (*self.N0);
+                return InnerOp;
+            }
+            if ((*self.FoldableOp) = (*self.getFoldableLogicOp).call((*self.N0))) {
+                (*self.A) = (*self.N1);
+                return InnerOp;
+            }
+        }
+        return SDValue {};
+    }
+
+struct Closure_22 {}
+
+fn Closure_22::call(self: *Closure_22, Op: *mut SDValue, Parent: *mut *mut SDNode, Magic: *mut u8) {
+        if Op.getOpcode() == XOR && Op.hasOneUse() && isBuildVectorAllOnes(Op.getOperand(1).getNode()) {
+            Magic = ~Magic;
+            Parent = Op.getNode();
+            Op = Op.getOperand(0);
+        }
+    }
+
+struct Closure_23 {
+    MRI: *mut MachineRegisterInfo,
+}
+
+unsafe fn Closure_23::call(self: *mut Closure_23, V: SDValue) -> auto {
+        if V.getOpcode() != CopyFromReg {
+            return Register { Reg: 0 };
+        }
+        let mut Reg: Register = cast(V.getOperand(1))();
+        if Reg.isVirtual() {
+            return Register { Reg: (*self.MRI).getLiveInPhysReg(Reg) };
+        }
+        return Reg;
+    }
+
+struct Closure_24 {
+    Widen: *mut bool,
+    cap_1: *mut X86DAGToDAGISel,
+    CmpSVT: *mut MVT,
+}
+
+unsafe fn Closure_24::call(self: *mut Closure_24, Root: *mut SDNode, P: *mut SDNode, L: *mut SDValue, Base: *mut SDValue, Scale: *mut SDValue, Index: *mut SDValue, Disp: *mut SDValue, Segment: *mut SDValue) -> bool {
+        if !(*self.Widen) {
+            if self.tryFoldLoad(Root, P, L, Base, Scale, Index, Disp, Segment) {
+                return true;
+            }
+        }
+        if (*self.CmpSVT) != i32 && (*self.CmpSVT) != i64 {
+            return false;
+        }
+        if L.getOpcode() == BITCAST && L.hasOneUse() {
+            P = L.getNode();
+            L = L.getOperand(0);
+        }
+        if  {
+            return false;
+        }
+        let mut MemIntr: *mut auto = cast(L);
+        if MemIntr()()() != (*self.CmpSVT).getSizeInBits() {
+            return false;
+        }
+        return self.tryFoldBroadcast(Root, P, L, Base, Scale, Index, Disp, Segment);
+    }

@@ -1,0 +1,1147 @@
+fn Parser::isCXXDeclarationStatement(self, DisambiguatingWithExpression: bool) -> bool {
+    (((operator!(operator!((self.getLangOpts() && "Must be called for C++ only.")))) || (_wassert(L"getLangOpts().CPlusPlus && \"Must be called for C++ only.\"", L"clang\\lib\\Parse\\ParseTentative.cpp", (21) as u32) , 0)) as void);
+    match self.Tok.getKind() {
+        kw_asm => {
+            kw_namespace;
+        },
+        coloncolon => {
+            identifier;
+        },
+        _ => {
+            if DisambiguatingWithExpression {
+                let mut TPA: TentativeParsingAction = TentativeParsingAction { *self, true };
+                let mut AccessExporter: SuppressAccessChecks = SuppressAccessChecks { *self, true };
+                if self.isCXXSimpleDeclaration(false) {
+                    TPA.Revert();
+                    return true;
+                }
+                TPA.Commit();
+                return false;
+            }
+        },
+    }
+}
+
+fn Parser::isCXXSimpleDeclaration(self, AllowForRangeDecl: bool) -> bool {
+    let mut InvalidAsDeclaration: bool = false;
+    let mut TPR: TPResult = self.isCXXDeclarationSpecifier(No, False, &mut InvalidAsDeclaration);
+    if TPR != Ambiguous {
+        return TPR != False;
+    }
+    if InvalidAsDeclaration {
+        return false;
+    }
+    {
+        let mut PA: RevertingTentativeParsingAction = RevertingTentativeParsingAction { *self, false };
+        TPR = self.TryParseSimpleDeclaration(AllowForRangeDecl);
+    }
+    if TPR == Error {
+        return true;
+    }
+    if TPR == Ambiguous {
+        TPR = True;
+    }
+    assert!(TPR == True || TPR == False);
+    return TPR == True;
+}
+
+fn Parser::TryConsumeDeclarationSpecifier(self) -> TPResult {
+    match self.Tok.getKind() {
+        kw__Atomic => {
+            if self.NextToken().isNot(l_paren) {
+                self.ConsumeToken();
+                break;
+            }
+        },
+        kw_typeof => {
+            kw_typeof_unqual;
+        },
+        kw_class => {
+            kw_struct;
+        },
+        annot_cxxscope => {
+            self.ConsumeAnnotationToken();
+        },
+        _ => {
+            self.ConsumeAnyToken(false);
+        },
+    }
+    return Ambiguous;
+}
+
+fn Parser::TryParseSimpleDeclaration(self, AllowForRangeDecl: bool) -> TPResult {
+    let mut DeclSpecifierIsAuto: bool = self.Tok.is(kw_auto);
+    if self.TryConsumeDeclarationSpecifier() == Error {
+        return Error;
+    }
+    if self.Tok.isNot(l_paren) {
+        let mut TPR: TPResult = self.isCXXDeclarationSpecifier(No, False, null);
+        if TPR == Ambiguous {
+            return True;
+        }
+        if TPR == True || TPR == Error {
+            return TPR;
+        }
+        assert!(TPR == False);
+    }
+    let mut TPR: TPResult = self.TryParseInitDeclaratorList(DeclSpecifierIsAuto);
+    if TPR != Ambiguous {
+        return TPR;
+    }
+    if self.Tok.isNot(semi) && (!AllowForRangeDecl || self.Tok.isNot(colon)) {
+        return False;
+    }
+    return Ambiguous;
+}
+
+fn Parser::TryParseInitDeclaratorList(self, MayHaveTrailingReturnType: bool) -> TPResult {
+    while true {
+        let mut TPR: TPResult = self.TryParseDeclarator(false, true, false, MayHaveTrailingReturnType);
+        if TPR != Ambiguous {
+            return TPR;
+        }
+        if self.Tok {
+            return True;
+        }
+        if self.Tok.is(l_paren) {
+            self.ConsumeParen();
+            if !self.SkipUntil(r_paren, StopAtSemi) {
+                return Error;
+            }
+        } else if self.Tok.is(l_brace) {
+            return True;
+        } else if self.Tok.is(equal) || self.isTokIdentifier_in() {
+            return True;
+        }
+        if !self.TryConsumeToken(comma) {
+            break;
+        }
+    }
+    return Ambiguous;
+}
+
+struct ConditionDeclarationOrInitStatementState {
+    P: *mut Parser,
+    CanBeExpression: bool,
+    CanBeCondition: bool,
+    CanBeInitStatement: bool,
+    CanBeForRangeDecl: bool,
+}
+
+fn ConditionDeclarationOrInitStatementState::resolved(self) -> bool {
+    return self.CanBeExpression + self.CanBeCondition + self.CanBeInitStatement + self.CanBeForRangeDecl < 2;
+}
+
+fn ConditionDeclarationOrInitStatementState::markNotExpression(self) {
+    self.CanBeExpression = false;
+    if !self.resolved() {
+        let mut PA: RevertingTentativeParsingAction = RevertingTentativeParsingAction { self.P, false };
+        if self.CanBeForRangeDecl {
+            let mut QuestionColonDepth: u32 = 0;
+            while true {
+                self.P;
+                if self.P.Tok.is(question) {
+                    QuestionColonDepth += 1;
+                } else if self.P.Tok.is(colon) {
+                    if QuestionColonDepth {
+                        QuestionColonDepth -= 1;
+                    } else {
+                        self.CanBeCondition = self.CanBeInitStatement = false;
+                        return;
+                    }
+                } else {
+                    self.CanBeForRangeDecl = false;
+                    break;
+                }
+                self.P.ConsumeToken();
+            }
+        } else {
+            self.P.SkipUntil(r_paren, semi, StopBeforeMatch);
+        }
+        if self.P.Tok.isNot(r_paren) {
+            self.CanBeCondition = self.CanBeForRangeDecl = false;
+        }
+        if self.P.Tok.isNot(semi) {
+            self.CanBeInitStatement = false;
+        }
+    }
+}
+
+fn ConditionDeclarationOrInitStatementState::markNotCondition(self) -> bool {
+    self.CanBeCondition = false;
+    return self.resolved();
+}
+
+fn ConditionDeclarationOrInitStatementState::markNotForRangeDecl(self) -> bool {
+    self.CanBeForRangeDecl = false;
+    return self.resolved();
+}
+
+fn ConditionDeclarationOrInitStatementState::update(self, IsDecl: TPResult) -> bool {
+    match IsDecl {
+        True => {
+            self.markNotExpression();
+        },
+        False => {
+            self.CanBeCondition = self.CanBeInitStatement = self.CanBeForRangeDecl = false;
+        },
+        Ambiguous => {
+            break;
+        },
+        Error => {
+            self.CanBeExpression = self.CanBeCondition = self.CanBeInitStatement = self.CanBeForRangeDecl = false;
+        },
+    }
+    return self.resolved();
+}
+
+fn ConditionDeclarationOrInitStatementState::result(self: *ConditionDeclarationOrInitStatementState) -> ConditionOrInitStatement {
+    assert!(self.CanBeExpression + self.CanBeCondition + self.CanBeInitStatement + self.CanBeForRangeDecl < 2, "result called but not yet resolved");
+    if self.CanBeExpression {
+        return Expression;
+    }
+    if self.CanBeCondition {
+        return ConditionDecl;
+    }
+    if self.CanBeInitStatement {
+        return InitStmtDecl;
+    }
+    if self.CanBeForRangeDecl {
+        return ForRangeDecl;
+    }
+    return Error;
+}
+
+fn Parser::isEnumBase(self, AllowSemi: bool) -> bool {
+    assert!(self.Tok.is(colon), "should be looking at the ':'");
+    let mut PA: RevertingTentativeParsingAction = RevertingTentativeParsingAction { *self, false };
+    self.ConsumeToken();
+    let mut InvalidAsDeclSpec: bool = false;
+    let mut R: TPResult = self.isCXXDeclarationSpecifier(No, True, &mut InvalidAsDeclSpec);
+    if R == Ambiguous {
+        if self.TryConsumeDeclarationSpecifier() == Error {
+            return true;
+        }
+        if self.Tok.is(l_brace) || (AllowSemi && self.Tok.is(semi)) {
+            return true;
+        }
+        R = self.isCXXDeclarationSpecifier(No, True, &mut InvalidAsDeclSpec);
+    }
+    return R != False;
+}
+
+fn Parser::isCXXConditionDeclarationOrInitStatement(self, CanBeInitStatement: bool, CanBeForRangeDecl: bool) -> ConditionOrInitStatement {
+    let mut State: ConditionDeclarationOrInitStatementState = ConditionDeclarationOrInitStatementState { *self, CanBeInitStatement, CanBeForRangeDecl };
+    if CanBeInitStatement && self.Tok.is(kw_using) {
+        return InitStmtDecl;
+    }
+    if State.update(self.isCXXDeclarationSpecifier(No, False, null)) {
+        return State.result();
+    }
+    let mut PA: RevertingTentativeParsingAction = RevertingTentativeParsingAction { *self, false };
+    let mut MayHaveTrailingReturnType: bool = self.Tok.is(kw_auto);
+    if State.update(self.TryConsumeDeclarationSpecifier()) {
+        return State.result();
+    }
+    assert!(self.Tok.is(l_paren), "Expected '('");
+    while true {
+        if State.update(self.TryParseDeclarator(false, true, false, MayHaveTrailingReturnType)) {
+            return State.result();
+        }
+        if self.Tok || (self.getLangOpts() && self.Tok.is(l_brace)) {
+            State.markNotExpression();
+            return State.result();
+        }
+        if State.CanBeForRangeDecl && self.Tok.is(colon) {
+            return ForRangeDecl;
+        }
+        if State.markNotCondition() {
+            return State.result();
+        }
+        if State.markNotForRangeDecl() {
+            return State.result();
+        }
+        if self.Tok.is(l_paren) {
+            self.ConsumeParen();
+            self.SkipUntil(r_paren, StopAtSemi);
+        }
+        if !self.TryConsumeToken(comma) {
+            break;
+        }
+    }
+    if State.CanBeCondition && self.Tok.is(r_paren) {
+        return ConditionDecl;
+    } else if State.CanBeInitStatement && self.Tok.is(semi) {
+        return InitStmtDecl;
+    } else {
+        return Expression;
+    }
+}
+
+fn Parser::isCXXTypeId(self, Context: TentativeCXXTypeIdContext, isAmbiguous: *mut bool) -> bool {
+    isAmbiguous = false;
+    let mut TPR: TPResult = self.isCXXDeclarationSpecifier(No, False, null);
+    if TPR != Ambiguous {
+        return TPR != False;
+    }
+    let mut PA: RevertingTentativeParsingAction = RevertingTentativeParsingAction { *self, false };
+    let mut MayHaveTrailingReturnType: bool = self.Tok.is(kw_auto);
+    self.TryConsumeDeclarationSpecifier();
+    assert!(self.Tok.is(l_paren), "Expected '('");
+    TPR = self.TryParseDeclarator(true, false, false, MayHaveTrailingReturnType);
+    if TPR == Error {
+        TPR = True;
+    }
+    if TPR == Ambiguous {
+        if Context == InParens && self.Tok.is(r_paren) {
+            TPR = True;
+            isAmbiguous = true;
+        } else if Context == AsGenericSelectionArgument && self.Tok.is(comma) {
+            TPR = True;
+            isAmbiguous = true;
+        } else if Context == AsTemplateArgument && (self.Tok || (self.getLangOpts() && (self.Tok || (self.Tok.is(ellipsis) && self.NextToken())))) {
+            TPR = True;
+            isAmbiguous = true;
+        } else if Context == InTrailingReturnType {
+            TPR = True;
+            isAmbiguous = true;
+        } else if Context == AsReflectionOperand {
+            TPR = True;
+            isAmbiguous = true;
+        } else {
+            TPR = False;
+        }
+    }
+    assert!(TPR == True || TPR == False);
+    return TPR == True;
+}
+
+fn Parser::isCXX11AttributeSpecifier(self, Disambiguate: bool, OuterMightBeMessageSend: bool) -> CXX11AttributeKind {
+    if self.Tok.is(kw_alignas) && operator!(self.getLangOpts()) {
+        return AttributeSpecifier;
+    }
+    if self.Tok.isRegularKeywordAttribute() {
+        return AttributeSpecifier;
+    }
+    if self.Tok.isNot(l_square) || self.NextToken().isNot(l_square) {
+        return NotAttributeSpecifier;
+    }
+    if !Disambiguate && operator!(self.getLangOpts()) {
+        return AttributeSpecifier;
+    }
+    if self.GetLookAheadToken(2).is(kw_using) {
+        return AttributeSpecifier;
+    }
+    let mut PA: RevertingTentativeParsingAction = RevertingTentativeParsingAction { *self, false };
+    self.ConsumeBracket();
+    if operator!(self.getLangOpts()) {
+        self.ConsumeBracket();
+        let mut IsAttribute: bool = self.SkipUntil(r_square, 0 as SkipUntilFlags);
+        IsAttribute &= self.Tok.is(r_square);
+        return if IsAttribute { AttributeSpecifier } else { InvalidAttributeSpecifier };
+    }
+    {
+        let mut LambdaTPA: RevertingTentativeParsingAction = RevertingTentativeParsingAction { *self, false };
+        let mut Intro: LambdaIntroducer = LambdaIntroducer {};
+        let mut Tentative: LambdaIntroducerTentativeParse = zeroed();
+        if self.ParseLambdaIntroducer(Intro, &mut Tentative) {
+            return NotAttributeSpecifier;
+        }
+        match Tentative {
+            MessageSend => {
+                return NotAttributeSpecifier;
+            },
+            Success => {
+                Incomplete;
+            },
+            Invalid => {
+                break;
+            },
+        }
+    }
+    self.ConsumeBracket();
+    let mut IsAttribute: bool = true;
+    while self.Tok.isNot(r_square) {
+        if self.Tok.is(comma) {
+            return AttributeSpecifier;
+        }
+        let mut Loc: SourceLocation = SourceLocation {};
+        if !self.TryParseCXX11AttributeIdentifier(Loc, None, null) {
+            IsAttribute = false;
+            break;
+        }
+        if self.Tok.is(coloncolon) {
+            self.ConsumeToken();
+            if !self.TryParseCXX11AttributeIdentifier(Loc, None, null) {
+                IsAttribute = false;
+                break;
+            }
+        }
+        if self.Tok.is(l_paren) {
+            self.ConsumeParen();
+            if !self.SkipUntil(r_paren, 0 as SkipUntilFlags) {
+                IsAttribute = false;
+                break;
+            }
+        }
+        self.TryConsumeToken(ellipsis);
+        if !self.TryConsumeToken(comma) {
+            break;
+        }
+    }
+    if IsAttribute {
+        if self.Tok.is(r_square) {
+            self.ConsumeBracket();
+            IsAttribute = self.Tok.is(r_square);
+        } else {
+            IsAttribute = false;
+        }
+    }
+    if IsAttribute {
+        return AttributeSpecifier;
+    }
+    return NotAttributeSpecifier;
+}
+
+fn Parser::TrySkipAttributes(self) -> bool {
+    while self.Tok || self.Tok.isRegularKeywordAttribute() {
+        if self.Tok.is(l_square) {
+            if !self.NextToken().is(l_square) {
+                return true;
+            }
+            self.ConsumeBracket();
+            self.ConsumeBracket();
+            if !self.SkipUntil(r_square, 0 as SkipUntilFlags) || self.Tok.isNot(r_square) {
+                return false;
+            }
+            self.ConsumeBracket();
+        } else if self.Tok.isRegularKeywordAttribute() && !doesKeywordAttributeTakeArgs(self.Tok.getKind()) {
+            self.ConsumeToken();
+        } else {
+            self.ConsumeToken();
+            if self.Tok.isNot(l_paren) {
+                return false;
+            }
+            self.ConsumeParen();
+            if !self.SkipUntil(r_paren, 0 as SkipUntilFlags) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+fn Parser::hasLambdaLikeContinuation(self) -> bool {
+    let mut TPA: RevertingTentativeParsingAction = RevertingTentativeParsingAction { *self, false };
+    self.ConsumeBracket();
+    if !self.SkipUntil(r_square, StopAtSemi | StopAtCodeCompletion) {
+        return false;
+    }
+    while true {
+        if !self.TrySkipAttributes() {
+            return false;
+        }
+        if self.Tok {
+            return true;
+        }
+        if self.getLangOpts() && self.TryConsumeToken(kw___noinline__) {
+            continue;
+        }
+        if !self.isLambdaSpecifier() {
+            return false;
+        }
+        self.ConsumeToken();
+    }
+}
+
+fn Parser::TryParsePtrOperatorSeq(self) -> TPResult {
+    while true {
+        if self.TryAnnotateOptionalCXXScopeToken(true) {
+            return Error;
+        }
+        if self.Tok || (self.Tok.is(annot_cxxscope) && self.NextToken().is(star)) {
+            self.ConsumeAnyToken(false);
+            if !self.TrySkipAttributes() {
+                return Error;
+            }
+            while self.Tok {
+                self.ConsumeToken();
+            }
+        } else {
+            return True;
+        }
+    }
+}
+
+fn Parser::TryParseOperatorId(self) -> TPResult {
+    assert!(self.Tok.is(kw_operator);
+    self.ConsumeToken();
+    match self.Tok.getKind() {
+        kw_new => {
+            kw_delete;
+        },
+        plus => {
+            minus;
+        },
+        l_square => {
+            if self.NextToken().is(r_square) {
+                self.ConsumeBracket();
+                self.ConsumeBracket();
+                return True;
+            }
+        },
+        l_paren => {
+            if self.NextToken().is(r_paren) {
+                self.ConsumeParen();
+                self.ConsumeParen();
+                return True;
+            }
+        },
+        lesslessless => {
+            self.ConsumeToken();
+        },
+        _ => {
+            break;
+        },
+    }
+    if self.getLangOpts() && self.isTokenStringLiteral() {
+        let mut FoundUDSuffix: bool = false;
+        while true {
+            {
+            FoundUDSuffix |= self.Tok.hasUDSuffix();
+            self.ConsumeStringToken();
+        }
+            if !(self.isTokenStringLiteral()) { break; }
+        }
+        if !FoundUDSuffix {
+            if self.Tok.is(identifier) {
+                self.ConsumeToken();
+            } else {
+                return Error;
+            }
+        }
+        return True;
+    }
+    let mut AnyDeclSpecifiers: bool = false;
+    while true {
+        let mut TPR: TPResult = self.isCXXDeclarationSpecifier(No, False, null);
+        if TPR == Error {
+            return TPR;
+        }
+        if TPR == False {
+            if !AnyDeclSpecifiers {
+                return Error;
+            }
+            break;
+        }
+        if self.TryConsumeDeclarationSpecifier() == Error {
+            return Error;
+        }
+        AnyDeclSpecifiers = true;
+    }
+    return self.TryParsePtrOperatorSeq();
+}
+
+fn Parser::TryParseDeclarator(self, mayBeAbstract: bool, mayHaveIdentifier: bool, mayHaveDirectInit: bool, mayHaveTrailingReturnType: bool) -> TPResult {
+    if self.TryParsePtrOperatorSeq() == Error {
+        return Error;
+    }
+    if self.Tok.is(ellipsis) {
+        self.ConsumeToken();
+    }
+    if (self.Tok || (self.Tok.is(annot_cxxscope) && (self.NextToken().is(identifier) || self.NextToken().is(kw_operator)))) && mayHaveIdentifier {
+        if self.Tok.is(annot_cxxscope) {
+            let mut SS: CXXScopeSpec = CXXScopeSpec {};
+            self.Actions.RestoreNestedNameSpecifierAnnotation(self.Tok.getAnnotationValue(), self.Tok.getAnnotationRange(), SS);
+            if SS.isInvalid() {
+                return Error;
+            }
+            self.ConsumeAnnotationToken();
+        } else if self.Tok.is(identifier) {}
+        if self.Tok.is(kw_operator) {
+            if self.TryParseOperatorId() == Error {
+                return Error;
+            }
+        } else {
+            self.ConsumeToken();
+        }
+    } else if self.Tok.is(l_paren) {
+        self.ConsumeParen();
+        if mayBeAbstract && (self.Tok.is(r_paren) || (self.Tok.is(ellipsis) && self.NextToken().is(r_paren)) || self.isDeclarationSpecifier(No, false)) {
+            let mut TPR: TPResult = self.TryParseFunctionDeclarator(mayHaveTrailingReturnType);
+            if TPR != Ambiguous {
+                return TPR;
+            }
+        } else {
+            if self.Tok {
+                return True;
+            }
+            let mut TPR: TPResult = self.TryParseDeclarator(mayBeAbstract, mayHaveIdentifier, false, false);
+            if TPR != Ambiguous {
+                return TPR;
+            }
+            if self.Tok.isNot(r_paren) {
+                return False;
+            }
+            self.ConsumeParen();
+        }
+    } else if !mayBeAbstract {
+        return False;
+    }
+    if mayHaveDirectInit {
+        return Ambiguous;
+    }
+    while true {
+        let mut TPR: TPResult = Ambiguous;
+        if self.Tok.is(l_paren) {
+            if !mayBeAbstract && !self.isCXXFunctionDeclarator(null, No) {
+                break;
+            }
+            self.ConsumeParen();
+            TPR = self.TryParseFunctionDeclarator(mayHaveTrailingReturnType);
+        } else if self.Tok.is(l_square) {
+            TPR = self.TryParseBracketDeclarator();
+        } else if self.Tok.is(kw_requires) {
+            TPR = True;
+        } else {
+            break;
+        }
+        if TPR != Ambiguous {
+            return TPR;
+        }
+    }
+    return Ambiguous;
+}
+
+fn Parser::isTentativelyDeclared(self, II: *mut IdentifierInfo) -> bool {
+    return is_contained(II);
+}
+
+struct TentativeParseCCC {
+    WantTypeSpecifiers: bool,
+    WantExpressionKeywords: bool,
+    WantCXXNamedCasts: bool,
+    WantFunctionLikeCasts: bool,
+    WantRemainingKeywords: bool,
+    WantObjCSuper: bool,
+    IsObjCIvarLookup: bool,
+    IsAddressOfOperand: bool,
+    Typo: *IdentifierInfo,
+    TypoNNS: NestedNameSpecifier,
+}
+
+fn TentativeParseCCC::TentativeParseCCC(self, Next: *Token) {
+    self.WantRemainingKeywords = false;
+    self.WantTypeSpecifiers = Next;
+}
+
+fn TentativeParseCCC::ValidateCandidate(self, Candidate: *TypoCorrection) -> bool {
+    if Candidate.isResolved() && !Candidate.isKeyword() && all_of(Candidate, Closure_1 {}) {
+        return false;
+    }
+    return self.ValidateCandidate(Candidate);
+}
+
+fn TentativeParseCCC::clone(self) -> i32 {
+    return make_unique(*self);
+}
+
+fn TentativeParseCCC::RankCandidate(self, candidate: *TypoCorrection) -> u32 {
+    return if (!self.MatchesTypo(candidate) && self.ValidateCandidate(candidate)) { 0 } else { InvalidDistance };
+}
+
+fn TentativeParseCCC::setTypoName(self, II: *IdentifierInfo) {
+    self.Typo = II;
+}
+
+fn TentativeParseCCC::setTypoNNS(self, NNS: NestedNameSpecifier) {
+    self.TypoNNS = NNS;
+}
+
+fn TentativeParseCCC::MatchesTypo(self, candidate: *TypoCorrection) -> bool {
+    return self.Typo && candidate.isResolved() && !candidate.requiresImport() && candidate.getCorrectionAsIdentifierInfo() == self.Typo && candidate.getCorrectionSpecifier() == self.TypoNNS;
+}
+
+fn Parser::isCXXDeclarationSpecifier(self, AllowImplicitTypename: ImplicitTypenameContext, BracedCastResult: TPResult, InvalidAsDeclSpec: *mut bool) -> TPResult {
+    let mut IsPlaceholderSpecifier: Closure_2 = Closure_2 { cap_0: self };
+    match self.Tok.getKind() {
+        identifier => {
+            if self.GetLookAheadToken(1).is(ellipsis) && self.GetLookAheadToken(2).is(l_square) {
+                if self.TryAnnotateTypeOrScopeToken(No, false) {
+                    return Error;
+                }
+                if self.Tok.is(identifier) {
+                    return False;
+                }
+                return self.isCXXDeclarationSpecifier(No, BracedCastResult, InvalidAsDeclSpec);
+            }
+            if self.TryAltiVecVectorToken() {
+                return True;
+            }
+            let mut Next: *Token = self.NextToken();
+            if operator!(self.getLangOpts()) && Next.is(identifier) {
+                return True;
+            }
+            if Next.is(l_paren) && self.Tok.getIdentifierInfo().hasRevertedTokenIDToIdentifier() && self.isRevertibleTypeTrait(self.Tok.getIdentifierInfo(), null) {
+                return False;
+            }
+            if Next {
+                let mut CCC: TentativeParseCCC = Next;
+                match self.TryAnnotateName(&mut CCC, No) {
+                    Error => {
+                        return Error;
+                    },
+                    TentativeDecl => {
+                        return False;
+                    },
+                    TemplateName => {
+                        if self.getLangOpts() {
+                            if self.TryAnnotateTypeOrScopeToken(AllowImplicitTypename, false) {
+                                return Error;
+                            }
+                            if self.Tok.isNot(identifier) {
+                                break;
+                            }
+                        }
+                    },
+                    Unresolved => {
+                        return if InvalidAsDeclSpec { Ambiguous } else { False };
+                    },
+                    Success => {
+                        break;
+                    },
+                }
+                assert!(self.Tok.isNot(identifier), "TryAnnotateName succeeded without producing an annotation");
+            } else {
+                if self.TryAnnotateTypeOrScopeToken(AllowImplicitTypename, false) {
+                    return Error;
+                }
+                if self.Tok.is(identifier) {
+                    return False;
+                }
+            }
+            return self.isCXXDeclarationSpecifier(AllowImplicitTypename, BracedCastResult, InvalidAsDeclSpec);
+        },
+        kw_typename => {
+            if self.TryAnnotateTypeOrScopeToken(Yes, false) {
+                return Error;
+            }
+        },
+        kw_auto => {
+            if self.NextToken().is(l_brace) {
+                return False;
+            }
+            if self.NextToken().is(l_paren) {
+                return Ambiguous;
+            }
+            return True;
+        },
+        coloncolon => {
+            let mut Next: *Token = self.NextToken();
+            if Next {
+                return False;
+            }
+        },
+        kw___super => {
+            kw_decltype;
+        },
+        kw_friend => {
+            kw_typedef;
+        },
+        kw_private => {
+            if operator!(self.getLangOpts()) {
+                return False;
+            }
+        },
+        kw___private => {
+            kw___local;
+        },
+        kw___ob_wrap => {
+            kw___ob_trap;
+        },
+        kw___declspec => {
+            kw___cdecl;
+        },
+        kw___funcref => {
+            return True;
+        },
+        kw___pascal => {
+            return True;
+        },
+        kw___vector => {
+            return True;
+        },
+        kw_this => {
+            if self.getLangOpts() {
+                let mut PA: RevertingTentativeParsingAction = RevertingTentativeParsingAction { *self, false };
+                self.ConsumeToken();
+                return self.isCXXDeclarationSpecifier(AllowImplicitTypename, BracedCastResult, InvalidAsDeclSpec);
+            }
+            return False;
+        },
+        annot_template_id => {
+            let mut TemplateId: *mut TemplateIdAnnotation = self.takeTemplateIdAnnotation(self.Tok);
+            if (TemplateId.hasInvalidName() || TemplateId.Kind == TNK_Undeclared_template) && InvalidAsDeclSpec {
+                *InvalidAsDeclSpec = self.NextToken().is(l_paren);
+                return Ambiguous;
+            }
+            if TemplateId.hasInvalidName() {
+                return Error;
+            }
+            if IsPlaceholderSpecifier(TemplateId, 0) {
+                return True;
+            }
+            if TemplateId.Kind != TNK_Type_template {
+                return False;
+            }
+            let mut SS: CXXScopeSpec = CXXScopeSpec {};
+            self.AnnotateTemplateIdTokenAsType(SS, AllowImplicitTypename, false);
+            assert!(self.Tok.is(annot_typename);
+        },
+        annot_cxxscope => {
+            if self.TryAnnotateTypeOrScopeToken(AllowImplicitTypename, false) {
+                return Error;
+            }
+        },
+        annot_typename => {
+            self.getLangOpts() && self.NextToken().is(less);
+        },
+        kw_char => {
+            kw_wchar_t;
+        },
+        kw_typeof => {
+            kw_typeof_unqual;
+        },
+        kw__Alignas => {
+            return True;
+        },
+        kw__Atomic => {
+            return True;
+        },
+        kw__BitInt => {
+            kw__ExtInt;
+        },
+        _ => {
+            return False;
+        },
+    }
+}
+
+fn Parser::isCXXDeclarationSpecifierAType(self) -> bool {
+    match self.Tok.getKind() {
+        annot_decltype => {
+            annot_pack_indexing_type;
+        },
+        kw_class => {
+            kw_struct;
+        },
+        kw_char => {
+            kw_wchar_t;
+        },
+        kw_auto => {
+            return self.getLangOpts();
+        },
+        kw__Atomic => {
+            return self.NextToken().is(l_paren);
+        },
+        _ => {
+            return false;
+        },
+    }
+}
+
+fn Parser::TryParseTypeofSpecifier(self) -> TPResult {
+    assert!(self.Tok, "Expected 'typeof' or 'typeof_unqual'!");
+    self.ConsumeToken();
+    assert!(self.Tok.is(l_paren), "Expected '('");
+    self.ConsumeParen();
+    if !self.SkipUntil(r_paren, StopAtSemi) {
+        return Error;
+    }
+    return Ambiguous;
+}
+
+fn Parser::TryParseProtocolQualifiers(self) -> TPResult {
+    assert!(self.Tok.is(less), "Expected '<' for qualifier list");
+    self.ConsumeToken();
+    while true {
+        {
+        if self.Tok.isNot(identifier) {
+            return Error;
+        }
+        self.ConsumeToken();
+        if self.Tok.is(comma) {
+            self.ConsumeToken();
+            continue;
+        }
+        if self.Tok.is(greater) {
+            self.ConsumeToken();
+            return Ambiguous;
+        }
+    }
+        if !(false) { break; }
+    }
+    return Error;
+}
+
+fn Parser::isCXXFunctionDeclarator(self, IsAmbiguous: *mut bool, AllowImplicitTypename: ImplicitTypenameContext) -> bool {
+    let mut PA: RevertingTentativeParsingAction = RevertingTentativeParsingAction { *self, false };
+    self.ConsumeParen();
+    let mut InvalidAsDeclaration: bool = false;
+    let mut TPR: TPResult = self.TryParseParameterDeclarationClause(&mut InvalidAsDeclaration, false, AllowImplicitTypename);
+    if TPR == Ambiguous {
+        if self.Tok.isNot(r_paren) {
+            TPR = False;
+        } else {
+            let mut Next: *Token = self.NextToken();
+            if Next || self.isCXX11VirtSpecifier(Next) {
+                TPR = True;
+            } else if InvalidAsDeclaration {
+                TPR = False;
+            }
+        }
+    }
+    if IsAmbiguous && TPR == Ambiguous {
+        *IsAmbiguous = true;
+    }
+    return TPR != False;
+}
+
+fn Parser::TryParseParameterDeclarationClause(self, InvalidAsDeclaration: *mut bool, VersusTemplateArgument: bool, AllowImplicitTypename: ImplicitTypenameContext) -> TPResult {
+    if self.Tok.is(r_paren) {
+        return Ambiguous;
+    }
+    while true {
+        if self.Tok.is(ellipsis) {
+            self.ConsumeToken();
+            if self.Tok.is(r_paren) {
+                return True;
+            } else {
+                return False;
+            }
+        }
+        if self.isCXX11AttributeSpecifier(false, true) != NotAttributeSpecifier {
+            return True;
+        }
+        if (self.getLangOpts() || self.getLangOpts()) && self.Tok.is(l_square) && self.hasLambdaLikeContinuation() {
+            return False;
+        }
+        let mut attrs: ParsedAttributes = zeroed();
+        self.MaybeParseMicrosoftAttributes(attrs);
+        let mut TPR: TPResult = self.isCXXDeclarationSpecifier(AllowImplicitTypename, False, InvalidAsDeclaration);
+        if TPR != Ambiguous && !(VersusTemplateArgument && TPR == True) {
+            return TPR;
+        }
+        let mut SeenType: bool = false;
+        let mut DeclarationSpecifierIsAuto: bool = self.Tok.is(kw_auto);
+        while true {
+            {
+            SeenType |= self.isCXXDeclarationSpecifierAType();
+            if self.TryConsumeDeclarationSpecifier() == Error {
+                return Error;
+            }
+            if SeenType && self.Tok.is(identifier) {
+                return True;
+            }
+            TPR = self.isCXXDeclarationSpecifier(AllowImplicitTypename, False, InvalidAsDeclaration);
+            if TPR == Error {
+                return TPR;
+            }
+            if TPR == True && !VersusTemplateArgument {
+                return TPR;
+            }
+        }
+            if !(TPR != False) { break; }
+        }
+        TPR = self.TryParseDeclarator(true, true, false, DeclarationSpecifierIsAuto);
+        if TPR != Ambiguous {
+            return TPR;
+        }
+        if self.Tok.is(kw___attribute) {
+            return True;
+        }
+        if VersusTemplateArgument {
+            return if self.Tok.is(equal) { True } else { False };
+        }
+        if self.Tok.is(equal) {
+            if !self.SkipUntil(comma, r_paren, StopAtSemi | StopBeforeMatch) {
+                return Error;
+            }
+        }
+        if self.Tok.is(ellipsis) {
+            self.ConsumeToken();
+            if self.Tok.is(r_paren) {
+                return True;
+            } else {
+                return False;
+            }
+        }
+        if !self.TryConsumeToken(comma) {
+            break;
+        }
+    }
+    return Ambiguous;
+}
+
+fn Parser::TryParseFunctionDeclarator(self, MayHaveTrailingReturnType: bool) -> TPResult {
+    let mut TPR: TPResult = self.TryParseParameterDeclarationClause(null, false, No);
+    if TPR == Ambiguous && self.Tok.isNot(r_paren) {
+        TPR = False;
+    }
+    if TPR == False || TPR == Error {
+        return TPR;
+    }
+    if !self.SkipUntil(r_paren, StopAtSemi) {
+        return Error;
+    }
+    while self.Tok {
+        self.ConsumeToken();
+    }
+    if self.Tok {
+        self.ConsumeToken();
+    }
+    if self.Tok.is(kw_throw) {
+        self.ConsumeToken();
+        if self.Tok.isNot(l_paren) {
+            return Error;
+        }
+        self.ConsumeParen();
+        if !self.SkipUntil(r_paren, StopAtSemi) {
+            return Error;
+        }
+    }
+    if self.Tok.is(kw_noexcept) {
+        self.ConsumeToken();
+        if self.Tok.is(l_paren) {
+            self.ConsumeParen();
+            if !self.SkipUntil(r_paren, StopAtSemi) {
+                return Error;
+            }
+        }
+    }
+    if !self.TrySkipAttributes() {
+        return Ambiguous;
+    }
+    if self.Tok.is(arrow) && MayHaveTrailingReturnType {
+        if TPR == True {
+            return TPR;
+        }
+        self.ConsumeToken();
+        if self.Tok.is(identifier) && self.NameAfterArrowIsNonType() {
+            return False;
+        }
+        if self.isCXXTypeId(InTrailingReturnType) {
+            return True;
+        }
+    }
+    return Ambiguous;
+}
+
+fn Parser::NameAfterArrowIsNonType(self) -> bool {
+    assert!(self.Tok.is(identifier);
+    let mut Next: Token = self.NextToken();
+    if Next.is(coloncolon) {
+        return false;
+    }
+    let mut Name: *mut IdentifierInfo = self.Tok.getIdentifierInfo();
+    let mut NameLoc: SourceLocation = self.Tok.getLocation();
+    let mut SS: CXXScopeSpec = CXXScopeSpec {};
+    let mut CCC: TentativeParseCCC = Next;
+    let mut Classification: NameClassification = self.Actions.ClassifyName(self.getCurScope(), SS, Name, NameLoc, Next, &mut CCC);
+    match Classification.getKind() {
+        OverloadSet => {
+            NonType;
+        },
+        _ => {
+            break;
+        },
+    }
+    return false;
+}
+
+fn Parser::TryParseBracketDeclarator(self) -> TPResult {
+    self.ConsumeBracket();
+    if self.Tok.is(l_brace) {
+        return False;
+    }
+    if !self.SkipUntil(r_square, comma, StopAtSemi | StopBeforeMatch) {
+        return Error;
+    }
+    if self.Tok.isNot(r_square) {
+        return False;
+    }
+    self.ConsumeBracket();
+    return Ambiguous;
+}
+
+fn Parser::isTemplateArgumentList(self, TokensToSkip: u32) -> TPResult {
+    if !TokensToSkip {
+        if self.Tok.isNot(less) {
+            return False;
+        }
+        if self.NextToken().is(greater) {
+            return True;
+        }
+    }
+    let mut PA: RevertingTentativeParsingAction = RevertingTentativeParsingAction { *self, false };
+    while TokensToSkip {
+        self.ConsumeAnyToken(false);
+        TokensToSkip -= 1;
+    }
+    if !self.TryConsumeToken(less) {
+        return False;
+    }
+    let mut InvalidAsTemplateArgumentList: bool = false;
+    if self.isCXXDeclarationSpecifier(No, False, &mut InvalidAsTemplateArgumentList) == True {
+        return True;
+    }
+    if InvalidAsTemplateArgumentList {
+        return False;
+    }
+    if  {
+        return Ambiguous;
+    }
+    return False;
+}
+
+fn Parser::isExplicitBool(self) -> TPResult {
+    assert!(self.Tok.is(l_paren), "expected to be looking at a '(' token");
+    let mut PA: RevertingTentativeParsingAction = RevertingTentativeParsingAction { *self, false };
+    self.ConsumeParen();
+    while self.Tok.is(l_paren) {
+        self.ConsumeParen();
+    }
+    if self.TryAnnotateOptionalCXXScopeToken(false) {
+        return Error;
+    }
+    let mut SS: CXXScopeSpec = CXXScopeSpec {};
+    if self.Tok.is(annot_cxxscope) {
+        self.Actions.RestoreNestedNameSpecifierAnnotation(self.Tok.getAnnotationValue(), self.Tok.getAnnotationRange(), SS);
+        self.ConsumeAnnotationToken();
+    }
+    if self.Tok.is(kw_operator) {
+        return Ambiguous;
+    }
+    if self.Tok.isNot(identifier) && self.Tok.isNot(annot_template_id) {
+        return True;
+    }
+    if !self.Actions.isCurrentClassName(if self.Tok.is(identifier) { *self.Tok.getIdentifierInfo() } else { *self.takeTemplateIdAnnotation(self.Tok).Name }, self.getCurScope(), &mut SS) {
+        return True;
+    }
+    if !self.NextToken().is(r_paren) && !self.isConstructorDeclarator(SS.isEmpty(), false, No, null) {
+        return True;
+    }
+    return Ambiguous;
+}
+
+struct Closure_1 {}
+
+fn Closure_1::call(self: *Closure_1, ND: *mut NamedDecl) -> bool {
+        return ND.isCXXInstanceMember();
+    }
+
+struct Closure_2 {
+    cap_0: *mut Parser,
+}
+
+fn Closure_2::call(self: *Closure_2, TemplateId: *mut TemplateIdAnnotation, Lookahead: i32) -> auto {}

@@ -1,0 +1,221 @@
+fn BaseIndexOffset::equalBaseIndex(self: *BaseIndexOffset, Other: *BaseIndexOffset, DAG: *SelectionDAG, Off: *mut i64) -> bool {
+    if !self.Base.getNode() || !Other.Base.getNode() {
+        return false;
+    }
+    if !self.hasValidOffset() || !Other.hasValidOffset() {
+        return false;
+    }
+    Off = operator(Other.Offset) - operator(self.Offset);
+    if (Other.Index == self.Index) && (Other.IsIndexSignExt == self.IsIndexSignExt) {
+        if Other.Base == self.Base {
+            return true;
+        }
+        if dyn_cast(self.Base) {
+            A;
+        } else {
+            if dyn_cast(Other.Base) {
+                B;
+            } else if A.getGlobal() == B.getGlobal() {
+                Off += B.getOffset() - A.getOffset();
+                return true;
+            }
+            return false;
+        }
+        if dyn_cast(self.Base) {
+            A;
+        } else {
+            if dyn_cast(Other.Base) {
+                B;
+            } else {
+                let mut IsMatch: bool = A.isMachineConstantPoolEntry() == B.isMachineConstantPoolEntry();
+                if IsMatch {
+                    if A.isMachineConstantPoolEntry() {
+                        IsMatch = A.getMachineCPVal() == B.getMachineCPVal();
+                    } else {
+                        IsMatch = A.getConstVal() == B.getConstVal();
+                    }
+                }
+                if IsMatch {
+                    Off += B.getOffset() - A.getOffset();
+                    return true;
+                }
+            }
+            return false;
+        }
+        if dyn_cast(self.Base) {
+            A;
+        } else if dyn_cast(Other.Base) {
+            B;
+        } else {
+            if A.getIndex() == B.getIndex() {
+                return true;
+            }
+            let mut MFI: *MachineFrameInfo = DAG.getMachineFunction().getFrameInfo();
+            if MFI.isFixedObjectIndex(A.getIndex()) && MFI.isFixedObjectIndex(B.getIndex()) {
+                Off += MFI.getObjectOffset(B.getIndex()) - MFI.getObjectOffset(A.getIndex());
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn BaseIndexOffset::computeAliasing(self, Op0: *SDNode, NumBytes0: LocationSize, Op1: *SDNode, NumBytes1: LocationSize, DAG: *SelectionDAG, IsAlias: *mut bool) -> bool {
+    let mut BasePtr0: BaseIndexOffset = match(Op0, DAG);
+    if !BasePtr0.getBase().getNode() {
+        return false;
+    }
+    let mut BasePtr1: BaseIndexOffset = match(Op1, DAG);
+    if !BasePtr1.getBase().getNode() {
+        return false;
+    }
+    let mut PtrDiff: i64 = 0;
+    if BasePtr0.equalBaseIndex(BasePtr1, DAG, PtrDiff) {
+        if PtrDiff >= 0 && NumBytes0.hasValue() && !NumBytes0.isScalable() {
+            IsAlias = !(NumBytes0.getValue().getFixedValue() as i64 <= PtrDiff);
+            return true;
+        }
+        if PtrDiff < 0 && NumBytes1.hasValue() && !NumBytes1.isScalable() {
+            IsAlias = !((PtrDiff + NumBytes1.getValue().getFixedValue() as i64) <= 0);
+            return true;
+        }
+        return false;
+    }
+    if dyn_cast(BasePtr0.getBase()) {
+        A;
+    } else if dyn_cast(BasePtr1.getBase()) {
+        B;
+    } else {
+        let mut MFI: *mut MachineFrameInfo = DAG.getMachineFunction().getFrameInfo();
+        if A.getIndex() != B.getIndex() && (!MFI.isFixedObjectIndex(A.getIndex()) || !MFI.isFixedObjectIndex(B.getIndex())) {
+            IsAlias = false;
+            return true;
+        }
+    }
+    let mut IsFI0: bool = isa(BasePtr0.getBase());
+    let mut IsFI1: bool = isa(BasePtr1.getBase());
+    let mut IsGV0: bool = isa(BasePtr0.getBase());
+    let mut IsGV1: bool = isa(BasePtr1.getBase());
+    let mut IsCV0: bool = isa(BasePtr0.getBase());
+    let mut IsCV1: bool = isa(BasePtr1.getBase());
+    if (IsFI0 || IsGV0 || IsCV0) && (IsFI1 || IsGV1 || IsCV1) {
+        if IsFI0 != IsFI1 || IsGV0 != IsGV1 || IsCV0 != IsCV1 {
+            IsAlias = false;
+            return true;
+        }
+        if IsGV0 && IsGV1 {
+            let mut GV0: *GlobalValue = cast(BasePtr0.getBase()).getGlobal();
+            let mut GV1: *GlobalValue = cast(BasePtr1.getBase()).getGlobal();
+            if GV0 != GV1 && !isa(GV0) && !isa(GV1) {
+                IsAlias = false;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn BaseIndexOffset::contains(self: *BaseIndexOffset, DAG: *SelectionDAG, BitSize: i64, Other: *BaseIndexOffset, OtherBitSize: i64, BitOffset: *mut i64) -> bool {
+    let mut Offset: i64 = 0;
+    if !self.equalBaseIndex(Other, DAG, Offset) {
+        return false;
+    }
+    if Offset >= 0 {
+        BitOffset = 8 * Offset;
+        return BitOffset + OtherBitSize <= BitSize;
+    }
+    return false;
+}
+
+fn matchLSNode(N: *LSBaseSDNode, DAG: *SelectionDAG) -> BaseIndexOffset {
+    let mut Ptr: SDValue = N.getBasePtr();
+    let mut Base: SDValue = DAG.getTargetLoweringInfo().unwrapAddress(Ptr);
+    let mut Index: SDValue = SDValue {};
+    let mut Offset: i64 = 0;
+    let mut IsIndexSignExt: bool = false;
+    if N.getAddressingMode() == PRE_INC {
+        if dyn_cast(N.getOffset()) {
+            C;
+        } else {
+            Offset += C.getSExtValue();
+        }
+    } else if N.getAddressingMode() == PRE_DEC {
+        if dyn_cast(N.getOffset()) {
+            C;
+        } else {
+            Offset -= C.getSExtValue();
+        }
+    }
+    while true {
+        match operator(Base).getOpcode() {
+            OR => {
+                if dyn_cast(operator(Base).getOperand(1)) {
+                    C;
+                } else if DAG.MaskedValueIsZero(operator(Base).getOperand(0), C.getAPIntValue(), 0) {
+                    Offset += C.getSExtValue();
+                    Base = DAG.getTargetLoweringInfo().unwrapAddress(operator(Base).getOperand(0));
+                    continue;
+                }
+            },
+            ADD => {
+                PTRADD;
+            },
+            LOAD => {
+                STORE;
+            },
+        }
+        break;
+    }
+    if operator(Base).isAnyAdd() {
+        if operator(operator(Base).getOperand(1)).getOpcode() == MUL {
+            return BaseIndexOffset { Base: Base, Index: Index, Offset: Offset, IsIndexSignExt: IsIndexSignExt };
+        }
+        Index = operator(Base).getOperand(1);
+        let mut PotentialBase: SDValue = operator(Base).getOperand(0);
+        if operator(Index).getOpcode() == SIGN_EXTEND {
+            Index = operator(Index).getOperand(0);
+            IsIndexSignExt = true;
+        }
+        if !operator(Index).isAnyAdd() || !isa(operator(Index).getOperand(1)) {
+            return BaseIndexOffset { Base: PotentialBase, Index: Index, Offset: Offset, IsIndexSignExt: IsIndexSignExt };
+        }
+        Offset += cast(operator(Index).getOperand(1)).getSExtValue();
+        Index = operator(Index).getOperand(0);
+        if operator(Index).getOpcode() == SIGN_EXTEND {
+            Index = operator(Index).getOperand(0);
+            IsIndexSignExt = true;
+        } else {
+            IsIndexSignExt = false;
+        }
+        Base = PotentialBase;
+    }
+    return BaseIndexOffset { Base: Base, Index: Index, Offset: Offset, IsIndexSignExt: IsIndexSignExt };
+}
+
+fn BaseIndexOffset::match(self, N: *SDNode, DAG: *SelectionDAG) -> BaseIndexOffset {
+    if dyn_cast(N) {
+        LS0;
+    } else {
+        return matchLSNode(LS0, DAG);
+    }
+    if dyn_cast(N) {
+        LN;
+    } else {
+        return BaseIndexOffset { Base: LN.getOperand(1), Index: SDValue {}, Offset: 0, IsIndexSignExt: false };
+    }
+    return BaseIndexOffset {};
+}
+
+fn BaseIndexOffset::dump(self: *BaseIndexOffset) {
+    self.print(dbgs());
+}
+
+fn BaseIndexOffset::print(self: *BaseIndexOffset, OS: *mut raw_ostream) {
+    OS << "BaseIndexOffset base=[";
+    operator(self.Base).print(OS, null);
+    OS << "] index=[";
+    if self.Index {
+        operator(self.Index).print(OS, null);
+    }
+    OS << "] offset=" << self.Offset;
+}

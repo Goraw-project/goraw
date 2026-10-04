@@ -1,0 +1,269 @@
+static mut EnableAArch64ELFLocalDynamicTLSGeneration: i32 = 0;
+
+fn AArch64MCInstLower::GetGlobalAddressSymbol(self: *AArch64MCInstLower, MO: *MachineOperand) -> *mut MCSymbol {
+    return self.GetGlobalValueSymbol(MO.getGlobal(), MO.getTargetFlags());
+}
+
+fn AArch64MCInstLower::GetGlobalValueSymbol(self: *AArch64MCInstLower, GV: *GlobalValue, TargetFlags: u32) -> *mut MCSymbol {
+    let mut TheTriple: *Triple = self.Printer.TM.getTargetTriple();
+    if !TheTriple.isOSBinFormatCOFF() {
+        return self.Printer.getSymbolPreferLocal(*GV);
+    }
+    assert!(TheTriple.isOSWindows(), "Windows is the only supported COFF target");
+    let mut IsIndirect: bool = (TargetFlags & (MO_DLLIMPORT | MO_COFFSTUB));
+    if !IsIndirect {
+        if !TheTriple.isWindowsArm64EC() || !isa(GV) || !GV.hasExternalLinkage() {
+            return self.Printer.getSymbol(GV);
+        }
+        let mut Name: str = self.Printer.getSymbol(GV).getName();
+        let mut ExcludedFns: []StringLiteral = ["__os_arm64x_check_icall_cfg", "__os_arm64x_dispatch_call_no_redirect", "__os_arm64x_check_icall"];
+        if is_contained(ExcludedFns, Name) {
+            return self.Printer.getSymbol(GV);
+        }
+        if getArm64ECMangledFunctionName(Name) {
+            MangledName;
+        } else {
+            let mut MangledSym: *mut MCSymbol = self.Ctx.getOrCreateSymbol(MangledName.value());
+            if operator!(cast(GV)("arm64ec_hasguestexit")) {
+                self.Printer(self.Printer.getSymbol(GV), MCSA_WeakAntiDep);
+                self.Printer(self.Printer.getSymbol(GV), create(MangledSym, self.Ctx, SMLoc {}));
+                self.Printer(MangledSym, MCSA_WeakAntiDep);
+                self.Printer(MangledSym, create(self.Printer.getSymbol(GV), self.Ctx, SMLoc {}));
+            }
+            if TargetFlags & MO_ARM64EC_CALLMANGLE {
+                return MangledSym;
+            }
+        }
+        return self.Printer.getSymbol(GV);
+    }
+    let mut Name: str = zeroed();
+    if (TargetFlags & MO_DLLIMPORT) && TheTriple.isWindowsArm64EC() && !(TargetFlags & MO_ARM64EC_CALLMANGLE) && isa(GV) {
+        Name() = "__imp_";
+        self.Printer.TM.getNameWithPrefix(GV, self.Printer.getObjFileLowering().getMangler());
+        let mut ExtraSym: *mut MCSymbol = self.Ctx.getOrCreateSymbol();
+        self.Printer(ExtraSym, MCSA_Global);
+        Name() = "__imp_aux_";
+    } else if TargetFlags & MO_DLLIMPORT {
+        Name() = "__imp_";
+    } else if TargetFlags & MO_COFFSTUB {
+        Name() = ".refptr.";
+    }
+    self.Printer.TM.getNameWithPrefix(GV, self.Printer.getObjFileLowering().getMangler());
+    let mut MCSym: *mut MCSymbol = self.Ctx.getOrCreateSymbol();
+    if TargetFlags & MO_COFFSTUB {
+        let mut MMICOFF: *mut MachineModuleInfoCOFF = self.Printer.MMI;
+        let mut StubSym: *mut i32 = MMICOFF()(MCSym);
+    }
+    return MCSym;
+}
+
+fn AArch64MCInstLower::GetExternalSymbolSymbol(self: *AArch64MCInstLower, MO: *MachineOperand) -> *mut MCSymbol {
+    return self.Printer.GetExternalSymbolSymbol(MO.getSymbolName());
+}
+
+fn AArch64MCInstLower::lowerSymbolOperandMachO(self: *AArch64MCInstLower, MO: *MachineOperand, Sym: *mut MCSymbol) -> MCOperand {
+    let mut Spec: (unnamed enum at P:\Goraw\llvm-project\llvm\lib\Target\AArch64\MCTargetDesc\AArch64MCAsmInfo.h:66:1) = S_None;
+    if (MO.getTargetFlags() & MO_GOT) != 0 {
+        if (MO.getTargetFlags() & MO_FRAGMENT) == MO_PAGE {
+            Spec = S_MACHO_GOTPAGE;
+        } else if (MO.getTargetFlags() & MO_FRAGMENT) == MO_PAGEOFF {
+            Spec = S_MACHO_GOTPAGEOFF;
+        } else {
+            llvm_unreachable_internal("Unexpected target flags with MO_GOT on GV operand", "llvm\\lib\\Target\\AArch64\\AArch64MCInstLower.cpp", 158);
+        }
+    } else if (MO.getTargetFlags() & MO_TLS) != 0 {
+        if (MO.getTargetFlags() & MO_FRAGMENT) == MO_PAGE {
+            Spec = S_MACHO_TLVPPAGE;
+        } else if (MO.getTargetFlags() & MO_FRAGMENT) == MO_PAGEOFF {
+            Spec = S_MACHO_TLVPPAGEOFF;
+        } else {
+            llvm_unreachable_internal("Unexpected target flags with MO_TLS on GV operand", "llvm\\lib\\Target\\AArch64\\AArch64MCInstLower.cpp", 166);
+        }
+    } else {
+        if (MO.getTargetFlags() & MO_FRAGMENT) == MO_PAGE {
+            Spec = S_MACHO_PAGE;
+        } else if (MO.getTargetFlags() & MO_FRAGMENT) == MO_PAGEOFF {
+            Spec = S_MACHO_PAGEOFF;
+        }
+    }
+    let mut Expr: *MCExpr = create(Sym, Spec, self.Ctx, SMLoc {});
+    if !MO.isJTI() && !MO.isMBB() && MO.getOffset() {
+        Expr = createAdd(Expr, create(MO.getOffset(), self.Ctx, false, 0), self.Ctx, SMLoc {});
+    }
+    return createExpr(Expr);
+}
+
+fn AArch64MCInstLower::lowerSymbolOperandELF(self: *AArch64MCInstLower, MO: *MachineOperand, Sym: *mut MCSymbol) -> MCOperand {
+    let mut RefFlags: u32 = 0;
+    if MO.getTargetFlags() & MO_GOT {
+        let mut MF: *MachineFunction = self.Printer.MF;
+        operator|=(RefFlags, (if MF() { S_GOT_AUTH } else { S_GOT }));
+    } else if MO.getTargetFlags() & MO_TLS {
+        let mut Model: Model = zeroed();
+        if MO.isGlobal() {
+            let mut MF: *MachineFunction = self.Printer.MF;
+            if MF() {
+                Model = GeneralDynamic;
+            } else {
+                let mut GV: *GlobalValue = MO.getGlobal();
+                Model = self.Printer.TM.getTLSModel(GV);
+                if operator!() && Model == LocalDynamic {
+                    Model = GeneralDynamic;
+                }
+            }
+        } else {
+            assert!(MO.isSymbol() && MO.getSymbolName() == "_TLS_MODULE_BASE_", "unexpected external TLS symbol");
+            Model = GeneralDynamic;
+        }
+        match Model {
+            InitialExec => {
+                RefFlags |= S_GOTTPREL;
+            },
+            LocalExec => {
+                RefFlags |= S_TPREL;
+            },
+            LocalDynamic => {
+                RefFlags |= S_DTPREL;
+            },
+            GeneralDynamic => {
+                let mut MF: *MachineFunction = self.Printer.MF;
+                operator|=(RefFlags, if MF() { S_TLSDESC_AUTH } else { S_TLSDESC });
+                break;
+            },
+        }
+    } else if MO.getTargetFlags() & MO_PREL {
+        RefFlags |= S_PREL;
+    } else {
+        RefFlags |= S_ABS;
+    }
+    if (MO.getTargetFlags() & MO_FRAGMENT) == MO_PAGE {
+        RefFlags |= S_PAGE;
+    } else if (MO.getTargetFlags() & MO_FRAGMENT) == MO_PAGEOFF {
+        RefFlags |= S_PAGEOFF;
+    } else if (MO.getTargetFlags() & MO_FRAGMENT) == MO_G3 {
+        RefFlags |= S_G3;
+    } else if (MO.getTargetFlags() & MO_FRAGMENT) == MO_G2 {
+        RefFlags |= S_G2;
+    } else if (MO.getTargetFlags() & MO_FRAGMENT) == MO_G1 {
+        RefFlags |= S_G1;
+    } else if (MO.getTargetFlags() & MO_FRAGMENT) == MO_G0 {
+        RefFlags |= S_G0;
+    } else if (MO.getTargetFlags() & MO_FRAGMENT) == MO_HI12 {
+        RefFlags |= S_HI12;
+    }
+    if MO.getTargetFlags() & MO_NC {
+        RefFlags |= S_NC;
+    }
+    let mut Expr: *MCExpr = create(Sym, self.Ctx, SMLoc {});
+    if !MO.isJTI() && !MO.isMBB() && MO.getOffset() {
+        Expr = createAdd(Expr, create(MO.getOffset(), self.Ctx, false, 0), self.Ctx, SMLoc {});
+    }
+    Expr = create(Expr, RefFlags, self.Ctx, SMLoc {});
+    return createExpr(Expr);
+}
+
+fn AArch64MCInstLower::lowerSymbolOperandCOFF(self: *AArch64MCInstLower, MO: *MachineOperand, Sym: *mut MCSymbol) -> MCOperand {
+    let mut RefFlags: u32 = 0;
+    if MO.getTargetFlags() & MO_TLS {
+        if (MO.getTargetFlags() & MO_FRAGMENT) == MO_PAGEOFF {
+            RefFlags |= S_SECREL_LO12;
+        } else if (MO.getTargetFlags() & MO_FRAGMENT) == MO_HI12 {
+            RefFlags |= S_SECREL_HI12;
+        }
+    } else if MO.getTargetFlags() & MO_S {
+        RefFlags |= S_SABS;
+    } else {
+        RefFlags |= S_ABS;
+        if (MO.getTargetFlags() & MO_FRAGMENT) == MO_PAGE {
+            RefFlags |= S_PAGE;
+        } else if (MO.getTargetFlags() & MO_FRAGMENT) == MO_PAGEOFF {
+            RefFlags |= S_PAGEOFF | S_NC;
+        }
+    }
+    if (MO.getTargetFlags() & MO_FRAGMENT) == MO_G3 {
+        RefFlags |= S_G3;
+    } else if (MO.getTargetFlags() & MO_FRAGMENT) == MO_G2 {
+        RefFlags |= S_G2;
+    } else if (MO.getTargetFlags() & MO_FRAGMENT) == MO_G1 {
+        RefFlags |= S_G1;
+    } else if (MO.getTargetFlags() & MO_FRAGMENT) == MO_G0 {
+        RefFlags |= S_G0;
+    }
+    if MO.getTargetFlags() & MO_NC {
+        let mut MOFrag: u32 = (MO.getTargetFlags() & MO_FRAGMENT);
+        if MOFrag == MO_G3 || MOFrag == MO_G2 || MOFrag == MO_G1 || MOFrag == MO_G0 {
+            RefFlags |= S_NC;
+        }
+    }
+    let mut Expr: *MCExpr = create(Sym, self.Ctx, SMLoc {});
+    if !MO.isJTI() && !MO.isMBB() && MO.getOffset() {
+        Expr = createAdd(Expr, create(MO.getOffset(), self.Ctx, false, 0), self.Ctx, SMLoc {});
+    }
+    Expr = create(Expr, RefFlags, self.Ctx, SMLoc {});
+    return createExpr(Expr);
+}
+
+fn AArch64MCInstLower::LowerSymbolOperand(self: *AArch64MCInstLower, MO: *MachineOperand, Sym: *mut MCSymbol) -> MCOperand {
+    if self.Printer.TM.getTargetTriple().isOSBinFormatMachO() {
+        return self.lowerSymbolOperandMachO(MO, Sym);
+    }
+    if self.Printer.TM.getTargetTriple().isOSBinFormatCOFF() {
+        return self.lowerSymbolOperandCOFF(MO, Sym);
+    }
+    assert!(self.Printer.TM.getTargetTriple().isOSBinFormatELF(), "Invalid target");
+    return self.lowerSymbolOperandELF(MO, Sym);
+}
+
+fn AArch64MCInstLower::lowerOperand(self: *AArch64MCInstLower, MO: *MachineOperand, MCOp: *mut MCOperand) -> bool {
+    match MO.getType() {
+        _ => {
+            llvm_unreachable_internal("unknown operand type", "llvm\\lib\\Target\\AArch64\\AArch64MCInstLower.cpp", 336);
+        },
+        MO_Register => {
+            if MO.isImplicit() {
+                return false;
+            }
+        },
+        MO_RegisterMask => {
+            return false;
+        },
+        MO_Immediate => {
+            MCOp = createImm(MO.getImm());
+        },
+        MO_MachineBasicBlock => {
+            MCOp = self.LowerSymbolOperand(MO, MO.getMBB().getSymbol());
+        },
+        MO_GlobalAddress => {
+            MCOp = self.LowerSymbolOperand(MO, self.GetGlobalAddressSymbol(MO));
+        },
+        MO_ExternalSymbol => {
+            MCOp = self.LowerSymbolOperand(MO, self.GetExternalSymbolSymbol(MO));
+        },
+        MO_MCSymbol => {
+            MCOp = self.LowerSymbolOperand(MO, MO.getMCSymbol());
+        },
+        MO_JumpTableIndex => {
+            MCOp = self.LowerSymbolOperand(MO, self.Printer.GetJTISymbol(MO.getIndex(), false));
+        },
+        MO_ConstantPoolIndex => {
+            MCOp = self.LowerSymbolOperand(MO, self.Printer.GetCPISymbol(MO.getIndex()));
+        },
+        MO_BlockAddress => {
+            MCOp = self.LowerSymbolOperand(MO, self.Printer.GetBlockAddressSymbol(MO.getBlockAddress()));
+        },
+    }
+    return true;
+}
+
+fn AArch64MCInstLower::Lower(self: *AArch64MCInstLower, MI: *MachineInstr, OutMI: *mut MCInst) {
+    OutMI.setOpcode(MI.getOpcode());
+    for MO in MI.operands() {
+        let mut MCOp: MCOperand = MCOperand {};
+        if self.lowerOperand(MO, MCOp) {
+            OutMI.addOperand(MCOp);
+        }
+    }
+    match OutMI.getOpcode() {
+
+    }
+}

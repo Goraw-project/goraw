@@ -1,0 +1,862 @@
+static mut NumSlotsAllocatedForStatepoints: Statistic = Statistic { "statepoint-lowering", "NumSlotsAllocatedForStatepoints", "Number of stack slots allocated for statepoints" };
+
+static mut NumOfStatepoints: Statistic = Statistic { "statepoint-lowering", "NumOfStatepoints", "Number of statepoint nodes encountered" };
+
+static mut StatepointMaxSlotsRequired: Statistic = Statistic { "statepoint-lowering", "StatepointMaxSlotsRequired", "Maximum number of stack slots required for a singe statepoint" };
+
+static mut UseRegistersForDeoptValues: opt<bool> = opt<bool> { "use-registers-for-deopt-values", Hidden, init(false), desc { Desc: "Allow using registers for non pointer deopt args" } };
+
+static mut UseRegistersForGCPointersInLandingPad: opt<bool> = opt<bool> { "use-registers-for-gc-values-in-landing-pad", Hidden, init(false), desc { Desc: "Allow using registers for gc pointer in landing pad" } };
+
+static mut MaxRegistersForGCPointers: opt<unsigned int> = opt<unsigned int> { "max-registers-for-gc-values", Hidden, init(0), desc { Desc: "Max number of VRegs allowed to pass GC pointer meta args in" } };
+
+const UndefStackMapValue: u32 = 4278124286;
+
+fn pushStackMapConstant(Ops: *mut SmallVectorImpl<SDValue>, Builder: *mut SelectionDAGBuilder, Value: u64) {
+    let mut L: SDLoc = Builder.getCurSDLoc();
+    Ops.push(Builder.DAG.getTargetConstant(ConstantOp, L, EVT { i64 }, false));
+    Ops.push(Builder.DAG.getTargetConstant(Value, L, EVT { i64 }, false));
+}
+
+fn StatepointLoweringState::startNewStatepoint(self, Builder: *mut SelectionDAGBuilder) {
+    assert!(self.PendingGCRelocateCalls.is_empty(), "Trying to visit statepoint before finished processing previous one");
+    self.Locations.clear();
+    self.NextSlotToAllocate = 0;
+    self.AllocatedStackSlots.clear();
+    self.AllocatedStackSlots.resize(Builder.FuncInfo.StatepointStackSlots.len, false);
+}
+
+fn StatepointLoweringState::clear(self) {
+    self.Locations.clear();
+    self.AllocatedStackSlots.clear();
+    assert!(self.PendingGCRelocateCalls.is_empty(), "cleared before statepoint sequence completed");
+}
+
+fn StatepointLoweringState::allocateStackSlot(self, ValueType: EVT, Builder: *mut SelectionDAGBuilder) -> SDValue {
+    operator(NumSlotsAllocatedForStatepoints, 0);
+    let mut MFI: *mut MachineFrameInfo = Builder.DAG.getMachineFunction().getFrameInfo();
+    let mut SpillSize: u32 = ValueType.getStoreSize().operator unsigned long long();
+    assert!((SpillSize * 8) == (-8 & (7 + ValueType.getSizeInBits().operator unsigned long long())), "Size not in bytes?");
+    let mut NumSlots: u64 = self.AllocatedStackSlots.len;
+    assert!(self.NextSlotToAllocate <= NumSlots, "Broken invariant");
+    assert!(self.AllocatedStackSlots.len == Builder.FuncInfo.StatepointStackSlots.len, "Broken invariant");
+    for ; self.NextSlotToAllocate < NumSlots; self.NextSlotToAllocate += 1 {
+        if !self.AllocatedStackSlots.test(self.NextSlotToAllocate) {
+            let mut FI: i32 = Builder.FuncInfo.StatepointStackSlots[self.NextSlotToAllocate];
+            if MFI.getObjectSize(FI) == SpillSize {
+                self.AllocatedStackSlots.set(self.NextSlotToAllocate);
+                return Builder.DAG.getFrameIndex(FI, ValueType, false);
+            }
+        }
+    }
+    let mut SpillSlot: SDValue = Builder.DAG.CreateStackTemporary(ValueType, 1);
+    let mut FI: u32 = cast(SpillSlot).getIndex();
+    MFI.markAsStatepointSpillSlotObjectIndex(FI);
+    Builder.FuncInfo.StatepointStackSlots.push(FI);
+    self.AllocatedStackSlots.resize(self.AllocatedStackSlots.len + 1, true);
+    assert!(self.AllocatedStackSlots.len == Builder.FuncInfo.StatepointStackSlots.len, "Broken invariant");
+    StatepointMaxSlotsRequired.updateMax(Builder.FuncInfo.StatepointStackSlots.len);
+    return SpillSlot;
+}
+
+fn findPreviousSpillSlot(Val: *Value, Builder: *mut SelectionDAGBuilder, LookUpDepth: i32) -> optional<int> {
+    if LookUpDepth <= 0 {
+        return optional<int> { nullopt };
+    }
+    if dyn_cast(Val) {
+        Relocate;
+    } else {
+        let mut Statepoint: *Value = Relocate.getStatepoint();
+        assert!((isa(Statepoint) || isa(Statepoint)), "GetStatepoint must return one of two types");
+        if isa(Statepoint) {
+            return optional<int> { nullopt };
+        }
+        let mut RelocationMap: *StatepointRelocationRecord> const = Builder.FuncInfo.StatepointRelocationMaps[cast(Statepoint)];
+        let mut It: const_iterator = RelocationMap.find(Relocate);
+        if It == RelocationMap.end() {
+            return optional<int> { nullopt };
+        }
+        let mut Record: *StatepointRelocationRecord = operator(It).second;
+        if Record.type != Spill {
+            return optional<int> { nullopt };
+        }
+        return optional<int> { Record.payload.FI };
+    }
+    if dyn_cast(Val) {
+        Cast;
+    } else {
+        return findPreviousSpillSlot(Cast.getOperand(0), Builder, LookUpDepth - 1);
+    }
+    if dyn_cast(Val) {
+        Phi;
+    } else {
+        let mut MergedResult: optional<int> = optional<int> {};
+        for IncomingValue in Phi.incoming_values() {
+            let mut SpillSlot: optional<int> = findPreviousSpillSlot(IncomingValue.operator llvm::Value *(), Builder, LookUpDepth - 1);
+            if !SpillSlot {
+                return optional<int> { nullopt };
+            }
+            if MergedResult && operator(MergedResult) != operator(SpillSlot) {
+                return optional<int> { nullopt };
+            }
+            MergedResult = SpillSlot;
+        }
+        return MergedResult;
+    }
+    return optional<int> { nullopt };
+}
+
+fn willLowerDirectly(Incoming: SDValue) -> bool {
+    if isa(Incoming) {
+        return true;
+    }
+    if Incoming.getValueType().getSizeInBits().operator unsigned long long() > 64 {
+        return false;
+    }
+    return isIntOrFPConstant(Incoming) || Incoming.isUndef();
+}
+
+fn FunctionLoweringInfo@llvm::StatepointDirectLeaf(self, V: SDValue) {
+    assert!(willLowerDirectly(V), "not a directly-lowered leaf");
+    if V.isUndef() {
+        self.Kind = Undef;
+    } else if dyn_cast(V) {
+        FI;
+    } else {
+        self.Kind = FrameIndex;
+        self.FrameIndexValue = FI.getIndex();
+    }
+}
+
+fn StatepointDirectLeaf@FunctionLoweringInfo@llvm::rematerialize(self: *StatepointDirectLeaf@FunctionLoweringInfo@llvm, DAG: *mut SelectionDAG, DL: *SDLoc, VT: EVT) -> SDValue {
+    match self.Kind {
+        FrameIndex => {
+            return DAG.getFrameIndex(self.FrameIndexValue, VT, false);
+        },
+        Constant => {
+            return DAG.getConstant(self.IntValue, DL, VT, false, false);
+        },
+        Undef => {
+            return DAG.getConstant(UndefStackMapValue, DL, VT, false, false);
+        },
+    }
+    llvm_unreachable_internal("unhandled directly-lowered leaf kind", "llvm\\lib\\CodeGen\\SelectionDAG\\StatepointLowering.cpp", 290);
+}
+
+fn reservePreviousStackSlotForValue(IncomingValue: *Value, Builder: *mut SelectionDAGBuilder) {
+    let mut Incoming: SDValue = Builder.getValue(IncomingValue);
+    if willLowerDirectly(Incoming) {
+        return;
+    }
+    let mut OldLocation: SDValue = Builder.StatepointLowering.getLocation(Incoming);
+    if OldLocation.getNode() {
+        return;
+    }
+    let mut LookUpDepth: i32 = 6;
+    let mut Index: optional<int> = findPreviousSpillSlot(IncomingValue, Builder, LookUpDepth);
+    if !Index {
+        return;
+    }
+    let mut StatepointSlots: *SmallVector<unsigned int, 50> = Builder.FuncInfo.StatepointStackSlots;
+    let mut SlotIt: *u32 = find(StatepointSlots, operator(Index));
+    assert!(SlotIt != StatepointSlots.end(), "Value spilled to the unknown stack slot");
+    let mut Offset: i32 = distance(StatepointSlots.begin(), SlotIt);
+    if Builder.StatepointLowering.isStackSlotAllocated(Offset) {
+        return;
+    }
+    Builder.StatepointLowering.reserveStackSlot(Offset);
+    let mut Loc: SDValue = Builder.DAG.getTargetFrameIndex(operator(Index), EVT { Builder.getFrameIndexTy() });
+    Builder.StatepointLowering.setLocation(Incoming, Loc);
+}
+
+fn lowerCallFromStatepointLoweringInfo(SI: *mut StatepointLoweringInfo, Builder: *mut SelectionDAGBuilder) -> pair<SDValue, SDNode *> {
+    let mut ReturnValue: SDValue = SDValue {};
+    let mut CallEndVal: SDValue = SDValue {};
+    tie(ReturnValue, CallEndVal) = Builder.lowerInvokable(SI.CLI, SI.EHPadBB);
+    let mut CallEnd: *mut SDNode = CallEndVal.getNode();
+    if CallEnd.getOpcode() == EH_LABEL {
+        CallEnd = CallEnd.getOperand(0).getNode();
+    }
+    let mut HasDef: bool = !SI.CLI.RetTy.isVoidTy();
+    if HasDef {
+        if CallEnd.getOpcode() == LOAD {
+            CallEnd = CallEnd.getOperand(0).getNode();
+        } else {
+            while CallEnd.getOpcode() == CopyFromReg {
+                CallEnd = CallEnd.getOperand(0).getNode();
+            }
+        }
+    }
+    assert!(CallEnd.getOpcode() == CALLSEQ_END, "expected!");
+    return make_pair(ReturnValue, CallEnd.getOperand(0).getNode());
+}
+
+fn getMachineMemOperand(MF: *mut MachineFunction, FI: *mut FrameIndexSDNode) -> *mut MachineMemOperand {
+    let mut PtrInfo: MachinePointerInfo = getFixedStack(MF, FI.getIndex(), 0);
+    let mut MMOFlags: Flags = MOStore | MOLoad | MOVolatile;
+    let mut MFI: *mut MachineFrameInfo = MF.getFrameInfo();
+    return MF.getMachineMemOperand(PtrInfo, MMOFlags, MFI.getObjectSize(FI.getIndex()), MFI.getObjectAlign(FI.getIndex()), MMOMetadata {}, System, NotAtomic, NotAtomic);
+}
+
+fn spillIncomingStatepointValue(Incoming: SDValue, Chain: SDValue, Builder: *mut SelectionDAGBuilder) -> tuple<SDValue, SDValue, MachineMemOperand *> {
+    let mut Loc: SDValue = Builder.StatepointLowering.getLocation(Incoming);
+    let mut MMO: *mut MachineMemOperand = null;
+    if !Loc.getNode() {
+        Loc = Builder.StatepointLowering.allocateStackSlot(Incoming.getValueType(), Builder);
+        let mut Index: i32 = cast(Loc).getIndex();
+        Loc = Builder.DAG.getTargetFrameIndex(Index, EVT { Builder.getFrameIndexTy() });
+        let mut MFI: *mut MachineFrameInfo = Builder.DAG.getMachineFunction().getFrameInfo();
+        assert!((MFI.getObjectSize(Index) * 8) == (-8 & (7 + Incoming.getValueSizeInBits().operator unsigned long long() as i64)), "Bad spill:  stack slot does not match!");
+        let mut MF: *mut MachineFunction = Builder.DAG.getMachineFunction();
+        let mut PtrInfo: MachinePointerInfo = getFixedStack(MF, Index, 0);
+        let mut StoreMMO: *mut MachineMemOperand = MF.getMachineMemOperand(PtrInfo, MOStore, MFI.getObjectSize(Index), MFI.getObjectAlign(Index), MMOMetadata {}, System, NotAtomic, NotAtomic);
+        Chain = Builder.DAG.getStore(Chain, Builder.getCurSDLoc(), Incoming, Loc, StoreMMO);
+        MMO = getMachineMemOperand(MF, *cast(Loc));
+        Builder.StatepointLowering.setLocation(Incoming, Loc);
+    }
+    assert!(Loc.getNode());
+    return make_tuple(Loc, Chain, MMO);
+}
+
+fn lowerIncomingStatepointValue(Incoming: SDValue, RequireSpillSlot: bool, Ops: *mut SmallVectorImpl<SDValue>, MemRefs: *mut SmallVectorImpl<MachineMemOperand *>, Builder: *mut SelectionDAGBuilder) {
+    if willLowerDirectly(Incoming) {
+        if dyn_cast(Incoming) {
+            FI;
+        } else {
+            assert!(Incoming.getValueType() == EVT { Builder.getFrameIndexTy() }, "Incoming value is a frame index!");
+            Ops.push(Builder.DAG.getTargetFrameIndex(FI.getIndex(), EVT { Builder.getFrameIndexTy() }));
+            let mut MF: *mut MachineFunction = Builder.DAG.getMachineFunction();
+            let mut MMO: *mut MachineMemOperand = getMachineMemOperand(MF, *FI);
+            MemRefs.push(MMO);
+            return;
+        }
+        assert!(Incoming.getValueType().getSizeInBits().operator unsigned long long() <= 64);
+        if Incoming.isUndef() {
+            pushStackMapConstant(Ops, Builder, 4278124286);
+            return;
+        }
+        if dyn_cast(Incoming) {
+            C;
+        } else {
+            pushStackMapConstant(Ops, Builder, C.getSExtValue());
+            return;
+        }
+        llvm_unreachable_internal("unhandled direct lowering case", "llvm\\lib\\CodeGen\\SelectionDAG\\StatepointLowering.cpp", 499);
+    }
+    if !RequireSpillSlot {
+        Ops.push(ValueParamT { Incoming });
+    } else {
+        let mut Chain: SDValue = Builder.getRoot();
+        let mut Res: tuple<SDValue, SDValue, MachineMemOperand *> = spillIncomingStatepointValue(Incoming, Chain, Builder);
+        Ops.push(ValueParamT { get(Res) });
+        if get(Res) {
+            MMO;
+        } else {
+            MemRefs.push(MMO);
+        }
+        Chain = get(Res);
+        Builder.DAG.setRoot(Chain);
+    }
+}
+
+fn isGCValue(V: *Value, Builder: *mut SelectionDAGBuilder) -> bool {
+    let mut Ty: *mut Type = V.getType();
+    if !Ty.isPtrOrPtrVectorTy() {
+        return false;
+    }
+    if Builder.GFI {
+        GFI;
+    } else if GFI.getStrategy().isGCManagedPointer(Ty) {
+        IsManaged;
+    } else {
+        return operator(IsManaged);
+    }
+    return true;
+}
+
+fn lowerStatepointMetaArgs(Ops: *mut SmallVectorImpl<SDValue>, MemRefs: *mut SmallVectorImpl<MachineMemOperand *>, GCPtrs: *mut SmallVectorImpl<SDValue>, LowerAsVReg: *mut DenseMap<SDValue, int>, SI: *mut StatepointLoweringInfo, Builder: *mut SelectionDAGBuilder) {
+    let mut LiveInDeopt: bool = SI.StatepointFlags & DeoptLiveIn as u64;
+    let mut MaxVRegPtrs: u32 = MaxRegistersForGCPointers.getValue();
+    let mut LPadPointers: SmallSet<SDValue, 8> = SmallSet<SDValue, 8> {};
+    if !UseRegistersForGCPointersInLandingPad {
+        if dyn_cast_or_null(SI.StatepointInstr) {
+            StInvoke;
+        } else {
+            let mut LPI: *mut LandingPadInst = StInvoke.getLandingPadInst();
+            for Relocate in SI.GCRelocates {
+                if Relocate.getOperand(0) == LPI {
+                    LPadPointers.insert(Builder.getValue(Relocate.getBasePtr()));
+                    LPadPointers.insert(Builder.getValue(Relocate.getDerivedPtr()));
+                }
+            }
+        }
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("statepoint-lowering", 1) {
+            dbgs() << "Deciding how to lower GC Pointers:\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    let mut LoweredGCPtrs: SmallSetVector<SDValue, 16> = SmallSetVector<SDValue, 16> {};
+    let mut GCPtrIndexMap: DenseMap<SDValue, unsigned int> = DenseMap<SDValue, unsigned int> {};
+    let mut CurNumVRegs: u32 = 0;
+    let mut canPassGCPtrOnVReg: Closure_1 = Closure_1 { LPadPointers: &mut LPadPointers };
+    let mut processGCPtr: Closure_2 = Closure_2 { Builder: &mut Builder, LoweredGCPtrs: &mut LoweredGCPtrs, GCPtrIndexMap: &mut GCPtrIndexMap, LowerAsVReg: &mut LowerAsVReg, MaxVRegPtrs: &mut MaxVRegPtrs, canPassGCPtrOnVReg: &mut canPassGCPtrOnVReg, CurNumVRegs: &mut CurNumVRegs };
+    for V in SI.Ptrs {
+        processGCPtr.call(V);
+    }
+    for V in SI.Bases {
+        processGCPtr.call(V);
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("statepoint-lowering", 1) {
+            dbgs() << LowerAsVReg.len << " pointers will go in vregs\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    let mut requireSpillSlot: Closure_3 = Closure_3 { Builder: &mut Builder, LowerAsVReg: &mut LowerAsVReg, LiveInDeopt: &mut LiveInDeopt };
+    for V in SI.DeoptState {
+        if requireSpillSlot.call(V) {
+            reservePreviousStackSlotForValue(V, Builder);
+        }
+    }
+    for V in SI.Ptrs {
+        let mut SDV: SDValue = Builder.getValue(V);
+        if !LowerAsVReg.count(SDV) {
+            reservePreviousStackSlotForValue(V, Builder);
+        }
+    }
+    for V in SI.Bases {
+        let mut SDV: SDValue = Builder.getValue(V);
+        if !LowerAsVReg.count(SDV) {
+            reservePreviousStackSlotForValue(V, Builder);
+        }
+    }
+    let mut NumVMSArgs: i32 = SI.DeoptState.len;
+    pushStackMapConstant(Ops, Builder, NumVMSArgs);
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("statepoint-lowering", 1) {
+            dbgs() << "Lowering deopt state\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    for V in SI.DeoptState {
+        let mut Incoming: SDValue = SDValue {};
+        if dyn_cast(V) {
+            Arg;
+        } else {
+            let mut FI: i32 = Builder.FuncInfo.getArgumentFrameIndex(Arg);
+            if FI != 2147483647 {
+                Incoming = Builder.DAG.getFrameIndex(FI, EVT { Builder.getFrameIndexTy() }, false);
+            }
+        }
+        if !Incoming.getNode() {
+            Incoming = Builder.getValue(V);
+        }
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("statepoint-lowering", 1) {
+                dbgs() << "Value " << *V << " requireSpillSlot = " << requireSpillSlot.call(V) << "\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        lowerIncomingStatepointValue(Incoming, requireSpillSlot.call(V), Ops, MemRefs, Builder);
+    }
+    pushStackMapConstant(Ops, Builder, LoweredGCPtrs.len);
+    for SDV in LoweredGCPtrs {
+        lowerIncomingStatepointValue(SDV, !LowerAsVReg.count(SDV), Ops, MemRefs, Builder);
+    }
+    GCPtrs = LoweredGCPtrs.takeVector();
+    let mut Allocas: SmallVector<SDValue, 4> = SmallVector<SDValue, 4> {};
+    for V in SI.GCLives {
+        let mut Incoming: SDValue = Builder.getValue(V);
+        if dyn_cast(Incoming) {
+            FI;
+        } else {
+            assert!(Incoming.getValueType() == EVT { Builder.getFrameIndexTy() }, "Incoming value is a frame index!");
+            Allocas.push(Builder.DAG.getTargetFrameIndex(FI.getIndex(), EVT { Builder.getFrameIndexTy() }));
+            let mut MF: *mut MachineFunction = Builder.DAG.getMachineFunction();
+            let mut MMO: *mut MachineMemOperand = getMachineMemOperand(MF, *FI);
+            MemRefs.push(MMO);
+        }
+    }
+    pushStackMapConstant(Ops, Builder, Allocas.len);
+    Ops.append(Allocas.begin(), Allocas.end());
+    pushStackMapConstant(Ops, Builder, SI.Ptrs.len);
+    let mut L: SDLoc = Builder.getCurSDLoc();
+    for let mut i: u32 = 0; i < SI.Ptrs.len; i += 1 {
+        let mut Base: SDValue = Builder.getValue(SI.Bases[i]);
+        assert!(GCPtrIndexMap.count(Base), "base not found in index map");
+        Ops.push(Builder.DAG.getTargetConstant(GCPtrIndexMap[Base], L, EVT { i64 }, false));
+        let mut Derived: SDValue = Builder.getValue(SI.Ptrs[i]);
+        assert!(GCPtrIndexMap.count(Derived), "derived not found in index map");
+        Ops.push(Builder.DAG.getTargetConstant(GCPtrIndexMap[Derived], L, EVT { i64 }, false));
+    }
+}
+
+fn SelectionDAGBuilder::LowerAsSTATEPOINT(self, SI: *mut StatepointLoweringInfo) -> SDValue {
+    operator(NumOfStatepoints, 0);
+    self.StatepointLowering.startNewStatepoint(*self);
+    assert!(SI.Bases.len == SI.Ptrs.len, "Pointer without base!");
+    assert!((self.GFI || SI.Bases.len == 0), "No gc specified, so cannot relocate pointers!");
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("statepoint-lowering", 1) {
+            if SI.StatepointInstr {
+                dbgs() << "Lowering statepoint " << *SI.StatepointInstr << "\n";
+            }
+        }
+    }
+        if !(false) { break; }
+    }
+    for Reloc in SI.GCRelocates {
+        if Reloc.getParent() == SI.StatepointInstr.getParent() {
+            self.StatepointLowering.scheduleRelocCall(*Reloc);
+        }
+    }
+    let mut LoweredMetaArgs: SmallVector<SDValue, 10> = SmallVector<SDValue, 10> {};
+    let mut LoweredGCArgs: SmallVector<SDValue, 16> = SmallVector<SDValue, 16> {};
+    let mut MemRefs: SmallVector<MachineMemOperand *, 16> = SmallVector<MachineMemOperand *, 16> {};
+    let mut LowerAsVReg: DenseMap<SDValue, int> = DenseMap<SDValue, int> {};
+    lowerStatepointMetaArgs(LoweredMetaArgs, MemRefs, LoweredGCArgs, LowerAsVReg, SI, *self);
+    SI.CLI.setChain(self.getRoot());
+    let mut ReturnVal: SDValue = SDValue {};
+    let mut CallNode: *mut SDNode = null;
+    tie(ReturnVal, CallNode) = lowerCallFromStatepointLoweringInfo(SI, *self);
+    let mut Chain: SDValue = CallNode.getOperand(0);
+    let mut Glue: SDValue = SDValue {};
+    let mut CallHasIncomingGlue: bool = CallNode.getGluedNode();
+    if CallHasIncomingGlue {
+        Glue = CallNode.getOperand(CallNode.getNumOperands() - 1);
+    }
+    let mut IsGCTransition: bool = (SI.StatepointFlags & GCTransition as u64) == GCTransition as u64;
+    if IsGCTransition {
+        let mut TSOps: SmallVector<SDValue, 8> = SmallVector<SDValue, 8> {};
+        TSOps.push(ValueParamT { Chain });
+        for V in SI.GCTransitionArgs {
+            TSOps.push(self.getValue(V));
+            if V.getType().isPointerTy() {
+                TSOps.push(self.DAG.getSrcValue(V));
+            }
+        }
+        if CallHasIncomingGlue {
+            TSOps.push(ValueParamT { Glue });
+        }
+        let mut NodeTys: SDVTList = self.DAG.getVTList(EVT { Other }, EVT { Glue });
+        let mut GCTransitionStart: SDValue = self.DAG.getNode(GC_TRANSITION_START, self.getCurSDLoc(), NodeTys, ArrayRef<SDValue> { TSOps });
+        Chain = GCTransitionStart.getValue(0);
+        Glue = GCTransitionStart.getValue(1);
+    }
+    let mut Ops: SmallVector<SDValue, 40> = SmallVector<SDValue, 40> {};
+    Ops.push(self.DAG.getTargetConstant(SI.ID, self.getCurSDLoc(), EVT { i64 }, false));
+    Ops.push(self.DAG.getTargetConstant(SI.NumPatchBytes, self.getCurSDLoc(), EVT { i32 }, false));
+    let mut NumCallRegArgs: u32 = CallNode.getNumOperands() - (if CallHasIncomingGlue { 4 } else { 3 });
+    Ops.push(self.DAG.getTargetConstant(NumCallRegArgs, self.getCurSDLoc(), EVT { i32 }, false));
+    let mut CallTarget: SDValue = SDValue { Node: CallNode.getOperand(1).getNode(), ResNo: 0 };
+    Ops.push(ValueParamT { CallTarget });
+    let mut RegMaskIt: op_iterator = zeroed();
+    if CallHasIncomingGlue {
+        RegMaskIt = CallNode.op_end() - 2;
+    } else {
+        RegMaskIt = CallNode.op_end() - 1;
+    }
+    Ops.insert(Ops.end(), CallNode.op_begin() + 2, RegMaskIt);
+    pushStackMapConstant(Ops, *self, SI.CLI.CallConv);
+    let mut Flags: u64 = SI.StatepointFlags;
+    assert!(((Flags & ~MaskAll as u64) == 0), "Unknown flag used");
+    pushStackMapConstant(Ops, *self, Flags);
+    append_range(Ops, LoweredMetaArgs);
+    Ops.push(ValueParamT { *RegMaskIt.operator const llvm::SDValue &() });
+    Ops.push(ValueParamT { Chain });
+    if Glue.getNode() {
+        Ops.push(ValueParamT { Glue });
+    }
+    let mut NodeTys: SmallVector<EVT, 8> = SmallVector<EVT, 8> {};
+    for SD in LoweredGCArgs {
+        if !LowerAsVReg.count(SD) {
+            continue;
+        }
+        NodeTys.push(SD.getValueType());
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("statepoint-lowering", 1) {
+            dbgs() << "Statepoint has " << NodeTys.len << " results\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    assert!(NodeTys.len == LowerAsVReg.len, "Inconsistent GC Ptr lowering");
+    NodeTys.push(ValueParamT { Other });
+    NodeTys.push(ValueParamT { Glue });
+    let mut NumResults: u32 = NodeTys.len;
+    let mut StatepointMCNode: *mut MachineSDNode = self.DAG.getMachineNode(STATEPOINT, self.getCurSDLoc(), ArrayRef<EVT> { NodeTys }, ArrayRef<SDValue> { Ops });
+    self.DAG.setNodeMemRefs(StatepointMCNode, ArrayRef<MachineMemOperand *> { MemRefs });
+    let mut VirtRegs: DenseMap<SDValue, Register> = DenseMap<SDValue, Register> {};
+    for Relocate in SI.GCRelocates {
+        let mut Derived: *mut Value = Relocate.getDerivedPtr();
+        let mut SD: SDValue = self.getValue(Derived);
+        let mut It: iterator = LowerAsVReg.find(SD);
+        if It == LowerAsVReg.end() {
+            continue;
+        }
+        let mut Relocated: SDValue = SDValue { Node: StatepointMCNode, ResNo: operator(It).second };
+        if SI.StatepointInstr.getParent() == Relocate.getParent() {
+            let mut Res: SDValue = self.StatepointLowering.getLocation(SD);
+            if Res {
+                assert!(Res == Relocated);
+            } else {
+                self.StatepointLowering.setLocation(SD, Relocated);
+            }
+            continue;
+        }
+        if !Inserted {
+            continue;
+        }
+        let mut RetTy: *mut Type = Relocate.getType();
+        let mut Reg: Register = self.FuncInfo.CreateRegs(RetTy, false);
+        let mut RFV: RegsForValue = RegsForValue { *self.DAG.getContext(), self.DAG.getTargetLoweringInfo(), self.DAG.getDataLayout(), Reg, RetTy, ID> { nullopt } };
+        let mut Chain: SDValue = self.DAG.getRoot();
+        RFV.getCopyToRegs(Relocated, self.DAG, self.getCurSDLoc(), Chain, null, null, ANY_EXTEND);
+        self.PendingExports.push(ValueParamT { Chain });
+        operator(VRegIt).second = Reg;
+    }
+    let mut StatepointInstr: *Instruction = SI.StatepointInstr;
+    let mut RelocationMap: *StatepointRelocationRecord> = self.FuncInfo.StatepointRelocationMaps[StatepointInstr];
+    for Relocate in SI.GCRelocates {
+        let mut V: *Value = Relocate.getDerivedPtr();
+        let mut SDV: SDValue = self.getValue(V);
+        let mut Loc: SDValue = self.StatepointLowering.getLocation(SDV);
+        let mut IsLocal: bool = (Relocate.getParent() == StatepointInstr.getParent());
+        let mut Record: RecordType = RecordType {};
+        if LowerAsVReg.count(SDV) {
+            if IsLocal {
+                Record.type = SDValueNode;
+            } else {
+                Record.type = VReg;
+                let mut It: iterator = VirtRegs.find(SDV);
+                assert!(It != VirtRegs.end());
+                Record.payload.Reg = operator(It).second;
+            }
+        } else if Loc.getNode() {
+            Record.type = Spill;
+            Record.payload.FI = cast(Loc).getIndex();
+        } else {
+            Record.type = NoRelocate;
+            assert!(willLowerDirectly(SDV), "NoRelocate value must lower directly");
+            if Relocate.getParent() != StatepointInstr.getParent() {
+                Record.RematLeaf.emplace(SDV);
+            }
+        }
+        RelocationMap[Relocate] = Record;
+    }
+    let mut SinkNode: *mut SDNode = StatepointMCNode;
+    if IsGCTransition {
+        let mut TEOps: SmallVector<SDValue, 8> = SmallVector<SDValue, 8> {};
+        TEOps.push(SDValue { Node: StatepointMCNode, ResNo: NumResults - 2 });
+        for V in SI.GCTransitionArgs {
+            TEOps.push(self.getValue(V));
+            if V.getType().isPointerTy() {
+                TEOps.push(self.DAG.getSrcValue(V));
+            }
+        }
+        TEOps.push(SDValue { Node: StatepointMCNode, ResNo: NumResults - 1 });
+        let mut NodeTys: SDVTList = self.DAG.getVTList(EVT { Other }, EVT { Glue });
+        let mut GCTransitionStart: SDValue = self.DAG.getNode(GC_TRANSITION_END, self.getCurSDLoc(), NodeTys, ArrayRef<SDValue> { TEOps });
+        SinkNode = GCTransitionStart.getNode();
+    }
+    let mut NumSinkValues: u32 = SinkNode.getNumValues();
+    let mut StatepointValues: [2]SDValue = [SDValue { Node: SinkNode, ResNo: NumSinkValues - 2 }, SDValue { Node: SinkNode, ResNo: NumSinkValues - 1 }];
+    self.DAG.ReplaceAllUsesWith(CallNode, StatepointValues);
+    self.DAG.DeleteNode(CallNode);
+    self.getControlRoot() as void;
+    return ReturnVal;
+}
+
+fn getGCResultLocality(S: *GCStatepointInst) -> pair<const GCResultInst *, const GCResultInst *> {
+    let mut Res: pair<const GCResultInst *, const GCResultInst *> = pair<const GCResultInst *, const GCResultInst *> { null, null };
+    for U in S.users() {
+        let mut GRI: *GCResultInst = dyn_cast(U);
+        if !GRI {
+            continue;
+        }
+        if GRI.getParent() == S.getParent() {
+            Res.first = GRI;
+        } else {
+            Res.second = GRI;
+        }
+    }
+    return Res;
+}
+
+fn SelectionDAGBuilder::LowerStatepoint(self, I: *GCStatepointInst, EHPadBB: *BasicBlock) {
+    assert!(I.getCallingConv() != AnyReg, "anyregcc is not supported on statepoints!");
+    assert!(self.GFI.getStrategy().useStatepoints(), "GCStrategy does not expect to encounter statepoints");
+    let mut ActualCallee: SDValue = SDValue {};
+    let mut Callee: SDValue = self.getValue(I.getActualCalledOperand());
+    if I.getNumPatchBytes() > 0 {
+        ActualCallee = self.DAG.getUNDEF(Callee.getValueType());
+    } else {
+        ActualCallee = Callee;
+    }
+    let mut GCResultLocality: pair<const GCResultInst *, const GCResultInst *> = getGCResultLocality(I);
+    let mut retAttrs: AttributeSet = AttributeSet {};
+    if GCResultLocality.first {
+        retAttrs = GCResultLocality.first.getAttributes().getRetAttrs();
+    }
+    let mut SI: StatepointLoweringInfo = StatepointLoweringInfo { self.DAG };
+    self.populateCallLoweringInfo(SI.CLI, &mut I, CallArgsBeginPos, I.getNumCallArgs(), ActualCallee, I.getActualReturnType(), retAttrs, false);
+    let mut Seen: SmallSet<SDValue, 8> = SmallSet<SDValue, 8> {};
+    for Relocate in I.getGCRelocates() {
+        SI.GCRelocates.push(Relocate);
+        let mut DerivedSD: SDValue = self.getValue(Relocate.getDerivedPtr());
+        if Seen.insert(DerivedSD).second {
+            SI.Bases.push(Relocate.getBasePtr());
+            SI.Ptrs.push(Relocate.getDerivedPtr());
+        }
+    }
+    for V in I.deopt_operands() {
+        if !isGCValue(V, *self) {
+            continue;
+        }
+        if Seen.insert(self.getValue(V)).second {
+            SI.Bases.push(V);
+            SI.Ptrs.push(V);
+        }
+    }
+    SI.GCLives = ArrayRef<const Use> { I.gc_live_begin(), I.gc_live_end() };
+    SI.StatepointInstr = &mut I;
+    SI.ID = I.getID();
+    SI.DeoptState = ArrayRef<const Use> { I.deopt_begin(), I.deopt_end() };
+    SI.GCTransitionArgs = ArrayRef<const Use> { I.gc_transition_args_begin(), I.gc_transition_args_end() };
+    SI.StatepointFlags = I.getFlags();
+    SI.NumPatchBytes = I.getNumPatchBytes();
+    SI.EHPadBB = EHPadBB;
+    let mut ReturnValue: SDValue = self.LowerAsSTATEPOINT(SI);
+    if !GCResultLocality.first && !GCResultLocality.second {
+        self.setValue(&mut I, self.DAG.getIntPtrConstant(-1, self.getCurSDLoc(), false));
+        return;
+    }
+    if GCResultLocality.first {
+        self.setValue(&mut I, ReturnValue);
+    }
+    if !GCResultLocality.second {
+        return;
+    }
+    let mut RetTy: *mut Type = GCResultLocality.second.getType();
+    let mut Reg: Register = self.FuncInfo.CreateRegs(RetTy, false);
+    let mut RFV: RegsForValue = RegsForValue { *self.DAG.getContext(), self.DAG.getTargetLoweringInfo(), self.DAG.getDataLayout(), Reg, RetTy, ID> { I.getCallingConv() } };
+    let mut Chain: SDValue = self.DAG.getEntryNode();
+    RFV.getCopyToRegs(ReturnValue, self.DAG, self.getCurSDLoc(), Chain, null, null, ANY_EXTEND);
+    self.PendingExports.push(ValueParamT { Chain });
+    self.FuncInfo.ValueMap[&mut I] = Reg;
+}
+
+fn SelectionDAGBuilder::LowerCallSiteWithDeoptBundleImpl(self, Call: *CallBase, Callee: SDValue, EHPadBB: *BasicBlock, VarArgDisallowed: bool, ForceVoidReturnTy: bool) {
+    let mut SI: StatepointLoweringInfo = StatepointLoweringInfo { self.DAG };
+    SI.CLI.CB = Call;
+    let mut ArgBeginIndex: u32 = Call.arg_begin() - Call.op_begin();
+    self.populateCallLoweringInfo(SI.CLI, Call, ArgBeginIndex, Call.arg_size(), Callee, if ForceVoidReturnTy { getVoidTy(*self.DAG.getContext()) } else { Call.getType() }, Call.getAttributes().getRetAttrs(), false);
+    if !VarArgDisallowed {
+        SI.CLI.IsVarArg = Call.getFunctionType().isVarArg();
+    }
+    let mut DeoptBundle: OperandBundleUse = operator(Call.getOperandBundle(OB_deopt));
+    let mut DefaultID: u32 = DeoptBundleStatepointID;
+    let mut SD: StatepointDirectives = parseStatepointDirectivesFromAttrs(Call.getAttributes());
+    SI.ID = SD.StatepointID.value_or(DefaultID);
+    SI.NumPatchBytes = SD.NumPatchBytes.value_or(0);
+    SI.DeoptState = ArrayRef<const Use> { DeoptBundle.Inputs.begin(), DeoptBundle.Inputs.end() };
+    SI.StatepointFlags = None as u64;
+    SI.EHPadBB = EHPadBB;
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("statepoint-lowering", 1) {
+            dbgs() << "Lowering call with deopt bundle " << *Call << "\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    if self.LowerAsSTATEPOINT(SI) {
+        ReturnVal;
+    } else {
+        ReturnVal = self.lowerRangeToAssertZExt(self.DAG, *Call, ReturnVal);
+        self.setValue(Call, ReturnVal);
+    }
+}
+
+fn SelectionDAGBuilder::LowerCallSiteWithDeoptBundle(self, Call: *CallBase, Callee: SDValue, EHPadBB: *BasicBlock) {
+    self.LowerCallSiteWithDeoptBundleImpl(Call, Callee, EHPadBB, false, false);
+}
+
+fn SelectionDAGBuilder::visitGCResult(self, CI: *GCResultInst) {
+    let mut SI: *Value = CI.getStatepoint();
+    assert!((isa(SI) || isa(SI)), "GetStatepoint must return one of two types");
+    if isa(SI) {
+        return;
+    }
+    if cast(SI).getParent() == CI.getParent() {
+        self.setValue(&mut CI, self.getValue(SI));
+        return;
+    }
+    let mut RetTy: *mut Type = CI.getType();
+    let mut CopyFromReg: SDValue = self.getCopyFromRegs(SI, RetTy);
+    assert!(CopyFromReg.getNode());
+    self.setValue(&mut CI, CopyFromReg);
+}
+
+fn SelectionDAGBuilder::visitGCRelocate(self, Relocate: *GCRelocateInst) {
+    let mut Statepoint: *Value = Relocate.getStatepoint();
+    assert!((isa(Statepoint) || isa(Statepoint)), "GetStatepoint must return one of two types");
+    if isa(Statepoint) {
+        return;
+    }
+    if cast(Statepoint).getParent() == Relocate.getParent() {
+        self.StatepointLowering.relocCallVisited(Relocate);
+    }
+    let mut DerivedPtr: *Value = Relocate.getDerivedPtr();
+    let mut RelocationMap: *StatepointRelocationRecord> = self.FuncInfo.StatepointRelocationMaps[cast(Statepoint)];
+    let mut SlotIt: iterator = RelocationMap.find(&mut Relocate);
+    assert!(SlotIt != RelocationMap.end(), "Relocating not lowered gc value");
+    let mut Record: *RecordType = operator(SlotIt).second;
+    if Record.type == SDValueNode {
+        assert!(cast(Statepoint).getParent() == Relocate.getParent(), "Nonlocal gc.relocate mapped via SDValue");
+        let mut SDV: SDValue = self.StatepointLowering.getLocation(self.getValue(DerivedPtr));
+        assert!(SDV.getNode(), "empty SDValue");
+        self.setValue(&mut Relocate, SDV);
+        return;
+    }
+    if Record.type == VReg {
+        let mut InReg: Register = Record.payload.Reg;
+        let mut RFV: RegsForValue = RegsForValue { *self.DAG.getContext(), self.DAG.getTargetLoweringInfo(), self.DAG.getDataLayout(), InReg, Relocate.getType(), ID> { nullopt } };
+        let mut Chain: SDValue = self.DAG.getRoot();
+        let mut Relocation: SDValue = RFV.getCopyFromRegs(self.DAG, self.FuncInfo, self.getCurSDLoc(), Chain, null, null);
+        self.setValue(&mut Relocate, Relocation);
+        return;
+    }
+    if Record.type == Spill {
+        let mut Index: u32 = Record.payload.FI;
+        let mut SpillSlot: SDValue = self.DAG.getFrameIndex(Index, EVT { self.getFrameIndexTy() }, false);
+        let mut Chain: SDValue = self.DAG.getRoot();
+        let mut MF: *mut MachineFunction = self.DAG.getMachineFunction();
+        let mut MFI: *mut MachineFrameInfo = MF.getFrameInfo();
+        let mut PtrInfo: MachinePointerInfo = getFixedStack(MF, Index, 0);
+        let mut LoadMMO: *mut MachineMemOperand = MF.getMachineMemOperand(PtrInfo, MOLoad, MFI.getObjectSize(Index), MFI.getObjectAlign(Index), MMOMetadata {}, System, NotAtomic, NotAtomic);
+        let mut LoadVT: EVT = self.DAG.getTargetLoweringInfo().getValueType(self.DAG.getDataLayout(), Relocate.getType(), false);
+        let mut SpillLoad: SDValue = self.DAG.getLoad(LoadVT, self.getCurSDLoc(), Chain, SpillSlot, LoadMMO);
+        self.PendingLoads.push(SpillLoad.getValue(1));
+        assert!(SpillLoad.getNode());
+        self.setValue(&mut Relocate, SpillLoad);
+        return;
+    }
+    assert!(Record.type == NoRelocate);
+    if Record.RematLeaf {
+        let mut VT: EVT = self.DAG.getTargetLoweringInfo().getValueType(self.DAG.getDataLayout(), Relocate.getType(), false);
+        self.setValue(&mut Relocate, operator(Record.RematLeaf).rematerialize(self.DAG, self.getCurSDLoc(), VT));
+        return;
+    }
+    let mut SD: SDValue = self.getValue(DerivedPtr);
+    if SD.isUndef() && SD.getValueType().getSizeInBits().operator unsigned long long() <= 64 {
+        self.setValue(&mut Relocate, self.DAG.getConstant(UndefStackMapValue, SDLoc { SD }, EVT { i64 }, false, false));
+        return;
+    }
+    self.setValue(&mut Relocate, SD);
+}
+
+fn SelectionDAGBuilder::LowerDeoptimizeCall(self, CI: *CallInst) {
+    let mut TLI: *TargetLowering = self.DAG.getTargetLoweringInfo();
+    let mut DeoptImpl: LibcallImpl = self.DAG.getLibcalls().getLibcallImpl(DEOPTIMIZE);
+    if DeoptImpl == Unsupported {
+        self.DAG.getContext().emitError("no deoptimize libcall available");
+        return;
+    }
+    let mut Callee: SDValue = self.DAG.getExternalSymbol(DeoptImpl, EVT { TLI.getPointerTy(self.DAG.getDataLayout(), 0) });
+    self.LowerCallSiteWithDeoptBundleImpl(CI, Callee, null, true, true);
+}
+
+fn SelectionDAGBuilder::LowerDeoptimizingReturn(self) {
+    if self.DAG.getTarget().Options.TrapUnreachable {
+        self.DAG.setRoot(self.DAG.getNode(TRAP, self.getCurSDLoc(), EVT { Other }, self.DAG.getRoot()));
+    }
+}
+
+struct Closure_1 {
+    LPadPointers: *mut SmallSet<SDValue, 8>,
+}
+
+unsafe fn Closure_1::call(self: *mut Closure_1, SD: SDValue) -> bool {
+        if SD.getValueType().isVector() {
+            return false;
+        }
+        if (*self.LPadPointers).count(SD) {
+            return false;
+        }
+        return !willLowerDirectly(SD);
+    }
+
+struct Closure_2 {
+    Builder: *mut SelectionDAGBuilder,
+    LoweredGCPtrs: *mut SmallSetVector<SDValue, 16>,
+    GCPtrIndexMap: *mut DenseMap<SDValue, unsigned int>,
+    LowerAsVReg: *mut DenseMap<SDValue, int>,
+    MaxVRegPtrs: *mut u32,
+    canPassGCPtrOnVReg: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\CodeGen\SelectionDAG\StatepointLowering.cpp:598:29),
+    CurNumVRegs: *mut u32,
+}
+
+unsafe fn Closure_2::call(self: *mut Closure_2, V: *Value) {
+        let mut PtrSD: SDValue = (*self.Builder).getValue(V);
+        if !(*self.LoweredGCPtrs).insert(PtrSD) {
+            return;
+        }
+        (*self.GCPtrIndexMap)[PtrSD] = (*self.LoweredGCPtrs).len - 1;
+        assert!(!(*self.LowerAsVReg).count(PtrSD), "must not have been seen");
+        if (*self.LowerAsVReg).len == (*self.MaxVRegPtrs) {
+            return;
+        }
+        assert!(V.getType().isVectorTy() == PtrSD.getValueType().isVector(), "IR and SD types disagree");
+        if !(*self.canPassGCPtrOnVReg).call(PtrSD) {
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("statepoint-lowering", 1) {
+                    dbgs() << "direct/spill ";
+                    PtrSD.dump(&mut (*self.Builder).DAG);
+                }
+            }
+                if !(false) { break; }
+            }
+            return;
+        }
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("statepoint-lowering", 1) {
+                dbgs() << "vreg ";
+                PtrSD.dump(&mut (*self.Builder).DAG);
+            }
+        }
+            if !(false) { break; }
+        }
+        (*self.LowerAsVReg)[PtrSD] = (*self.CurNumVRegs) += 1;
+    }
+
+struct Closure_3 {
+    Builder: *mut SelectionDAGBuilder,
+    LowerAsVReg: *mut DenseMap<SDValue, int>,
+    LiveInDeopt: *mut bool,
+}
+
+unsafe fn Closure_3::call(self: *mut Closure_3, V: *Value) -> bool {
+        if !(*self.Builder).DAG.getTargetLoweringInfo().isTypeLegal((*self.Builder).getValue(V).getValueType()) {
+            return true;
+        }
+        if isGCValue(V, (*self.Builder)) {
+            return !(*self.LowerAsVReg).count((*self.Builder).getValue(V));
+        }
+        return !((*self.LiveInDeopt) || UseRegistersForDeoptValues);
+    }

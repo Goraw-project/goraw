@@ -14,3 +14,8 @@ pub mod pkg;
 pub mod proto;
 pub mod types;
 pub mod cpp_transpiler;
+pub mod cpp_to_goraw;
+pub mod llvm_to_goraw;
+pub mod opcodes;
+pub mod backend;
+pub mod linker;

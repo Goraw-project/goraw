@@ -1,0 +1,133 @@
+const XRegList: []MCPhysReg = zeroed();
+
+const HRegList: []MCPhysReg = zeroed();
+
+const SRegList: []MCPhysReg = zeroed();
+
+const DRegList: []MCPhysReg = zeroed();
+
+const QRegList: []MCPhysReg = zeroed();
+
+const ZRegList: []MCPhysReg = zeroed();
+
+const PRegList: []MCPhysReg = zeroed();
+
+fn finishStackBlock(PendingMembers: *mut SmallVectorImpl<CCValAssign>, LocVT: MVT, ArgFlags: *mut ArgFlagsTy, State: *mut CCState, SlotAlign: Align) -> bool {
+    if LocVT.isScalableVector() {
+        let mut Subtarget: *AArch64Subtarget = null;
+        let mut TLI: *AArch64TargetLowering = Subtarget.getTargetLowering();
+        ArgFlags.setInConsecutiveRegs(false);
+        ArgFlags.setInConsecutiveRegsLast(false);
+        let mut ZRegsAllocated: [8]bool = zeroed();
+        for let mut I: i32 = 0; I < 8; I += 1 {
+            ZRegsAllocated[I] = State.isAllocated(ZRegList[I]);
+            State.AllocateReg(ZRegList[I]);
+        }
+        let mut PRegsAllocated: [4]bool = zeroed();
+        for let mut I: i32 = 0; I < 4; I += 1 {
+            PRegsAllocated[I] = State.isAllocated(PRegList[I]);
+            State.AllocateReg(PRegList[I]);
+        }
+        let mut It: *mut CCValAssign = PendingMembers[0];
+        let mut AssignFn: *mut CCAssignFn = TLI.CCAssignFnForCall(State.getCallingConv(), false);
+        let mut OrigTy: *mut Type = It.getValVT().getTypeForEVT(State.getContext());
+        if AssignFn(It.getValNo(), It.getValVT(), It.getValVT(), Full, ArgFlags, OrigTy, State) {
+            llvm_unreachable_internal("Call operand has unhandled type", "llvm\\lib\\Target\\AArch64\\AArch64CallingConvention.cpp", 82);
+        }
+        ArgFlags.setInConsecutiveRegs(true);
+        ArgFlags.setInConsecutiveRegsLast(true);
+        for let mut I: i32 = 0; I < 8; I += 1 {
+            if !ZRegsAllocated[I] {
+                State.DeallocateReg(ZRegList[I]);
+            }
+        }
+        for let mut I: i32 = 0; I < 4; I += 1 {
+            if !PRegsAllocated[I] {
+                State.DeallocateReg(PRegList[I]);
+            }
+        }
+        PendingMembers.clear();
+        return true;
+    }
+    let mut Size: u32 = LocVT.getSizeInBits().operator unsigned long long() / 8;
+    for It in PendingMembers {
+        It.convertToMem(State.AllocateStack(Size, SlotAlign));
+        State.addLoc(It);
+        SlotAlign = 1;
+    }
+    PendingMembers.clear();
+    return true;
+}
+
+fn CC_AArch64_Custom_Stack_Block(ValNo: *mut u32, ValVT: *mut MVT, LocVT: *mut MVT, LocInfo: *mut LocInfo, ArgFlags: *mut ArgFlagsTy, State: *mut CCState) -> bool {
+    let mut PendingMembers: *mut SmallVectorImpl<CCValAssign> = State.getPendingLocs();
+    PendingMembers.push(getPending(ValNo, ValVT, LocVT, LocInfo, 0));
+    if !ArgFlags.isInConsecutiveRegsLast() {
+        return true;
+    }
+    return finishStackBlock(PendingMembers, LocVT, ArgFlags, State, 8);
+}
+
+fn CC_AArch64_Custom_Block(ValNo: *mut u32, ValVT: *mut MVT, LocVT: *mut MVT, LocInfo: *mut LocInfo, ArgFlags: *mut ArgFlagsTy, State: *mut CCState) -> bool {
+    let mut Subtarget: *AArch64Subtarget = null;
+    let mut IsDarwinILP32: bool = Subtarget.isTargetILP32() && Subtarget.isTargetMachO();
+    let mut RegList: ArrayRef<MCPhysReg> = ArrayRef<MCPhysReg> {};
+    if LocVT.SimpleTy == i64 || (IsDarwinILP32 && LocVT.SimpleTy == i32) {
+        RegList(XRegList);
+    } else if LocVT.SimpleTy == f16 || LocVT.SimpleTy == bf16 {
+        RegList(HRegList);
+    } else if LocVT.SimpleTy == f32 || LocVT.is32BitVector() {
+        RegList(SRegList);
+    } else if LocVT.SimpleTy == f64 || LocVT.is64BitVector() {
+        RegList(DRegList);
+    } else if LocVT.SimpleTy == f128 || LocVT.is128BitVector() {
+        RegList(QRegList);
+    } else if LocVT.isScalableVector() {
+        if LocVT == nxv1i1 || LocVT == nxv2i1 || LocVT == nxv4i1 || LocVT == nxv8i1 || LocVT == nxv16i1 || LocVT == aarch64svcount {
+            RegList(PRegList);
+        } else {
+            RegList(ZRegList);
+        }
+    } else {
+        return false;
+    }
+    let mut PendingMembers: *mut SmallVectorImpl<CCValAssign> = State.getPendingLocs();
+    PendingMembers.push(getPending(ValNo, ValVT, LocVT, LocInfo, 0));
+    if !ArgFlags.isInConsecutiveRegsLast() {
+        return true;
+    }
+    let mut EltsPerReg: u32 = if (IsDarwinILP32 && LocVT.SimpleTy == i32) { 2 } else { 1 };
+    let mut RegResult: ArrayRef<MCPhysReg> = State.AllocateRegBlock(RegList, alignTo(PendingMembers.len, EltsPerReg) / EltsPerReg);
+    if !RegResult.is_empty() && EltsPerReg == 1 {
+        PendingMembers.clear();
+        return true;
+    } else if !RegResult.is_empty() {
+        assert!(EltsPerReg == 2, "unexpected ABI");
+        let mut UseHigh: bool = false;
+        let mut Info: LocInfo = zeroed();
+        let mut RegIdx: u32 = 0;
+        for It in PendingMembers {
+            Info = if UseHigh { AExtUpper } else { ZExt };
+            State.addLoc(getReg(It.getValNo(), i32, RegResult[RegIdx], i64, Info, false));
+            UseHigh = !UseHigh;
+            if !UseHigh {
+                RegIdx += 1;
+            }
+        }
+        PendingMembers.clear();
+        return true;
+    }
+    if !LocVT.isScalableVector() {
+        for Reg in RegList {
+            State.AllocateReg(Reg);
+        }
+    }
+    let mut StackAlign: MaybeAlign = State.getMachineFunction().getDataLayout().getStackAlignment();
+    assert!(StackAlign, "data layout string is missing stack alignment");
+    let mut MemAlign: Align = ArgFlags.getNonZeroMemAlign();
+    let mut SlotAlign: Align = min(MemAlign, operator(StackAlign));
+    if !Subtarget.isTargetDarwin() {
+        SlotAlign = max(SlotAlign, 8);
+    }
+    return finishStackBlock(PendingMembers, LocVT, ArgFlags, State, SlotAlign);
+}

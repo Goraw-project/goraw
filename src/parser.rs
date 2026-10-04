@@ -234,6 +234,7 @@ impl<'a> Parser<'a> {
     fn parse_static(&mut self) -> P<StaticDef> {
         let start = self.span();
         self.expect(&Tok::Static, "`static`")?;
+        let _is_mut = self.eat(&Tok::Mut);
         let (name, _) = self.expect_ident("глобальной переменной")?;
         self.expect(&Tok::Colon, "`:` (у static обязателен тип)")?;
         let ty = self.parse_type()?;
@@ -468,8 +469,17 @@ impl<'a> Parser<'a> {
                     Some(TypeExpr::Ptr(Box::new(inner), sp.to(self.prev_span())))
                 }
             }
-            Tok::Ident(name) => {
+            Tok::Ident(mut name) => {
                 self.bump();
+                while let Tok::Ident(next) = self.peek() {
+                    if matches!(next.as_str(), "int" | "long" | "short" | "char" | "double" | "float") {
+                        name.push(' ');
+                        name.push_str(next);
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
                 if self.eat(&Tok::Lt) {
                     let mut args = Vec::new();
                     while !matches!(self.peek(), Tok::Gt | Tok::Eof) {
@@ -1352,9 +1362,17 @@ impl<'a> Parser<'a> {
                     self.bump();
                     let mut fields = Vec::new();
                     while !matches!(self.peek(), Tok::RBrace | Tok::Eof) {
-                        let (fname, fsp) = self.expect_ident("поля")?;
-                        self.expect(&Tok::Colon, "`:`")?;
-                        let val = self.parse_expr()?;
+                        let (fname, val, fsp) = if matches!(self.peek(), Tok::Ident(_)) && self.toks.get(self.i + 1).map(|t| &t.tok) == Some(&Tok::Colon) {
+                            let (fname, fsp) = self.expect_ident("поля")?;
+                            self.expect(&Tok::Colon, "`:`")?;
+                            let val = self.parse_expr()?;
+                            (fname, val, fsp)
+                        } else {
+                            let idx = fields.len();
+                            let val = self.parse_expr()?;
+                            let fsp = val.span();
+                            (format!("f{idx}"), val, fsp)
+                        };
                         fields.push((fname, val, fsp));
                         if !self.eat(&Tok::Comma) {
                             break;

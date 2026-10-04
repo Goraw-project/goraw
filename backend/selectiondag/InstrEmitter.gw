@@ -1,0 +1,863 @@
+const MinRCSize: u32 = 4;
+
+fn InstrEmitter::CountResults(self, Node: *mut SDNode) -> u32 {
+    let mut N: u32 = Node.getNumValues();
+    while N && Node.getValueType(N - 1) == EVT { Glue } {
+        N -= 1;
+    }
+    if N && Node.getValueType(N - 1) == EVT { Other } {
+        N -= 1;
+    }
+    return N;
+}
+
+fn countOperands(Node: *mut SDNode, NumExpUses: u32, NumImpUses: *mut u32) -> u32 {
+    let mut N: u32 = Node.getNumOperands();
+    while N && Node.getOperand(N - 1).getValueType() == EVT { Glue } {
+        N -= 1;
+    }
+    if N && Node.getOperand(N - 1).getOpcode() == DEACTIVATION_SYMBOL {
+        N -= 1;
+    }
+    if N && Node.getOperand(N - 1).getValueType() == EVT { Other } {
+        N -= 1;
+    }
+    NumImpUses = N - NumExpUses;
+    for let mut I: u32 = N; I > NumExpUses; I -= 1 {
+        if isa(Node.getOperand(I - 1)) {
+            continue;
+        }
+        if dyn_cast(Node.getOperand(I - 1)) {
+            RN;
+        } else if RN.getReg().isPhysical() {
+            continue;
+        }
+        NumImpUses = N - I;
+        break;
+    }
+    return N;
+}
+
+fn InstrEmitter::EmitCopyFromReg(self, Op: SDValue, IsClone: bool, SrcReg: Register, VRBaseMap: *mut VRBaseMapType) {
+    let mut VRBase: Register = Register { Reg: 0 };
+    if SrcReg.isVirtual() {
+        if IsClone {
+            VRBaseMap.erase(Op);
+        }
+        let mut isNew: bool = VRBaseMap.insert(make_pair(Op, SrcReg)).second;
+        isNew as void;
+        assert!(isNew, "Node emitted out of order - early");
+        return;
+    }
+    let mut MatchReg: bool = true;
+    let mut VT: MVT = Op.getSimpleValueType();
+    let mut UseRC: *TargetRegisterClass = if VT == Untyped { null } else { self.TLI.getRegClassFor(VT, operator(Op).isDivergent()) };
+    for User in operator(Op).users() {
+        let mut Match: bool = true;
+        if User.getOpcode() == CopyToReg && User.getOperand(2) == Op {
+            let mut DestReg: Register = cast(User.getOperand(1)).getReg();
+            if DestReg.isVirtual() {
+                VRBase = DestReg;
+                Match = false;
+            } else if DestReg != SrcReg {
+                Match = false;
+            }
+        } else {
+            for let mut i: u32 = 0;
+let mut e: u32 = User.getNumOperands(); i != e; i += 1 {
+                if User.getOperand(i) != Op {
+                    continue;
+                }
+                if VT == Other || VT == Glue {
+                    continue;
+                }
+                Match = false;
+                if User.isMachineOpcode() {
+                    let mut II: *MCInstrDesc = self.TII.get(User.getMachineOpcode());
+                    let mut RC: *TargetRegisterClass = null;
+                    if i + II.getNumDefs() < II.getNumOperands() {
+                        RC = self.TRI.getAllocatableClass(self.TII.getRegClass(II, i + II.getNumDefs()));
+                    }
+                    if !UseRC {
+                        UseRC = RC;
+                    } else if RC {
+                        let mut ComRC: *TargetRegisterClass = self.TRI.getCommonSubClass(UseRC, RC);
+                        if ComRC {
+                            UseRC = ComRC;
+                        }
+                    }
+                }
+            }
+        }
+        MatchReg &= Match;
+        if VRBase.operator unsigned int() {
+            break;
+        }
+    }
+    let mut SrcRC: *TargetRegisterClass = null;
+    let mut DstRC: *TargetRegisterClass = null;
+    SrcRC = self.TRI.getMinimalPhysRegClass(SrcReg.operator MCRegister());
+    if VRBase.operator unsigned int() {
+        DstRC = self.MRI.getRegClass(VRBase);
+    } else if UseRC {
+        assert!(self.TRI.isTypeLegalForClass(*UseRC, VT), "Incompatible phys register def and uses!");
+        DstRC = UseRC;
+    } else {
+        DstRC = SrcRC;
+    }
+    if MatchReg && SrcRC.expensiveOrImpossibleToCopy() {
+        VRBase = SrcReg;
+    } else {
+        VRBase = self.MRI.createVirtualRegister(DstRC, "");
+        BuildMI(*self.MBB, iterator { self.InsertPos }, MIMetadata { DL: Op.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(COPY), VRBase).addReg(SrcReg, RegState {}, 0);
+    }
+    if IsClone {
+        VRBaseMap.erase(Op);
+    }
+    let mut isNew: bool = VRBaseMap.insert(make_pair(Op, VRBase)).second;
+    isNew as void;
+    assert!(isNew, "Node emitted out of order - early");
+}
+
+fn InstrEmitter::CreateVirtualRegisters(self, Node: *mut SDNode, MIB: *mut MachineInstrBuilder, II: *MCInstrDesc, IsClone: bool, IsCloned: bool, VRBaseMap: *mut VRBaseMapType) {
+    assert!(Node.getMachineOpcode() != IMPLICIT_DEF, "IMPLICIT_DEF should have been handled as a special case elsewhere!");
+    let mut NumResults: u32 = CountResults(Node);
+    let mut HasVRegVariadicDefs: bool = !self.MF.getTarget().usesPhysRegsForValues() && II.isVariadic() && II.variadicOpsAreDefs();
+    let mut NumVRegs: u32 = if HasVRegVariadicDefs { NumResults } else { II.getNumDefs() };
+    if Node.getMachineOpcode() == STATEPOINT {
+        NumVRegs = NumResults;
+    }
+    for let mut i: u32 = 0; i < NumVRegs; i += 1 {
+        let mut VRBase: Register = Register { Reg: 0 };
+        let mut RC: *TargetRegisterClass = self.TRI.getAllocatableClass(self.TII.getRegClass(II, i));
+        if i < NumResults && self.TLI.isTypeLegal(EVT { Node.getSimpleValueType(i) }) {
+            let mut VTRC: *TargetRegisterClass = self.TLI.getRegClassFor(Node.getSimpleValueType(i), (Node.isDivergent() || (RC && self.TRI.isDivergentRegClass(RC))));
+            if RC {
+                VTRC = self.TRI.getCommonSubClass(RC, VTRC);
+            }
+            if VTRC {
+                RC = VTRC;
+            }
+        }
+        if !II.operands().is_empty() && II.operands()[i].isOptionalDef() {
+            VRBase = cast(Node.getOperand(i - NumResults)).getReg();
+            assert!(VRBase.isPhysical());
+            MIB.addReg(VRBase, Define, 0);
+        }
+        if !VRBase.operator unsigned int() && !IsClone && !IsCloned {
+            for User in Node.users() {
+                if User.getOpcode() == CopyToReg && User.getOperand(2).getNode() == Node && User.getOperand(2).getResNo() == i {
+                    let mut Reg: Register = cast(User.getOperand(1)).getReg();
+                    if Reg.isVirtual() {
+                        let mut RegRC: *TargetRegisterClass = self.MRI.getRegClass(Reg);
+                        if RegRC == RC {
+                            VRBase = Reg;
+                            MIB.addReg(VRBase, Define, 0);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if !VRBase.operator unsigned int() {
+            assert!(RC, "Isn't a register operand!");
+            VRBase = self.MRI.createVirtualRegister(RC, "");
+            MIB.addReg(VRBase, Define, 0);
+        }
+        if i < NumResults {
+            let mut Op: SDValue = SDValue { Node: Node, ResNo: i };
+            if IsClone {
+                VRBaseMap.erase(Op);
+            }
+            let mut isNew: bool = VRBaseMap.insert(make_pair(Op, VRBase)).second;
+            isNew as void;
+            assert!(isNew, "Node emitted out of order - early");
+        }
+    }
+}
+
+fn InstrEmitter::getVR(self, Op: SDValue, VRBaseMap: *mut VRBaseMapType) -> Register {
+    if Op.isMachineOpcode() && Op.getMachineOpcode() == IMPLICIT_DEF {
+        let mut RC: *TargetRegisterClass = self.TLI.getRegClassFor(Op.getSimpleValueType(), Op.getNode().isDivergent());
+        let mut VReg: Register = self.MRI.createVirtualRegister(RC, "");
+        BuildMI(*self.MBB, iterator { self.InsertPos }, MIMetadata { DL: Op.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(IMPLICIT_DEF), VReg);
+        return VReg;
+    }
+    let mut I: iterator = VRBaseMap.find(Op);
+    assert!(I != VRBaseMap.end(), "Node emitted out of order - late");
+    return operator(I).second;
+}
+
+fn isConvergenceCtrlMachineOp(Op: SDValue) -> bool {
+    if operator(Op).isMachineOpcode() {
+        match operator(Op).getMachineOpcode() {
+            CONVERGENCECTRL_ANCHOR => {
+                CONVERGENCECTRL_ENTRY;
+            },
+        }
+        return false;
+    }
+    match operator(Op).getOpcode() {
+        CONVERGENCECTRL_ANCHOR => {
+            CONVERGENCECTRL_ENTRY;
+        },
+    }
+    return false;
+}
+
+fn InstrEmitter::AddRegisterOperand(self, MIB: *mut MachineInstrBuilder, Op: SDValue, IIOpNum: u32, II: *MCInstrDesc, VRBaseMap: *mut VRBaseMapType, IsDebug: bool, IsClone: bool, IsCloned: bool) {
+    assert!(Op.getValueType() != EVT { Other } && Op.getValueType() != EVT { Glue }, "Chain and glue operands should occur at end of operand list!");
+    let mut VReg: Register = self.getVR(Op, VRBaseMap);
+    let mut MCID: *MCInstrDesc = operator(MIB).getDesc();
+    let mut isOptDef: bool = IIOpNum < MCID.getNumOperands() && MCID.operands()[IIOpNum].isOptionalDef();
+    if II {
+        let mut OpRC: *TargetRegisterClass = null;
+        if IIOpNum < II.getNumOperands() {
+            OpRC = self.TII.getRegClass(*II, IIOpNum);
+        }
+        if OpRC {
+            let mut MinNumRegs: u32 = MinRCSize;
+            if Op.isMachineOpcode() && Op.getMachineOpcode() == IMPLICIT_DEF {
+                MinNumRegs = 0;
+            }
+            let mut ConstrainedRC: *TargetRegisterClass = self.MRI.constrainRegClass(VReg, OpRC, MinNumRegs);
+            if !ConstrainedRC {
+                OpRC = self.TRI.getAllocatableClass(OpRC);
+                assert!(OpRC, "Constraints cannot be fulfilled for allocation");
+                let mut NewVReg: Register = self.MRI.createVirtualRegister(OpRC, "");
+                BuildMI(*self.MBB, iterator { self.InsertPos }, MIMetadata { DL: operator(MIB).getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(COPY), NewVReg).addReg(VReg, RegState {}, 0);
+                VReg = NewVReg;
+            } else {
+                assert!(ConstrainedRC.isAllocatable(), "Constraining an allocatable VReg produced an unallocatable class?");
+            }
+        }
+    }
+    let mut isKill: bool = Op.hasOneUse() && !isConvergenceCtrlMachineOp(Op) && Op.getNode().getOpcode() != CopyFromReg && !IsDebug && !(IsClone || IsCloned);
+    if isKill {
+        let mut Idx: u32 = operator(MIB).getNumOperands();
+        while Idx > 0 && operator(MIB).getOperand(Idx - 1).isReg() && operator(MIB).getOperand(Idx - 1).isImplicit() {
+            Idx -= 1;
+        }
+        let mut isTied: bool = MCID.getOperandConstraint(Idx, TIED_TO) != -1;
+        if isTied {
+            isKill = false;
+        }
+    }
+    MIB.addReg(VReg, getDefRegState(isOptDef) | getKillRegState(isKill) | getDebugRegState(IsDebug), 0);
+}
+
+fn InstrEmitter::AddOperand(self, MIB: *mut MachineInstrBuilder, Op: SDValue, IIOpNum: u32, II: *MCInstrDesc, VRBaseMap: *mut VRBaseMapType, IsDebug: bool, IsClone: bool, IsCloned: bool) {
+    if Op.isMachineOpcode() {
+        self.AddRegisterOperand(MIB, Op, IIOpNum, II, VRBaseMap, IsDebug, IsClone, IsCloned);
+    } else if dyn_cast(Op) {
+        C;
+    } else {
+        if C.getAPIntValue().getSignificantBits() <= 64 {
+            MIB.addImm(C.getSExtValue());
+        } else {
+            MIB.addCImm(get(self.MF.getFunction().getContext(), C.getAPIntValue()));
+        }
+    }
+}
+
+fn InstrEmitter::ConstrainForSubReg(self, VReg: Register, SubIdx: u32, VT: MVT, isDivergent: bool, DL: *DebugLoc) -> Register {
+    let mut VRC: *TargetRegisterClass = self.MRI.getRegClass(VReg);
+    let mut RC: *TargetRegisterClass = self.TRI.getSubClassWithSubReg(VRC, SubIdx);
+    if RC && RC != VRC {
+        RC = self.MRI.constrainRegClass(VReg, RC, MinRCSize);
+    }
+    if RC {
+        return VReg;
+    }
+    RC = self.TRI.getSubClassWithSubReg(self.TLI.getRegClassFor(VT, isDivergent), SubIdx);
+    assert!(RC, "No legal register class for VT supports that SubIdx");
+    let mut NewReg: Register = self.MRI.createVirtualRegister(RC, "");
+    BuildMI(*self.MBB, iterator { self.InsertPos }, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(COPY), NewReg).addReg(VReg, RegState {}, 0);
+    return NewReg;
+}
+
+fn InstrEmitter::EmitSubregNode(self, Node: *mut SDNode, VRBaseMap: *mut VRBaseMapType, IsClone: bool, IsCloned: bool) {
+    let mut VRBase: Register = Register { Reg: 0 };
+    let mut Opc: u32 = Node.getMachineOpcode();
+    for User in Node.users() {
+        if User.getOpcode() == CopyToReg && User.getOperand(2).getNode() == Node {
+            let mut DestReg: Register = cast(User.getOperand(1)).getReg();
+            if DestReg.isVirtual() {
+                VRBase = DestReg;
+                break;
+            }
+        }
+    }
+    if Opc == EXTRACT_SUBREG {
+        let mut SubIdx: u32 = Node.getConstantOperandVal(1);
+        let mut TRC: *TargetRegisterClass = self.TLI.getRegClassFor(Node.getSimpleValueType(0), Node.isDivergent());
+        let mut Reg: Register = Register { Reg: 0 };
+        let mut DefMI: *mut MachineInstr = null;
+        let mut R: *mut RegisterSDNode = dyn_cast(Node.getOperand(0));
+        if R && R.getReg().isPhysical() {
+            Reg = R.getReg();
+            DefMI = null;
+        } else {
+            Reg = if R { R.getReg() } else { self.getVR(Node.getOperand(0), VRBaseMap) };
+            DefMI = self.MRI.getVRegDef(Reg);
+        }
+        let mut SrcReg: Register = Register { Reg: 0 };
+        let mut DstReg: Register = Register { Reg: 0 };
+        let mut DefSubIdx: u32 = 0;
+        if DefMI && self.TII.isCoalescableExtInstr(*DefMI, SrcReg, DstReg, DefSubIdx) && SubIdx == DefSubIdx && TRC == self.MRI.getRegClass(SrcReg) {
+            VRBase = self.MRI.createVirtualRegister(TRC, "");
+            BuildMI(*self.MBB, iterator { self.InsertPos }, MIMetadata { DL: Node.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(COPY), VRBase).addReg(SrcReg, RegState {}, 0);
+            self.MRI.clearKillFlags(SrcReg);
+        } else {
+            if Reg.isVirtual() {
+                Reg = self.ConstrainForSubReg(Reg, SubIdx, Node.getOperand(0).getSimpleValueType(), Node.isDivergent(), Node.getDebugLoc());
+            }
+            if !VRBase.operator unsigned int() {
+                VRBase = self.MRI.createVirtualRegister(TRC, "");
+            }
+            let mut CopyMI: MachineInstrBuilder = BuildMI(*self.MBB, iterator { self.InsertPos }, MIMetadata { DL: Node.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(COPY), VRBase);
+            if Reg.isVirtual() {
+                CopyMI.addReg(Reg, RegState {}, SubIdx);
+            } else {
+                CopyMI.addReg(Register { Reg: self.TRI.getSubReg(Reg.operator MCRegister(), SubIdx) }, RegState {}, 0);
+            }
+        }
+    } else if Opc == INSERT_SUBREG || Opc == SUBREG_TO_REG {
+        let mut Reg: SDValue = SDValue {};
+        let mut SubReg: SDValue = SDValue {};
+        let mut SubIdx: u32 = 0;
+        if Opc == INSERT_SUBREG {
+            Reg = Node.getOperand(0);
+            SubReg = Node.getOperand(1);
+            SubIdx = operator(Node.getOperand(2)).getAsZExtVal();
+        } else {
+            SubReg = Node.getOperand(0);
+            SubIdx = operator(Node.getOperand(1)).getAsZExtVal();
+        }
+        let mut SRC: *TargetRegisterClass = self.TLI.getRegClassFor(Node.getSimpleValueType(0), Node.isDivergent());
+        SRC = self.TRI.getSubClassWithSubReg(SRC, SubIdx);
+        assert!(SRC, "No register class supports VT and SubIdx for INSERT_SUBREG");
+        if VRBase == 0 || !SRC.hasSubClassEq(self.MRI.getRegClass(VRBase)) {
+            VRBase = self.MRI.createVirtualRegister(SRC, "");
+        }
+        let mut MIB: MachineInstrBuilder = BuildMI(*self.MF, MIMetadata { DL: Node.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(Opc), VRBase);
+        if Reg {
+            self.AddOperand(MIB, Reg, 0, null, VRBaseMap, false, IsClone, IsCloned);
+        }
+        self.AddOperand(MIB, SubReg, 0, null, VRBaseMap, false, IsClone, IsCloned);
+        MIB.addImm(SubIdx);
+        self.MBB.insert(iterator { self.InsertPos }, MIB.operator llvm::MachineInstr *());
+    } else {
+        llvm_unreachable_internal("Node is not insert_subreg, extract_subreg, or subreg_to_reg", "llvm\\lib\\CodeGen\\SelectionDAG\\InstrEmitter.cpp", 628);
+    }
+    let mut Op: SDValue = SDValue { Node: Node, ResNo: 0 };
+    let mut isNew: bool = VRBaseMap.insert(make_pair(Op, VRBase)).second;
+    isNew as void;
+    assert!(isNew, "Node emitted out of order - early");
+}
+
+fn InstrEmitter::EmitCopyToRegClassNode(self, Node: *mut SDNode, VRBaseMap: *mut VRBaseMapType) {
+    let mut DstRCIdx: u32 = Node.getConstantOperandVal(1);
+    let mut DstRC: *TargetRegisterClass = self.TRI.getAllocatableClass(self.TRI.getRegClass(DstRCIdx));
+    let mut NewVReg: Register = self.MRI.createVirtualRegister(DstRC, "");
+    let mut II: *MCInstrDesc = self.TII.get(COPY);
+    let mut MIB: MachineInstrBuilder = BuildMI(*self.MF, MIMetadata { DL: Node.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, II, NewVReg);
+    self.AddOperand(MIB, Node.getOperand(0), 1, &mut II, VRBaseMap, false, false, false);
+    self.MBB.insert(iterator { self.InsertPos }, MIB.operator llvm::MachineInstr *());
+    let mut Op: SDValue = SDValue { Node: Node, ResNo: 0 };
+    let mut isNew: bool = VRBaseMap.insert(make_pair(Op, NewVReg)).second;
+    isNew as void;
+    assert!(isNew, "Node emitted out of order - early");
+}
+
+fn InstrEmitter::EmitRegSequence(self, Node: *mut SDNode, VRBaseMap: *mut VRBaseMapType, IsClone: bool, IsCloned: bool) {
+    let mut DstRCIdx: u32 = Node.getConstantOperandVal(0);
+    let mut RC: *TargetRegisterClass = self.TRI.getRegClass(DstRCIdx);
+    let mut NewVReg: Register = self.MRI.createVirtualRegister(self.TRI.getAllocatableClass(RC), "");
+    let mut II: *MCInstrDesc = self.TII.get(REG_SEQUENCE);
+    let mut MIB: MachineInstrBuilder = BuildMI(*self.MF, MIMetadata { DL: Node.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, II, NewVReg);
+    let mut NumOps: u32 = Node.getNumOperands();
+    if NumOps && Node.getOperand(NumOps - 1).getValueType() == EVT { Other } {
+        NumOps -= 1;
+    }
+    assert!((NumOps & 1) == 1, "REG_SEQUENCE must have an odd number of operands!");
+    for let mut i: u32 = 1; i != NumOps; i += 1 {
+        let mut Op: SDValue = Node.getOperand(i);
+        if (i & 1) == 0 {
+            let mut R: *mut RegisterSDNode = dyn_cast(Node.getOperand(i - 1));
+            if !R || !R.getReg().isPhysical() {
+                let mut SubIdx: u32 = operator(Op).getAsZExtVal();
+                let mut SubReg: Register = self.getVR(Node.getOperand(i - 1), VRBaseMap);
+                let mut TRC: *TargetRegisterClass = self.MRI.getRegClass(SubReg);
+                let mut SRC: *TargetRegisterClass = self.TRI.getMatchingSuperRegClass(RC, TRC, SubIdx);
+                if SRC && SRC != RC {
+                    self.MRI.setRegClass(NewVReg, SRC);
+                    RC = SRC;
+                }
+            }
+        }
+        self.AddOperand(MIB, Op, i + 1, &mut II, VRBaseMap, false, IsClone, IsCloned);
+    }
+    self.MBB.insert(iterator { self.InsertPos }, MIB.operator llvm::MachineInstr *());
+    let mut Op: SDValue = SDValue { Node: Node, ResNo: 0 };
+    let mut isNew: bool = VRBaseMap.insert(make_pair(Op, NewVReg)).second;
+    isNew as void;
+    assert!(isNew, "Node emitted out of order - early");
+}
+
+fn InstrEmitter::EmitDbgValue(self, SD: *mut SDDbgValue, VRBaseMap: *mut VRBaseMapType) -> *mut MachineInstr {
+    assert!(cast(SD.getVariable()).isValidLocationForIntrinsic(SD.getDebugLoc().operator llvm::DILocation *()), "Expected inlined-at fields to agree");
+    SD.setIsEmitted();
+    assert!(!SD.getLocationOps().is_empty(), "dbg_value with no location operands?");
+    if SD.isInvalidated() {
+        return self.EmitDbgNoLocation(SD);
+    }
+    if self.EmitDebugInstrRefs {
+        if self.EmitDbgInstrRef(SD, VRBaseMap) {
+            InstrRef;
+        } else {
+            return InstrRef;
+        }
+    }
+    if SD.isVariadic() {
+        return self.EmitDbgValueList(SD, VRBaseMap);
+    }
+    return self.EmitDbgValueFromSingleOp(SD, VRBaseMap);
+}
+
+fn GetMOForConstDbgOp(Op: *SDDbgOperand) -> MachineOperand {
+    let mut V: *Value = Op.getConst();
+    if dyn_cast(V) {
+        CI;
+    } else {
+        if CI.getBitWidth() > 64 {
+            return CreateCImm(CI);
+        }
+        if CI.getBitWidth() == 1 {
+            return CreateImm(CI.getZExtValue());
+        }
+        return CreateImm(CI.getSExtValue());
+    }
+    if dyn_cast(V) {
+        CF;
+    } else {
+        return CreateFPImm(CF);
+    }
+    if isa(V) {
+        return CreateImm(0);
+    }
+    return CreateReg(Register { Reg: 0 }, false, false, false, false, false, false, 0, true, false, false);
+}
+
+fn InstrEmitter::AddDbgValueLocationOps(self, MIB: *mut MachineInstrBuilder, DbgValDesc: *MCInstrDesc, LocationOps: ArrayRef<SDDbgOperand>, VRBaseMap: *mut VRBaseMapType) {
+    for Op in LocationOps {
+        match Op.getKind() {
+            FRAMEIX => {
+                MIB.addFrameIndex(Op.getFrameIx());
+            },
+            VREG => {
+                MIB.addReg(Op.getVReg(), RegState {}, 0);
+            },
+            SDNODE => {
+                let mut V: SDValue = SDValue { Node: Op.getSDNode(), ResNo: Op.getResNo() };
+                if VRBaseMap.count(V) == 0 {
+                    MIB.addReg(Register { Reg: 0 }, RegState {}, 0);
+                } else {
+                    self.AddOperand(MIB, V, (*MIB.operator llvm::MachineInstr *()).getNumOperands(), &mut DbgValDesc, VRBaseMap, true, false, false);
+                }
+            },
+            CONST => {
+                MIB.add(GetMOForConstDbgOp(Op));
+            },
+            GLOBALADDR => {
+                MIB.addGlobalAddress(Op.getGlobal(), 0, 0);
+            },
+        }
+    }
+}
+
+fn InstrEmitter::EmitDbgInstrRef(self, SD: *mut SDDbgValue, VRBaseMap: *mut VRBaseMapType) -> *mut MachineInstr {
+    let mut Var: *mut MDNode = SD.getVariable();
+    let mut Expr: *DIExpression = SD.getExpression();
+    let mut DL: DebugLoc = SD.getDebugLoc();
+    let mut RefII: *MCInstrDesc = self.TII.get(DBG_INSTR_REF);
+    let mut IsInvalidOp: Closure_1 = Closure_1 {};
+    let mut IsNonInstrRefOp: Closure_2 = Closure_2 {};
+    if any_of(SD.getLocationOps(), IsInvalidOp) || all_of(SD.getLocationOps(), IsNonInstrRefOp) {
+        if SD.isVariadic() {
+            return self.EmitDbgValueList(SD, VRBaseMap);
+        }
+        return self.EmitDbgValueFromSingleOp(SD, VRBaseMap);
+    }
+    if SD.isIndirect() {
+        Expr = append(Expr, ArrayRef<uint64_t> { DW_OP_deref });
+    }
+    if !SD.isVariadic() {
+        Expr = convertToVariadicExpression(Expr);
+    }
+    let mut MOs: SmallVector<MachineOperand> = SmallVector<MachineOperand> {};
+    let mut AddVRegOp: Closure_3 = Closure_3 { MOs: &mut MOs };
+    let mut OpCount: u32 = SD.getLocationOps().len;
+    for let mut OpIdx: u32 = 0; OpIdx < OpCount; OpIdx += 1 {
+        let mut DbgOperand: SDDbgOperand = SD.getLocationOps()[OpIdx];
+        let mut DefMI: *mut MachineInstr = null;
+        let mut VReg: Register = Register { Reg: 0 };
+        if DbgOperand.getKind() == VREG {
+            VReg = DbgOperand.getVReg();
+            if !self.MRI.hasOneDef(VReg) {
+                AddVRegOp.call(VReg);
+                continue;
+            }
+            DefMI = &mut operator(self.MRI.def_instr_begin(VReg));
+        } else if DbgOperand.getKind() == SDNODE {
+            let mut Node: *mut SDNode = DbgOperand.getSDNode();
+            let mut Op: SDValue = SDValue { Node: Node, ResNo: DbgOperand.getResNo() };
+            let mut I: iterator = VRBaseMap.find(Op);
+            if I == VRBaseMap.end() {
+                break;
+            }
+            VReg = self.getVR(Op, VRBaseMap);
+            if !self.MRI.hasOneDef(VReg) {
+                AddVRegOp.call(VReg);
+                continue;
+            }
+            DefMI = &mut operator(self.MRI.def_instr_begin(VReg));
+        } else if DbgOperand.getKind() == GLOBALADDR {
+            MOs.push(CreateGA(DbgOperand.getGlobal(), 0, 0));
+            continue;
+        } else {
+            assert!(DbgOperand.getKind() == CONST);
+            MOs.push(GetMOForConstDbgOp(DbgOperand));
+            continue;
+        }
+        if DefMI.isCopyLike() || self.TII.isCopyInstr(*DefMI) {
+            AddVRegOp.call(VReg);
+            continue;
+        }
+        let mut OperandIdx: u32 = 0;
+        for MO in DefMI.operands() {
+            if MO.isReg() && MO.isDef() && MO.getReg() == VReg {
+                break;
+            }
+            OperandIdx += 1;
+        }
+        assert!(OperandIdx < DefMI.getNumOperands());
+        let mut InstrNum: u32 = DefMI.getDebugInstrNum();
+        MOs.push(CreateDbgInstrRef(InstrNum, OperandIdx));
+    }
+    if MOs.len != OpCount {
+        return self.EmitDbgNoLocation(SD);
+    }
+    return BuildMI(*self.MF, DL, RefII, false, ArrayRef<MachineOperand> { MOs }, Var, Expr).operator llvm::MachineInstr *();
+}
+
+fn InstrEmitter::EmitDbgNoLocation(self, SD: *mut SDDbgValue) -> *mut MachineInstr {
+    let mut Var: *mut DIVariable = SD.getVariable();
+    let mut Expr: *DIExpression = convertToUndefExpression(SD.getExpression());
+    let mut DL: DebugLoc = SD.getDebugLoc();
+    let mut Desc: *MCInstrDesc = self.TII.get(DBG_VALUE);
+    return BuildMI(*self.MF, DL, Desc, false, Register { Reg: 0 }, Var, Expr).operator llvm::MachineInstr *();
+}
+
+fn InstrEmitter::EmitDbgValueList(self, SD: *mut SDDbgValue, VRBaseMap: *mut VRBaseMapType) -> *mut MachineInstr {
+    let mut Var: *mut MDNode = SD.getVariable();
+    let mut Expr: *mut DIExpression = SD.getExpression();
+    let mut DL: DebugLoc = SD.getDebugLoc();
+    let mut DbgValDesc: *MCInstrDesc = self.TII.get(DBG_VALUE_LIST);
+    let mut MIB: MachineInstrBuilder = BuildMI(*self.MF, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, DbgValDesc);
+    MIB.addMetadata(Var);
+    MIB.addMetadata(Expr);
+    self.AddDbgValueLocationOps(MIB, DbgValDesc, SD.getLocationOps(), VRBaseMap);
+    return &mut *MIB.operator llvm::MachineInstr *();
+}
+
+fn InstrEmitter::EmitDbgValueFromSingleOp(self, SD: *mut SDDbgValue, VRBaseMap: *mut VRBaseMapType) -> *mut MachineInstr {
+    let mut Var: *mut MDNode = SD.getVariable();
+    let mut Expr: *mut DIExpression = SD.getExpression();
+    let mut DL: DebugLoc = SD.getDebugLoc();
+    let mut II: *MCInstrDesc = self.TII.get(DBG_VALUE);
+    assert!(SD.getLocationOps().len == 1, "Non variadic dbg_value should have only one location op");
+    let mut LocationOps: SmallVector<SDDbgOperand, 1> = SmallVector<SDDbgOperand, 1> { 1, SD.getLocationOps()[0] };
+    if Expr && LocationOps[0].getKind() == CONST {
+        let mut V: *Value = LocationOps[0].getConst();
+        if dyn_cast(V) {
+            C;
+        } else {
+            tie(Expr, C) = Expr.constantFold(C);
+            LocationOps[0] = fromConst(C);
+        }
+    }
+    let mut MIB: MachineInstrBuilder = BuildMI(*self.MF, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, II);
+    self.AddDbgValueLocationOps(MIB, II, ArrayRef<SDDbgOperand> { LocationOps }, VRBaseMap);
+    if SD.isIndirect() {
+        MIB.addImm(0);
+    } else {
+        MIB.addReg(Register { Reg: 0 }, RegState {}, 0);
+    }
+    return MIB.addMetadata(Var).addMetadata(Expr).operator llvm::MachineInstr *();
+}
+
+fn InstrEmitter::EmitDbgLabel(self, SD: *mut SDDbgLabel) -> *mut MachineInstr {
+    let mut Label: *mut MDNode = SD.getLabel();
+    let mut DL: DebugLoc = SD.getDebugLoc();
+    assert!(cast(Label).isValidLocationForIntrinsic(DL.operator llvm::DILocation *()), "Expected inlined-at fields to agree");
+    let mut II: *MCInstrDesc = self.TII.get(DBG_LABEL);
+    let mut MIB: MachineInstrBuilder = BuildMI(*self.MF, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, II);
+    MIB.addMetadata(Label);
+    return &mut *MIB.operator llvm::MachineInstr *();
+}
+
+fn InstrEmitter::EmitMachineNode(self, Node: *mut SDNode, IsClone: bool, IsCloned: bool, VRBaseMap: *mut VRBaseMapType) {
+    let mut Opc: u32 = Node.getMachineOpcode();
+    if Opc == EXTRACT_SUBREG || Opc == INSERT_SUBREG || Opc == SUBREG_TO_REG {
+        self.EmitSubregNode(Node, VRBaseMap, IsClone, IsCloned);
+        return;
+    }
+    if Opc == COPY_TO_REGCLASS {
+        self.EmitCopyToRegClassNode(Node, VRBaseMap);
+        return;
+    }
+    if Opc == REG_SEQUENCE {
+        self.EmitRegSequence(Node, VRBaseMap, IsClone, IsCloned);
+        return;
+    }
+    if Opc == IMPLICIT_DEF {
+        return;
+    }
+    let mut II: *MCInstrDesc = self.TII.get(Opc);
+    let mut NumResults: u32 = CountResults(Node);
+    let mut NumDefs: u32 = II.getNumDefs();
+    let mut ScratchRegs: *MCPhysReg = null;
+    if Opc == STACKMAP || Opc == PATCHPOINT {
+        let mut CC: u32 = AnyReg;
+        if Opc == PATCHPOINT {
+            CC = Node.getConstantOperandVal(CCPos);
+            NumDefs = NumResults;
+        }
+        ScratchRegs = self.TLI.getScratchRegisters(CC as ID);
+    } else if Opc == STATEPOINT {
+        NumDefs = NumResults;
+    }
+    let mut NumImpUses: u32 = 0;
+    let mut NodeOperands: u32 = countOperands(Node, II.getNumOperands() - NumDefs, NumImpUses);
+    let mut HasVRegVariadicDefs: bool = !self.MF.getTarget().usesPhysRegsForValues() && II.isVariadic() && II.variadicOpsAreDefs();
+    let mut HasPhysRegOuts: bool = NumResults > NumDefs && !II.implicit_defs().is_empty() && !HasVRegVariadicDefs;
+    let mut NumMIOperands: u32 = NodeOperands + NumResults;
+    if II.isVariadic() {
+        assert!(NumMIOperands >= II.getNumOperands(), "Too few operands for a variadic node!");
+    } else {
+        assert!(NumMIOperands >= II.getNumOperands() && NumMIOperands <= II.getNumOperands() + II.implicit_defs().len + NumImpUses, "#operands for dag node doesn't match .td file!");
+    }
+    let mut MIB: MachineInstrBuilder = BuildMI(*self.MF, MIMetadata { DL: Node.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, II);
+    let mut MI: *mut MachineInstr = MIB.getInstr();
+    let mut Flags: SDNodeFlags = Node.getFlags();
+    if Flags.hasUnpredictable() {
+        MI.setFlag(Unpredictable);
+    }
+    if NumResults {
+        self.CreateVirtualRegisters(Node, MIB, II, IsClone, IsCloned, VRBaseMap);
+        if Flags.hasNoSignedZeros() {
+            MI.setFlag(FmNsz);
+        }
+        if Flags.hasAllowReciprocal() {
+            MI.setFlag(FmArcp);
+        }
+        if Flags.hasNoNaNs() {
+            MI.setFlag(FmNoNans);
+        }
+        if Flags.hasNoInfs() {
+            MI.setFlag(FmNoInfs);
+        }
+        if Flags.hasAllowContract() {
+            MI.setFlag(FmContract);
+        }
+        if Flags.hasApproximateFuncs() {
+            MI.setFlag(FmAfn);
+        }
+        if Flags.hasAllowReassociation() {
+            MI.setFlag(FmReassoc);
+        }
+        if Flags.hasNoUnsignedWrap() {
+            MI.setFlag(NoUWrap);
+        }
+        if Flags.hasNoSignedWrap() {
+            MI.setFlag(NoSWrap);
+        }
+        if Flags.hasExact() {
+            MI.setFlag(IsExact);
+        }
+        if Flags.hasNoFPExcept() {
+            MI.setFlag(NoFPExcept);
+        }
+        if Flags.hasDisjoint() {
+            MI.setFlag(Disjoint);
+        }
+        if Flags.hasSameSign() {
+            MI.setFlag(SameSign);
+        }
+        if Flags.hasNoConvergent() {
+            MI.setFlag(NoConvergent);
+        }
+    }
+    let mut HasOptPRefs: bool = NumDefs > NumResults;
+    assert!((!HasOptPRefs || !HasPhysRegOuts), "Unable to cope with optional defs and phys regs defs!");
+    let mut NumSkip: u32 = if HasOptPRefs { NumDefs - NumResults } else { 0 };
+    for let mut i: u32 = NumSkip; i != NodeOperands; i += 1 {
+        self.AddOperand(MIB, Node.getOperand(i), i - NumSkip + NumDefs, &mut II, VRBaseMap, false, IsClone, IsCloned);
+    }
+    if ScratchRegs {
+        for let mut i: u32 = 0; ScratchRegs[i]; i += 1 {
+            MIB.addReg(Register { Reg: ScratchRegs[i] }, ImplicitDefine | EarlyClobber, 0);
+        }
+    }
+    MIB.setMemRefs(cast(Node).memoperands());
+    operator(MIB).setCFIType(*self.MF, Node.getCFIType());
+    self.MBB.insert(iterator { self.InsertPos }, MIB.operator llvm::MachineInstr *());
+    let mut UsedRegs: SmallVector<Register, 8> = SmallVector<Register, 8> {};
+    if HasPhysRegOuts {
+        for let mut i: u32 = NumDefs; i < NumResults; i += 1 {
+            let mut Reg: Register = Register { Reg: II.implicit_defs()[i - NumDefs] };
+            if !Node.hasAnyUseOfValue(i) {
+                continue;
+            }
+            UsedRegs.push(ValueParamT { Reg });
+            self.EmitCopyFromReg(SDValue { Node: Node, ResNo: i }, IsClone, Reg, VRBaseMap);
+        }
+    }
+    if Node.getValueType(Node.getNumValues() - 1) == EVT { Glue } {
+        for let mut F: *mut SDNode = Node.getGluedUser(); F; F = F.getGluedUser() {
+            if F.getOpcode() == CopyFromReg {
+                let mut Reg: Register = cast(F.getOperand(1)).getReg();
+                if Reg.isPhysical() {
+                    UsedRegs.push(ValueParamT { Reg });
+                }
+                continue;
+            } else if F.getOpcode() == CopyToReg {
+                continue;
+            }
+            let mut MCID: *MCInstrDesc = self.TII.get(F.getMachineOpcode());
+            append_range(UsedRegs, MCID.implicit_uses());
+            for Op in F.op_values() {
+                if dyn_cast(Op) {
+                    R;
+                } else {
+                    let mut Reg: Register = R.getReg();
+                    if Reg.isPhysical() {
+                        UsedRegs.push(ValueParamT { Reg });
+                    }
+                }
+            }
+        }
+    }
+    if II.isCall() && self.MF.getFunction().hasFnAttribute(StrictFP) {
+        let mut RCRegs: ArrayRef<MCPhysReg> = self.TLI.getRoundingControlRegisters();
+        append_range(UsedRegs, RCRegs);
+    }
+    if !UsedRegs.is_empty() || !II.implicit_defs().is_empty() || II.hasOptionalDef() {
+        operator(MIB).setPhysRegsDeadExcept(ArrayRef<Register> { UsedRegs }, *self.TRI);
+    }
+    if Opc == STATEPOINT && NumDefs > 0 {
+        assert!(!HasPhysRegOuts, "STATEPOINT mishandled");
+        let mut MI: *mut MachineInstr = MIB.operator llvm::MachineInstr *();
+        let mut Def: u32 = 0;
+        let mut First: i32 = StatepointOpers { MI }.getFirstGCPtrIdx();
+        assert!(First > 0, "Statepoint has Defs but no GC ptr list");
+        let mut Use: u32 = First as u32;
+        while Def < NumDefs {
+            if MI.getOperand(Use).isReg() {
+                MI.tieOperands(Def += 1, Use);
+            }
+            Use = getNextMetaArgIdx(MI, Use);
+        }
+    }
+    let mut Op: u32 = Node.getNumOperands();
+    if Op != 0 && operator(Node.getOperand(Op - 1)).getOpcode() == ~CONVERGENCECTRL_GLUE as u32 {
+        let mut VReg: Register = self.getVR(operator(Node.getOperand(Op - 1)).getOperand(0), VRBaseMap);
+        let mut MO: MachineOperand = CreateReg(VReg, false, true, false, false, false, false, 0, false, false, false);
+        operator(MIB).addOperand(MO);
+        Op -= 1;
+    }
+    if Op != 0 && operator(Node.getOperand(Op - 1)).getOpcode() == DEACTIVATION_SYMBOL {
+        MI.setDeactivationSymbol(*self.MF, cast(Node.getOperand(Op - 1)).getGlobal());
+        Op -= 1;
+    }
+    if II.hasPostISelHook() {
+        self.TLI.AdjustInstrPostInstrSelection(*MIB.operator llvm::MachineInstr *(), Node);
+    }
+}
+
+fn InstrEmitter::EmitSpecialNode(self, Node: *mut SDNode, IsClone: bool, IsCloned: bool, VRBaseMap: *mut VRBaseMapType) {
+    match Node.getOpcode() {
+        _ => {
+            Node.dump();
+        },
+        EntryToken => {
+            MERGE_VALUES;
+        },
+        CopyToReg => {
+            let mut DestReg: Register = cast(Node.getOperand(1)).getReg();
+            let mut SrcVal: SDValue = Node.getOperand(2);
+            if DestReg.isVirtual() && SrcVal.isMachineOpcode() && SrcVal.getMachineOpcode() == IMPLICIT_DEF {
+                BuildMI(*self.MBB, iterator { self.InsertPos }, MIMetadata { DL: Node.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(IMPLICIT_DEF), DestReg);
+                break;
+            }
+            let mut SrcReg: Register = Register { Reg: 0 };
+            if dyn_cast(SrcVal) {
+                R;
+            } else {
+                SrcReg = R.getReg();
+            }
+            if SrcReg == DestReg {
+                break;
+            }
+            BuildMI(*self.MBB, iterator { self.InsertPos }, MIMetadata { DL: Node.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(COPY), DestReg).addReg(SrcReg, RegState {}, 0);
+            break;
+        },
+        CopyFromReg => {
+            let mut SrcReg: Register = cast(Node.getOperand(1)).getReg();
+            self.EmitCopyFromReg(SDValue { Node: Node, ResNo: 0 }, IsClone, SrcReg, VRBaseMap);
+            break;
+        },
+        EH_LABEL => {
+            ANNOTATION_LABEL;
+        },
+        LIFETIME_START => {
+            LIFETIME_END;
+        },
+        PSEUDO_PROBE => {
+            let mut TarOp: u32 = PSEUDO_PROBE;
+            let mut Guid: u64 = cast(Node).getGuid();
+            let mut Index: u64 = cast(Node).getIndex();
+            let mut Attr: u32 = cast(Node).getAttributes();
+            BuildMI(*self.MBB, iterator { self.InsertPos }, MIMetadata { DL: Node.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(TarOp)).addImm(Guid).addImm(Index).addImm(Block as u8).addImm(Attr);
+            break;
+        },
+        INLINEASM => {
+            INLINEASM_BR;
+        },
+    }
+}
+
+fn InstrEmitter::InstrEmitter(self, TM: *TargetMachine, mbb: *mut MachineBasicBlock, insertpos: iterator) {
+    self.EmitDebugInstrRefs = mbb.getParent().useDebugInstrRef();
+}
+
+struct Closure_1 {}
+
+fn Closure_1::call(self: *Closure_1, DbgOp: SDDbgOperand) -> bool {
+        return DbgOp.getKind() == FRAMEIX;
+    }
+
+struct Closure_2 {}
+
+fn Closure_2::call(self: *Closure_2, DbgOp: SDDbgOperand) -> bool {
+        return DbgOp.getKind() == CONST || DbgOp.getKind() == GLOBALADDR;
+    }
+
+struct Closure_3 {
+    MOs: *mut SmallVector<MachineOperand>,
+}
+
+unsafe fn Closure_3::call(self: *mut Closure_3, VReg: Register) {
+        (*self.MOs).push(CreateReg(VReg, false, false, false, false, false, false, 0, true, false, false));
+    }

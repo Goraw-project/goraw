@@ -1,0 +1,354 @@
+static mut LinkCategory: OptionCategory = OptionCategory { Name: "Link Options", Description: "" };
+
+static mut InputFilenames: string> = string> { Positional, OneOrMore, desc { Desc: "<input bitcode files>" }, cat { Category: LinkCategory } };
+
+static mut OverridingInputs: string> = string> { "override", value_desc { Desc: "filename" }, desc { Desc: "input bitcode file which can override previously defined symbol(s)" }, cat { Category: LinkCategory } };
+
+static mut Imports: string> = string> { "import", value_desc { Desc: "function:filename" }, desc { Desc: "Pair of function name and filename, where function should be imported from bitcode in filename" }, cat { Category: LinkCategory } };
+
+static mut SummaryIndex: string> = string> { "summary-index", desc { Desc: "Module summary index filename" }, init(""), value_desc { Desc: "filename" }, cat { Category: LinkCategory } };
+
+static mut OutputFilename: string> = string> { "o", desc { Desc: "Override output filename" }, init("-"), value_desc { Desc: "filename" }, cat { Category: LinkCategory } };
+
+static mut Internalize: opt<bool> = opt<bool> { "internalize", desc { Desc: "Internalize linked symbols - maintains existing linkage for the first input and converts linkage in all other inputs to `internal`" }, cat { Category: LinkCategory } };
+
+static mut DisableDITypeMap: opt<bool> = opt<bool> { "disable-debug-info-type-map", desc { Desc: "Don't use a uniquing type map for debug info" }, cat { Category: LinkCategory } };
+
+static mut OnlyNeeded: opt<bool> = opt<bool> { "only-needed", desc { Desc: "Link only needed symbols" }, cat { Category: LinkCategory } };
+
+static mut Force: opt<bool> = opt<bool> { "f", desc { Desc: "Enable binary output on terminals" }, cat { Category: LinkCategory } };
+
+static mut DisableLazyLoad: opt<bool> = opt<bool> { "disable-lazy-loading", desc { Desc: "Disable lazy module loading" }, cat { Category: LinkCategory } };
+
+static mut OutputAssembly: opt<bool> = opt<bool> { "S", desc { Desc: "Write output as LLVM assembly" }, Hidden, cat { Category: LinkCategory } };
+
+static mut Verbose: opt<bool> = opt<bool> { "v", desc { Desc: "Print information about actions taken" }, cat { Category: LinkCategory } };
+
+static mut DumpAsm: opt<bool> = opt<bool> { "d", desc { Desc: "Print assembly as linked" }, Hidden, cat { Category: LinkCategory } };
+
+static mut SuppressWarnings: opt<bool> = opt<bool> { "suppress-warnings", desc { Desc: "Suppress all linking warnings" }, init(false), cat { Category: LinkCategory } };
+
+static mut NoVerify: opt<bool> = opt<bool> { "disable-verify", desc { Desc: "Do not run the verifier" }, Hidden, cat { Category: LinkCategory } };
+
+static mut IgnoreNonBitcode: opt<bool> = opt<bool> { "ignore-non-bitcode", desc { Desc: "Do not report an error for non-bitcode files in archives" }, Hidden };
+
+static mut ExitOnErr: ExitOnError = ExitOnError { Banner: "", GetExitCode: 1 };
+
+fn loadFile(argv0: *u8, Buffer: unique_ptr<MemoryBuffer>, Context: *mut LLVMContext, MaterializeMetadata: bool) -> unique_ptr<Module> {
+    let mut Err: SMDiagnostic = SMDiagnostic {};
+    if Verbose {
+        errs() << "Loading '" << operator(Buffer).getBufferIdentifier() << "'\n";
+    }
+    let mut Result: unique_ptr<Module> = unique_ptr<Module> {};
+    if DisableLazyLoad {
+        Result = parseIR(MemoryBufferRef { operator(Buffer) }, Err, Context, ParserCallbacks {}, null);
+    } else {
+        Result = getLazyIRModule(unique_ptr<MemoryBuffer> { move(Buffer) }, Err, Context, !MaterializeMetadata);
+    }
+    if !Result {
+        Err.print(argv0, errs(), true, true, true);
+        return unique_ptr<Module> { null };
+    }
+    if MaterializeMetadata {
+        ExitOnErr.call(operator(Result).materializeMetadata());
+        UpgradeDebugInfo(operator(Result));
+    }
+    return Result;
+}
+
+fn loadArFile(Argv0: *u8, Buffer: unique_ptr<MemoryBuffer>, Context: *mut LLVMContext) -> unique_ptr<Module> {
+    let mut Result: unique_ptr<Module> = unique_ptr<Module> { Module { "ArchiveModule", Context } };
+    let mut ArchiveName: str = operator(Buffer).getBufferIdentifier();
+    if Verbose {
+        errs() << "Reading library archive file '" << ArchiveName << "' to memory\n";
+    }
+    let mut ArchiveOrError: Archive>> = create(operator(Buffer).getMemBufferRef());
+    if !ArchiveOrError {
+        ExitOnErr.call(ArchiveOrError.takeError());
+    }
+    let mut Archive: Archive> = Archive> { move(ArchiveOrError.get()) };
+    let mut L: Linker = Linker { Mover: operator(Result) };
+    let mut Err: Error = success();
+    for C in operator(Archive).children(Err, true) {
+        let mut Ename: Expected<StringRef> = C.getName();
+        if Ename.takeError() {
+            E;
+        } else {
+            errs() << Argv0 << ": ";
+            error() << " failed to read name of archive member" << ArchiveName << "'\n";
+            return unique_ptr<Module> { null };
+        }
+        let mut ChildName: str = Ename.get();
+        if Verbose {
+            errs() << "Parsing member '" << ChildName << "' of archive library to module.\n";
+        }
+        let mut ParseErr: SMDiagnostic = SMDiagnostic {};
+        let mut MemBuf: Expected<MemoryBufferRef> = C.getMemoryBufferRef();
+        if MemBuf.takeError() {
+            E;
+        } else {
+            errs() << Argv0 << ": ";
+            error() << " loading memory for member '" << ChildName << "' of archive library failed'" << ArchiveName << "'\n";
+            return unique_ptr<Module> { null };
+        }
+        if !isBitcode(MemBuf.get().getBufferStart() as *u8, MemBuf.get().getBufferEnd() as *u8) {
+            if IgnoreNonBitcode {
+                continue;
+            }
+            errs() << Argv0 << ": ";
+            error() << "  member of archive is not a bitcode file: '" << ChildName << "'\n";
+            return unique_ptr<Module> { null };
+        }
+        let mut M: unique_ptr<Module> = unique_ptr<Module> {};
+        if DisableLazyLoad {
+            M = parseIR(MemBuf.get(), ParseErr, Context, ParserCallbacks {}, null);
+        } else {
+            M = getLazyIRModule(getMemBuffer(MemBuf.get(), false), ParseErr, Context, false);
+        }
+        if !M {
+            errs() << Argv0 << ": ";
+            error() << " parsing member '" << ChildName << "' of archive library failed'" << ArchiveName << "'\n";
+            return unique_ptr<Module> { null };
+        }
+        if Verbose {
+            errs() << "Linking member '" << ChildName << "' of archive library.\n";
+        }
+        if L.linkInModule(unique_ptr<Module> { move(M) }, None, function<void (Module &, const StringSet<> &)> {}) {
+            return unique_ptr<Module> { null };
+        }
+    }
+    ExitOnErr.call(Error { Payload: move(Err) });
+    return Result;
+}
+
+struct ModuleLazyLoaderCache {
+    ModuleMap: unique_ptr<Module>>,
+    createLazyModule: string &)>,
+}
+
+fn ModuleLazyLoaderCache::takeModule(self, FileName: str) -> unique_ptr<Module> {
+    let mut I: iterator = self.ModuleMap.find(FileName);
+    assert!(I != self.ModuleMap.end();
+    let mut Ret: unique_ptr<Module> = unique_ptr<Module> { move(operator(I).second) };
+    self.ModuleMap.erase(iterator { I });
+    return Ret;
+}
+
+fn ModuleLazyLoaderCache::operator()(self, argv0: *u8, Identifier: str) -> *mut Module {
+    let mut Module: *mut Module> = self.ModuleMap[Identifier];
+    if !Module {
+        Module = self.createLazyModule.call(argv0, Identifier);
+        assert!(Module, "Failed to create lazy module!");
+    }
+    return operator(Module);
+}
+
+struct LLVMLinkDiagnosticHandler {
+    DiagnosticContext: *mut void,
+    HasErrors: bool,
+    DiagHandlerCallback: DiagnosticHandlerTy,
+}
+
+fn LLVMLinkDiagnosticHandler::handleDiagnostics(self, DI: *DiagnosticInfo) -> bool {
+    let mut Severity: u32 = DI.getSeverity();
+    match Severity {
+        DS_Error => {
+            error();
+        },
+        DS_Warning => {
+            if SuppressWarnings {
+                return true;
+            }
+        },
+        DS_Remark => {
+            DS_Note;
+        },
+    }
+    let mut DP: DiagnosticPrinterRawOStream = DiagnosticPrinterRawOStream { Stream: errs() };
+    DI.print(DP);
+    errs() << 10;
+    return true;
+}
+
+fn LLVMLinkDiagnosticHandler::isAnyRemarkEnabled(self: *LLVMLinkDiagnosticHandler, PassName: str) -> bool {
+    return (self.isMissedOptRemarkEnabled(PassName) || self.isPassedOptRemarkEnabled(PassName) || self.isAnalysisRemarkEnabled(PassName));
+}
+
+fn importFunctions(argv0: *u8, DestModule: *mut Module) -> bool {
+    if SummaryIndex.len == 0 {
+        return true;
+    }
+    let mut Index: unique_ptr<ModuleSummaryIndex> = ExitOnErr.call(getModuleSummaryIndexForFile(SummaryIndex, false));
+    let mut ImportIDs: ImportIDTable = ImportIDTable {};
+    let mut ImportList: ImportMapTy = ImportMapTy { ImportIDs };
+    let mut ModuleLoader: Closure_1 = Closure_1 { DestModule: &mut DestModule };
+    let mut ModuleLoaderCache: ModuleLazyLoaderCache = ModuleLazyLoaderCache { string &)> { ModuleLoader } };
+    let mut FileNameStringCache: StringSet<> = StringSet<> {};
+    for Import in Imports {
+        let mut Idx: u64 = Import.find(':', 0);
+        if Idx == npos {
+            errs() << "Import parameter bad format: " << Import << "\n";
+            return false;
+        }
+        let mut FunctionName: str = Import[0..0 + Idx];
+        let mut FileName: str = Import[Idx + 1..Idx + 1 + npos];
+        let mut SrcModule: *mut Module = ModuleLoaderCache.call(argv0, FileName);
+        if !NoVerify && verifyModule(SrcModule, &mut errs(), null) {
+            errs() << argv0 << ": " << FileName;
+            error() << "input module is broken!\n";
+            return false;
+        }
+        let mut F: *mut Function = SrcModule.getFunction(FunctionName);
+        if !F {
+            errs() << "Ignoring import request for non-existent function " << FunctionName << " from " << FileName << "\n";
+            continue;
+        }
+        if F.hasWeakAnyLinkage() {
+            errs() << "Ignoring import request for weak-any function " << FunctionName << " from " << FileName << "\n";
+            continue;
+        }
+        if Verbose {
+            errs() << "Importing " << FunctionName << " from " << FileName << "\n";
+        }
+        let mut GUID: GUID = F.getGUIDOrFallback();
+        ImportList.addDefinition(operator(FileNameStringCache.insert(FileName).first).getKey(), GUID);
+    }
+    let mut CachedModuleLoader: Closure_2 = Closure_2 { ModuleLoaderCache: &mut ModuleLoaderCache };
+    let mut Importer: FunctionImporter = FunctionImporter { Index: operator(Index), ModuleLoader: ModuleLoaderTy { CachedModuleLoader }, ClearDSOLocalOnDeclarations: false };
+    ExitOnErr.call(Importer.importFunctions(DestModule, ImportList));
+    return true;
+}
+
+fn linkFiles(argv0: *u8, Context: *mut LLVMContext, L: *mut Linker, Files: *string>, Flags: u32) -> bool {
+    let mut ApplicableFlags: u32 = Flags & OverrideFromSrc;
+    let mut InternalizeLinkedSymbols: bool = false;
+    for File in Files {
+        let mut BufferOrErr: unique_ptr<MemoryBuffer>> = getFileOrSTDIN(File, true, true, optional<Align> { nullopt });
+        if BufferOrErr.getError() {
+            EC;
+        } else if EC == error_condition { no_such_file_or_directory } {
+            ExitOnErr.call(createStringError(EC, "No such file or directory: '%s'", File.ptr));
+        }
+        let mut Buffer: unique_ptr<MemoryBuffer> = ExitOnErr.call(errorOrToExpected(move(BufferOrErr)));
+        let mut M: unique_ptr<Module> = if identify_magic(operator(Buffer).getBuffer()).operator llvm::file_magic::Impl() == archive { loadArFile(argv0, unique_ptr<MemoryBuffer> { move(Buffer) }, Context) } else { loadFile(argv0, unique_ptr<MemoryBuffer> { move(Buffer) }, Context, true) };
+        if !M {
+            errs() << argv0 << ": ";
+            error() << " loading file '" << File << "'\n";
+            return false;
+        }
+        if DisableDITypeMap && !NoVerify && verifyModule(operator(M), &mut errs(), null) {
+            errs() << argv0 << ": " << File << ": ";
+            error() << "input module is broken!\n";
+            return false;
+        }
+        if !SummaryIndex.is_empty() {
+            let mut Index: unique_ptr<ModuleSummaryIndex> = ExitOnErr.call(getModuleSummaryIndexForFile(SummaryIndex, false));
+            for I in operator(Index) {
+                for S in I.second.getSummaryList() {
+                    if isLocalLinkage(operator(S).linkage()) {
+                        operator(S).setExternalLinkageForTest();
+                    }
+                }
+            }
+            renameModuleForThinLTO(operator(M), operator(Index), false, null);
+        }
+        if Verbose {
+            errs() << "Linking in '" << File << "'\n";
+        }
+        let mut Err: bool = false;
+        if InternalizeLinkedSymbols {
+            Err = L.linkInModule(unique_ptr<Module> { move(M) }, ApplicableFlags, function<void (Module &, const StringSet<> &)> { Closure_3 {} });
+        } else {
+            Err = L.linkInModule(unique_ptr<Module> { move(M) }, ApplicableFlags, function<void (Module &, const StringSet<> &)> {});
+        }
+        if Err {
+            return false;
+        }
+        InternalizeLinkedSymbols = Internalize;
+        ApplicableFlags = Flags;
+    }
+    return true;
+}
+
+fn main() -> i32 {
+    let mut X: InitLLVM = InitLLVM { argc, argv, true, false };
+    ExitOnErr.setBanner(argv[0] + ": ");
+    HideUnrelatedOptions([&mut LinkCategory, &mut getColorCategory()], getTopLevel());
+    ParseCommandLineOptions(argc, argv, "llvm linker\n", null, null, null);
+    let mut Context: LLVMContext = LLVMContext {};
+    Context.setDiagnosticHandler(unique_ptr<DiagnosticHandler> { make_unique() }, true);
+    if !DisableDITypeMap {
+        Context.enableDebugTypeODRUniquing();
+    }
+    let mut Composite: Module> = make_unique("llvm-link", Context);
+    let mut L: Linker = Linker { Mover: operator(Composite) };
+    let mut Flags: u32 = None;
+    if OnlyNeeded {
+        Flags |= LinkOnlyNeeded;
+    }
+    if !linkFiles(argv[0], Context, L, InputFilenames, Flags) {
+        return 1;
+    }
+    if !linkFiles(argv[0], Context, L, OverridingInputs, Flags | OverrideFromSrc) {
+        return 1;
+    }
+    if !importFunctions(argv[0], operator(Composite)) {
+        return 1;
+    }
+    if DumpAsm {
+        errs() << "Here's the assembly:\n" << operator(Composite);
+    }
+    let mut EC: error_code = error_code {};
+    let mut Out: ToolOutputFile = ToolOutputFile { Installer: OutputFilename, OSHolder: EC, OS: if OutputAssembly { OF_TextWithCRLF } else { OF_None } };
+    if EC {
+        error() << EC.message() << 10;
+        return 1;
+    }
+    if !NoVerify && verifyModule(operator(Composite), &mut errs(), null) {
+        errs() << argv[0] << ": ";
+        error() << "linked module is broken!\n";
+        return 1;
+    }
+    if Verbose {
+        errs() << "Writing bitcode...\n";
+    }
+    if OutputAssembly {
+        operator(Composite).renumberMetadataForAssembly();
+        operator(Composite).print(Out.os(), null, false, false);
+    } else if Force || !CheckBitcodeOutputToConsole(Out.os()) {
+        WriteBitcodeToFile(operator(Composite), Out.os(), true, null, false, null);
+    }
+    Out.keep();
+    return 0;
+}
+
+struct Closure_1 {
+    DestModule: *mut Module,
+}
+
+unsafe fn Closure_1::call(self: *mut Closure_1, argv0: *u8, Identifier: str) -> unique_ptr<Module> {
+        let mut Buffer: unique_ptr<MemoryBuffer> = ExitOnErr.call(errorOrToExpected(getFileOrSTDIN(Identifier, true, true, optional<Align> { nullopt })));
+        return loadFile(argv0, unique_ptr<MemoryBuffer> { move(Buffer) }, (*self.DestModule).getContext(), false);
+    }
+
+struct Closure_2 {
+    ModuleLoaderCache: *mut ModuleLazyLoaderCache,
+}
+
+unsafe fn Closure_2::call(self: *mut Closure_2, Identifier: str) -> unique_ptr<Module> {
+        return (*self.ModuleLoaderCache).takeModule(Identifier[0..allocator<char> {}]);
+    }
+
+struct Closure_4 {
+    GVS: *mut StringSet<>,
+}
+
+unsafe fn Closure_4::call(self: *mut Closure_4, GV: *GlobalValue) -> bool {
+                    return !GV.hasName() || ((*self.GVS).count(GV.getName()) == 0);
+                }
+
+struct Closure_3 {}
+
+fn Closure_3::call(self: *Closure_3, M: *mut Module, GVS: *StringSet<>) {
+                internalizeModule(M, function<bool (const GlobalValue &)> { Closure_4 { GVS: &mut GVS } });
+            }

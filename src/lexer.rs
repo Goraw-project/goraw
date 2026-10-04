@@ -181,6 +181,10 @@ impl<'a> Lexer<'a> {
                 out.push(self.lex_string(diags));
                 continue;
             }
+            if c == '\'' {
+                out.push(self.lex_char(diags));
+                continue;
+            }
 
             // операторы и пунктуация
             let tok = self.lex_operator(diags);
@@ -354,7 +358,8 @@ impl<'a> Lexer<'a> {
                 }
             }
         } else {
-            match s.parse::<i64>() {
+            let val = s.parse::<i64>().or_else(|_| s.parse::<u64>().map(|u| u as i64));
+            match val {
                 Ok(n) => Token { tok: Tok::Int(n), span },
                 Err(_) => {
                     diags.push(Diagnostic::error("E0003", span, format!("целочисленный литерал `{s}` не помещается в i64")));
@@ -386,6 +391,12 @@ impl<'a> Lexer<'a> {
                     Some('\\') => s.push('\\'),
                     Some('"') => s.push('"'),
                     Some('\'') => s.push('\''),
+                    Some('x') => {
+                        let h1 = self.bump().and_then(|c| c.to_digit(16)).unwrap_or(0);
+                        let h2 = self.bump().and_then(|c| c.to_digit(16)).unwrap_or(0);
+                        let b = ((h1 << 4) | h2) as u8;
+                        s.push(b as char);
+                    }
                     Some(other) => {
                         diags.push(Diagnostic::error(
                             "E0005",
@@ -401,6 +412,67 @@ impl<'a> Lexer<'a> {
         }
         let end = self.pos();
         Token { tok: Tok::Str(s), span: Span::new(start, end) }
+    }
+
+    fn lex_char(&mut self, diags: &mut Diags) -> Token {
+        let start = self.pos();
+        self.bump(); // '
+        let ch = match self.bump() {
+            None => {
+                diags.push(
+                    Diagnostic::error("E0004", Span::new(start, self.pos()), "незакрытый символьный литерал")
+                        .with_hint("добавьте закрывающую кавычку `'`"),
+                );
+                0i64
+            }
+            Some('\'') => {
+                // Пустой символьный литерал '' или двойной апостроф
+                0i64
+            }
+            Some('\\') => match self.bump() {
+                Some('n') => '\n' as u32 as i64,
+                Some('t') => '\t' as u32 as i64,
+                Some('r') => '\r' as u32 as i64,
+                Some('0') => '\0' as u32 as i64,
+                Some('\\') => '\\' as u32 as i64,
+                Some('"') => '"' as u32 as i64,
+                Some('\'') => '\'' as u32 as i64,
+                Some('x') => {
+                    let h1 = self.bump().and_then(|c| c.to_digit(16)).unwrap_or(0);
+                    let h2 = self.bump().and_then(|c| c.to_digit(16)).unwrap_or(0);
+                    ((h1 << 4) | h2) as i64
+                }
+                Some(other) => {
+                    diags.push(Diagnostic::error(
+                        "E0005",
+                        Span::new(start, self.pos()),
+                        format!("неизвестная escape-последовательность `\\{other}`"),
+                    ));
+                    other as u32 as i64
+                }
+                None => 0i64,
+            },
+            Some(c) => c as u32 as i64,
+        };
+
+        // Закрывающая одинарная кавычка
+        if self.peek() == Some('\'') {
+            self.bump();
+        } else {
+            // Если кавычка не закрыта сразу, считываем до кавычки или конца строки
+            while let Some(extra) = self.peek() {
+                if extra == '\'' {
+                    self.bump();
+                    break;
+                }
+                if extra == '\n' {
+                    break;
+                }
+                self.bump();
+            }
+        }
+        let end = self.pos();
+        Token { tok: Tok::Int(ch), span: Span::new(start, end) }
     }
 
     fn lex_operator(&mut self, diags: &mut Diags) -> Option<Tok> {

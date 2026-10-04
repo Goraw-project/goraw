@@ -1,0 +1,813 @@
+static mut NumUnfolds: Statistic = Statistic { "pre-RA-sched", "NumUnfolds", "Number of nodes unfolded" };
+
+static mut NumDups: Statistic = Statistic { "pre-RA-sched", "NumDups", "Number of duplicated nodes" };
+
+static mut NumPRCopies: Statistic = Statistic { "pre-RA-sched", "NumPRCopies", "Number of physical copies" };
+
+static mut fastDAGScheduler: RegisterScheduler = RegisterScheduler { "fast", "Fast suboptimal list scheduling", createFastDAGScheduler };
+
+static mut linearizeDAGScheduler: RegisterScheduler = RegisterScheduler { "linearize", "Linearize DAG, no scheduling", createDAGLinearizer };
+
+struct FastPriorityQueue {
+    Queue: SmallVector<SUnit *, 16>,
+}
+
+fn FastPriorityQueue::empty(self: *FastPriorityQueue) -> bool {
+    return self.Queue.len == 0;
+}
+
+fn FastPriorityQueue::push(self, U: *mut SUnit) {
+    self.Queue.push(U);
+}
+
+fn FastPriorityQueue::pop(self) -> *mut SUnit {
+    if self.len == 0 {
+        return null;
+    }
+    return self.Queue.pop_back_val();
+}
+
+struct ScheduleDAGFast {
+    TM: *TargetMachine,
+    TII: *TargetInstrInfo,
+    TRI: *TargetRegisterInfo,
+    MF: *mut MachineFunction,
+    MRI: *mut MachineRegisterInfo,
+    SUnits: []SUnit,
+    EntrySU: SUnit,
+    ExitSU: SUnit,
+    StressSched: bool,
+    BB: *mut MachineBasicBlock,
+    DAG: *mut SelectionDAG,
+    InstrItins: *InstrItineraryData,
+    Sequence: []*mut SUnit,
+    AvailableQueue: FastPriorityQueue,
+    NumLiveRegs: u32,
+    LiveRegDefs: []*mut SUnit,
+    LiveRegCycles: []u32,
+}
+
+fn ScheduleDAGFast::AddPred(self, SU: *mut SUnit, D: *SDep) {
+    SU.addPred(D, true);
+}
+
+fn ScheduleDAGFast::RemovePred(self, SU: *mut SUnit, D: *SDep) {
+    SU.removePred(D);
+}
+
+fn ScheduleDAGFast::forceUnitLatencies(self: *ScheduleDAGFast) -> bool {
+    return true;
+}
+
+fn ScheduleDAGFast::getInstrDesc(self: *ScheduleDAGFast, SU: *SUnit) -> *MCInstrDesc {
+    if SU.isInstr() {
+        return &mut SU.getInstr().getDesc();
+    }
+    return self.getNodeDesc(SU.getNode());
+}
+
+fn ScheduleDAGFast::addCustomGraphFeatures(self: *ScheduleDAGFast, arg: *mut GraphWriter<ScheduleDAG *>) {}
+
+fn ScheduleDAGFast::isPassiveNode(self, Node: *mut SDNode) -> bool {
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if Node.getOpcode() == EntryToken || isa(Node) {
+        return true;
+    }
+    return false;
+}
+
+fn ScheduleDAGFast::Schedule(self) {
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            dbgs() << "********** List Scheduling **********\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    self.NumLiveRegs = 0;
+    self.LiveRegDefs.resize(self.TRI.getNumRegs(), null);
+    self.LiveRegCycles.resize(self.TRI.getNumRegs(), 0);
+    self.BuildSchedGraph();
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            self.dump();
+        }
+    }
+        if !(false) { break; }
+    }
+    self.ListScheduleBottomUp();
+}
+
+fn ScheduleDAGFast::ReleasePred(self, SU: *mut SUnit, PredEdge: *mut SDep) {
+    let mut PredSU: *mut SUnit = PredEdge.getSUnit();
+    if PredSU.NumSuccsLeft == 0 {
+        dbgs() << "*** Scheduling failed! ***\n";
+        self.dumpNode(*PredSU);
+        dbgs() << " has been released too many times!\n";
+        llvm_unreachable_internal(null, "llvm\\lib\\CodeGen\\SelectionDAG\\ScheduleDAGFast.cpp", 137);
+    }
+    PredSU.NumSuccsLeft -= 1;
+    if PredSU.NumSuccsLeft == 0 && PredSU != &mut self.EntrySU {
+        PredSU.isAvailable = true;
+        self.AvailableQueue.push(PredSU);
+    }
+}
+
+fn ScheduleDAGFast::ReleasePredecessors(self, SU: *mut SUnit, CurCycle: u32) {
+    for Pred in SU.Preds {
+        self.ReleasePred(SU, &mut Pred);
+        if Pred.isAssignedRegDep() {
+            if !self.LiveRegDefs[Pred.getReg().operator unsigned int()] {
+                self.NumLiveRegs += 1;
+                self.LiveRegDefs[Pred.getReg().operator unsigned int()] = Pred.getSUnit();
+                self.LiveRegCycles[Pred.getReg().operator unsigned int()] = CurCycle;
+            }
+        }
+    }
+}
+
+fn ScheduleDAGFast::ScheduleNodeBottomUp(self, SU: *mut SUnit, CurCycle: u32) {
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            dbgs() << "*** Scheduling [" << CurCycle << "]: ";
+        }
+    }
+        if !(false) { break; }
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            self.dumpNode(*SU);
+        }
+    }
+        if !(false) { break; }
+    }
+    assert!(CurCycle >= SU.getHeight(), "Node scheduled below its height!");
+    SU.setHeightToAtLeast(CurCycle);
+    self.Sequence.push(SU);
+    self.ReleasePredecessors(SU, CurCycle);
+    for Succ in SU.Succs {
+        if Succ.isAssignedRegDep() {
+            if self.LiveRegCycles[Succ.getReg().operator unsigned int()] == Succ.getSUnit().getHeight() {
+                assert!(self.NumLiveRegs > 0, "NumLiveRegs is already zero!");
+                assert!(self.LiveRegDefs[Succ.getReg().operator unsigned int()] == SU, "Physical register dependency violated?");
+                self.NumLiveRegs -= 1;
+                self.LiveRegDefs[Succ.getReg().operator unsigned int()] = null;
+                self.LiveRegCycles[Succ.getReg().operator unsigned int()] = 0;
+            }
+        }
+    }
+    SU.isScheduled = true;
+}
+
+fn ScheduleDAGFast::CopyAndMoveSuccessors(self, SU: *mut SUnit) -> *mut SUnit {
+    if SU.getNode().getGluedNode() {
+        return null;
+    }
+    let mut N: *mut SDNode = SU.getNode();
+    if !N {
+        return null;
+    }
+    let mut NewSU: *mut SUnit = null;
+    let mut TryUnfold: bool = false;
+    for let mut i: u32 = 0;
+let mut e: u32 = N.getNumValues(); i != e; i += 1 {
+        let mut VT: MVT = N.getSimpleValueType(i);
+        if VT == Glue {
+            return null;
+        } else if VT == Other {
+            TryUnfold = true;
+        }
+    }
+    for Op in N.op_values() {
+        let mut VT: MVT = Op.getNode().getSimpleValueType(Op.getResNo());
+        if VT == Glue {
+            return null;
+        }
+    }
+    if TryUnfold {
+        let mut NewNodes: SmallVector<SDNode *, 2> = SmallVector<SDNode *, 2> {};
+        if !self.TII.unfoldMemoryOperand(*self.DAG, N, NewNodes) {
+            return null;
+        }
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                dbgs() << "Unfolding SU # " << SU.NodeNum << "\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        assert!(NewNodes.len == 2, "Expected a load folding node!");
+        N = NewNodes[1];
+        let mut LoadNode: *mut SDNode = NewNodes[0];
+        let mut NumVals: u32 = N.getNumValues();
+        let mut OldNumVals: u32 = SU.getNode().getNumValues();
+        for let mut i: u32 = 0; i != NumVals; i += 1 {
+            self.DAG.ReplaceAllUsesOfValueWith(SDValue { Node: SU.getNode(), ResNo: i }, SDValue { Node: N, ResNo: i });
+        }
+        self.DAG.ReplaceAllUsesOfValueWith(SDValue { Node: SU.getNode(), ResNo: OldNumVals - 1 }, SDValue { Node: LoadNode, ResNo: 1 });
+        let mut NewSU: *mut SUnit = self.newSUnit(N);
+        assert!(N.getNodeId() == -1, "Node already inserted!");
+        N.setNodeId(NewSU.NodeNum);
+        let mut MCID: *MCInstrDesc = self.TII.get(N.getMachineOpcode());
+        for let mut i: u32 = 0; i != MCID.getNumOperands(); i += 1 {
+            if MCID.getOperandConstraint(i, TIED_TO) != -1 {
+                NewSU.isTwoAddress = true;
+                break;
+            }
+        }
+        if MCID.isCommutable() {
+            NewSU.isCommutable = true;
+        }
+        let mut isNewLoad: bool = true;
+        let mut LoadSU: *mut SUnit = null;
+        if LoadNode.getNodeId() != -1 {
+            LoadSU = &mut self.SUnits[LoadNode.getNodeId()];
+            isNewLoad = false;
+        } else {
+            LoadSU = self.newSUnit(LoadNode);
+            LoadNode.setNodeId(LoadSU.NodeNum);
+        }
+        let mut ChainPred: SDep = SDep {};
+        let mut ChainSuccs: SmallVector<SDep, 4> = SmallVector<SDep, 4> {};
+        let mut LoadPreds: SmallVector<SDep, 4> = SmallVector<SDep, 4> {};
+        let mut NodePreds: SmallVector<SDep, 4> = SmallVector<SDep, 4> {};
+        let mut NodeSuccs: SmallVector<SDep, 4> = SmallVector<SDep, 4> {};
+        for Pred in SU.Preds {
+            if Pred.isCtrl() {
+                ChainPred = Pred;
+            } else if Pred.getSUnit().getNode() && Pred.getSUnit().getNode().isOperandOf(LoadNode) {
+                LoadPreds.push(ValueParamT { Pred });
+            } else {
+                NodePreds.push(ValueParamT { Pred });
+            }
+        }
+        for Succ in SU.Succs {
+            if Succ.isCtrl() {
+                ChainSuccs.push(ValueParamT { Succ });
+            } else {
+                NodeSuccs.push(ValueParamT { Succ });
+            }
+        }
+        if ChainPred.getSUnit() {
+            self.RemovePred(SU, ChainPred);
+            if isNewLoad {
+                self.AddPred(LoadSU, ChainPred);
+            }
+        }
+        for Pred in LoadPreds {
+            self.RemovePred(SU, Pred);
+            if isNewLoad {
+                self.AddPred(LoadSU, Pred);
+            }
+        }
+        for Pred in NodePreds {
+            self.RemovePred(SU, Pred);
+            self.AddPred(NewSU, Pred);
+        }
+        for D in NodeSuccs {
+            let mut SuccDep: *mut SUnit = D.getSUnit();
+            D.setSUnit(SU);
+            self.RemovePred(SuccDep, D);
+            D.setSUnit(NewSU);
+            self.AddPred(SuccDep, D);
+        }
+        for D in ChainSuccs {
+            let mut SuccDep: *mut SUnit = D.getSUnit();
+            D.setSUnit(SU);
+            self.RemovePred(SuccDep, D);
+            if isNewLoad {
+                D.setSUnit(LoadSU);
+                self.AddPred(SuccDep, D);
+            }
+        }
+        if isNewLoad {
+            let mut D: SDep = SDep { LoadSU, Barrier };
+            D.setLatency(LoadSU.Latency);
+            self.AddPred(NewSU, D);
+        }
+        operator(NumUnfolds);
+        if NewSU.NumSuccsLeft == 0 {
+            NewSU.isAvailable = true;
+            return NewSU;
+        }
+        SU = NewSU;
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            dbgs() << "Duplicating SU # " << SU.NodeNum << "\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    NewSU = self.Clone(SU);
+    for Pred in SU.Preds {
+        if !Pred.isArtificial() {
+            self.AddPred(NewSU, Pred);
+        }
+    }
+    let mut DelDeps: pair<SUnit *, SDep>, 4> = pair<SUnit *, SDep>, 4> {};
+    for Succ in SU.Succs {
+        if Succ.isArtificial() {
+            continue;
+        }
+        let mut SuccSU: *mut SUnit = Succ.getSUnit();
+        if SuccSU.isScheduled {
+            let mut D: SDep = Succ;
+            D.setSUnit(NewSU);
+            self.AddPred(SuccSU, D);
+            D.setSUnit(SU);
+            DelDeps.push(make_pair(SuccSU, D));
+        }
+    }
+    for x in DelDeps {
+        self.RemovePred(Del, Dep);
+    }
+    operator(NumDups);
+    return NewSU;
+}
+
+fn ScheduleDAGFast::InsertCopiesAndMoveSuccs(self, SU: *mut SUnit, Reg: u32, DestRC: *TargetRegisterClass, SrcRC: *TargetRegisterClass, Copies: *mut SmallVectorImpl<SUnit *>) {
+    let mut CopyFromSU: *mut SUnit = self.newSUnit(null as *mut SDNode);
+    CopyFromSU.CopySrcRC = SrcRC;
+    CopyFromSU.CopyDstRC = DestRC;
+    let mut CopyToSU: *mut SUnit = self.newSUnit(null as *mut SDNode);
+    CopyToSU.CopySrcRC = DestRC;
+    CopyToSU.CopyDstRC = SrcRC;
+    let mut DelDeps: pair<SUnit *, SDep>, 4> = pair<SUnit *, SDep>, 4> {};
+    for Succ in SU.Succs {
+        if Succ.isArtificial() {
+            continue;
+        }
+        let mut SuccSU: *mut SUnit = Succ.getSUnit();
+        if SuccSU.isScheduled {
+            let mut D: SDep = Succ;
+            D.setSUnit(CopyToSU);
+            self.AddPred(SuccSU, D);
+            DelDeps.push(make_pair(SuccSU, Succ));
+        }
+    }
+    for x in DelDeps {
+        self.RemovePred(Del, Dep);
+    }
+    let mut FromDep: SDep = SDep { Dep: SU, Contents: Data, Latency: Register { Reg: Reg } };
+    FromDep.setLatency(SU.Latency);
+    self.AddPred(CopyFromSU, FromDep);
+    let mut ToDep: SDep = SDep { Dep: CopyFromSU, Contents: Data, Latency: Register { Reg: 0 } };
+    ToDep.setLatency(CopyFromSU.Latency);
+    self.AddPred(CopyToSU, ToDep);
+    Copies.push(CopyFromSU);
+    Copies.push(CopyToSU);
+    operator(NumPRCopies);
+}
+
+fn CheckForLiveRegDef(SU: *mut SUnit, Reg: MCRegister, LiveRegDefs: *mut []*mut SUnit, RegAdded: *mut SmallSet<unsigned int, 4>, LRegs: *mut SmallVectorImpl<unsigned int>, TRI: *TargetRegisterInfo, Node: *SDNode) -> bool {
+    let mut Added: bool = false;
+    for let mut AI: MCRegAliasIterator = MCRegAliasIterator { Reg, TRI, true }; AI.isValid(); operator(AI) {
+        if !LiveRegDefs[operator(AI).operator unsigned int()] {
+            continue;
+        }
+        if LiveRegDefs[operator(AI).operator unsigned int()] == SU {
+            continue;
+        }
+        if Node && LiveRegDefs[operator(AI).operator unsigned int()].getNode() == Node {
+            continue;
+        }
+        if RegAdded.insert(operator(AI).operator unsigned int()).second {
+            LRegs.push(operator(AI).operator unsigned int());
+            Added = true;
+        }
+    }
+    return Added;
+}
+
+fn ScheduleDAGFast::DelayForLiveRegsBottomUp(self, SU: *mut SUnit, LRegs: *mut SmallVectorImpl<unsigned int>) -> bool {
+    if self.NumLiveRegs == 0 {
+        return false;
+    }
+    let mut RegAdded: SmallSet<unsigned int, 4> = SmallSet<unsigned int, 4> {};
+    for Pred in SU.Preds {
+        if Pred.isAssignedRegDep() {
+            CheckForLiveRegDef(Pred.getSUnit(), Pred.getReg().operator MCRegister(), self.LiveRegDefs, RegAdded, LRegs, self.TRI, null);
+        }
+    }
+    for let mut Node: *mut SDNode = SU.getNode(); Node; Node = Node.getGluedNode() {
+        if Node.getOpcode() == INLINEASM || Node.getOpcode() == INLINEASM_BR {
+            let mut NumOps: u32 = Node.getNumOperands();
+            if Node.getOperand(NumOps - 1).getValueType() == EVT { Glue } {
+                NumOps -= 1;
+            }
+            for let mut i: u32 = Op_FirstOperand; i != NumOps;  {
+                let mut Flags: u32 = Node.getConstantOperandVal(i);
+                let mut F: Flag = Flag { Flags };
+                let mut NumVals: u32 = F.getNumOperandRegisters();
+                i += 1;
+                if F.isRegDefKind() || F.isRegDefEarlyClobberKind() || F.isClobberKind() {
+                    for ; NumVals; NumVals -= 1 , i += 1 {
+                        let mut Reg: Register = cast(Node.getOperand(i)).getReg();
+                        if Reg.isPhysical() {
+                            CheckForLiveRegDef(SU, Reg.operator MCRegister(), self.LiveRegDefs, RegAdded, LRegs, self.TRI, null);
+                        }
+                    }
+                } else {
+                    i += NumVals;
+                }
+            }
+            continue;
+        }
+        if Node.getOpcode() == CopyToReg {
+            let mut Reg: Register = cast(Node.getOperand(1)).getReg();
+            if Reg.isPhysical() {
+                let mut SrcNode: *mut SDNode = Node.getOperand(2).getNode();
+                CheckForLiveRegDef(SU, Reg.operator MCRegister(), self.LiveRegDefs, RegAdded, LRegs, self.TRI, SrcNode);
+            }
+        }
+        if !Node.isMachineOpcode() {
+            continue;
+        }
+        let mut MCID: *MCInstrDesc = self.TII.get(Node.getMachineOpcode());
+        for Reg in MCID.implicit_defs() {
+            CheckForLiveRegDef(SU, MCRegister { Reg: Reg }, self.LiveRegDefs, RegAdded, LRegs, self.TRI, null);
+        }
+    }
+    return !LRegs.is_empty();
+}
+
+fn ScheduleDAGFast::ListScheduleBottomUp(self) {
+    let mut CurCycle: u32 = 0;
+    self.ReleasePredecessors(&mut self.ExitSU, CurCycle);
+    if !self.SUnits.is_empty() {
+        let mut RootSU: *mut SUnit = &mut self.SUnits[self.DAG.getRoot().getNode().getNodeId()];
+        assert!(RootSU.Succs.is_empty(), "Graph root shouldn't have successors!");
+        RootSU.isAvailable = true;
+        self.AvailableQueue.push(RootSU);
+    }
+    let mut NotReady: SmallVector<SUnit *, 4> = SmallVector<SUnit *, 4> {};
+    let mut LRegsMap: DenseMap<SUnit *, SmallVector<unsigned int, 4>> = DenseMap<SUnit *, SmallVector<unsigned int, 4>> {};
+    self.Sequence.reserve(self.SUnits.len);
+    while !self.AvailableQueue.is_empty() {
+        let mut Delayed: bool = false;
+        LRegsMap.clear();
+        let mut CurSU: *mut SUnit = self.AvailableQueue.pop();
+        while CurSU {
+            let mut LRegs: SmallVector<unsigned int, 4> = SmallVector<unsigned int, 4> {};
+            if !self.DelayForLiveRegsBottomUp(CurSU, LRegs) {
+                break;
+            }
+            Delayed = true;
+            LRegsMap.insert(make_pair(CurSU, LRegs));
+            CurSU.isPending = true;
+            NotReady.push(CurSU);
+            CurSU = self.AvailableQueue.pop();
+        }
+        if Delayed && !CurSU {
+            if !CurSU {
+                let mut TrySU: *mut SUnit = NotReady[0];
+                let mut LRegs: *mut SmallVectorImpl<unsigned int> = LRegsMap[TrySU];
+                assert!(LRegs.len == 1, "Can't handle this yet!");
+                let mut Reg: u32 = LRegs[0];
+                let mut LRDef: *mut SUnit = self.LiveRegDefs[Reg];
+                let mut RC: *TargetRegisterClass = self.TRI.getMinimalPhysRegClass(MCRegister { Reg: Reg });
+                let mut DestRC: *TargetRegisterClass = self.TRI.getCrossCopyRegClass(RC);
+                let mut NewDef: *mut SUnit = null;
+                if DestRC != RC {
+                    NewDef = self.CopyAndMoveSuccessors(LRDef);
+                    if !DestRC && !NewDef {
+                        report_fatal_error("Can't handle live physical register dependency!", true);
+                    }
+                }
+                if !NewDef {
+                    let mut Copies: SmallVector<SUnit *, 2> = SmallVector<SUnit *, 2> {};
+                    self.InsertCopiesAndMoveSuccs(LRDef, Reg, DestRC, RC, Copies);
+                    while true {
+                        {
+                        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                            dbgs() << "Adding an edge from SU # " << TrySU.NodeNum << " to SU #" << Copies.front().NodeNum << "\n";
+                        }
+                    }
+                        if !(false) { break; }
+                    }
+                    self.AddPred(TrySU, SDep { Copies.front(), Artificial });
+                    NewDef = Copies.back();
+                }
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                        dbgs() << "Adding an edge from SU # " << NewDef.NodeNum << " to SU #" << TrySU.NodeNum << "\n";
+                    }
+                }
+                    if !(false) { break; }
+                }
+                self.LiveRegDefs[Reg] = NewDef;
+                self.AddPred(NewDef, SDep { TrySU, Artificial });
+                TrySU.isAvailable = false;
+                CurSU = NewDef;
+            }
+            if !CurSU {
+                llvm_unreachable_internal("Unable to resolve live physical register dependencies!", "llvm\\lib\\CodeGen\\SelectionDAG\\ScheduleDAGFast.cpp", 588);
+            }
+        }
+        for SU in NotReady {
+            SU.isPending = false;
+            if SU.isAvailable {
+                self.AvailableQueue.push(SU);
+            }
+        }
+        NotReady.clear();
+        if CurSU {
+            self.ScheduleNodeBottomUp(CurSU, CurCycle);
+        }
+        CurCycle += 1;
+    }
+    reverse(self.Sequence.begin(), self.Sequence.end());
+    self.VerifyScheduledSequence(true);
+}
+
+struct ScheduleDAGLinearize {
+    TM: *TargetMachine,
+    TII: *TargetInstrInfo,
+    TRI: *TargetRegisterInfo,
+    MF: *mut MachineFunction,
+    MRI: *mut MachineRegisterInfo,
+    SUnits: []SUnit,
+    EntrySU: SUnit,
+    ExitSU: SUnit,
+    StressSched: bool,
+    BB: *mut MachineBasicBlock,
+    DAG: *mut SelectionDAG,
+    InstrItins: *InstrItineraryData,
+    Sequence: []*mut SUnit,
+    Sequence: []*mut SDNode,
+    GluedMap: DenseMap<SDNode *, SDNode *>,
+}
+
+fn ScheduleDAGLinearize::getInstrDesc(self: *ScheduleDAGLinearize, SU: *SUnit) -> *MCInstrDesc {
+    if SU.isInstr() {
+        return &mut SU.getInstr().getDesc();
+    }
+    return self.getNodeDesc(SU.getNode());
+}
+
+fn ScheduleDAGLinearize::addCustomGraphFeatures(self: *ScheduleDAGLinearize, arg: *mut GraphWriter<ScheduleDAG *>) {}
+
+fn ScheduleDAGLinearize::isPassiveNode(self, Node: *mut SDNode) -> bool {
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if isa(Node) {
+        return true;
+    }
+    if Node.getOpcode() == EntryToken || isa(Node) {
+        return true;
+    }
+    return false;
+}
+
+fn ScheduleDAGLinearize::forceUnitLatencies(self: *ScheduleDAGLinearize) -> bool {
+    return false;
+}
+
+fn ScheduleDAGLinearize::ScheduleNode(self, N: *mut SDNode) {
+    if N.getNodeId() != 0 {
+        llvm_unreachable_internal(null, "llvm\\lib\\CodeGen\\SelectionDAG\\ScheduleDAGFast.cpp", 640);
+    }
+    if !N.isMachineOpcode() && (N.getOpcode() == EntryToken || isPassiveNode(N)) {
+        return;
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            dbgs() << "\n*** Scheduling: ";
+        }
+    }
+        if !(false) { break; }
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            N.dump(self.DAG);
+        }
+    }
+        if !(false) { break; }
+    }
+    self.Sequence.push(N);
+    let mut NumOps: u32 = N.getNumOperands();
+    if NumOps {
+        NumLeft;
+    } else {
+        let mut GluedOpN: *mut SDNode = null;
+        while true {
+            {
+            let mut Op: *SDValue = N.getOperand(NumLeft - 1);
+            let mut OpN: *mut SDNode = Op.getNode();
+            if NumLeft == NumOps && Op.getValueType() == EVT { Glue } {
+                GluedOpN = OpN;
+                assert!(OpN.getNodeId() != 0, "Glue operand not ready?");
+                OpN.setNodeId(0);
+                self.ScheduleNode(OpN);
+                continue;
+            }
+            if OpN == GluedOpN {
+                continue;
+            }
+            let mut DI: iterator = self.GluedMap.find(OpN);
+            if DI != self.GluedMap.end() && operator(DI).second != N {
+                OpN = operator(DI).second;
+            }
+            let mut Degree: u32 = OpN.getNodeId();
+            assert!(Degree > 0, "Predecessor over-released!");
+            OpN.setNodeId(Degree -= 1);
+            if Degree == 0 {
+                self.ScheduleNode(OpN);
+            }
+        }
+            if !(NumLeft -= 1) { break; }
+        }
+    }
+}
+
+fn findGluedUser(N: *mut SDNode) -> *mut SDNode {
+    while N.getGluedUser() {
+        Glued;
+    }
+    return N;
+}
+
+fn ScheduleDAGLinearize::Schedule(self) {
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            dbgs() << "********** DAG Linearization **********\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    let mut Glues: SmallVector<SDNode *, 8> = SmallVector<SDNode *, 8> {};
+    let mut DAGSize: u32 = 0;
+    for Node in self.DAG.allnodes() {
+        let mut N: *mut SDNode = &mut Node;
+        let mut Degree: u32 = N.use_size();
+        N.setNodeId(Degree);
+        let mut NumVals: u32 = N.getNumValues();
+        if NumVals && N.getValueType(NumVals - 1) == EVT { Glue } && N.hasAnyUseOfValue(NumVals - 1) {
+            let mut User: *mut SDNode = findGluedUser(N);
+            if User {
+                Glues.push(N);
+                self.GluedMap.insert(make_pair(N, User));
+            }
+        }
+        if N.isMachineOpcode() || (N.getOpcode() != EntryToken && !isPassiveNode(N)) {
+            DAGSize += 1;
+        }
+    }
+    for Glue in Glues {
+        let mut GUser: *mut SDNode = self.GluedMap[Glue];
+        let mut Degree: u32 = Glue.getNodeId();
+        let mut UDegree: u32 = GUser.getNodeId();
+        let mut ImmGUser: *mut SDNode = Glue.getGluedUser();
+        for U in Glue.users() {
+            if U == ImmGUser {
+                Degree -= 1;
+            }
+        }
+        GUser.setNodeId(UDegree + Degree);
+        Glue.setNodeId(1);
+    }
+    self.Sequence.reserve(DAGSize);
+    self.ScheduleNode(self.DAG.getRoot().getNode());
+}
+
+fn ScheduleDAGLinearize::EmitSchedule(self, InsertPos: *mut iterator) -> *mut MachineBasicBlock {
+    let mut Emitter: InstrEmitter = InstrEmitter { self.DAG.getTarget(), self.BB, iterator { InsertPos } };
+    let mut VRBaseMap: VRBaseMapType = VRBaseMapType {};
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            {
+                dbgs() << "\n*** Final schedule ***\n";
+            }
+        }
+    }
+        if !(false) { break; }
+    }
+    let mut NumNodes: u32 = self.Sequence.len;
+    let mut BB: *mut MachineBasicBlock = Emitter.getBlock();
+    for let mut i: u32 = 0; i != NumNodes; i += 1 {
+        let mut N: *mut SDNode = self.Sequence[NumNodes - i - 1];
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+                N.dump(self.DAG);
+            }
+        }
+            if !(false) { break; }
+        }
+        Emitter.EmitNode(N, false, false, VRBaseMap);
+        if N.getHasDebugValue() {
+            let mut InsertPos: iterator = Emitter.getInsertPos();
+            for DV in self.DAG.GetDbgValues(N) {
+                if !DV.isEmitted() {
+                    if Emitter.EmitDbgValue(DV, VRBaseMap) {
+                        DbgMI;
+                    } else {
+                        BB.insert(iterator { InsertPos }, DbgMI);
+                    }
+                }
+            }
+        }
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("pre-RA-sched", 1) {
+            dbgs() << 10;
+        }
+    }
+        if !(false) { break; }
+    }
+    InsertPos = Emitter.getInsertPos();
+    return Emitter.getBlock();
+}
+
+fn createFastDAGScheduler(IS: *mut SelectionDAGISel, arg: CodeGenOptLevel) -> *mut ScheduleDAGSDNodes {
+    return ScheduleDAGFast { *IS.MF };
+}
+
+fn createDAGLinearizer(IS: *mut SelectionDAGISel, arg: CodeGenOptLevel) -> *mut ScheduleDAGSDNodes {
+    return ScheduleDAGLinearize { *IS.MF };
+}

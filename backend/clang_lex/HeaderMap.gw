@@ -1,0 +1,181 @@
+fn HashHMapKey(Str: str) -> u32 {
+    let mut Result: u32 = 0;
+    let mut S: *u8 = Str.begin();
+    let mut End: *u8 = Str.end();
+    for ; S != End; S += 1 {
+        Result += toLowercase(*S) * 13;
+    }
+    return Result;
+}
+
+fn HeaderMap::Create(self, FE: FileEntryRef, FM: *mut FileManager) -> unique_ptr<HeaderMap> {
+    let mut FileSize: u32 = FE.getSize();
+    if FileSize <=  {
+        return null;
+    }
+    let mut FileBuffer: MemoryBuffer>> = FM.getBufferForFile(FE, false, true, nullopt, false);
+    if !FileBuffer || !operator(FileBuffer) {
+        return null;
+    }
+    let mut NeedsByteSwap: bool = false;
+    if !checkHeader(operator(operator(FileBuffer)), NeedsByteSwap) {
+        return null;
+    }
+    return HeaderMap { move(operator(FileBuffer)), NeedsByteSwap };
+}
+
+fn HeaderMapImpl::checkHeader(self, File: *MemoryBuffer, NeedsByteSwap: *mut bool) -> bool {
+    if File.getBufferSize() <=  {
+        return false;
+    }
+    let mut FileStart: *u8 = File.getBufferStart();
+    let mut Header: *HMapHeader = FileStart as *HMapHeader;
+    if Header.Magic == HMAP_HeaderMagicNumber && Header.Version == HMAP_HeaderVersion {
+        NeedsByteSwap = false;
+    } else if Header.Magic == byteswap(HMAP_HeaderMagicNumber) && Header.Version == byteswap(HMAP_HeaderVersion) {
+        NeedsByteSwap = true;
+    } else {
+        return false;
+    }
+    if Header.Reserved != 0 {
+        return false;
+    }
+    let mut NumBuckets: u32 = if NeedsByteSwap { byteswap(Header.NumBuckets) } else { Header.NumBuckets };
+    if !isPowerOf2_32(NumBuckets) {
+        return false;
+    }
+    if File.getBufferSize() <  +  * NumBuckets {
+        return false;
+    }
+    return true;
+}
+
+fn HeaderMapImpl::getFileName(self: *HeaderMapImpl) -> str {
+    return operator(self.FileBuffer).getBufferIdentifier();
+}
+
+fn HeaderMapImpl::getEndianAdjustedWord(self: *HeaderMapImpl, X: u32) -> u32 {
+    if !self.NeedsBSwap {
+        return X;
+    }
+    return byteswap(X);
+}
+
+fn HeaderMapImpl::getHeader(self: *HeaderMapImpl) -> *HMapHeader {
+    return *operator(self.FileBuffer).getBufferStart() as *HMapHeader;
+}
+
+fn HeaderMapImpl::getBucket(self: *HeaderMapImpl, BucketNo: u32) -> HMapBucket {
+    assert!(operator(self.FileBuffer).getBufferSize() >=  +  * BucketNo, "Expected bucket to be in range");
+    let mut Result: HMapBucket = HMapBucket {};
+    Result.Key = HMAP_EmptyBucketKey;
+    let mut BucketArray: *HMapBucket = operator(self.FileBuffer).getBufferStart() +  as *HMapBucket;
+    let mut BucketPtr: *HMapBucket = BucketArray + BucketNo;
+    Result.Key = self.getEndianAdjustedWord(BucketPtr.Key);
+    Result.Prefix = self.getEndianAdjustedWord(BucketPtr.Prefix);
+    Result.Suffix = self.getEndianAdjustedWord(BucketPtr.Suffix);
+    return Result;
+}
+
+fn HeaderMapImpl::getString(self: *HeaderMapImpl, StrTabIdx: u32) -> optional<StringRef> {
+    StrTabIdx += self.getEndianAdjustedWord(self.getHeader().StringsOffset);
+    if StrTabIdx >= operator(self.FileBuffer).getBufferSize() {
+        return nullopt;
+    }
+    let mut Data: *u8 = operator(self.FileBuffer).getBufferStart() + StrTabIdx;
+    let mut MaxLen: u32 = operator(self.FileBuffer).getBufferSize() - StrTabIdx;
+    if MaxLen == 0 {
+        return nullopt;
+    }
+    let mut Len: u32 = strnlen(Data, MaxLen);
+    if Len == MaxLen && Data[Len - 1] {
+        return nullopt;
+    }
+    return Data[0..Len];
+}
+
+fn HeaderMapImpl::dump(self: *HeaderMapImpl) {
+    let mut Hdr: *HMapHeader = self.getHeader();
+    let mut NumBuckets: u32 = self.getEndianAdjustedWord(Hdr.NumBuckets);
+    dbgs() << "Header Map " << self.getFileName() << ":\n  " << NumBuckets << ", " << self.getEndianAdjustedWord(Hdr.NumEntries) << "\n";
+    let mut getStringOrInvalid: Closure_1 = Closure_1 { cap_0: self };
+    for let mut i: u32 = 0; i != NumBuckets; i += 1 {
+        let mut B: HMapBucket = self.getBucket(i);
+        if B.Key == HMAP_EmptyBucketKey {
+            continue;
+        }
+        let mut Key: str = getStringOrInvalid.call(B.Key);
+        let mut Prefix: str = getStringOrInvalid.call(B.Prefix);
+        let mut Suffix: str = getStringOrInvalid.call(B.Suffix);
+        dbgs() << "  " << i << ". " << Key << " -> '" << Prefix << "' '" << Suffix << "'\n";
+    }
+}
+
+fn HeaderMapImpl::lookupFilename(self: *HeaderMapImpl, Filename: str, DestPath: *mut SmallVectorImpl<char>) -> str {
+    let mut Hdr: *HMapHeader = self.getHeader();
+    let mut NumBuckets: u32 = self.getEndianAdjustedWord(Hdr.NumBuckets);
+    assert!(isPowerOf2_32(NumBuckets), "Expected power of 2");
+    for let mut Bucket: u32 = HashHMapKey(Filename); ; Bucket += 1 {
+        let mut B: HMapBucket = self.getBucket(Bucket & (NumBuckets - 1));
+        if B.Key == HMAP_EmptyBucketKey {
+            return "";
+        }
+        let mut Key: optional<StringRef> = self.getString(B.Key);
+        if __builtin_expect((!Key) as bool, false) {
+            continue;
+        }
+        if !Filename.equals_insensitive(operator(Key)) {
+            continue;
+        }
+        let mut Prefix: optional<StringRef> = self.getString(B.Prefix);
+        let mut Suffix: optional<StringRef> = self.getString(B.Suffix);
+        DestPath.clear();
+        if __builtin_expect((Prefix && Suffix) as bool, true) {
+            DestPath.append(operator(Prefix).begin(), operator(Prefix).end());
+            DestPath.append(operator(Suffix).begin(), operator(Suffix).end());
+        }
+        return DestPath.begin()[0..DestPath.len];
+    }
+}
+
+fn HeaderMapImpl::reverseLookupFilename(self: *HeaderMapImpl, DestPath: str) -> str {
+    if !self.ReverseMap.is_empty() {
+        return self.ReverseMap.lookup(DestPath);
+    }
+    let mut Hdr: *HMapHeader = self.getHeader();
+    let mut NumBuckets: u32 = self.getEndianAdjustedWord(Hdr.NumBuckets);
+    let mut RetKey: str = "";
+    for let mut i: u32 = 0; i != NumBuckets; i += 1 {
+        let mut B: HMapBucket = self.getBucket(i);
+        if B.Key == HMAP_EmptyBucketKey {
+            continue;
+        }
+        let mut Key: optional<StringRef> = self.getString(B.Key);
+        let mut Prefix: optional<StringRef> = self.getString(B.Prefix);
+        let mut Suffix: optional<StringRef> = self.getString(B.Suffix);
+        if __builtin_expect((Key && Prefix && Suffix) as bool, true) {
+            let mut Buf: SmallVector<char, 1024> = SmallVector<char, 1024> {};
+            Buf.append(operator(Prefix).begin(), operator(Prefix).end());
+            Buf.append(operator(Suffix).begin(), operator(Suffix).end());
+            let mut Value: str = Buf.begin()[0..Buf.len];
+            self.ReverseMap[Value] = operator(Key);
+            if DestPath == Value {
+                RetKey = operator(Key);
+            }
+        }
+    }
+    return RetKey;
+}
+
+struct Closure_1 {
+    cap_0: *HeaderMapImpl,
+}
+
+fn Closure_1::call(self: *mut Closure_1, Id: u32) -> auto {
+        if self.getString(Id) {
+            S;
+        } else {
+            return operator(S);
+        }
+        return "<invalid>";
+    }

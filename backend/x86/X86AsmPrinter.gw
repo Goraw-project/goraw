@@ -1,0 +1,775 @@
+fn X86AsmPrinter::X86AsmPrinter(self, TM: *mut TargetMachine, Streamer: i32) {
+    self.GetPSI;
+    self.GetSDPI;
+}
+
+fn X86AsmPrinter::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
+    self.PSI = self.GetPSI.call(*MF.getFunction().getParent());
+    self.SDPI = self.GetSDPI.call(*MF.getFunction().getParent());
+    self.Subtarget = operator&(MF);
+    self.SMShadowTracker.startFunction(MF);
+    self.CodeEmitter.reset(self.TM.getTarget().createMCCodeEmitter);
+    let mut M: *Module = MF.getFunction().getParent();
+    self.EmitFPOData = self.Subtarget.isTargetWin32() && M.getCodeViewFlag();
+    self.IndCSPrefix = M.getModuleFlag("indirect_branch_cs_prefix");
+    self.SetupMachineFunction(MF);
+    if self.Subtarget.isTargetCOFF() {
+        let mut Local: bool = MF.getFunction().hasLocalLinkage();
+        operator(self.OutStreamer).beginCOFFSymbolDef(self.CurrentFnSym);
+        operator(self.OutStreamer).emitCOFFSymbolStorageClass(if Local { IMAGE_SYM_CLASS_STATIC } else { IMAGE_SYM_CLASS_EXTERNAL });
+        operator(self.OutStreamer).emitCOFFSymbolType(IMAGE_SYM_DTYPE_FUNCTION << SCT_COMPLEX_TYPE_SHIFT);
+        operator(self.OutStreamer).endCOFFSymbolDef();
+    }
+    self.emitFunctionBody();
+    self.emitXRayTable();
+    self.EmitFPOData = false;
+    self.IndCSPrefix = false;
+    return false;
+}
+
+fn X86AsmPrinter::emitFunctionBodyStart(self) {
+    if self.EmitFPOData {
+        let mut XTS: *mut X86TargetStreamer = operator(self.OutStreamer).getTargetStreamer() as *mut X86TargetStreamer;
+        XTS.emitFPOProc(self.CurrentFnSym, self.MF());
+    }
+}
+
+fn X86AsmPrinter::emitFunctionBodyEnd(self) {
+    if self.EmitFPOData {
+        let mut XTS: *mut X86TargetStreamer = operator(self.OutStreamer).getTargetStreamer() as *mut X86TargetStreamer;
+        XTS.emitFPOEndProc(SMLoc {});
+    }
+}
+
+fn X86AsmPrinter::MaskKCFIType(self, Value: u32) -> u32 {
+    let mut InvalidValues: [2]u32 = [4196274163, 4213051379];
+    for N in InvalidValues[..] {
+        if N == Value || -N == Value {
+            return Value + 1;
+        }
+    }
+    return Value;
+}
+
+fn X86AsmPrinter::EmitKCFITypePadding(self, MF: *MachineFunction, HasType: bool) {
+    let mut PrefixBytes: i64 = MF.getFunction().getFnAttributeAsParsedInteger("patchable-function-prefix", 0);
+    if HasType {
+        PrefixBytes += 5;
+    }
+    self.emitNops(offsetToAlignment(PrefixBytes, MF.getPreferredAlignment()));
+}
+
+fn X86AsmPrinter::emitKCFITypeId(self, MF: *MachineFunction) {
+    let mut F: *Function = MF.getFunction();
+    if !F.getParent().getModuleFlag("kcfi") {
+        return;
+    }
+    let mut Type: *mut ConstantInt = null;
+    if F.getMetadata(MD_kcfi_type) {
+        MD;
+    } else {
+        Type = extract(MD.getOperand(0));
+    }
+    if !Type {
+        self.EmitKCFITypePadding(MF, false);
+        return;
+    }
+    let mut FnSym: *mut MCSymbol = self.OutContext.getOrCreateSymbol("__cfi_" + MF.getName());
+    self.emitLinkage(&mut MF.getFunction(), FnSym);
+    if self.MAI.hasDotTypeDotSizeDirective() {
+        operator(self.OutStreamer).emitSymbolAttribute(FnSym, MCSA_ELF_TypeFunction);
+    }
+    operator(self.OutStreamer).emitLabel(FnSym, SMLoc {});
+    self.EmitKCFITypePadding(MF, true);
+    let mut DestReg: u32 = 0;
+    let mut M: *Module = F.getParent();
+    if M.getModuleFlag("kcfi-arity") {
+        let mut Triple: *Triple = M.getTargetTriple();
+        assert!(Triple.isX86_64() && !Triple.isOSWindows();
+        let mut ArityToRegMap: [8]u32 = zeroed();
+        let mut Arity: i32 = 0;
+        if MF() > 0 {
+            Arity = 7;
+        } else {
+            Arity = 0;
+        }
+        DestReg = ArityToRegMap[Arity];
+    }
+    self.EmitAndCountInstruction;
+    if self.MAI.hasDotTypeDotSizeDirective() {
+        let mut EndSym: *mut MCSymbol = self.OutContext.createTempSymbol("cfi_func_end", true);
+        operator(self.OutStreamer).emitLabel(EndSym, SMLoc {});
+        let mut SizeExp: *MCExpr = createSub(create(EndSym, self.OutContext, SMLoc {}), create(FnSym, self.OutContext, SMLoc {}), self.OutContext);
+        operator(self.OutStreamer).emitELFSize(FnSym, SizeExp);
+    }
+}
+
+fn X86AsmPrinter::PrintSymbolOperand(self, MO: *MachineOperand, O: *mut raw_ostream) {
+    match MO.getType() {
+        _ => {
+            llvm_unreachable_internal("unknown symbol type!", "llvm\\lib\\Target\\X86\\X86AsmPrinter.cpp", 257);
+        },
+        MO_ConstantPoolIndex => {
+            self.GetCPISymbol(MO.getIndex()).print(O, self.MAI);
+        },
+        MO_GlobalAddress => {
+            let mut GV: *GlobalValue = MO.getGlobal();
+            let mut GVSym: *mut MCSymbol = null;
+            if MO.getTargetFlags() == MO_DARWIN_NONLAZY || MO.getTargetFlags() == MO_DARWIN_NONLAZY_PIC_BASE {
+                GVSym = self.getSymbolWithGlobalValueBase(GV, "$non_lazy_ptr");
+            } else {
+                GVSym = self.getSymbolPreferLocal(*GV);
+            }
+            if MO.getTargetFlags() == MO_DLLIMPORT {
+                GVSym = self.OutContext.getOrCreateSymbol("__imp_" + GVSym.getName());
+            } else if MO.getTargetFlags() == MO_COFFSTUB {
+                GVSym = self.OutContext.getOrCreateSymbol(".refptr." + GVSym.getName());
+            }
+            if MO.getTargetFlags() == MO_DARWIN_NONLAZY || MO.getTargetFlags() == MO_DARWIN_NONLAZY_PIC_BASE {
+                let mut Sym: *mut MCSymbol = self.getSymbolWithGlobalValueBase(GV, "$non_lazy_ptr");
+                let mut StubSym: *mut i32 = self.MMI(Sym);
+            }
+            if GVSym.getName()[0] != '$' {
+                GVSym.print(O, self.MAI);
+            } else {
+                O << '(';
+                GVSym.print(O, self.MAI);
+                O << ')';
+            }
+            self.printOffset(MO.getOffset(), O);
+            break;
+        },
+    }
+    match MO.getTargetFlags() {
+        _ => {
+            llvm_unreachable_internal("Unknown target flag on GV operand", "llvm\\lib\\Target\\X86\\X86AsmPrinter.cpp", 305);
+        },
+        MO_NO_FLAG => {
+            break;
+        },
+        MO_DARWIN_NONLAZY => {
+            MO_DLLIMPORT;
+        },
+        MO_GOT_ABSOLUTE_ADDRESS => {
+            O << " + [.-";
+        },
+        MO_PIC_BASE_OFFSET => {
+            MO_DARWIN_NONLAZY_PIC_BASE;
+        },
+        MO_TLSGD => {
+            O << "@TLSGD";
+        },
+        MO_TLSLD => {
+            O << "@TLSLD";
+        },
+        MO_TLSLDM => {
+            O << "@TLSLDM";
+        },
+        MO_GOTTPOFF => {
+            O << "@GOTTPOFF";
+        },
+        MO_INDNTPOFF => {
+            O << "@INDNTPOFF";
+        },
+        MO_TPOFF => {
+            O << "@TPOFF";
+        },
+        MO_DTPOFF => {
+            O << "@DTPOFF";
+        },
+        MO_NTPOFF => {
+            O << "@NTPOFF";
+        },
+        MO_GOTNTPOFF => {
+            O << "@GOTNTPOFF";
+        },
+        MO_GOTPCREL => {
+            O << "@GOTPCREL";
+        },
+        MO_GOTPCREL_NORELAX => {
+            O << "@GOTPCREL_NORELAX";
+        },
+        MO_GOT => {
+            O << "@GOT";
+        },
+        MO_GOTOFF => {
+            O << "@GOTOFF";
+        },
+        MO_PLT => {
+            O << "@PLT";
+        },
+        MO_TLVP => {
+            O << "@TLVP";
+        },
+        MO_TLVP_PIC_BASE => {
+            O << "@TLVP" << '-';
+        },
+        MO_SECREL => {
+            O << "@SECREL32";
+        },
+    }
+}
+
+fn X86AsmPrinter::PrintOperand(self, MI: *MachineInstr, OpNo: u32, O: *mut raw_ostream) {
+    let mut MO: *MachineOperand = MI.getOperand(OpNo);
+    let mut IsATT: bool = MI.getInlineAsmDialect() == AD_ATT;
+    match MO.getType() {
+        _ => {
+            llvm_unreachable_internal("unknown operand type!", "llvm\\lib\\Target\\X86\\X86AsmPrinter.cpp", 351);
+        },
+        MO_Register => {
+            if IsATT {
+                O << '%';
+            }
+            O << getRegisterName(MO.getReg().operator MCRegister());
+            return;
+        },
+        MO_Immediate => {
+            if IsATT {
+                O << '$';
+            }
+        },
+        MO_ConstantPoolIndex => {
+            MO_GlobalAddress;
+        },
+        MO_BlockAddress => {
+            let mut Sym: *mut MCSymbol = self.GetBlockAddressSymbol(MO.getBlockAddress());
+            Sym.print(O, self.MAI);
+            break;
+        },
+    }
+}
+
+fn X86AsmPrinter::PrintModifiedOperand(self, MI: *MachineInstr, OpNo: u32, O: *mut raw_ostream, Modifier: str) {
+    let mut MO: *MachineOperand = MI.getOperand(OpNo);
+    if Modifier.len == 0 || !MO.isReg() {
+        return self.PrintOperand(MI, OpNo, O);
+    }
+    if MI.getInlineAsmDialect() == AD_ATT {
+        O << '%';
+    }
+    let mut Reg: Register = MO.getReg();
+    if Modifier.consume_front("subreg") {
+        let mut Size: u32 = if (Modifier == "64") { 64 } else { if (Modifier == "32") { 32 } else { if (Modifier == "16") { 16 } else { 8 } } };
+        Reg = Register { Reg: getX86SubSuperRegister(Reg.operator MCRegister(), Size, false) };
+    }
+    O << getRegisterName(Reg.operator MCRegister());
+}
+
+fn X86AsmPrinter::PrintPCRelImm(self, MI: *MachineInstr, OpNo: u32, O: *mut raw_ostream) {
+    let mut MO: *MachineOperand = MI.getOperand(OpNo);
+    match MO.getType() {
+        _ => {
+            llvm_unreachable_internal("Unknown pcrel immediate operand", "llvm\\lib\\Target\\X86\\X86AsmPrinter.cpp", 414);
+        },
+        MO_Register => {
+            self.PrintOperand(MI, OpNo, O);
+        },
+        MO_Immediate => {
+            O << MO.getImm();
+        },
+        MO_GlobalAddress => {
+            self.PrintSymbolOperand(MO, O);
+        },
+    }
+}
+
+fn X86AsmPrinter::PrintLeaMemReference(self, MI: *MachineInstr, OpNo: u32, O: *mut raw_ostream, Modifier: str) {
+    let mut BaseReg: *MachineOperand = MI.getOperand(OpNo + AddrBaseReg);
+    let mut IndexReg: *MachineOperand = MI.getOperand(OpNo + AddrIndexReg);
+    let mut DispSpec: *MachineOperand = MI.getOperand(OpNo + AddrDisp);
+    let mut HasBaseReg: bool = BaseReg.getReg() != 0;
+    if  {
+        HasBaseReg = false;
+    }
+    if (DispSpec.isGlobal() || DispSpec.isSymbol()) && Modifier == "disp-only" {
+        HasBaseReg = false;
+    }
+    let mut HasParenPart: bool = IndexReg.getReg().operator unsigned int() || HasBaseReg;
+    match DispSpec.getType() {
+        _ => {
+            llvm_unreachable_internal("unknown operand type!", "llvm\\lib\\Target\\X86\\X86AsmPrinter.cpp", 448);
+        },
+        MO_Immediate => {
+            let mut DispVal: i32 = DispSpec.getImm();
+            if DispVal || !HasParenPart {
+                O << DispVal;
+            }
+            break;
+        },
+        MO_GlobalAddress => {
+            MO_ConstantPoolIndex;
+        },
+    }
+    if Modifier == "H" {
+        O << "+8";
+    }
+    if HasParenPart {
+        O << '(';
+        if HasBaseReg {
+            self.PrintModifiedOperand(MI, OpNo + AddrBaseReg, O, Modifier);
+        }
+        if IndexReg.getReg().operator unsigned int() {
+            O << ',';
+            self.PrintModifiedOperand(MI, OpNo + AddrIndexReg, O, Modifier);
+            let mut ScaleVal: u32 = MI.getOperand(OpNo + AddrScaleAmt).getImm();
+            if ScaleVal != 1 {
+                O << ',' << ScaleVal;
+            }
+        }
+        O << ')';
+    }
+}
+
+fn isSimpleReturn(MI: *MachineInstr) -> bool {
+    return MI.getDesc().isReturn() && !MI.getDesc().isCall();
+}
+
+fn isIndirectBranchOrTailCall(MI: *MachineInstr) -> bool {
+    let mut Opc: u32 = MI.getOpcode();
+}
+
+fn X86AsmPrinter::emitBasicBlockEnd(self, MBB: *MachineBasicBlock) {
+    if self.Subtarget() || self.Subtarget() {
+        let mut I: const_iterator = MBB.getLastNonDebugInstr(true);
+        if I != MBB.end() {
+            if (self.Subtarget() && isSimpleReturn(operator(I))) || (self.Subtarget() && isIndirectBranchOrTailCall(operator(I))) {
+                let mut TmpInst: MCInst = MCInst {};
+                TmpInst.setOpcode;
+                self.EmitToStreamer(operator(self.OutStreamer), TmpInst);
+            }
+        }
+    }
+    if self.SplitChainedAtEndOfBlock {
+        operator(self.OutStreamer).emitWinCFISplitChained(SMLoc {});
+        operator(self.OutStreamer).emitWinCFIEndProlog(SMLoc {});
+        self.SplitChainedAtEndOfBlock = false;
+    }
+    self.emitBasicBlockEnd(MBB);
+    self.SMShadowTracker.emitShadowPadding(operator(self.OutStreamer), self.getSubtargetInfo());
+}
+
+fn X86AsmPrinter::PrintMemReference(self, MI: *MachineInstr, OpNo: u32, O: *mut raw_ostream, Modifier: str) {
+    assert!(isMem(*MI, OpNo), "Invalid memory reference!");
+    let mut Segment: *MachineOperand = MI.getOperand(OpNo + AddrSegmentReg);
+    if Segment.getReg().operator unsigned int() {
+        self.PrintModifiedOperand(MI, OpNo + AddrSegmentReg, O, Modifier);
+        O << ':';
+    }
+    self.PrintLeaMemReference(MI, OpNo, O, Modifier);
+}
+
+fn X86AsmPrinter::PrintIntelMemReference(self, MI: *MachineInstr, OpNo: u32, O: *mut raw_ostream, Modifier: str) {
+    let mut BaseReg: *MachineOperand = MI.getOperand(OpNo + AddrBaseReg);
+    let mut ScaleVal: u32 = MI.getOperand(OpNo + AddrScaleAmt).getImm();
+    let mut IndexReg: *MachineOperand = MI.getOperand(OpNo + AddrIndexReg);
+    let mut DispSpec: *MachineOperand = MI.getOperand(OpNo + AddrDisp);
+    let mut SegReg: *MachineOperand = MI.getOperand(OpNo + AddrSegmentReg);
+    let mut HasBaseReg: bool = BaseReg.getReg() != 0;
+    if  {
+        HasBaseReg = false;
+    }
+    if (DispSpec.isGlobal() || DispSpec.isSymbol()) && Modifier == "disp-only" {
+        HasBaseReg = false;
+    }
+    if SegReg.getReg().operator unsigned int() {
+        self.PrintOperand(MI, OpNo + AddrSegmentReg, O);
+        O << ':';
+    }
+    O << '[';
+    let mut NeedPlus: bool = false;
+    if HasBaseReg {
+        self.PrintOperand(MI, OpNo + AddrBaseReg, O);
+        NeedPlus = true;
+    }
+    if IndexReg.getReg().operator unsigned int() {
+        if NeedPlus {
+            O << " + ";
+        }
+        if ScaleVal != 1 {
+            O << ScaleVal << '*';
+        }
+        self.PrintOperand(MI, OpNo + AddrIndexReg, O);
+        NeedPlus = true;
+    }
+    if !DispSpec.isImm() {
+        if NeedPlus {
+            O << " + ";
+        }
+        self.PrintSymbolOperand(DispSpec, O);
+    } else {
+        let mut DispVal: i64 = DispSpec.getImm();
+        if DispVal || (!IndexReg.getReg().operator unsigned int() && !HasBaseReg) {
+            if NeedPlus {
+                if DispVal > 0 {
+                    O << " + ";
+                } else {
+                    O << " - ";
+                    DispVal = -DispVal;
+                }
+            }
+            O << DispVal;
+        }
+    }
+    O << ']';
+}
+
+fn X86AsmPrinter::getIFuncMCSubtargetInfo(self: *X86AsmPrinter) -> *MCSubtargetInfo {
+    assert!(self.Subtarget);
+    return self.Subtarget;
+}
+
+fn X86AsmPrinter::emitMachOIFuncStubBody(self, M: *mut Module, GI: *GlobalIFunc, LazyPointer: *mut MCSymbol) {
+    operator(self.OutStreamer).emitInstruction;
+}
+
+fn X86AsmPrinter::emitMachOIFuncStubHelperBody(self, M: *mut Module, GI: *GlobalIFunc, LazyPointer: *mut MCSymbol) {
+    operator(self.OutStreamer).emitInstruction;
+    operator(self.OutStreamer).emitInstruction;
+    operator(self.OutStreamer).emitInstruction;
+}
+
+fn printAsmMRegister(P: *X86AsmPrinter, MI: *MachineInstr, MO: *MachineOperand, Mode: i8, O: *mut raw_ostream) -> bool {
+    let mut Reg: Register = MO.getReg();
+    let mut EmitPercent: bool = MI.getInlineAsmDialect() == AD_ATT;
+    if  {
+        return true;
+    }
+    match Mode {
+        _ => {
+            return true;
+        },
+        'b' => {
+            Reg = Register { Reg: getX86SubSuperRegister(Reg.operator MCRegister(), 8, false) };
+        },
+        'h' => {
+            Reg = Register { Reg: getX86SubSuperRegister(Reg.operator MCRegister(), 8, true) };
+        },
+        'w' => {
+            Reg = Register { Reg: getX86SubSuperRegister(Reg.operator MCRegister(), 16, false) };
+        },
+        'k' => {
+            Reg = Register { Reg: getX86SubSuperRegister(Reg.operator MCRegister(), 32, false) };
+        },
+        'V' => {
+            EmitPercent = false;
+        },
+        'q' => {
+            Reg = getX86SubSuperRegister(Reg, if P.getSubtarget()() { 64 } else { 32 });
+        },
+    }
+    if EmitPercent {
+        O << '%';
+    }
+    O << getRegisterName(Reg.operator MCRegister());
+    return false;
+}
+
+fn printAsmVRegister(MI: *MachineInstr, MO: *MachineOperand, Mode: i8, O: *mut raw_ostream) -> bool {
+    let mut Reg: Register = MO.getReg();
+    let mut EmitPercent: bool = MI.getInlineAsmDialect() == AD_ATT;
+    let mut Index: u32 = 0;
+    if  {
+        
+    } else if  {
+        
+    } else if  {
+        
+    } else {
+        return true;
+    }
+    match Mode {
+        _ => {
+            return true;
+        },
+        'x' => {
+            
+        },
+        't' => {
+            
+        },
+        'g' => {
+            
+        },
+    }
+    if EmitPercent {
+        O << '%';
+    }
+    O << getRegisterName(Reg.operator MCRegister());
+    return false;
+}
+
+fn X86AsmPrinter::PrintAsmOperand(self, MI: *MachineInstr, OpNo: u32, ExtraCode: *u8, O: *mut raw_ostream) -> bool {
+    if ExtraCode && ExtraCode[0] {
+        if ExtraCode[1] != 0 {
+            return true;
+        }
+        let mut MO: *MachineOperand = MI.getOperand(OpNo);
+        let mut IsIntel: bool = MI.getInlineAsmDialect() == AD_Intel;
+        match ExtraCode[0] {
+            _ => {
+                return self.PrintAsmOperand(MI, OpNo, ExtraCode, O);
+            },
+            'a' => {
+                match MO.getType() {
+                    _ => {
+                        return true;
+                    },
+                    MO_Immediate => {
+                        O << MO.getImm();
+                    },
+                    MO_ConstantPoolIndex => {
+                        MO_JumpTableIndex;
+                    },
+                    MO_GlobalAddress => {
+                        self.PrintSymbolOperand(MO, O);
+                    },
+                    MO_Register => {
+                        O << (if IsIntel { '[' } else { '(' });
+                    },
+                }
+            },
+            'c' => {
+                match MO.getType() {
+                    _ => {
+                        self.PrintOperand(MI, OpNo, O);
+                    },
+                    MO_Immediate => {
+                        O << MO.getImm();
+                    },
+                    MO_ConstantPoolIndex => {
+                        MO_JumpTableIndex;
+                    },
+                    MO_GlobalAddress => {
+                        self.PrintSymbolOperand(MO, O);
+                    },
+                }
+            },
+            'A' => {
+                if MO.isReg() {
+                    if !IsIntel {
+                        O << '*';
+                    }
+                    self.PrintOperand(MI, OpNo, O);
+                    return false;
+                }
+            },
+            'b' => {
+                'h';
+            },
+            'x' => {
+                't';
+            },
+            'p' => {
+                let mut MO: *MachineOperand = MI.getOperand(OpNo);
+                if MO.getType() != MO_GlobalAddress {
+                    return true;
+                }
+                self.PrintSymbolOperand(MO, O);
+                return false;
+            },
+            'P' => {
+                self.PrintPCRelImm(MI, OpNo, O);
+            },
+            'n' => {
+                if MO.isImm() {
+                    O << -MO.getImm();
+                    return false;
+                }
+            },
+        }
+    }
+    self.PrintOperand(MI, OpNo, O);
+    return false;
+}
+
+fn X86AsmPrinter::PrintAsmMemoryOperand(self, MI: *MachineInstr, OpNo: u32, ExtraCode: *u8, O: *mut raw_ostream) -> bool {
+    if ExtraCode && ExtraCode[0] {
+        if ExtraCode[1] != 0 {
+            return true;
+        }
+        match ExtraCode[0] {
+            _ => {
+                return true;
+            },
+            'a' => {
+                let mut Flags: Flag = Flag { MI.getOperand(OpNo - 1).getImm() };
+                if Flags.getMemoryConstraintID() != p {
+                    return true;
+                }
+                break;
+            },
+            'b' => {
+                'h';
+            },
+            'H' => {
+                if MI.getInlineAsmDialect() == AD_Intel {
+                    return true;
+                } else {
+                    self.PrintMemReference(MI, OpNo, O, "H");
+                }
+            },
+            'P' => {
+                if MI.getInlineAsmDialect() == AD_Intel {
+                    self.PrintIntelMemReference(MI, OpNo, O, "disp-only");
+                } else {
+                    self.PrintMemReference(MI, OpNo, O, "disp-only");
+                }
+            },
+        }
+    } else {
+        let mut Flags: Flag = Flag { MI.getOperand(OpNo - 1).getImm() };
+        if Flags.getMemoryConstraintID() == p {
+            return true;
+        }
+    }
+    if MI.getInlineAsmDialect() == AD_Intel {
+        self.PrintIntelMemReference(MI, OpNo, O, "");
+    } else {
+        self.PrintMemReference(MI, OpNo, O, "");
+    }
+    return false;
+}
+
+fn X86AsmPrinter::emitStartOfAsmFile(self, M: *mut Module) {
+    let mut TT: *Triple = M.getTargetTriple();
+    if TT.isOSBinFormatELF() {
+        let mut FeatureFlagsAnd: u32 = 0;
+        if M.getModuleFlag("cf-protection-branch") {
+            FeatureFlagsAnd |= GNU_PROPERTY_X86_FEATURE_1_IBT;
+        }
+        if M.getModuleFlag("cf-protection-return") {
+            FeatureFlagsAnd |= GNU_PROPERTY_X86_FEATURE_1_SHSTK;
+        }
+        if FeatureFlagsAnd {
+            assert!((TT.isX86_32() || TT.isX86_64()), "CFProtection used on invalid architecture!");
+            let mut Cur: *mut MCSection = operator(self.OutStreamer).getCurrentSectionOnly();
+            let mut Nt: *mut MCSection = self.MMI.getContext().getELFSection(".note.gnu.property", SHT_NOTE, SHF_ALLOC);
+            operator(self.OutStreamer).switchSection(Nt, 0);
+            let mut WordSize: i32 = if TT.isX86_64() && !TT.isX32() { 8 } else { 4 };
+            self.emitAlignment(if WordSize == 4 { Align { ShiftValue: 4 } } else { Align { ShiftValue: 8 } }, null, 0);
+            operator(self.OutStreamer).emitIntValue(4, 4);
+            operator(self.OutStreamer).emitIntValue(8 + WordSize, 4);
+            operator(self.OutStreamer).emitIntValue(NT_GNU_PROPERTY_TYPE_0, 4);
+            operator(self.OutStreamer).emitBytes("GNU"[0..4]);
+            operator(self.OutStreamer).emitInt32(GNU_PROPERTY_X86_FEATURE_1_AND);
+            operator(self.OutStreamer).emitInt32(4);
+            operator(self.OutStreamer).emitInt32(FeatureFlagsAnd);
+            self.emitAlignment(if WordSize == 4 { Align { ShiftValue: 4 } } else { Align { ShiftValue: 8 } }, null, 0);
+            operator(self.OutStreamer).switchSection(Cur, 0);
+        }
+    }
+    if TT.isOSBinFormatMachO() {
+        operator(self.OutStreamer)(self.getObjFileLowering().getTextSection);
+    }
+    if TT.isOSBinFormatCOFF() {
+        self.emitCOFFFeatureSymbol(M);
+        self.emitCOFFReplaceableFunctionData(M);
+        if M.getModuleFlag("import-call-optimization") {
+            self.EnableImportCallOptimization = true;
+        }
+        if M.getWinX64EHUnwindMode() == V3 {
+            operator(self.OutStreamer).emitWinCFIUnwindVersion(3, SMLoc {});
+        }
+    }
+    let mut IntelSyntax: bool = self.MAI.getOutputAssemblerDialect() == AD_Intel;
+    operator(self.OutStreamer).emitSyntaxDirective(if IntelSyntax { "intel" } else { "att" }, if IntelSyntax { "noprefix" } else { "" });
+    let mut is16: bool = TT.getEnvironment() == CODE16;
+    if M()()() && is16 {
+        let mut XTS: *mut X86TargetStreamer = operator(self.OutStreamer).getTargetStreamer() as *mut X86TargetStreamer;
+        XTS.emitCode16();
+    }
+}
+
+fn emitNonLazySymbolPointer(OutStreamer: *mut MCStreamer, StubLabel: *mut MCSymbol, MCSym: *mut i32) {
+    OutStreamer.emitLabel(StubLabel, SMLoc {});
+    OutStreamer.emitSymbolAttribute(MCSA_IndirectSymbol);
+    if MCSym()() {
+        OutStreamer.emitIntValue(0, 4);
+    } else {
+        OutStreamer.emitValue(create(OutStreamer.getContext()), 4);
+    }
+}
+
+fn emitNonLazyStubs(MMI: *mut MachineModuleInfo, OutStreamer: *mut MCStreamer) {
+    let mut MMIMacho: *mut MachineModuleInfoMachO = MMI;
+    let mut Stubs: i32 = 0;
+    Stubs() = MMIMacho()();
+    if operator!() {
+        OutStreamer.switchSection(MMI.getContext().getMachOSection("__IMPORT", "__pointers", S_NON_LAZY_SYMBOL_POINTERS, getMetadata(), null), 0);
+        Stubs()();
+        OutStreamer.addBlankLine();
+    }
+}
+
+fn usesMSVCFloatingPoint(TT: *Triple, M: *Module) -> bool {
+    if !TT.isWindowsMSVCEnvironment() {
+        return false;
+    }
+    return false;
+}
+
+fn X86AsmPrinter::emitEndOfAsmFile(self, M: *mut Module) {
+    let mut TT: *Triple = M.getTargetTriple();
+    if TT.isOSBinFormatMachO() {
+        emitNonLazyStubs(self.MMI, operator(self.OutStreamer));
+        self.FM.serializeToFaultMapSection();
+        operator(self.OutStreamer).emitSubsectionsViaSymbols();
+    } else if TT.isOSBinFormatCOFF() {
+        if self.EnableImportCallOptimization {
+            operator(self.OutStreamer)(self.getObjFileLowering().getImportCallSection);
+            let mut ImpCallMagic: [12]i8 = "RetpolineV1";
+            operator(self.OutStreamer).emitBytes(ImpCallMagic[0..(ImpCallMagic)]);
+        }
+        if usesMSVCFloatingPoint(TT, M) {
+            let mut SymbolName: str = if (TT.getArch() == x86) { "__fltused" } else { "_fltused" };
+            let mut S: *mut MCSymbol = self.MMI.getContext().getOrCreateSymbol(SymbolName);
+            operator(self.OutStreamer).emitSymbolAttribute(S, MCSA_Global);
+            return;
+        }
+    } else if TT.isOSBinFormatELF() {
+        self.FM.serializeToFaultMapSection();
+    }
+    if TT.isX86_64() && self.TM.getCodeModel() == Large {
+        if self.OutContext.lookupSymbol("__morestack_addr") {
+            AddrSymbol;
+        } else {
+            let mut Alignment: Align = Align { ShiftValue: 1 };
+            let mut ReadOnlySection: *mut MCSection = self.getObjFileLowering().getSectionForConstant(self.getDataLayout(), getReadOnly(), null, Alignment, null);
+            operator(self.OutStreamer).switchSection(ReadOnlySection, 0);
+            operator(self.OutStreamer).emitLabel(AddrSymbol, SMLoc {});
+            let mut PtrSize: u32 = self.MAI.getCodePointerSize();
+            operator(self.OutStreamer).emitSymbolValue(self.GetExternalSymbolSymbol("__morestack"), PtrSize, false);
+        }
+    }
+}
+
+static mut ID: i8 = 0;
+
+fn X86AsmPrinterBeginPass::run(self, M: *mut Module, MAM: *mut ModuleAnalysisManager) -> PreservedAnalyses {
+    MAM;
+    let mut AsmPrinter: *mut X86AsmPrinter = MAM() as X86AsmPrinter;
+    AsmPrinter.GetPSI;
+    AsmPrinter.GetSDPI;
+    setupModuleAsmPrinter(M, MAM, AsmPrinter);
+    AsmPrinter.doInitialization(M);
+    return all();
+}
+
+fn X86AsmPrinterPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
+    let mut AsmPrinter: *mut X86AsmPrinter = MFAM(*MF.getFunction().getParent())() as X86AsmPrinter;
+    AsmPrinter.GetPSI;
+    AsmPrinter.GetSDPI;
+    setupMachineFunctionAsmPrinter(MFAM, MF, AsmPrinter);
+    AsmPrinter.runOnMachineFunction(MF);
+    return all();
+}
+
+fn X86AsmPrinterEndPass::run(self, M: *mut Module, MAM: *mut ModuleAnalysisManager) -> PreservedAnalyses {
+    let mut AsmPrinter: *mut X86AsmPrinter = MAM() as X86AsmPrinter;
+    AsmPrinter.GetPSI;
+    AsmPrinter.GetSDPI;
+    setupModuleAsmPrinter(M, MAM, AsmPrinter);
+    AsmPrinter.doFinalization(M);
+    return all();
+}

@@ -1,0 +1,70 @@
+fn SMEAttrs::validate(self: *SMEAttrs) {
+    assert!(!(self.hasStreamingInterface() && self.hasStreamingCompatibleInterface()), "SM_Enabled and SM_Compatible are mutually exclusive");
+    assert!(!(self.isNewZA() && (self.Bitmask & SME_ABI_Routine)), "ZA_New and SME_ABI_Routine are mutually exclusive");
+    assert!((self.isNewZA() + self.isInZA() + self.isOutZA() + self.isInOutZA() + self.isPreservesZA()) <= 1, "Attributes 'aarch64_new_za', 'aarch64_in_za', 'aarch64_out_za', 'aarch64_inout_za' and 'aarch64_preserves_za' are mutually exclusive");
+    assert!((self.isNewZT0() + self.isInZT0() + self.isOutZT0() + self.isInOutZT0() + self.isPreservesZT0()) <= 1, "Attributes 'aarch64_new_zt0', 'aarch64_in_zt0', 'aarch64_out_zt0', 'aarch64_inout_zt0' and 'aarch64_preserves_zt0' are mutually exclusive");
+    assert!(!(self.hasAgnosticZAInterface() && self.hasSharedZAInterface()), "Function cannot have a shared-ZA interface and an agnostic-ZA interface");
+}
+
+fn SMEAttrs::SMEAttrs(self, Attrs: *AttributeList) {
+    self.Bitmask = 0;
+    for Attr in Attrs.getFnAttrs() {
+        if !Attr.isStringAttribute() {
+            continue;
+        }
+        let mut Kind: str = Attr.getKindAsString();
+        if !Kind.consume_front("aarch64_") {
+            continue;
+        }
+        self.Bitmask |= Kind.Case("pstate_sm_enabled", SM_Enabled).Case("pstate_sm_compatible", SM_Compatible).Case("pstate_sm_body", SM_Body).Case("za_state_agnostic", ZA_State_Agnostic).Case("in_za", encodeZAState(In)).Case("out_za", encodeZAState(Out)).Case("inout_za", encodeZAState(InOut)).Case("preserves_za", encodeZAState(Preserved)).Case("new_za", encodeZAState(New)).Case("in_zt0", encodeZT0State(In)).Case("out_zt0", encodeZT0State(Out)).Case("inout_zt0", encodeZT0State(InOut)).Case("preserves_zt0", encodeZT0State(Preserved)).Case("new_zt0", encodeZT0State(New)).Default(Normal);
+    }
+}
+
+fn SMEAttrs::addKnownFunctionAttrs(self, FuncName: str, RTLCI: *RuntimeLibcallsInfo) {
+    let mut Impl: LibcallImpl = RTLCI.getSupportedLibcallImpl(FuncName);
+    if Impl == Unsupported {
+        return;
+    }
+    let mut KnownAttrs: u32 = Normal;
+    let mut LC: Libcall = getLibcallFromImpl(Impl);
+    match LC {
+        SMEABI_SME_STATE => {
+            SMEABI_TPIDR2_SAVE;
+        },
+        SMEABI_ZA_DISABLE => {
+            SMEABI_TPIDR2_RESTORE;
+        },
+        SC_MEMCPY => {
+            SC_MEMMOVE;
+        },
+        _ => {
+            break;
+        },
+    }
+    self.set(KnownAttrs, true);
+}
+
+fn SMECallAttrs::requiresSMChange(self: *SMECallAttrs) -> bool {
+    if self.callee().hasStreamingCompatibleInterface() {
+        return false;
+    }
+    if self.caller().hasNonStreamingInterfaceAndBody() && self.callee().hasNonStreamingInterface() {
+        return false;
+    }
+    if self.caller().hasStreamingInterfaceOrBody() && self.callee().hasStreamingInterface() {
+        return false;
+    }
+    return true;
+}
+
+fn SMECallAttrs::SMECallAttrs(self, CB: *CallBase, RTLCI: *RuntimeLibcallsInfo) {
+    if CB.getCalledFunction() {
+        CalledFunction;
+    } else {
+        self.CalledFn = SMEAttrs { *CalledFunction, RTLCI };
+    }
+    assert!((self.IsIndirect || ((self.Callsite | self.CalledFn) == self.CalledFn)), "SME attributes at callsite do not match declaration");
+    if isa(CB) {
+        self.CalledFn.set(ZA_State_Agnostic, false);
+    }
+}

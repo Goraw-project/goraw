@@ -1,0 +1,180 @@
+fn extractConstantMask(C: *Constant, MaskEltSizeInBits: u32, UndefElts: *mut APInt, RawMask: *mut SmallVectorImpl<uint64_t>) -> bool {
+    let mut CstTy: *mut FixedVectorType = dyn_cast(C.getType());
+    if !CstTy {
+        return false;
+    }
+    let mut CstEltTy: *mut Type = CstTy.getElementType();
+    if !CstEltTy.isIntegerTy() {
+        return false;
+    }
+    let mut CstSizeInBits: u32 = CstTy.getPrimitiveSizeInBits().operator unsigned long long();
+    let mut CstEltSizeInBits: u32 = CstTy.getScalarSizeInBits();
+    let mut NumCstElts: u32 = CstTy.getNumElements();
+    assert!((CstSizeInBits % MaskEltSizeInBits) == 0, "Unaligned shuffle mask size");
+    let mut NumMaskElts: u32 = CstSizeInBits / MaskEltSizeInBits;
+    UndefElts = APInt { NumMaskElts, 0, false, false };
+    RawMask.resize(NumMaskElts, 0);
+    if MaskEltSizeInBits == CstEltSizeInBits {
+        assert!(NumCstElts == NumMaskElts, "Unaligned shuffle mask size");
+        for let mut i: u32 = 0; i != NumMaskElts; i += 1 {
+            let mut COp: *mut Constant = C.getAggregateElement(i);
+            if !COp || (!isa(COp) && !isa(COp)) {
+                return false;
+            }
+            if isa(COp) {
+                UndefElts.setBit(i);
+                RawMask[i] = 0;
+                continue;
+            }
+            let mut Elt: *mut ConstantInt = cast(COp);
+            RawMask[i] = Elt.getValue().getZExtValue();
+        }
+        return true;
+    }
+    let mut UndefBits: APInt = APInt { CstSizeInBits, 0, false, false };
+    let mut MaskBits: APInt = APInt { CstSizeInBits, 0, false, false };
+    for let mut i: u32 = 0; i != NumCstElts; i += 1 {
+        let mut COp: *mut Constant = C.getAggregateElement(i);
+        if !COp || (!isa(COp) && !isa(COp)) {
+            return false;
+        }
+        let mut BitOffset: u32 = i * CstEltSizeInBits;
+        if isa(COp) {
+            UndefBits.setBits(BitOffset, BitOffset + CstEltSizeInBits);
+            continue;
+        }
+        MaskBits.insertBits(cast(COp).getValue(), BitOffset);
+    }
+    for let mut i: u32 = 0; i != NumMaskElts; i += 1 {
+        let mut BitOffset: u32 = i * MaskEltSizeInBits;
+        let mut EltUndef: APInt = UndefBits.extractBits(MaskEltSizeInBits, BitOffset);
+        if EltUndef.isAllOnes() {
+            UndefElts.setBit(i);
+            RawMask[i] = 0;
+            continue;
+        }
+        let mut EltBits: APInt = MaskBits.extractBits(MaskEltSizeInBits, BitOffset);
+        RawMask[i] = EltBits.getZExtValue();
+    }
+    return true;
+}
+
+fn DecodePSHUFBMask(C: *Constant, Width: u32, ShuffleMask: *mut SmallVectorImpl<int>) {
+    assert!((Width == 128 || Width == 256 || Width == 512) && C.getType().getPrimitiveSizeInBits().operator unsigned long long() >= Width, "Unexpected vector size.");
+    let mut UndefElts: APInt = APInt {};
+    let mut RawMask: SmallVector<uint64_t, 64> = SmallVector<uint64_t, 64> {};
+    if !extractConstantMask(C, 8, UndefElts, RawMask) {
+        return;
+    }
+    let mut NumElts: u32 = Width / 8;
+    assert!((NumElts == 16 || NumElts == 32 || NumElts == 64), "Unexpected number of vector elements.");
+    for let mut i: u32 = 0; i != NumElts; i += 1 {
+        if UndefElts[i] {
+            ShuffleMask.push(SM_SentinelUndef);
+            continue;
+        }
+        let mut Element: u64 = RawMask[i];
+        if Element & (1 << 7) {
+            ShuffleMask.push(SM_SentinelZero);
+        } else {
+            let mut Base: u32 = i & ~15;
+            let mut Index: i32 = Base + (Element & 15);
+            ShuffleMask.push(Index);
+        }
+    }
+}
+
+fn DecodeVPERMILPMask(C: *Constant, ElSize: u32, Width: u32, ShuffleMask: *mut SmallVectorImpl<int>) {
+    assert!((Width == 128 || Width == 256 || Width == 512) && C.getType().getPrimitiveSizeInBits().operator unsigned long long() >= Width, "Unexpected vector size.");
+    assert!((ElSize == 32 || ElSize == 64), "Unexpected vector element size.");
+    let mut UndefElts: APInt = APInt {};
+    let mut RawMask: SmallVector<uint64_t, 16> = SmallVector<uint64_t, 16> {};
+    if !extractConstantMask(C, ElSize, UndefElts, RawMask) {
+        return;
+    }
+    let mut NumElts: u32 = Width / ElSize;
+    let mut NumEltsPerLane: u32 = 128 / ElSize;
+    assert!((NumElts == 2 || NumElts == 4 || NumElts == 8 || NumElts == 16), "Unexpected number of vector elements.");
+    for let mut i: u32 = 0; i != NumElts; i += 1 {
+        if UndefElts[i] {
+            ShuffleMask.push(SM_SentinelUndef);
+            continue;
+        }
+        let mut Index: i32 = i & ~(NumEltsPerLane - 1);
+        let mut Element: u64 = RawMask[i];
+        if ElSize == 64 {
+            Index += (Element >> 1) & 1;
+        } else {
+            Index += Element & 3;
+        }
+        ShuffleMask.push(Index);
+    }
+}
+
+fn DecodeVPERMIL2PMask(C: *Constant, M2Z: u32, ElSize: u32, Width: u32, ShuffleMask: *mut SmallVectorImpl<int>) {
+    let mut MaskTy: *mut Type = C.getType();
+    let mut MaskTySize: u32 = MaskTy.getPrimitiveSizeInBits().operator unsigned long long();
+    MaskTySize as void;
+    assert!((MaskTySize == 128 || MaskTySize == 256) && Width >= MaskTySize, "Unexpected vector size.");
+    let mut UndefElts: APInt = APInt {};
+    let mut RawMask: SmallVector<uint64_t, 8> = SmallVector<uint64_t, 8> {};
+    if !extractConstantMask(C, ElSize, UndefElts, RawMask) {
+        return;
+    }
+    let mut NumElts: u32 = Width / ElSize;
+    let mut NumEltsPerLane: u32 = 128 / ElSize;
+    assert!((NumElts == 2 || NumElts == 4 || NumElts == 8), "Unexpected number of vector elements.");
+    for let mut i: u32 = 0; i != NumElts; i += 1 {
+        if UndefElts[i] {
+            ShuffleMask.push(SM_SentinelUndef);
+            continue;
+        }
+        let mut Selector: u64 = RawMask[i];
+        let mut MatchBit: u32 = (Selector >> 3) & 1;
+        if (M2Z & 2) != 0 && MatchBit != (M2Z & 1) {
+            ShuffleMask.push(SM_SentinelZero);
+            continue;
+        }
+        let mut Index: i32 = i & ~(NumEltsPerLane - 1);
+        if ElSize == 64 {
+            Index += (Selector >> 1) & 1;
+        } else {
+            Index += Selector & 3;
+        }
+        let mut Src: i32 = (Selector >> 2) & 1;
+        Index += Src * NumElts;
+        ShuffleMask.push(Index);
+    }
+}
+
+fn DecodeVPPERMMask(C: *Constant, Width: u32, ShuffleMask: *mut SmallVectorImpl<int>) {
+    let mut MaskTy: *mut Type = C.getType();
+    let mut MaskTySize: u32 = MaskTy.getPrimitiveSizeInBits().operator unsigned long long();
+    MaskTySize as void;
+    assert!(Width == 128 && Width >= MaskTySize, "Unexpected vector size.");
+    let mut UndefElts: APInt = APInt {};
+    let mut RawMask: SmallVector<uint64_t, 16> = SmallVector<uint64_t, 16> {};
+    if !extractConstantMask(C, 8, UndefElts, RawMask) {
+        return;
+    }
+    let mut NumElts: u32 = Width / 8;
+    assert!(NumElts == 16, "Unexpected number of vector elements.");
+    for let mut i: u32 = 0; i != NumElts; i += 1 {
+        if UndefElts[i] {
+            ShuffleMask.push(SM_SentinelUndef);
+            continue;
+        }
+        let mut Element: u64 = RawMask[i];
+        let mut Index: u64 = Element & 31;
+        let mut PermuteOp: u64 = (Element >> 5) & 7;
+        if PermuteOp == 4 {
+            ShuffleMask.push(SM_SentinelZero);
+            continue;
+        }
+        if PermuteOp != 0 {
+            ShuffleMask.clear();
+            return;
+        }
+        ShuffleMask.push(Index as i32);
+    }
+}

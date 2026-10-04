@@ -1,0 +1,501 @@
+static mut DisableDFASched: opt<bool> = opt<bool> { "disable-dfa-sched", Hidden, desc { Desc: "Disable use of DFA during scheduling" } };
+
+static mut RegPressureThreshold: opt<int> = opt<int> { "dfa-sched-reg-pressure-threshold", Hidden, init(5), desc { Desc: "Track reg pressure and switch priority to in-depth" } };
+
+fn ResourcePriorityQueue::ResourcePriorityQueue(self, IS: *mut SelectionDAGISel) {
+    let mut STI: *TargetSubtargetInfo = IS.MF.getSubtarget();
+    self.TRI = STI.getRegisterInfo();
+    self.TLI = IS.TLI;
+    self.TII = STI.getInstrInfo();
+    self.ResourcesModel.reset(self.TII.CreateTargetScheduleState(STI));
+    assert!(self.ResourcesModel, "Unimplemented CreateTargetScheduleState.");
+    let mut NumRC: u32 = self.TRI.getNumRegClasses();
+    self.RegLimit.resize(NumRC);
+    self.RegPressure.resize(NumRC);
+    fill(self.RegLimit, 0);
+    fill(self.RegPressure, 0);
+    for RC in self.TRI.regclasses() {
+        self.RegLimit[RC.getID()] = self.TRI.getRegPressureLimit(&mut RC, *IS.MF);
+    }
+    self.ParallelLiveRanges = 0;
+    self.HorizontalVerticalBalance = 0;
+}
+
+fn ResourcePriorityQueue::~ResourcePriorityQueue(self) {}
+
+fn ResourcePriorityQueue::numberRCValPredInSU(self, SU: *mut SUnit, RCId: u32) -> u32 {
+    let mut NumberDeps: u32 = 0;
+    for Pred in SU.Preds {
+        if Pred.isCtrl() {
+            continue;
+        }
+        let mut PredSU: *mut SUnit = Pred.getSUnit();
+        let mut ScegN: *SDNode = PredSU.getNode();
+        if !ScegN {
+            continue;
+        }
+        match ScegN.getOpcode() {
+            _ => {
+                break;
+            },
+            TokenFactor => {
+                break;
+            },
+            CopyFromReg => {
+                NumberDeps += 1;
+            },
+            CopyToReg => {
+                break;
+            },
+            INLINEASM => {
+                break;
+            },
+            INLINEASM_BR => {
+                break;
+            },
+        }
+        if !ScegN.isMachineOpcode() {
+            continue;
+        }
+        for let mut i: u32 = 0;
+let mut e: u32 = ScegN.getNumValues(); i != e; i += 1 {
+            let mut VT: MVT = ScegN.getSimpleValueType(i);
+            if self.TLI.isTypeLegal(EVT { VT }) && (self.TLI.getRegClassFor(VT, false).getID() == RCId) {
+                NumberDeps += 1;
+                break;
+            }
+        }
+    }
+    return NumberDeps;
+}
+
+fn ResourcePriorityQueue::numberRCValSuccInSU(self, SU: *mut SUnit, RCId: u32) -> u32 {
+    let mut NumberDeps: u32 = 0;
+    for Succ in SU.Succs {
+        if Succ.isCtrl() {
+            continue;
+        }
+        let mut SuccSU: *mut SUnit = Succ.getSUnit();
+        let mut ScegN: *SDNode = SuccSU.getNode();
+        if !ScegN {
+            continue;
+        }
+        match ScegN.getOpcode() {
+            _ => {
+                break;
+            },
+            TokenFactor => {
+                break;
+            },
+            CopyFromReg => {
+                break;
+            },
+            CopyToReg => {
+                NumberDeps += 1;
+            },
+            INLINEASM => {
+                break;
+            },
+            INLINEASM_BR => {
+                break;
+            },
+        }
+        if !ScegN.isMachineOpcode() {
+            continue;
+        }
+        for let mut i: u32 = 0;
+let mut e: u32 = ScegN.getNumOperands(); i != e; i += 1 {
+            let mut Op: *SDValue = ScegN.getOperand(i);
+            let mut VT: MVT = Op.getNode().getSimpleValueType(Op.getResNo());
+            if self.TLI.isTypeLegal(EVT { VT }) && (self.TLI.getRegClassFor(VT, false).getID() == RCId) {
+                NumberDeps += 1;
+                break;
+            }
+        }
+    }
+    return NumberDeps;
+}
+
+fn numberCtrlDepsInSU(SU: *mut SUnit) -> u32 {
+    let mut NumberDeps: u32 = 0;
+    for Succ in SU.Succs {
+        if Succ.isCtrl() {
+            NumberDeps += 1;
+        }
+    }
+    return NumberDeps;
+}
+
+fn numberCtrlPredInSU(SU: *mut SUnit) -> u32 {
+    let mut NumberDeps: u32 = 0;
+    for Pred in SU.Preds {
+        if Pred.isCtrl() {
+            NumberDeps += 1;
+        }
+    }
+    return NumberDeps;
+}
+
+fn ResourcePriorityQueue::initNodes(self, sunits: *mut []SUnit) {
+    self.SUnits = &mut sunits;
+    self.NumNodesSolelyBlocking.resize(self.SUnits.len, 0);
+    for SU in *self.SUnits {
+        self.initNumRegDefsLeft(&mut SU);
+        SU.NodeQueueId = 0;
+    }
+}
+
+fn resource_sort::operator()(self: *resource_sort, LHS: *SUnit, RHS: *SUnit) -> bool {
+    if LHS.isScheduleHigh && !RHS.isScheduleHigh {
+        return false;
+    }
+    if !LHS.isScheduleHigh && RHS.isScheduleHigh {
+        return true;
+    }
+    let mut LHSNum: u32 = LHS.NodeNum;
+    let mut RHSNum: u32 = RHS.NodeNum;
+    let mut LHSLatency: u32 = self.PQ.getLatency(LHSNum);
+    let mut RHSLatency: u32 = self.PQ.getLatency(RHSNum);
+    if LHSLatency < RHSLatency {
+        return true;
+    }
+    if LHSLatency > RHSLatency {
+        return false;
+    }
+    let mut LHSBlocked: u32 = self.PQ.getNumSolelyBlockNodes(LHSNum);
+    let mut RHSBlocked: u32 = self.PQ.getNumSolelyBlockNodes(RHSNum);
+    if LHSBlocked < RHSBlocked {
+        return true;
+    }
+    if LHSBlocked > RHSBlocked {
+        return false;
+    }
+    return LHSNum < RHSNum;
+}
+
+fn ResourcePriorityQueue::getSingleUnscheduledPred(self, SU: *mut SUnit) -> *mut SUnit {
+    let mut OnlyAvailablePred: *mut SUnit = null;
+    for Pred in SU.Preds {
+        let mut PredSU: *mut SUnit = *Pred.getSUnit();
+        if !PredSU.isScheduled {
+            if OnlyAvailablePred && OnlyAvailablePred != &mut PredSU {
+                return null;
+            }
+            OnlyAvailablePred = &mut PredSU;
+        }
+    }
+    return OnlyAvailablePred;
+}
+
+fn ResourcePriorityQueue::push(self, SU: *mut SUnit) {
+    let mut NumNodesBlocking: u32 = 0;
+    for Succ in SU.Succs {
+        if self.getSingleUnscheduledPred(Succ.getSUnit()) == SU {
+            NumNodesBlocking += 1;
+        }
+    }
+    self.NumNodesSolelyBlocking[SU.NodeNum] = NumNodesBlocking;
+    self.Queue.push(SU);
+}
+
+fn ResourcePriorityQueue::isResourceAvailable(self, SU: *mut SUnit) -> bool {
+    if !SU || !SU.getNode() {
+        return false;
+    }
+    if SU.getNode().getGluedNode() {
+        return true;
+    }
+    if SU.getNode().isMachineOpcode() {
+        match SU.getNode().getMachineOpcode() {
+            _ => {
+                if !operator(self.ResourcesModel).canReserveResources(&mut self.TII.get(SU.getNode().getMachineOpcode())) {
+                    return false;
+                }
+            },
+            EXTRACT_SUBREG => {
+                INSERT_SUBREG;
+            },
+        }
+    }
+    for S in self.Packet {
+        for Succ in S.Succs {
+            if Succ.isCtrl() {
+                continue;
+            }
+            if Succ.getSUnit() == SU {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+fn ResourcePriorityQueue::reserveResources(self, SU: *mut SUnit) {
+    if !self.isResourceAvailable(SU) || SU.getNode().getGluedNode() {
+        operator(self.ResourcesModel).clearResources();
+        self.Packet.clear();
+    }
+    if SU.getNode() && SU.getNode().isMachineOpcode() {
+        match SU.getNode().getMachineOpcode() {
+            _ => {
+                operator(self.ResourcesModel).reserveResources(&mut self.TII.get(SU.getNode().getMachineOpcode()));
+            },
+            EXTRACT_SUBREG => {
+                INSERT_SUBREG;
+            },
+        }
+        self.Packet.push(SU);
+    } else {
+        operator(self.ResourcesModel).clearResources();
+        self.Packet.clear();
+    }
+    if self.Packet.len >= self.InstrItins.SchedModel.IssueWidth {
+        operator(self.ResourcesModel).clearResources();
+        self.Packet.clear();
+    }
+}
+
+fn ResourcePriorityQueue::rawRegPressureDelta(self, SU: *mut SUnit, RCId: u32) -> i32 {
+    let mut RegBalance: i32 = 0;
+    if !SU || !SU.getNode() || !SU.getNode().isMachineOpcode() {
+        return RegBalance;
+    }
+    for let mut i: u32 = 0;
+let mut e: u32 = SU.getNode().getNumValues(); i != e; i += 1 {
+        let mut VT: MVT = SU.getNode().getSimpleValueType(i);
+        if self.TLI.isTypeLegal(EVT { VT }) && self.TLI.getRegClassFor(VT, false) && self.TLI.getRegClassFor(VT, false).getID() == RCId {
+            RegBalance += self.numberRCValSuccInSU(SU, RCId);
+        }
+    }
+    for let mut i: u32 = 0;
+let mut e: u32 = SU.getNode().getNumOperands(); i != e; i += 1 {
+        let mut Op: *SDValue = SU.getNode().getOperand(i);
+        let mut VT: MVT = Op.getNode().getSimpleValueType(Op.getResNo());
+        if isa(Op.getNode()) {
+            continue;
+        }
+        if self.TLI.isTypeLegal(EVT { VT }) && self.TLI.getRegClassFor(VT, false) && self.TLI.getRegClassFor(VT, false).getID() == RCId {
+            RegBalance -= self.numberRCValPredInSU(SU, RCId);
+        }
+    }
+    return RegBalance;
+}
+
+fn ResourcePriorityQueue::regPressureDelta(self, SU: *mut SUnit, RawPressure: bool) -> i32 {
+    let mut RegBalance: i32 = 0;
+    if !SU || !SU.getNode() || !SU.getNode().isMachineOpcode() {
+        return RegBalance;
+    }
+    if RawPressure {
+        for RC in self.TRI.regclasses() {
+            RegBalance += self.rawRegPressureDelta(SU, RC.getID());
+        }
+    } else {
+        for RC in self.TRI.regclasses() {
+            if (self.RegPressure[RC.getID()] + self.rawRegPressureDelta(SU, RC.getID()) > 0) && (self.RegPressure[RC.getID()] + self.rawRegPressureDelta(SU, RC.getID()) >= self.RegLimit[RC.getID()]) {
+                RegBalance += self.rawRegPressureDelta(SU, RC.getID());
+            }
+        }
+    }
+    return RegBalance;
+}
+
+const PriorityOne: u32 = 200;
+
+const PriorityTwo: u32 = 50;
+
+const PriorityThree: u32 = 15;
+
+const PriorityFour: u32 = 5;
+
+const ScaleOne: u32 = 20;
+
+const ScaleTwo: u32 = 10;
+
+const ScaleThree: u32 = 5;
+
+const FactorOne: u32 = 2;
+
+fn ResourcePriorityQueue::SUSchedulingCost(self, SU: *mut SUnit) -> i32 {
+    let mut ResCount: i32 = 1;
+    if SU.isScheduled {
+        return ResCount;
+    }
+    if SU.isScheduleHigh {
+        ResCount += PriorityOne;
+    }
+    if self.HorizontalVerticalBalance > RegPressureThreshold.operator int() {
+        ResCount += (SU.getHeight() * ScaleTwo);
+        if self.isResourceAvailable(SU) {
+            ResCount <<= FactorOne;
+        }
+        ResCount -= (self.regPressureDelta(SU, true) * ScaleOne);
+    } else {
+        ResCount += (SU.getHeight() * ScaleTwo);
+        ResCount += (self.NumNodesSolelyBlocking[SU.NodeNum] * ScaleTwo);
+        if self.isResourceAvailable(SU) {
+            ResCount <<= FactorOne;
+        }
+        ResCount -= (self.regPressureDelta(SU, false) * ScaleTwo);
+    }
+    for let mut N: *mut SDNode = SU.getNode(); N; N = N.getGluedNode() {
+        if N.isMachineOpcode() {
+            let mut TID: *MCInstrDesc = self.TII.get(N.getMachineOpcode());
+            if TID.isCall() {
+                ResCount += (PriorityTwo + (ScaleThree * N.getNumValues()));
+            }
+        } else {
+            match N.getOpcode() {
+                _ => {
+                    break;
+                },
+                TokenFactor => {
+                    CopyFromReg;
+                },
+                INLINEASM => {
+                    INLINEASM_BR;
+                },
+            }
+        }
+    }
+    return ResCount;
+}
+
+fn ResourcePriorityQueue::scheduledNode(self, SU: *mut SUnit) {
+    if !SU {
+        operator(self.ResourcesModel).clearResources();
+        self.Packet.clear();
+        return;
+    }
+    let mut ScegN: *SDNode = SU.getNode();
+    if ScegN.isMachineOpcode() {
+        for let mut i: u32 = 0;
+let mut e: u32 = ScegN.getNumValues(); i != e; i += 1 {
+            let mut VT: MVT = ScegN.getSimpleValueType(i);
+            if self.TLI.isTypeLegal(EVT { VT }) {
+                let mut RC: *TargetRegisterClass = self.TLI.getRegClassFor(VT, false);
+                if RC {
+                    self.RegPressure[RC.getID()] += self.numberRCValSuccInSU(SU, RC.getID());
+                }
+            }
+        }
+        for let mut i: u32 = 0;
+let mut e: u32 = ScegN.getNumOperands(); i != e; i += 1 {
+            let mut Op: *SDValue = ScegN.getOperand(i);
+            let mut VT: MVT = Op.getNode().getSimpleValueType(Op.getResNo());
+            if self.TLI.isTypeLegal(EVT { VT }) {
+                let mut RC: *TargetRegisterClass = self.TLI.getRegClassFor(VT, false);
+                if RC {
+                    if self.RegPressure[RC.getID()] > (self.numberRCValPredInSU(SU, RC.getID())) {
+                        self.RegPressure[RC.getID()] -= self.numberRCValPredInSU(SU, RC.getID());
+                    } else {
+                        self.RegPressure[RC.getID()] = 0;
+                    }
+                }
+            }
+        }
+        for Pred in SU.Preds {
+            if Pred.isCtrl() || (Pred.getSUnit().NumRegDefsLeft == 0) {
+                continue;
+            }
+            Pred.getSUnit().NumRegDefsLeft -= 1;
+        }
+    }
+    self.reserveResources(SU);
+    let mut NumberNonControlDeps: u32 = 0;
+    for Succ in SU.Succs {
+        self.adjustPriorityOfUnscheduledPreds(Succ.getSUnit());
+        if !Succ.isCtrl() {
+            NumberNonControlDeps += 1;
+        }
+    }
+    if !NumberNonControlDeps {
+        if self.ParallelLiveRanges >= SU.NumPreds {
+            self.ParallelLiveRanges -= SU.NumPreds;
+        } else {
+            self.ParallelLiveRanges = 0;
+        }
+    } else {
+        self.ParallelLiveRanges += SU.NumRegDefsLeft;
+    }
+    self.HorizontalVerticalBalance += (SU.Succs.len - numberCtrlDepsInSU(SU));
+    self.HorizontalVerticalBalance -= (SU.Preds.len - numberCtrlPredInSU(SU));
+}
+
+fn ResourcePriorityQueue::initNumRegDefsLeft(self, SU: *mut SUnit) {
+    let mut NodeNumDefs: u32 = 0;
+    for let mut N: *mut SDNode = SU.getNode(); N; N = N.getGluedNode() {
+        if N.isMachineOpcode() {
+            let mut TID: *MCInstrDesc = self.TII.get(N.getMachineOpcode());
+            if N.getMachineOpcode() == IMPLICIT_DEF {
+                NodeNumDefs = 0;
+                break;
+            }
+            NodeNumDefs = if N.getNumValues() < TID.getNumDefs() { N.getNumValues() } else { TID.getNumDefs() };
+        } else {
+            match N.getOpcode() {
+                _ => {
+                    break;
+                },
+                CopyFromReg => {
+                    NodeNumDefs += 1;
+                },
+                INLINEASM => {
+                    INLINEASM_BR;
+                },
+            }
+        }
+    }
+    SU.NumRegDefsLeft = NodeNumDefs;
+}
+
+fn ResourcePriorityQueue::adjustPriorityOfUnscheduledPreds(self, SU: *mut SUnit) {
+    if SU.isAvailable {
+        return;
+    }
+    let mut OnlyAvailablePred: *mut SUnit = self.getSingleUnscheduledPred(SU);
+    if !OnlyAvailablePred || !OnlyAvailablePred.isAvailable {
+        return;
+    }
+    self.remove(OnlyAvailablePred);
+    self.push(OnlyAvailablePred);
+}
+
+fn ResourcePriorityQueue::pop(self) -> *mut SUnit {
+    if self.len == 0 {
+        return null;
+    }
+    let mut Best: []*mut SUnit = self.Queue.begin();
+    if !DisableDFASched {
+        let mut BestCost: i32 = self.SUSchedulingCost(operator(Best));
+        for let mut I: SUnit *>>> = next(self.Queue.begin(), 1);
+let mut E: iterator = self.Queue.end(); !I == E; operator(I) {
+            if self.SUSchedulingCost(operator(I)) > BestCost {
+                BestCost = self.SUSchedulingCost(operator(I));
+                Best = I;
+            }
+        }
+    } else {
+        for let mut I: SUnit *>>> = next(self.Queue.begin(), 1);
+let mut E: iterator = self.Queue.end(); !I == E; operator(I) {
+            if self.Picker.call(operator(Best), operator(I)) {
+                Best = I;
+            }
+        }
+    }
+    let mut V: *mut SUnit = operator(Best);
+    if !Best == prev(self.Queue.end(), 1) {
+        swap(operator(Best), self.Queue.back());
+    }
+    self.Queue.pop();
+    return V;
+}
+
+fn ResourcePriorityQueue::remove(self, SU: *mut SUnit) {
+    assert!(!self.Queue.is_empty(), "Queue is empty!");
+    let mut I: []*mut SUnit = find(self.Queue, SU);
+    if !I == prev(self.Queue.end(), 1) {
+        swap(operator(I), self.Queue.back());
+    }
+    self.Queue.pop();
+}

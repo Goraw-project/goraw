@@ -1,0 +1,395 @@
+fn getChunk(Imm: u64, ChunkIdx: u32) -> u64 {
+    assert!(ChunkIdx < 4, "Out of range chunk index specified!");
+    return (Imm >> (ChunkIdx * 16)) & 65535;
+}
+
+fn canUseOrr(Chunk: u64, Encoding: *mut u64) -> bool {
+    Chunk = (Chunk << 48) | (Chunk << 32) | (Chunk << 16) | Chunk;
+    return processLogicalImmediate(Chunk, 64, Encoding);
+}
+
+fn tryToreplicateChunks(UImm: u64, Insn: *mut SmallVectorImpl<ImmInsnModel>) -> bool {
+    let mut Counts: i32 = 0;
+    for let mut Idx: u32 = 0; Idx < 4; Idx += 1 {
+        [getChunk(UImm, Idx)] += 1;
+    }
+    return false;
+}
+
+fn isStartChunk(Chunk: u64) -> bool {
+    if Chunk == 0 || Chunk == max() {
+        return false;
+    }
+    return isMask_64(~Chunk);
+}
+
+fn isEndChunk(Chunk: u64) -> bool {
+    if Chunk == 0 || Chunk == max() {
+        return false;
+    }
+    return isMask_64(Chunk);
+}
+
+fn updateImm(Imm: u64, Idx: u32, Clear: bool) -> u64 {
+    let mut Mask: u64 = 65535;
+    if Clear {
+        Imm &= ~(Mask << (Idx * 16));
+    } else {
+        Imm |= Mask << (Idx * 16);
+    }
+    return Imm;
+}
+
+fn trySequenceOfOnes(UImm: u64, Insn: *mut SmallVectorImpl<ImmInsnModel>) -> bool {
+    let mut NotSet: i32 = -1;
+    let mut Mask: u64 = 65535;
+    let mut StartIdx: i32 = NotSet;
+    let mut EndIdx: i32 = NotSet;
+    for let mut Idx: i32 = 0; Idx < 4; Idx += 1 {
+        let mut Chunk: i64 = getChunk(UImm, Idx);
+        Chunk = (Chunk << 48) >> 48;
+        if isStartChunk(Chunk) {
+            StartIdx = Idx;
+        } else if isEndChunk(Chunk) {
+            EndIdx = Idx;
+        }
+    }
+    if StartIdx == NotSet || EndIdx == NotSet {
+        return false;
+    }
+    let mut Outside: u64 = 0;
+    let mut Inside: u64 = Mask;
+    if StartIdx > EndIdx {
+        swap(StartIdx, EndIdx);
+        swap(Outside, Inside);
+    }
+    let mut OrrImm: u64 = UImm;
+    let mut FirstMovkIdx: i32 = NotSet;
+    let mut SecondMovkIdx: i32 = NotSet;
+    for let mut Idx: i32 = 0; Idx < 4; Idx += 1 {
+        let mut Chunk: u64 = getChunk(UImm, Idx);
+        if (Idx < StartIdx || EndIdx < Idx) && Chunk != Outside {
+            OrrImm = updateImm(OrrImm, Idx, Outside == 0);
+            if FirstMovkIdx == NotSet {
+                FirstMovkIdx = Idx;
+            } else {
+                SecondMovkIdx = Idx;
+            }
+        } else if Idx > StartIdx && Idx < EndIdx && Chunk != Inside {
+            OrrImm = updateImm(OrrImm, Idx, Inside != Mask);
+            if FirstMovkIdx == NotSet {
+                FirstMovkIdx = Idx;
+            } else {
+                SecondMovkIdx = Idx;
+            }
+        }
+    }
+    assert!(FirstMovkIdx != NotSet, "Constant materializable with single ORR!");
+    let mut Encoding: u64 = 0;
+    processLogicalImmediate(OrrImm, 64, Encoding);
+    Insn();
+    let mut SingleMovk: bool = SecondMovkIdx == NotSet;
+    Insn();
+    if SingleMovk {
+        return true;
+    }
+    Insn();
+    return true;
+}
+
+fn tryCopyWithNegation(Imm: u64, AllowThreeSequence: bool, Insn: *mut SmallVectorImpl<ImmInsnModel>) -> bool {
+    if !Imm || isShiftedMask_64(Imm) {
+        return false;
+    }
+    let mut Mask: u32 = 65535;
+    let mut tryExpansion: Closure_1 = Closure_1 { AllowThreeSequence: &mut AllowThreeSequence, Insn: &mut Insn };
+    for let mut N: u32 = 17; N < 48; N += 1 {
+        let mut C: u64 = 18446744069414584320 | (Imm ^ (Imm << N));
+        if (C ^ (C << N)) == Imm && tryExpansion(C, N) {
+            return true;
+        }
+        C = 18446744069414584320 | (Imm ^ ~(~Imm << N));
+        if (C ^ ~(C << N)) == Imm && tryExpansion(C, N) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn GetRunOfOnesStartingAt(V: u64, StartPosition: u64) -> u64 {
+    let mut NumOnes: u64 = countr_one(V >> StartPosition);
+    let mut UnshiftedOnes: u64 = 0;
+    if NumOnes == 64 {
+        UnshiftedOnes = ~0;
+    } else {
+        UnshiftedOnes = (1 << NumOnes) - 1;
+    }
+    return UnshiftedOnes << StartPosition;
+}
+
+fn MaximallyReplicateSubImmediate(V: u64, Subset: u64) -> u64 {
+    let mut Result: u64 = Subset;
+    for let mut i: u64 = 0; i < 6; i += 1 {
+        let mut Rotation: u64 = 1 << (6 - i);
+        let mut Closure: u64 = Result | rotl(Result, Rotation);
+        if Closure != (Closure & V) {
+            break;
+        }
+        Result = Closure;
+    }
+    return Result;
+}
+
+fn maximalLogicalImmWithin(RemainingBits: u64, OriginalBits: u64) -> u64 {
+    let mut Position: u32 = countr_zero(RemainingBits);
+    let mut FirstRun: u64 = GetRunOfOnesStartingAt(OriginalBits, Position);
+    let mut MaximalImm: u64 = MaximallyReplicateSubImmediate(OriginalBits, FirstRun);
+    return MaximalImm;
+}
+
+fn decomposeIntoOrrOfLogicalImmediates(UImm: u64) -> pair<uint64_t, uint64_t>> {
+    if UImm == 0 || ~UImm == 0 {
+        return nullopt();
+    }
+    let mut InitialTrailingOnes: u32 = countr_one(UImm);
+    let mut RotatedBits: u64 = rotr(UImm, InitialTrailingOnes);
+    let mut MaximalImm1: u64 = maximalLogicalImmWithin(RotatedBits, RotatedBits);
+    let mut RemainingBits: u64 = RotatedBits & ~MaximalImm1;
+    let mut MaximalImm2: u64 = maximalLogicalImmWithin(RemainingBits, RotatedBits);
+    if RemainingBits & ~MaximalImm2 {
+        return nullopt();
+    }
+    return make_pair(rotl(MaximalImm1, InitialTrailingOnes), rotl(MaximalImm2, InitialTrailingOnes));
+}
+
+fn tryOrrOfLogicalImmediates(UImm: u64, Insn: *mut SmallVectorImpl<ImmInsnModel>) -> bool {
+    let mut MaybeDecomposition: auto = zeroed();
+    if MaybeDecomposition() == nullopt {
+        return false;
+    }
+    let mut Imm1: u64 = ;
+    let mut Imm2: u64 = ;
+    let mut Encoding1: u64 = 0;
+    let mut Encoding2: u64 = 0;
+    let mut Imm1Success: bool = processLogicalImmediate(Imm1, 64, Encoding1);
+    let mut Imm2Success: bool = processLogicalImmediate(Imm2, 64, Encoding2);
+    if Imm1Success && Imm2Success {
+        Insn();
+        Insn();
+        return true;
+    }
+    return false;
+}
+
+fn tryAndOfLogicalImmediates(UImm: u64, Insn: *mut SmallVectorImpl<ImmInsnModel>) -> bool {
+    let mut MaybeDecomposition: auto = zeroed();
+    if MaybeDecomposition() == nullopt {
+        return false;
+    }
+    let mut Imm1: u64 = ;
+    let mut Imm2: u64 = ;
+    let mut Encoding1: u64 = 0;
+    let mut Encoding2: u64 = 0;
+    let mut Imm1Success: bool = processLogicalImmediate(~Imm1, 64, Encoding1);
+    let mut Imm2Success: bool = processLogicalImmediate(~Imm2, 64, Encoding2);
+    if Imm1Success && Imm2Success {
+        Insn();
+        Insn();
+        return true;
+    }
+    return false;
+}
+
+fn tryEorOfLogicalImmediates(Imm: u64, Insn: *mut SmallVectorImpl<ImmInsnModel>) -> bool {
+    let mut BigSize: u32 = 64;
+    while true {
+        {
+        BigSize /= 2;
+        let mut Mask: u64 = (1 << BigSize) - 1;
+        if (Imm & Mask) != ((Imm >> BigSize) & Mask) {
+            BigSize *= 2;
+            break;
+        }
+    }
+        if !(BigSize > 2) { break; }
+    }
+    let mut BigMask: u64 = (-1 as u64) >> (64 - BigSize);
+    let mut RunStarts: u64 = Imm & operator~(rotl(Imm, 1));
+    let mut RunsPerBigChunk: i32 = popcount(RunStarts & BigMask);
+    let mut BigToSmallSizeTable: [32]i8 = [-1, -1, 0, 1, 2, 2, -1, 3, 3, 3, -1, -1, -1, -1, -1, 4, 4, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 5];
+    let mut BigToSmallShift: i32 = BigToSmallSizeTable[RunsPerBigChunk];
+    if BigToSmallShift == -1 {
+        return false;
+    }
+    let mut SmallSize: u32 = BigSize >> BigToSmallShift;
+    let mut RepeatedOnesTable: [7]u64 = [18446744073709551615, 6148914691236517205, 1229782938247303441, 72340172838076673, 281479271743489, 4294967297, 1];
+    let mut SmallOnes: u64 = RepeatedOnesTable[countr_zero(SmallSize)];
+    let mut Rotation: i32 = countr_zero(RunStarts);
+    let mut RotatedImm: u64 = rotr(Imm, Rotation);
+    for let mut Attempt: i32 = 0; Attempt < 3; Attempt += 1 {
+        let mut RunLength: u32 = countr_one(RotatedImm);
+        let mut SmallImm: u64 = rotl((SmallOnes << RunLength) - SmallOnes, Rotation);
+        let mut BigImm: u64 = Imm ^ SmallImm;
+        let mut BigEncoding: u64 = 0;
+        let mut SmallEncoding: u64 = 0;
+        if processLogicalImmediate(BigImm, 64, BigEncoding) && processLogicalImmediate(SmallImm, 64, SmallEncoding) {
+            Insn();
+            Insn();
+            return true;
+        }
+        operator+=(Rotation, countr_zero(rotr(RunStarts, Rotation) & ~1));
+        RotatedImm = rotr(Imm, Rotation);
+    }
+    return false;
+}
+
+fn expandMOVImmSimple(Imm: u64, BitSize: u32, OneChunks: u32, ZeroChunks: u32, Insn: *mut SmallVectorImpl<ImmInsnModel>) {
+    let mut Mask: u32 = 65535;
+    let mut isNeg: bool = false;
+    if OneChunks > ZeroChunks {
+        isNeg = true;
+        Imm = ~Imm;
+    }
+    let mut FirstOpc: u32 = 0;
+    if BitSize == 32 {
+        Imm &= (1 << 32) - 1;
+    } else {}
+    let mut Shift: u32 = 0;
+    let mut LastShift: u32 = 0;
+    if Imm != 0 {
+        let mut LZ: u32 = countl_zero(Imm);
+        let mut TZ: u32 = countr_zero(Imm);
+        Shift = (TZ / 16) * 16;
+        LastShift = ((63 - LZ) / 16) * 16;
+    }
+    let mut Imm16: u32 = (Imm >> Shift) & Mask;
+    Insn()(void { FirstOpc, Imm16, getShifterImm(LSL, Shift) });
+    if Shift == LastShift {
+        return;
+    }
+    if isNeg {
+        Imm = ~Imm;
+    }
+    let mut Opc: u32 = 0;
+    while Shift < LastShift {
+        Shift += 16;
+        Imm16 = (Imm >> Shift) & Mask;
+        if Imm16 == (if isNeg { Mask } else { 0 }) {
+            continue;
+        }
+        Insn()(void { Opc, Imm16, getShifterImm(LSL, Shift) });
+    }
+    if Insn()() > 2 && (Imm >> 32) == (Imm & 4294967295) {
+        for let mut Size: i32 = Insn()(); Size > 2; Size -= 1 {
+            Insn()();
+        }
+        Insn();
+    }
+}
+
+fn expandMOVImm(Imm: u64, BitSize: u32, Insn: *mut SmallVectorImpl<ImmInsnModel>) {
+    let mut Mask: u32 = 65535;
+    let mut OneChunks: u32 = 0;
+    let mut ZeroChunks: u32 = 0;
+    for let mut Shift: u32 = 0; Shift < BitSize; Shift += 16 {
+        let mut Chunk: u32 = (Imm >> Shift) & Mask;
+        if Chunk == Mask {
+            OneChunks += 1;
+        } else if Chunk == 0 {
+            ZeroChunks += 1;
+        }
+    }
+    if (BitSize / 16) - OneChunks <= 1 || (BitSize / 16) - ZeroChunks <= 1 {
+        expandMOVImmSimple(Imm, BitSize, OneChunks, ZeroChunks, Insn);
+        (((operator!(operator!((Insn()() == 1 && "Move of immediate should have expanded to a single MOVZ/MOVN")))) || (_wassert(L"Insn.size() == 1 && \"Move of immediate should have expanded to a single MOVZ/MOVN\"", L"llvm\\lib\\Target\\AArch64\\AArch64ExpandImm.cpp", (618) as u32) , 0)) as void);
+        return;
+    }
+    let mut UImm: u64 = Imm << (64 - BitSize) >> (64 - BitSize);
+    let mut Encoding: u64 = 0;
+    if processLogicalImmediate(UImm, BitSize, Encoding) {
+        let mut Opc: u32 = 0;
+        Insn()(void { Opc, 0, Encoding });
+        return;
+    }
+    if OneChunks >= (BitSize / 16) - 2 || ZeroChunks >= (BitSize / 16) - 2 {
+        expandMOVImmSimple(Imm, BitSize, OneChunks, ZeroChunks, Insn);
+        return;
+    }
+    assert!(BitSize == 64, "All 32-bit immediates can be expanded with aMOVZ/MOVK pair");
+    for let mut Shift: u32 = 0; Shift < BitSize; Shift += 16 {
+        let mut ShiftedMask: u64 = (65535 << Shift);
+        let mut ZeroChunk: u64 = UImm & ~ShiftedMask;
+        let mut OneChunk: u64 = UImm | ShiftedMask;
+        let mut RotatedImm: u64 = rotl(UImm, 32);
+        let mut ReplicateChunk: u64 = ZeroChunk | (RotatedImm & ShiftedMask);
+        if processLogicalImmediate(ZeroChunk, BitSize, Encoding) || processLogicalImmediate(OneChunk, BitSize, Encoding) || processLogicalImmediate(ReplicateChunk, BitSize, Encoding) {
+            Insn();
+            let mut Imm16: u32 = getChunk(UImm, Shift / 16);
+            Insn();
+            return;
+        }
+    }
+    if tryOrrOfLogicalImmediates(Imm, Insn) {
+        return;
+    }
+    if tryAndOfLogicalImmediates(Imm, Insn) {
+        return;
+    }
+    if tryEorOfLogicalImmediates(UImm, Insn) {
+        return;
+    }
+    if tryCopyWithNegation(Imm, false, Insn) {
+        return;
+    }
+    if OneChunks || ZeroChunks {
+        expandMOVImmSimple(Imm, BitSize, OneChunks, ZeroChunks, Insn);
+        return;
+    }
+    if BitSize == 64 && tryToreplicateChunks(UImm, Insn) {
+        return;
+    }
+    if BitSize == 64 && trySequenceOfOnes(UImm, Insn) {
+        return;
+    }
+    if tryCopyWithNegation(Imm, true, Insn) {
+        return;
+    }
+    expandMOVImmSimple(Imm, BitSize, OneChunks, ZeroChunks, Insn);
+}
+
+fn expandMOVAddr(Opcode: u32, TargetFlags: u32, IsTargetMachO: bool, Insn: *mut SmallVectorImpl<AddrInsnModel>) {
+    if  {
+        Insn();
+        Insn();
+        return;
+    }
+    Insn();
+    if TargetFlags & MO_TAGGED {
+        Insn();
+    }
+    Insn();
+}
+
+struct Closure_1 {
+    AllowThreeSequence: *mut bool,
+    Insn: *mut SmallVectorImpl<ImmInsnModel>,
+}
+
+unsafe fn Closure_1::call(self: *mut Closure_1, Opc: u32, C: u64, N: u32) -> bool {
+        assert!((C >> 32) == 4294967295, "Invalid immediate");
+        let mut Imm0: u32 = C & Mask;
+        let mut Imm16: u32 = (C >> 16) & Mask;
+        if Imm0 != Mask && Imm16 != Mask && !(*self.AllowThreeSequence) {
+            return false;
+        }
+        if Imm0 != Mask {
+            (*self.Insn)();
+            if Imm16 != Mask {
+                (*self.Insn)();
+            }
+        } else {
+            (*self.Insn)();
+        }
+        (*self.Insn)()(void { Opc, nullopt, N });
+        return true;
+    }

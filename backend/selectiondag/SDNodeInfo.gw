@@ -1,0 +1,208 @@
+fn reportNodeError(DAG: *SelectionDAG, N: *SDNode, Msg: str) {
+    let mut S: str = "";
+    let mut SS: raw_string_ostream = raw_string_ostream { S };
+    SS << "invalid node: " << Msg << 10;
+    N.printrWithDepth(SS, &mut DAG, 2);
+    report_fatal_error(S, true);
+}
+
+fn checkResultType(DAG: *SelectionDAG, N: *SDNode, ResIdx: u32, ExpectedVT: EVT) {
+    let mut ActualVT: EVT = N.getValueType(ResIdx);
+    if ActualVT != ExpectedVT {
+        reportNodeError(DAG, N, "result #" + ResIdx + " has invalid type; expected " + ExpectedVT.getEVTString() + ", got " + ActualVT.getEVTString());
+    }
+}
+
+fn checkOperandType(DAG: *SelectionDAG, N: *SDNode, OpIdx: u32, ExpectedVT: EVT) {
+    let mut ActualVT: EVT = N.getOperand(OpIdx).getValueType();
+    if ActualVT != ExpectedVT {
+        reportNodeError(DAG, N, "operand #" + OpIdx + " has invalid type; expected " + ExpectedVT.getEVTString() + ", got " + ActualVT.getEVTString());
+    }
+}
+
+struct SDNodeValue {
+    N: *SDNode,
+    Idx: u32,
+    IsRes: bool,
+}
+
+fn SDNodeValue::getValue(self: *SDNodeValue) -> SDValue {
+    return if self.IsRes { SDValue { Node: self.N, ResNo: self.Idx } } else { self.N.getOperand(self.Idx) };
+}
+
+fn SDNodeValue::getValueType(self: *SDNodeValue) -> EVT {
+    return self.getValue().getValueType();
+}
+
+fn SDNodeInfo::verifyNode(self: *SDNodeInfo, DAG: *SelectionDAG, N: *SDNode) {
+    let mut Desc: *SDNodeDesc = self.getDesc(N.getOpcode());
+    let mut HasChain: bool = Desc.hasProperty(SDNPHasChain);
+    let mut HasOutGlue: bool = Desc.hasProperty(SDNPOutGlue);
+    let mut HasInGlue: bool = Desc.hasProperty(SDNPInGlue);
+    let mut HasOptInGlue: bool = Desc.hasProperty(SDNPOptInGlue);
+    let mut IsVariadic: bool = Desc.hasProperty(SDNPVariadic);
+    let mut ActualNumResults: u32 = N.getNumValues();
+    let mut ExpectedNumResults: u32 = Desc.NumResults + HasChain + HasOutGlue;
+    if ActualNumResults != ExpectedNumResults {
+        reportNodeError(DAG, N, "invalid number of results; expected " + ExpectedNumResults + ", got " + ActualNumResults);
+    }
+    if HasChain {
+        let mut ChainResIdx: u32 = Desc.NumResults;
+        checkResultType(DAG, N, ChainResIdx, EVT { Other });
+    }
+    if HasOutGlue {
+        let mut GlueResIdx: u32 = Desc.NumResults + HasChain;
+        checkResultType(DAG, N, GlueResIdx, EVT { Glue });
+    }
+    let mut HasOptionalOperands: bool = Desc.NumOperands < 0 || IsVariadic;
+    let mut ActualNumOperands: u32 = N.getNumOperands();
+    let mut ExpectedMinNumOperands: u32 = (if Desc.NumOperands >= 0 { Desc.NumOperands } else { 0 }) + HasChain + HasInGlue;
+    if ActualNumOperands < ExpectedMinNumOperands {
+        let mut How: str = if HasOptionalOperands { "at least " } else { "" };
+        reportNodeError(DAG, N, "invalid number of operands; expected " + How + ExpectedMinNumOperands + ", got " + ActualNumOperands);
+    }
+    if Desc.NumOperands >= 0 && !IsVariadic {
+        let mut ExpectedMaxNumOperands: u32 = ExpectedMinNumOperands + HasOptInGlue;
+        if ActualNumOperands > ExpectedMaxNumOperands {
+            let mut How: str = if HasOptInGlue { "at most " } else { "" };
+            reportNodeError(DAG, N, "invalid number of operands; expected " + How + ExpectedMaxNumOperands + ", got " + ActualNumOperands);
+        }
+    }
+    if HasChain {
+        checkOperandType(DAG, N, 0, EVT { Other });
+    }
+    if HasInGlue {
+        checkOperandType(DAG, N, ActualNumOperands - 1, EVT { Glue });
+    }
+    if HasOptInGlue && ActualNumOperands >= 1 && N.getOperand(ActualNumOperands - 1).getValueType() == EVT { Glue } {
+        HasInGlue = true;
+    }
+    if IsVariadic && Desc.NumOperands >= 0 {
+        let mut VarOpStart: u32 = HasChain + Desc.NumOperands;
+        let mut VarOpEnd: u32 = ActualNumOperands - HasInGlue;
+        for let mut OpIdx: u32 = VarOpStart; OpIdx != VarOpEnd; OpIdx += 1 {
+            let mut OpOpcode: u32 = N.getOperand(OpIdx).getOpcode();
+            if OpOpcode != Register && OpOpcode != RegisterMask {
+                reportNodeError(DAG, N, "variadic operand #" + OpIdx + " must be Register or RegisterMask");
+            }
+        }
+    }
+    let mut VTHwMode: u32 = DAG.getSubtarget().getHwMode(HwMode_ValueType);
+    let mut GetConstraintValue: Closure_1 = Closure_1 { Desc: &mut Desc, N: &mut N, HasChain: &mut HasChain };
+    let mut GetConstraintVT: Closure_2 = Closure_2 { cap_0: self, VTHwMode: &mut VTHwMode };
+    let mut ES: str = "";
+    let mut SS: raw_svector_ostream = raw_svector_ostream { ES };
+    for C in self.getConstraints(N.getOpcode()) {
+        let mut Val: SDNodeValue = GetConstraintValue.call(C.ConstrainedValIdx);
+        let mut VT: EVT = Val.getValueType();
+        match C.Kind {
+            SDTCisVT => {
+                let mut ExpectedVT: EVT = EVT { GetConstraintVT.call(C) };
+                let mut IsPtr: bool = ExpectedVT == EVT { iPTR };
+                if IsPtr {
+                    ExpectedVT = EVT { DAG.getTargetLoweringInfo().getPointerTy(DAG.getDataLayout(), 0) };
+                }
+                if VT != ExpectedVT {
+                    SS << Val << " must have type " << ExpectedVT;
+                    if IsPtr {
+                        SS << " (iPTR)";
+                    }
+                    SS << ", but has type " << VT;
+                    reportNodeError(DAG, N, SS);
+                }
+                break;
+            },
+            SDTCisPtrTy => {
+                break;
+            },
+            SDTCisInt => {
+                if !VT.isInteger() {
+                    SS << Val << " must have integer type, but has type " << VT;
+                    reportNodeError(DAG, N, SS);
+                }
+            },
+            SDTCisFP => {
+                if !VT.isFloatingPoint() {
+                    SS << Val << " must have floating-point type, but has type " << VT;
+                    reportNodeError(DAG, N, SS);
+                }
+            },
+            SDTCisVec => {
+                break;
+            },
+            SDTCisSameAs => {
+                break;
+            },
+            SDTCisVTSmallerThanOp => {
+                break;
+            },
+            SDTCisOpSmallerThanOp => {
+                break;
+            },
+            SDTCisEltOfVec => {
+                let mut VecVal: SDNodeValue = GetConstraintValue.call(C.ConstrainingValIdx);
+                let mut VecVT: EVT = VecVal.getValueType();
+                if !VecVT.isVector() {
+                    SS << VecVal << " must have vector type, but has type " << VecVT;
+                    reportNodeError(DAG, N, SS);
+                }
+                if !VecVT.isVectorOf(VT) {
+                    SS << Val << " must have " << VecVT.getVectorElementType() << " type (element type of " << VecVal << "), but has type " << VT;
+                    reportNodeError(DAG, N, SS);
+                }
+                break;
+            },
+            SDTCisSubVecOfVec => {
+                break;
+            },
+            SDTCVecEltisVT => {
+                let mut ExpectedVT: EVT = EVT { GetConstraintVT.call(C) };
+                if !VT.isVector() {
+                    SS << Val << " must have vector type";
+                    reportNodeError(DAG, N, SS);
+                }
+                if VT.getVectorElementType() != ExpectedVT {
+                    SS << Val << " must have " << ExpectedVT << " element type, but has " << VT.getVectorElementType() << " element type";
+                    reportNodeError(DAG, N, SS);
+                }
+                break;
+            },
+            SDTCisSameNumEltsAs => {
+                break;
+            },
+            SDTCisSameSizeAs => {
+                break;
+            },
+        }
+    }
+}
+
+struct Closure_1 {
+    Desc: *mut SDNodeDesc,
+    N: *mut *SDNode,
+    HasChain: *mut bool,
+}
+
+unsafe fn Closure_1::call(self: *mut Closure_1, ValIdx: u32) -> SDNodeValue {
+        if ValIdx < (*self.Desc).NumResults {
+            return SDNodeValue { N: (*self.N), Idx: ValIdx, IsRes: true };
+        }
+        return SDNodeValue { N: (*self.N), Idx: (*self.HasChain) + (ValIdx - (*self.Desc).NumResults), IsRes: false };
+    }
+
+struct Closure_2 {
+    cap_0: *SDNodeInfo,
+    VTHwMode: *mut u32,
+}
+
+unsafe fn Closure_2::call(self: *mut Closure_2, C: *SDTypeConstraint) -> SimpleValueType {
+        if !C.NumHwModes {
+            return C.VT as SimpleValueType;
+        }
+        for x in VTByHwModePair> { &mut self.VTByHwModeTable[C.VT], C.NumHwModes } {
+            if Mode == (*self.VTHwMode) {
+                return VT;
+            }
+        }
+        llvm_unreachable_internal("No value type for this HW mode", "llvm\\lib\\CodeGen\\SelectionDAG\\SDNodeInfo.cpp", 178);
+    }

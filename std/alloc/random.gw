@@ -1,0 +1,108 @@
+fn qround(x: *mut u32, a: u64, b: u64, c: u64, d: u64) {
+    x[a] += x[b];
+    x[d] = mi_rotl32(x[d] ^ x[a], 16);
+    x[c] += x[d];
+    x[b] = mi_rotl32(x[b] ^ x[c], 12);
+    x[a] += x[b];
+    x[d] = mi_rotl32(x[d] ^ x[a], 8);
+    x[c] += x[d];
+    x[b] = mi_rotl32(x[b] ^ x[c], 7);
+}
+
+fn chacha_block(ctx: *mut mi_random_ctx_t) {
+    let mut x: [16]u32 = zeroed();
+    for let mut i: u64 = 0; i < 16; i += 1 {
+        x[i] = ctx.input[i];
+    }
+    for let mut i: u64 = 0; i < (20); i += 2 {
+        qround(x, 0, 4, 8, 12);
+        qround(x, 1, 5, 9, 13);
+        qround(x, 2, 6, 10, 14);
+        qround(x, 3, 7, 11, 15);
+        qround(x, 0, 5, 10, 15);
+        qround(x, 1, 6, 11, 12);
+        qround(x, 2, 7, 8, 13);
+        qround(x, 3, 4, 9, 14);
+    }
+    for let mut i: u64 = 0; i < 16; i += 1 {
+        ctx.output[i] = x[i] + ctx.input[i];
+    }
+    ctx.output_available = 16;
+    ctx.input[12] += 1;
+    if ctx.input[12] == 0 {
+        ctx.input[13] += 1;
+        if ctx.input[13] == 0 {
+            ctx.input[14] += 1;
+        }
+    }
+}
+
+fn chacha_next32(ctx: *mut mi_random_ctx_t) -> u32 {
+    if ctx.output_available <= 0 {
+        chacha_block(ctx);
+        ctx.output_available = 16;
+    }
+    let mut x: u32 = ctx.output[16 - ctx.output_available];
+    ctx.output[16 - ctx.output_available] = 0;
+    ctx.output_available -= 1;
+    return x;
+}
+
+fn read32(p: *u8, idx32: u64) -> u32 {
+    let mut i: u64 = 4 * idx32;
+    return (p[i + 0] as u32 | p[i + 1] as u32 << 8 | p[i + 2] as u32 << 16 | p[i + 3] as u32 << 24);
+}
+
+fn chacha_init(ctx: *mut mi_random_ctx_t, key: *u8, nonce: u64) {
+    ctx.output_available = 0;
+    _mi_memzero(ctx.output, (ctx.output));
+    for let mut i: u64 = 0; i < 4; i += 1 {
+        let mut sigma: *u8 = "expand 32-byte k" as *mut u8;
+        ctx.input[i] = read32(sigma, i);
+    }
+    for let mut i: u64 = 0; i < 8; i += 1 {
+        ctx.input[i + 4] = read32(key, i);
+    }
+    ctx.input[12] = 0;
+    ctx.input[13] = 0;
+    ctx.input[14] = nonce as u32;
+    ctx.input[15] = (nonce >> 32) as u32;
+}
+
+fn chacha_split(ctx: *mut mi_random_ctx_t, nonce: u64, ctx_new: *mut mi_random_ctx_t) {
+    _mi_memzero(ctx_new, (*ctx_new));
+    ctx_new.weak = ctx.weak;
+    _mi_memcpy(ctx_new.input, ctx.input, (ctx_new.input));
+    ctx_new.input[12] = 0;
+    ctx_new.input[13] = 0;
+    ctx_new.input[14] = nonce as u32;
+    ctx_new.input[15] = (nonce >> 32) as u32;
+    (if (ctx.input[14] != ctx_new.input[14] || ctx.input[15] != ctx_new.input[15]) { 0 as void } else { _mi_assert_fail("ctx->input[14] != ctx_new->input[14] || ctx->input[15] != ctx_new->input[15]", "mimalloc\\src\\random.c", 120, "chacha_split") });
+    chacha_block(ctx_new);
+}
+
+fn mi_random_is_initialized(ctx: *mut mi_random_ctx_t) -> bool {
+    return (ctx != 0 && ctx.input[0] != 0);
+}
+
+fn mi_random_init_ex(ctx: *mut mi_random_ctx_t, use_weak: bool) {
+    let mut key: [32]u8 = zeroed();
+    if use_weak || !_mi_prim_random_buf(key, (key)) {
+        if !use_weak {
+            _mi_warning_message("unable to use secure randomness\n");
+        }
+        let mut x: u64 = _mi_os_random_weak(0);
+        for let mut i: u64 = 0; i < 32; i += 4 , x += 1 {
+            x = _mi_random_shuffle(x);
+            key[i] = (x) as u8;
+            key[i + 1] = (x >> 8) as u8;
+            key[i + 2] = (x >> 16) as u8;
+            key[i + 3] = (x >> 24) as u8;
+        }
+        ctx.weak = true;
+    } else {
+        ctx.weak = false;
+    }
+    chacha_init(ctx, key, ctx as u64);
+    _mi_memzero(key, (key));
+}

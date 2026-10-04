@@ -1,0 +1,588 @@
+static mut NumClosuresConverted: Statistic = Statistic { "x86-domain-reassignment", "NumClosuresConverted", "Number of closures converted by the pass" };
+
+static mut NumClosuresBuilt: Statistic = Statistic { "x86-domain-reassignment", "NumClosuresBuilt", "Number of closures built by the pass" };
+
+static mut DisableX86DomainReassignment: i32 = "disable-x86-domain-reassignment";
+
+enum RegDomain {
+    NoDomain = 0,
+    GPRDomain = 1,
+    MaskDomain = 2,
+    OtherDomain = 3,
+    NumDomains = 4,
+}
+
+fn isMask(RC: *TargetRegisterClass, TRI: *TargetRegisterInfo) -> bool {}
+
+fn getDomain(RC: *TargetRegisterClass, TRI: *TargetRegisterInfo) -> RegDomain {
+    if TRI.isGeneralPurposeRegisterClass(RC) {
+        return GPRDomain;
+    }
+    if isMask(RC, TRI) {
+        return MaskDomain;
+    }
+    return OtherDomain;
+}
+
+fn getDstRC(SrcRC: *TargetRegisterClass, Domain: RegDomain) -> *TargetRegisterClass {
+    assert!(Domain == MaskDomain, "add domain");
+    llvm_unreachable_internal("add register class", "llvm\\lib\\Target\\X86\\X86DomainReassignment.cpp", 71);
+    return null;
+}
+
+struct InstrConverterBase {
+    SrcOpcode: u32,
+}
+
+fn InstrConverterBase::~InstrConverterBase(self) {}
+
+fn InstrConverterBase::isLegal(self: *InstrConverterBase, MI: *MachineInstr, TII: *TargetInstrInfo) -> bool {
+    assert!(MI.getOpcode() == self.SrcOpcode, "Wrong instruction passed to converter");
+    return true;
+}
+
+struct InstrIgnore {
+    SrcOpcode: u32,
+}
+
+fn InstrIgnore::convertInstr(self: *InstrIgnore, MI: *mut MachineInstr, TII: *TargetInstrInfo, MRI: *mut MachineRegisterInfo) -> bool {
+    assert!(self.isLegal(MI, TII), "Cannot convert instruction");
+    return false;
+}
+
+fn InstrIgnore::getExtraCost(self: *InstrIgnore, MI: *MachineInstr, MRI: *mut MachineRegisterInfo) -> f64 {
+    return 0;
+}
+
+fn InstrIgnore::isLegal(self: *InstrIgnore, MI: *MachineInstr, TII: *TargetInstrInfo) -> bool {
+    assert!(MI.getOpcode() == self.SrcOpcode, "Wrong instruction passed to converter");
+    return true;
+}
+
+struct InstrReplacer {
+    SrcOpcode: u32,
+    DstOpcode: u32,
+}
+
+fn InstrReplacer::isLegal(self: *InstrReplacer, MI: *MachineInstr, TII: *TargetInstrInfo) -> bool {
+    if !self.isLegal(MI, TII) {
+        return false;
+    }
+    for MO in MI.implicit_operands() {
+        if MO.isReg() && MO.isDef() && !MO.isDead() && operator!(TII.get(MO.getReg())) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn InstrReplacer::convertInstr(self: *InstrReplacer, MI: *mut MachineInstr, TII: *TargetInstrInfo, MRI: *mut MachineRegisterInfo) -> bool {
+    assert!(self.isLegal(MI, TII), "Cannot convert instruction");
+    let mut Bld: MachineInstrBuilder = BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII.get);
+    for Op in MI.explicit_operands() {
+        Bld.add(Op);
+    }
+    return true;
+}
+
+fn InstrReplacer::getExtraCost(self: *InstrReplacer, MI: *MachineInstr, MRI: *mut MachineRegisterInfo) -> f64 {
+    return 0;
+}
+
+struct InstrReplacerDstCOPY {
+    SrcOpcode: u32,
+    DstOpcode: u32,
+}
+
+fn InstrReplacerDstCOPY::convertInstr(self: *InstrReplacerDstCOPY, MI: *mut MachineInstr, TII: *TargetInstrInfo, MRI: *mut MachineRegisterInfo) -> bool {
+    assert!(self.isLegal(MI, TII), "Cannot convert instruction");
+    let mut MBB: *mut MachineBasicBlock = MI.getParent();
+    let mut DL: *DebugLoc = MI.getDebugLoc();
+    let mut Reg: Register = MRI(TII.getRegClass(TII.get, 0));
+    let mut Bld: MachineInstrBuilder = BuildMI(*MBB, MI, DL, TII.get, Reg);
+    BuildMI(*MBB, MI, DL, TII.get)(MI.getOperand(0))(Reg);
+    return true;
+}
+
+fn InstrReplacerDstCOPY::getExtraCost(self: *InstrReplacerDstCOPY, MI: *MachineInstr, MRI: *mut MachineRegisterInfo) -> f64 {
+    return 0;
+}
+
+fn InstrReplacerDstCOPY::isLegal(self: *InstrReplacerDstCOPY, MI: *MachineInstr, TII: *TargetInstrInfo) -> bool {
+    assert!(MI.getOpcode() == self.SrcOpcode, "Wrong instruction passed to converter");
+    return true;
+}
+
+struct InstrCOPYReplacer {
+    SrcOpcode: u32,
+    DstOpcode: u32,
+    DstDomain: RegDomain,
+}
+
+fn InstrCOPYReplacer::isLegal(self: *InstrCOPYReplacer, MI: *MachineInstr, TII: *TargetInstrInfo) -> bool {
+    if !self.isLegal(MI, TII) {
+        return false;
+    }
+    let mut DstReg: Register = MI.getOperand(0).getReg();
+    if  {
+        return false;
+    }
+    let mut SrcReg: Register = MI.getOperand(1).getReg();
+    if  {
+        return false;
+    }
+    return true;
+}
+
+fn InstrCOPYReplacer::getExtraCost(self: *InstrCOPYReplacer, MI: *MachineInstr, MRI: *mut MachineRegisterInfo) -> f64 {
+    assert!(MI.getOpcode() == COPY, "Expected a COPY");
+    for MO in MI.operands() {
+        if MO.getReg().isPhysical() {
+            return 1;
+        }
+        let mut OpDomain: RegDomain = getDomain(MRI.getRegClass(MO.getReg()), MRI.getTargetRegisterInfo());
+        if OpDomain == self.DstDomain {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+fn InstrCOPYReplacer::convertInstr(self: *InstrCOPYReplacer, MI: *mut MachineInstr, TII: *TargetInstrInfo, MRI: *mut MachineRegisterInfo) -> bool {
+    assert!(self.isLegal(MI, TII), "Cannot convert instruction");
+    let mut Bld: MachineInstrBuilder = BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII.get);
+    for Op in MI.explicit_operands() {
+        Bld.add(Op);
+    }
+    return true;
+}
+
+struct InstrReplaceWithCopy {
+    SrcOpcode: u32,
+    SrcOpIdx: u32,
+}
+
+fn InstrReplaceWithCopy::convertInstr(self: *InstrReplaceWithCopy, MI: *mut MachineInstr, TII: *TargetInstrInfo, MRI: *mut MachineRegisterInfo) -> bool {
+    assert!(self.isLegal(MI, TII), "Cannot convert instruction");
+    BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII.get)(void { MI.getOperand(0), MI.getOperand(self.SrcOpIdx) });
+    return true;
+}
+
+fn InstrReplaceWithCopy::getExtraCost(self: *InstrReplaceWithCopy, MI: *MachineInstr, MRI: *mut MachineRegisterInfo) -> f64 {
+    return 0;
+}
+
+fn InstrReplaceWithCopy::isLegal(self: *InstrReplaceWithCopy, MI: *MachineInstr, TII: *TargetInstrInfo) -> bool {
+    assert!(MI.getOpcode() == self.SrcOpcode, "Wrong instruction passed to converter");
+    return true;
+}
+
+struct Closure {
+    Edges: i32,
+    Instrs: SmallVector<MachineInstr *, 8>,
+    LegalDstDomains: bitset<NumDomains>,
+    ID: u32,
+}
+
+fn Closure::setAllIllegal(self) {}
+
+fn Closure::hasLegalDstDomain(self: *Closure) -> bool {}
+
+fn Closure::isLegal(self: *Closure, RD: RegDomain) -> bool {}
+
+fn Closure::setIllegal(self, RD: RegDomain) {}
+
+fn Closure::empty(self: *Closure) -> bool {}
+
+fn Closure::insertEdge(self, Reg: Register) -> bool {}
+
+fn Closure::edges(self: *Closure) -> i32 {}
+
+fn Closure::addInstruction(self, I: *mut MachineInstr) {}
+
+fn Closure::instructions(self: *Closure) -> ArrayRef<MachineInstr *> {}
+
+fn Closure::dump(self: *Closure, MRI: *MachineRegisterInfo) {
+    dbgs() << "Registers: ";
+    let mut LS: ListSeparator = ListSeparator { ", ", "" };
+    dbgs() << "\n" << "Instructions:";
+    dbgs() << "\n";
+}
+
+fn Closure::getID(self: *Closure) -> u32 {
+    return self.ID;
+}
+
+struct X86DomainReassignmentImpl {
+    STI: *X86Subtarget,
+    MRI: *mut MachineRegisterInfo,
+    TII: *X86InstrInfo,
+    EnclosedEdges: i32,
+    EnclosedInstrs: i32,
+    Converters: InstrConverterBaseMap,
+}
+
+struct X86DomainReassignmentLegacy {
+    Resolver: *mut AnalysisResolver,
+    PassID: *void,
+    Kind: PassKind,
+    RequiredProperties: MachineFunctionProperties,
+    SetProperties: MachineFunctionProperties,
+    ClearedProperties: MachineFunctionProperties,
+}
+
+fn X86DomainReassignmentLegacy::getAnalysisUsage(self: *X86DomainReassignmentLegacy, AU: *mut AnalysisUsage) {
+    AU.setPreservesCFG();
+    self.getAnalysisUsage(AU);
+}
+
+fn X86DomainReassignmentLegacy::getPassName(self: *X86DomainReassignmentLegacy) -> str {
+    return "X86 Domain Reassignment Pass";
+}
+
+fn X86DomainReassignmentLegacy::getPassKind(self: *X86DomainReassignmentLegacy) -> PassKind {
+    return self.Kind;
+}
+
+fn X86DomainReassignmentLegacy::getPassID(self: *X86DomainReassignmentLegacy) -> AnalysisID {
+    return self.PassID;
+}
+
+fn X86DomainReassignmentLegacy::doInitialization(self, arg: *mut Module) -> bool {
+    return false;
+}
+
+fn X86DomainReassignmentLegacy::doFinalization(self, arg: *mut Module) -> bool {
+    return false;
+}
+
+fn X86DomainReassignmentLegacy::assignPassManager(self, arg: *mut PMStack, arg: PassManagerType) {}
+
+fn X86DomainReassignmentLegacy::getResolver(self: *X86DomainReassignmentLegacy) -> *mut AnalysisResolver {
+    return self.Resolver;
+}
+
+fn X86DomainReassignmentLegacy::getRequiredProperties(self: *X86DomainReassignmentLegacy) -> MachineFunctionProperties {
+    return MachineFunctionProperties {};
+}
+
+fn X86DomainReassignmentLegacy::getSetProperties(self: *X86DomainReassignmentLegacy) -> MachineFunctionProperties {
+    return MachineFunctionProperties {};
+}
+
+fn X86DomainReassignmentLegacy::getClearedProperties(self: *X86DomainReassignmentLegacy) -> MachineFunctionProperties {
+    return MachineFunctionProperties {};
+}
+
+static mut ID: i8 = 0;
+
+fn X86DomainReassignmentImpl::visitRegister(self, C: *mut Closure, Reg: Register, Domain: *mut RegDomain, Worklist: *mut SmallVectorImpl<Register>) -> bool {
+    if !Reg.isVirtual() {
+        return true;
+    }
+    let mut I: auto = zeroed();
+    if  {
+        if I() != C.getID() {
+            C.setAllIllegal();
+            return false;
+        }
+        return true;
+    }
+    if !self.MRI.hasOneDef(Reg) {
+        return true;
+    }
+    let mut RD: RegDomain = getDomain(self.MRI.getRegClass(Reg), self.MRI.getTargetRegisterInfo());
+    if Domain == NoDomain {
+        Domain = RD;
+    }
+    if Domain != RD {
+        return true;
+    }
+    Worklist()(Reg);
+    return true;
+}
+
+fn X86DomainReassignmentImpl::encloseInstr(self, C: *mut Closure, MI: *mut MachineInstr) -> bool {
+    if operator!() {
+        if  {
+            C.setAllIllegal();
+            return false;
+        }
+        return true;
+    }
+    C.addInstruction(MI);
+    for let mut i: i32 = 0; i != NumDomains; i += 1 {
+        if C.isLegal(i as RegDomain) {
+            let mut I: auto = self.Converters(void { i, MI.getOpcode() });
+            if I() == self.Converters() || operator!((MI, self.TII)) {
+                C.setIllegal(i as RegDomain);
+            }
+        }
+    }
+    return C.hasLegalDstDomain();
+}
+
+fn X86DomainReassignmentImpl::calculateCost(self: *X86DomainReassignmentImpl, C: *Closure, DstDomain: RegDomain) -> f64 {
+    assert!(C.isLegal(DstDomain), "Cannot calculate cost for illegal closure");
+    let mut Cost: f64 = 0.0;
+    return Cost;
+}
+
+fn X86DomainReassignmentImpl::isReassignmentProfitable(self: *X86DomainReassignmentImpl, C: *Closure, Domain: RegDomain) -> bool {
+    return self.calculateCost(C, Domain) < 0.0;
+}
+
+fn X86DomainReassignmentImpl::reassign(self: *X86DomainReassignmentImpl, C: *Closure, Domain: RegDomain) {
+    assert!(C.isLegal(Domain), "Cannot convert illegal closure");
+    let mut ToErase: SmallVector<MachineInstr *, 8> = zeroed();
+}
+
+fn usedAsAddr(MI: *MachineInstr, Reg: Register, TII: *TargetInstrInfo) -> bool {
+    if !MI.mayLoadOrStore(AnyInBundle) {
+        return false;
+    }
+    let mut MemOpStart: i32 = getMemoryOperandIdx(TII.get);
+    if MemOpStart == -1 {
+        return false;
+    }
+    for let mut MemOpIdx: u32 = MemOpStart;
+let mut MemOpEnd: u32 = MemOpStart + AddrNumOperands; MemOpIdx < MemOpEnd; MemOpIdx += 1 {
+        let mut Op: *MachineOperand = MI.getOperand(MemOpIdx);
+        if Op.isReg() && Op.getReg() == Reg {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn X86DomainReassignmentImpl::buildClosure(self, C: *mut Closure, Reg: Register) {
+    let mut Worklist: SmallVector<Register, 4> = zeroed();
+    let mut Domain: RegDomain = NoDomain;
+    self.visitRegister(C, Reg, Domain);
+    while operator!() {
+        let mut CurReg: Register = ();
+        if !C.insertEdge(CurReg) {
+            continue;
+        }
+        let mut DefMI: *mut MachineInstr = self.MRI.getVRegDef(CurReg);
+        if !self.encloseInstr(C, DefMI) {
+            return;
+        }
+        let mut OpEnd: i32 = DefMI.getNumOperands();
+        let mut MemOp: i32 = getMemoryOperandIdx(DefMI.getDesc());
+        for let mut OpIdx: i32 = 0; OpIdx < OpEnd; OpIdx += 1 {
+            if OpIdx == MemOp {
+                OpIdx += (AddrNumOperands - 1);
+                continue;
+            }
+            let mut Op: *mut auto = DefMI.getOperand(OpIdx);
+            if operator!() || operator!() {
+                continue;
+            }
+            if operator!(self.visitRegister(C, Domain)) {
+                return;
+            }
+        }
+    }
+}
+
+fn X86DomainReassignmentImpl::initConverters(self) {
+    let mut createReplacerDstCOPY: Closure_1 = Closure_1 { cap_0: self };
+    createReplacerDstCOPY();
+    createReplacerDstCOPY();
+    createReplacerDstCOPY();
+    createReplacerDstCOPY();
+    if self.STI() {
+        createReplacerDstCOPY();
+        createReplacerDstCOPY();
+        createReplacerDstCOPY();
+        createReplacerDstCOPY();
+        createReplacerDstCOPY();
+        createReplacerDstCOPY();
+    }
+    let mut createReplacer: Closure_2 = Closure_2 { cap_0: self };
+    createReplacer();
+    createReplacer();
+    createReplacer();
+    createReplacer();
+    createReplacer();
+    createReplacer();
+    createReplacer();
+    createReplacer();
+    createReplacer();
+    let mut HasNDD: bool = self.STI();
+    if HasNDD {
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+    }
+    if self.STI() {
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        if HasNDD {
+            createReplacer();
+            createReplacer();
+            createReplacer();
+            createReplacer();
+            createReplacer();
+            createReplacer();
+            createReplacer();
+            createReplacer();
+            createReplacer();
+            createReplacer();
+            createReplacer();
+            createReplacer();
+            createReplacer();
+            createReplacer();
+        }
+    }
+    if self.STI() {
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        createReplacer();
+        if HasNDD {
+            createReplacer();
+            createReplacer();
+            createReplacer();
+            createReplacer();
+            createReplacer();
+            createReplacer();
+            createReplacer();
+            createReplacer();
+        }
+    }
+}
+
+fn X86DomainReassignmentImpl::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
+    if DisableX86DomainReassignment() {
+        return false;
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("x86-domain-reassignment", 1) {
+            dbgs() << "***** Machine Function before Domain Reassignment *****\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("x86-domain-reassignment", 1) {
+            MF.print(dbgs(), null);
+        }
+    }
+        if !(false) { break; }
+    }
+    self.STI = operator&(MF);
+    if !self.STI.hasAVX512() || operator!(self.STI()) {
+        return false;
+    }
+    self.MRI = &mut MF.getRegInfo();
+    assert!(self.MRI.isSSA(), "Expected MIR to be in SSA form");
+    self.TII = self.STI.getInstrInfo();
+    self.initConverters();
+    let mut Changed: bool = false;
+    let mut Closures: i32 = 0;
+    let mut ClosureID: u32 = 0;
+    for let mut Idx: u32 = 0; Idx < self.MRI.getNumVirtRegs(); Idx += 1 {
+        let mut Reg: Register = index2VirtReg(Idx);
+        if self.MRI.reg_nodbg_empty(Reg) {
+            continue;
+        }
+        if !self.MRI.getTargetRegisterInfo().isGeneralPurposeRegisterClass(self.MRI.getRegClass(Reg)) {
+            continue;
+        }
+        if  {
+            continue;
+        }
+        let mut C: Closure = ClosureID += 1;
+        self.buildClosure(C, Reg);
+        operator(NumClosuresBuilt);
+        if !C.is_empty() && C.isLegal(MaskDomain) {
+            Closures()(move(C));
+        }
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("x86-domain-reassignment", 1) {
+            dbgs() << "***** Machine Function after Domain Reassignment *****\n";
+        }
+    }
+        if !(false) { break; }
+    }
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("x86-domain-reassignment", 1) {
+            MF.print(dbgs(), null);
+        }
+    }
+        if !(false) { break; }
+    }
+    return Changed;
+}
+
+fn X86DomainReassignmentLegacy::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
+    if self.skipFunction(MF.getFunction()) {
+        return false;
+    }
+    let mut Impl: X86DomainReassignmentImpl = X86DomainReassignmentImpl {};
+    return Impl.runOnMachineFunction(MF);
+}
+
+fn createX86DomainReassignmentLegacyPass() -> *mut FunctionPass {
+    return X86DomainReassignmentLegacy {};
+}
+
+fn X86DomainReassignmentPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
+    let mut Impl: X86DomainReassignmentImpl = X86DomainReassignmentImpl {};
+    let mut Changed: bool = Impl.runOnMachineFunction(MF);
+    if !Changed {
+        return all();
+    }
+    let mut PA: PreservedAnalyses = getMachineFunctionPassPreservedAnalyses();
+    PA;
+    return PA;
+}
+
+struct Closure_1 {
+    cap_0: *mut X86DomainReassignmentImpl,
+}
+
+fn Closure_1::call(self: *Closure_1, From: u32, To: u32) {}
+
+struct Closure_2 {
+    cap_0: *mut X86DomainReassignmentImpl,
+}
+
+fn Closure_2::call(self: *Closure_2, From: u32, To: u32) {}

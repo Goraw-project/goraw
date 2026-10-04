@@ -1,0 +1,3265 @@
+struct CostKindCosts {
+    RecipThroughputCost: u32,
+    LatencyCost: u32,
+    CodeSizeCost: u32,
+    SizeAndLatencyCost: u32,
+}
+
+fn CostKindCosts::operator[](self: *CostKindCosts, Kind: TargetCostKind) -> optional<unsigned int> {
+    let mut Cost: u32 = ~0;
+    match Kind {
+        TCK_RecipThroughput => {
+            Cost = self.RecipThroughputCost;
+        },
+        TCK_Latency => {
+            Cost = self.LatencyCost;
+        },
+        TCK_CodeSize => {
+            Cost = self.CodeSizeCost;
+        },
+        TCK_SizeAndLatency => {
+            Cost = self.SizeAndLatencyCost;
+        },
+    }
+    if Cost == ~0 {
+        return optional<unsigned int> { nullopt };
+    }
+    return Cost;
+}
+
+fn X86TTIImpl::getPopcntSupport(self: *X86TTIImpl, TyWidth: u32) -> PopcntSupportKind {
+    assert!(isPowerOf2_32(TyWidth), "Ty width must be power of 2");
+    return if self.ST() { PSK_FastHardware } else { PSK_Software };
+}
+
+fn X86TTIImpl::getCacheSize(self: *X86TTIImpl, Level: CacheLevel) -> optional<unsigned int> {
+    match Level {
+        L1D => {
+            return 32 * 1024;
+        },
+        L2D => {
+            return 256 * 1024;
+        },
+    }
+    llvm_unreachable_internal("Unknown TargetTransformInfo::CacheLevel", "llvm\\lib\\Target\\X86\\X86TargetTransformInfo.cpp", 141);
+}
+
+fn X86TTIImpl::getCacheAssociativity(self: *X86TTIImpl, Level: CacheLevel) -> optional<unsigned int> {
+    match Level {
+        L1D => {
+            
+        },
+        L2D => {
+            return 8;
+        },
+    }
+    llvm_unreachable_internal("Unknown TargetTransformInfo::CacheLevel", "llvm\\lib\\Target\\X86\\X86TargetTransformInfo.cpp", 162);
+}
+
+enum ClassIDEnum {
+    GPRClass = 0,
+    VectorClass = 1,
+    ScalarFPClass = 2,
+}
+
+fn X86TTIImpl::getRegisterClassForType(self: *X86TTIImpl, Vector: bool, Ty: *mut Type) -> u32 {
+    return if Vector { VectorClass } else { if Ty && Ty.isFloatingPointTy() { ScalarFPClass } else { GPRClass } };
+}
+
+fn X86TTIImpl::getNumberOfRegisters(self: *X86TTIImpl, ClassID: u32) -> u32 {
+    if ClassID == VectorClass && !self.ST.hasSSE1() {
+        return 0;
+    }
+    if operator!(self.ST()) {
+        return 8;
+    }
+    if (ClassID == GPRClass && self.ST()) || (ClassID != GPRClass && self.ST.hasAVX512()) {
+        return 32;
+    }
+    return 16;
+}
+
+fn X86TTIImpl::hasConditionalLoadStoreForType(self: *X86TTIImpl, Ty: *mut Type, IsStore: bool) -> bool {
+    if operator!(self.ST()) {
+        return false;
+    }
+    if !Ty {
+        return true;
+    }
+    let mut VTy: *mut auto = dyn_cast(Ty);
+    if !Ty.isIntegerTy() && (operator!() || () != 1) {
+        return false;
+    }
+    let mut ScalarTy: *mut Type = Ty.getScalarType();
+    match cast(ScalarTy)() {
+        _ => {
+            return false;
+        },
+        16 => {
+            32;
+        },
+    }
+}
+
+fn X86TTIImpl::getRegisterBitWidth(self: *X86TTIImpl, K: RegisterKind) -> TypeSize {
+    let mut PreferVectorWidth: u32 = self.ST.getPreferVectorWidth();
+    match K {
+        RGK_Scalar => {
+            return getFixed(if self.ST() { 64 } else { 32 });
+        },
+        RGK_FixedWidthVector => {
+            if self.ST.hasAVX512() && PreferVectorWidth >= 512 {
+                return getFixed(512);
+            }
+        },
+        RGK_ScalableVector => {
+            return getScalable(0);
+        },
+    }
+    llvm_unreachable_internal("Unsupported register kind", "llvm\\lib\\Target\\X86\\X86TargetTransformInfo.cpp", 228);
+}
+
+fn X86TTIImpl::getLoadStoreVecRegBitWidth(self: *X86TTIImpl, arg: u32) -> u32 {
+    return self.getRegisterBitWidth(RGK_FixedWidthVector).getFixedValue();
+}
+
+fn X86TTIImpl::getMaxInterleaveFactor(self: *X86TTIImpl, VF: ElementCount, HasUnorderedReductions: bool) -> u32 {
+    if VF.isScalar() {
+        return 1;
+    }
+    if self.ST() {
+        return 1;
+    }
+    if self.ST.hasAVX() {
+        return 4;
+    }
+    return 2;
+}
+
+fn X86TTIImpl::getArithmeticInstrCost(self: *X86TTIImpl, Opcode: u32, Ty: *mut Type, CostKind: TargetCostKind, Op1Info: OperandValueInfo, Op2Info: OperandValueInfo, Args: ArrayRef<const Value *>, CtxI: *Instruction) -> InstructionCost {
+    if Opcode == Mul && Ty.isVectorTy() && Ty.getPrimitiveSizeInBits().operator unsigned long long() <= 64 && Ty.getScalarSizeInBits() == 8 {
+        let mut WideVecTy: *mut Type = getExtendedElementVectorType(cast(Ty));
+        return self.getCastInstrCost(ZExt, WideVecTy, Ty, None, CostKind, null) + self.getCastInstrCost(Trunc, Ty, WideVecTy, None, CostKind, null) + self.getArithmeticInstrCost(Opcode, WideVecTy, CostKind, Op1Info, Op2Info, void {}, null);
+    }
+    let mut LT: pair<InstructionCost, MVT> = zeroed();
+    let mut ISD: i32 = self.TLI.InstructionOpcodeToISD;
+    assert!(ISD, "Invalid opcode");
+    if ISD == MUL && () == 2 && () && (LT()() == i32 || () == i64) {
+        let mut Op1Signed: bool = false;
+        let mut Op2Signed: bool = false;
+        let mut Op1MinSize: u32 = 0;
+        let mut Op2MinSize: u32 = 0;
+        let mut OpMinSize: u32 = max(Op1MinSize, Op2MinSize);
+        let mut SignedMode: bool = Op1Signed || Op2Signed;
+        if OpMinSize <= 15 && operator!(self.ST()) && () == i32 {
+            let mut Op1Constant: bool = isa([0]) || isa([0]);
+            let mut Op2Constant: bool = isa([1]) || isa([1]);
+            let mut Op1Sext: bool = isa([0]) && (Op1MinSize == 15 || (Op1MinSize < 15 && !self.ST.hasSSE41()));
+            let mut Op2Sext: bool = isa([1]) && (Op2MinSize == 15 || (Op2MinSize < 15 && !self.ST.hasSSE41()));
+            let mut IsZeroExtended: bool = !Op1Signed || !Op2Signed;
+            let mut IsConstant: bool = Op1Constant || Op2Constant;
+            let mut IsSext: bool = Op1Sext || Op2Sext;
+            if IsConstant || IsZeroExtended || IsSext {
+                LT() = getVectorVT(i16, 2 * ());
+            }
+        }
+        if self.ST() &&  == v4i32 {
+            if OpMinSize <= 7 {
+                return  * 3;
+            }
+            if !SignedMode && OpMinSize <= 8 {
+                return  * 3;
+            }
+            if OpMinSize <= 15 {
+                return  * 5;
+            }
+            if !SignedMode && OpMinSize <= 16 {
+                return  * 5;
+            }
+        }
+    }
+    if ISD == MUL && Op2Info.isConstant() && (Op2Info.isPowerOf2() || Op2Info.isNegatedPowerOf2()) {
+        let mut Cost: InstructionCost = self.getArithmeticInstrCost(Shl, Ty, CostKind, Op1Info.getNoProps(), Op2Info.getNoProps(), void {}, null);
+        if Op2Info.isNegatedPowerOf2() {
+            operator(Cost, self.getArithmeticInstrCost(Sub, Ty, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, OperandValueInfo { OK_AnyValue, OP_None }, void {}, null));
+        }
+        return Cost;
+    }
+    if (ISD == SDIV || ISD == SREM) && Op2Info.isConstant() && Op2Info.isPowerOf2() {
+        let mut Cost: InstructionCost = InstructionCost { 2 } * self.getArithmeticInstrCost(AShr, Ty, CostKind, Op1Info.getNoProps(), Op2Info.getNoProps(), void {}, null);
+        operator(Cost, self.getArithmeticInstrCost(LShr, Ty, CostKind, Op1Info.getNoProps(), Op2Info.getNoProps(), void {}, null));
+        operator(Cost, self.getArithmeticInstrCost(Add, Ty, CostKind, Op1Info.getNoProps(), Op2Info.getNoProps(), void {}, null));
+        if ISD == SREM {
+            operator(Cost, self.getArithmeticInstrCost(Mul, Ty, CostKind, Op1Info.getNoProps(), Op2Info.getNoProps(), void {}, null));
+            operator(Cost, self.getArithmeticInstrCost(Sub, Ty, CostKind, Op1Info.getNoProps(), Op2Info.getNoProps(), void {}, null));
+        }
+        return Cost;
+    }
+    if (ISD == UDIV || ISD == UREM) && Op2Info.isConstant() && Op2Info.isPowerOf2() {
+        if ISD == UDIV {
+            return self.getArithmeticInstrCost(LShr, Ty, CostKind, Op1Info.getNoProps(), Op2Info.getNoProps(), void {}, null);
+        }
+        return self.getArithmeticInstrCost(And, Ty, CostKind, Op1Info.getNoProps(), Op2Info.getNoProps(), void {}, null);
+    }
+    if !Ty.isVectorTy() && Op2Info.isConstant() && !Op2Info.isNegatedPowerOf2() && (ISD == UDIV || ISD == SDIV || ISD == UREM || ISD == SREM) {
+        let mut Cost: u32 = if ISD == UREM || ISD == SREM { 6 } else { 5 };
+        if CostKind == TCK_CodeSize || CostKind == TCK_SizeAndLatency {
+            Cost += 2;
+        }
+        return  * Cost;
+    }
+    let mut GFNIUniformConstCostTable: []CostKindTblEntry = zeroed();
+    if Op2Info.isUniform() && Op2Info.isConstant() && self.ST() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX512BWUniformConstCostTable: []CostKindTblEntry = zeroed();
+    if Op2Info.isUniform() && Op2Info.isConstant() && self.ST() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX512DQUniformConstCostTable: []CostKindTblEntry = zeroed();
+    if Op2Info.isUniform() && Op2Info.isConstant() && self.ST() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX512UniformConstCostTable: []CostKindTblEntry = zeroed();
+    if Op2Info.isUniform() && Op2Info.isConstant() && self.ST.hasAVX512() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX2UniformConstCostTable: []CostKindTblEntry = zeroed();
+    if Op2Info.isUniform() && Op2Info.isConstant() && self.ST.hasAVX2() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVXUniformConstCostTable: []CostKindTblEntry = zeroed();
+    if Op2Info.isUniform() && Op2Info.isConstant() && self.ST.hasAVX() && (operator!(self.ST()) || () != 8) {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut SSE2UniformConstCostTable: []CostKindTblEntry = zeroed();
+    if Op2Info.isUniform() && Op2Info.isConstant() && self.ST.hasSSE2() && (operator!(self.ST()) || () != 8) {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX512BWConstCostTable: []CostKindTblEntry = zeroed();
+    if Op2Info.isConstant() && self.ST() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX512DQConstCostTable: []CostKindTblEntry = zeroed();
+    if Op2Info.isConstant() && self.ST() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX512ConstCostTable: []CostKindTblEntry = zeroed();
+    if Op2Info.isConstant() && self.ST.hasAVX512() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX2ConstCostTable: []CostKindTblEntry = zeroed();
+    if Op2Info.isConstant() && self.ST.hasAVX2() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVXConstCostTable: []CostKindTblEntry = zeroed();
+    if Op2Info.isConstant() && self.ST.hasAVX() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut SSE41ConstCostTable: []CostKindTblEntry = zeroed();
+    if Op2Info.isConstant() && self.ST.hasSSE41() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut SSE2ConstCostTable: []CostKindTblEntry = zeroed();
+    if Op2Info.isConstant() && self.ST.hasSSE2() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut ScalarVarDivCostTable: []CostKindTblEntry = zeroed();
+    if operator!() && !Op2Info.isConstant() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut IsStrictFP: bool = CtxI && CtxI.getFunction().hasFnAttribute(StrictFP);
+    let mut IsDivRem: bool = ISD == UDIV || ISD == SDIV || ISD == UREM || ISD == SREM;
+    let mut VarDivToFP: bool = IsDivRem && !Op2Info.isConstant() && (!IsStrictFP || self.ST.useAVX512Regs());
+    let mut AVX512DQExactVarDivCostTable: []CostKindTblEntry = zeroed();
+    let mut AVX512DQVarDivCostTable: []CostKindTblEntry = zeroed();
+    let mut IsSignedDiv: bool = ISD == SDIV || ISD == SREM;
+    let mut OperandsFit: Closure_1 = Closure_1 { CtxI: &mut CtxI, IsSignedDiv: &mut IsSignedDiv };
+    let mut ExactI32: bool = VarDivToFP && () == i32 && OperandsFit(semanticsPrecision(IEEEsingle()));
+    if VarDivToFP && self.ST() && self.ST.useAVX512Regs() && () == i64 {
+        let mut ExactFPDiv: bool = OperandsFit(semanticsPrecision(IEEEdouble()));
+        let mut SlowMultiply: bool = !ExactFPDiv &&  == v2i64 && self.ST();
+        if !SlowMultiply {
+            let mut Tbl: ArrayRef<CostKindTblEntry> = zeroed();
+            if  {
+                if  {
+                    return  * operator*();
+                }
+            }
+        }
+    }
+    let mut AVX512BWVarDivCostTable: []CostKindTblEntry = zeroed();
+    let mut AVX512BWExactVarDivCostTable: []CostKindTblEntry = zeroed();
+    if VarDivToFP && self.ST() {
+        let mut Tbl: ArrayRef<CostKindTblEntry> = zeroed();
+        if ExactI32 {
+            Tbl() = ;
+        }
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX512VarDivCostTable: []CostKindTblEntry = zeroed();
+    let mut AVX512ExactVarDivCostTable: []CostKindTblEntry = zeroed();
+    if VarDivToFP && self.ST.hasAVX512() {
+        let mut Tbl: ArrayRef<CostKindTblEntry> = zeroed();
+        if ExactI32 {
+            Tbl() = ;
+        }
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX2VarDivCostTable: []CostKindTblEntry = zeroed();
+    let mut AVX2ExactVarDivCostTable: []CostKindTblEntry = zeroed();
+    if VarDivToFP && self.ST.hasAVX2() {
+        let mut Tbl: ArrayRef<CostKindTblEntry> = zeroed();
+        if ExactI32 {
+            Tbl() = ;
+        }
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX1VarDivCostTable: []CostKindTblEntry = zeroed();
+    let mut AVX1ExactVarDivCostTable: []CostKindTblEntry = zeroed();
+    if VarDivToFP && self.ST.hasAVX() {
+        let mut Tbl: ArrayRef<CostKindTblEntry> = zeroed();
+        if ExactI32 {
+            Tbl() = ;
+        }
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut SSE2VarDivCostTable: []CostKindTblEntry = zeroed();
+    let mut SSE2ExactVarDivCostTable: []CostKindTblEntry = zeroed();
+    if VarDivToFP && self.ST.hasSSE2() {
+        let mut Tbl: ArrayRef<CostKindTblEntry> = zeroed();
+        if ExactI32 {
+            Tbl() = ;
+        }
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX512BWUniformCostTable: []CostKindTblEntry = zeroed();
+    if self.ST() && Op2Info.isUniform() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX512UniformCostTable: []CostKindTblEntry = zeroed();
+    if self.ST.hasAVX512() && Op2Info.isUniform() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX2UniformCostTable: []CostKindTblEntry = zeroed();
+    if self.ST.hasAVX2() && Op2Info.isUniform() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVXUniformCostTable: []CostKindTblEntry = zeroed();
+    if self.ST.hasAVX() && Op2Info.isUniform() && (operator!(self.ST()) || () != 8) {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut SSE2UniformCostTable: []CostKindTblEntry = zeroed();
+    if self.ST.hasSSE2() && Op2Info.isUniform() && (operator!(self.ST()) || () != 8) {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX512DQCostTable: []CostKindTblEntry = zeroed();
+    if self.ST() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX512BWCostTable: []CostKindTblEntry = zeroed();
+    if self.ST() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX512CostTable: []CostKindTblEntry = zeroed();
+    if self.ST.hasAVX512() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX2ShiftCostTable: []CostKindTblEntry = zeroed();
+    if self.ST.hasAVX512() {
+        if ISD == SHL &&  == v32i16 && Op2Info.isConstant() {
+            return self.getArithmeticInstrCost(Mul, Ty, CostKind, Op1Info.getNoProps(), Op2Info.getNoProps(), void {}, null);
+        }
+    }
+    if self.ST.hasAVX2() && operator!((self.ST() &&  == v4i32)) {
+        if ISD == SHL &&  == v16i16 && Op2Info.isConstant() {
+            return self.getArithmeticInstrCost(Mul, Ty, CostKind, Op1Info.getNoProps(), Op2Info.getNoProps(), void {}, null);
+        }
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut XOPShiftCostTable: []CostKindTblEntry = zeroed();
+    if self.ST() {
+        let mut ShiftISD: i32 = ISD;
+        if (ShiftISD == SRL || ShiftISD == SRA) && Op2Info.isConstant() {
+            ShiftISD = SHL;
+        }
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    if ISD == SHL && !Op2Info.isUniform() && Op2Info.isConstant() {
+        let mut VT: MVT = ;
+        if ((VT == v8i16 || VT == v4i32) && self.ST.hasSSE2()) || ((VT == v16i16 || VT == v8i32) && self.ST.hasAVX()) {
+            ISD = MUL;
+        }
+    }
+    let mut GLMCostTable: []CostKindTblEntry = zeroed();
+    if self.ST() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut SLMCostTable: []CostKindTblEntry = zeroed();
+    if self.ST() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX2CostTable: []CostKindTblEntry = zeroed();
+    if self.ST.hasAVX2() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX1CostTable: []CostKindTblEntry = zeroed();
+    if self.ST.hasAVX() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut SSE42CostTable: []CostKindTblEntry = zeroed();
+    if self.ST.hasSSE42() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut SSE41CostTable: []CostKindTblEntry = zeroed();
+    if self.ST.hasSSE41() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut SSSE3CostTable: []CostKindTblEntry = zeroed();
+    if self.ST.hasSSSE3() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut SSE2CostTable: []CostKindTblEntry = zeroed();
+    if self.ST.hasSSE2() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut SSE1CostTable: []CostKindTblEntry = zeroed();
+    if self.ST.hasSSE1() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut X64CostTbl: []CostKindTblEntry = zeroed();
+    if self.ST() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut X86CostTbl: []CostKindTblEntry = zeroed();
+    if  {
+        if  {
+            return  * operator*();
+        }
+    }
+    if CostKind == TCK_RecipThroughput && () && (ISD == SDIV || ISD == SREM || ISD == UDIV || ISD == UREM) {
+        let mut ScalarCost: InstructionCost = self.getArithmeticInstrCost(Opcode, Ty.getScalarType(), CostKind, Op1Info.getNoProps(), Op2Info.getNoProps(), void {}, null);
+        return 20 *  * () * ScalarCost;
+    }
+    if CostKind == TCK_CodeSize {
+        match ISD {
+            FADD => {
+                FSUB;
+            },
+        }
+    }
+}
+
+fn X86TTIImpl::getAltInstrCost(self: *X86TTIImpl, VecTy: *mut VectorType, Opcode0: u32, Opcode1: u32, OpcodeMask: *SmallBitVector, CostKind: TargetCostKind) -> InstructionCost {
+    if self.isLegalAltInstr(VecTy, Opcode0, Opcode1, OpcodeMask) {
+        return InstructionCost { TCC_Basic };
+    }
+    return getInvalid(0);
+}
+
+fn X86TTIImpl::getShuffleCost(self: *X86TTIImpl, Kind: ShuffleKind, DstTy: *mut VectorType, SrcTy: *mut VectorType, CostKind: TargetCostKind, Mask: ArrayRef<int>, Index: i32, SubTp: *mut VectorType, Args: ArrayRef<const Value *>, CtxI: *Instruction, VIC: VectorInstrContext) -> InstructionCost {
+    assert!((Mask.is_empty() || DstTy.isScalableTy() || Mask.len == DstTy.getElementCount().getKnownMinValue()), "Expected the Mask to match the return size if given");
+    assert!(SrcTy.getScalarType() == DstTy.getScalarType(), "Expected the same scalar types");
+    let mut LT: pair<InstructionCost, MVT> = zeroed();
+    Kind = improveShuffleKindFromMask(Kind, Mask, SrcTy, Index, SubTp);
+    if operator!() && all_of(Closure_3 {}) {
+        return InstructionCost { TCC_Free };
+    }
+    if Kind == SK_PermuteTwoSrc && Mask.len == (2 * SrcTy.getElementCount().getKnownMinValue()) && isIdentityMask(Mask, Mask.len) {
+        return self.getShuffleCost(SK_InsertSubvector, getDoubleElementsVectorType(SrcTy), getDoubleElementsVectorType(SrcTy), CostKind, Mask, Mask.len / 2, SrcTy, void {}, null, None);
+    }
+    if Kind == SK_Transpose {
+        if LT() != v4f64 &&  != v4i64 {
+            Kind = SK_PermuteTwoSrc;
+        }
+    }
+    if Kind == SK_Broadcast {
+        LT() = 1;
+        let mut IsBroadcastLoadFoldUser: Closure_4 = Closure_4 {};
+        let mut IsFoldableSLPBroadcastLoad: Closure_5 = Closure_5 { DstTy: &mut DstTy, IsBroadcastLoadFoldUser: &mut IsBroadcastLoadFoldUser };
+        if operator!() && (match([0], m_OneUse(m_Load(m_Value()))) || IsFoldableSLPBroadcastLoad()) && (self.ST.hasAVX2() || (self.ST.hasAVX() && () >= 32)) {
+            return InstructionCost { TCC_Free };
+        }
+    }
+    let mut IsInLaneShuffle: bool = false;
+    let mut IsSingleElementMask: bool = false;
+    if SrcTy.getPrimitiveSizeInBits().operator unsigned long long() > 0 && (SrcTy.getPrimitiveSizeInBits().operator unsigned long long() % 128) == 0 && SrcTy.getScalarSizeInBits() == () && Mask.len == SrcTy.getElementCount().getKnownMinValue() {
+        let mut NumLanes: u32 = SrcTy.getPrimitiveSizeInBits().operator unsigned long long() / 128;
+        let mut NumEltsPerLane: u32 = Mask.len / NumLanes;
+        if (Mask.len % NumLanes) == 0 {
+            IsInLaneShuffle = all_of(enumerate(Mask), Closure_6 { Mask: &mut Mask, NumEltsPerLane: &mut NumEltsPerLane });
+            IsSingleElementMask = (Mask.len - 1) == count_if(Mask, Closure_7 {}) as u32;
+        }
+    }
+    if LT()(bf16) {
+        LT() = (f16);
+    }
+    if Kind == SK_ExtractSubvector && () {
+        let mut NumElts: i32 = ();
+        if (Index % NumElts) == 0 {
+            return InstructionCost { TCC_Free };
+        }
+        let mut SubLT: pair<InstructionCost, MVT> = zeroed();
+        if SubLT()() {
+            let mut NumSubElts: i32 = ();
+            if (Index % NumSubElts) == 0 && (NumElts % NumSubElts) == 0 {
+                return ;
+            }
+            let mut OrigSubElts: i32 = cast(SubTp)();
+            if NumSubElts > OrigSubElts && (Index % OrigSubElts) == 0 && (NumSubElts % OrigSubElts) == 0 && () == () && ()() == SrcTy.getElementType().getPrimitiveSizeInBits() {
+                assert!(NumElts >= NumSubElts && NumElts > OrigSubElts, "Unexpected number of elements!");
+                let mut VecTy: *mut auto = get(SrcTy.getElementType());
+                let mut SubTy: *mut auto = get(SrcTy.getElementType());
+                let mut ExtractIndex: i32 = alignDown((Index % NumElts), NumSubElts);
+                let mut ExtractCost: InstructionCost = self.getShuffleCost(SK_ExtractSubvector, CostKind, void {}, ExtractIndex);
+                if SubTp.getPrimitiveSizeInBits().operator unsigned long long() >= 32 || self.ST.hasSSSE3() {
+                    return ExtractCost + InstructionCost { 1 };
+                }
+                assert!(SubTp.getPrimitiveSizeInBits().operator unsigned long long() == 16, "Unexpected vector size");
+                return ExtractCost + InstructionCost { 2 };
+            }
+        }
+        Kind = SK_PermuteSingleSrc;
+    }
+    if Kind == SK_InsertSubvector && () {
+        let mut DstLT: pair<InstructionCost, MVT> = zeroed();
+        let mut NumElts: i32 = ();
+        let mut SubLT: pair<InstructionCost, MVT> = zeroed();
+        if SubLT()() {
+            let mut NumSubElts: i32 = ();
+            let mut MatchingTypes: bool = NumElts == NumSubElts && (SubTp.getElementCount().getKnownMinValue() % NumSubElts) == 0;
+            if (Index % NumSubElts) == 0 && (NumElts % NumSubElts) == 0 {
+                return if MatchingTypes { TCC_Free } else {  };
+            }
+        }
+        if LT() == 1 &&  == v4f32 &&  == 1 &&  == f32 && (Index == 0 || self.ST.hasSSE41()) {
+            return InstructionCost { 1 };
+        }
+        Kind = if (Index == 0 &&  == 1) { SK_Select } else { SK_PermuteTwoSrc };
+    }
+    let mut VT: EVT = self.TLI.getValueType;
+    if VT.isSimple() && VT.isVector() && VT.getSizeInBits().operator unsigned long long() < 128 && !self.ST.hasSSSE3() {
+        let mut SSE2SubVectorShuffleTbl: []CostKindTblEntry = zeroed();
+        if self.ST.hasSSE2() {
+            if  {
+                if  {
+                    return  * operator*();
+                }
+            }
+        }
+    }
+    if LT() != 1 {
+        let mut LegalVT: MVT = ;
+        if LegalVT.isVector() && LegalVT.getVectorElementType().getSizeInBits() == SrcTy.getElementType().getPrimitiveSizeInBits() && LegalVT.getVectorNumElements() < cast(SrcTy)() {
+            let mut VecTySize: u32 = 0;
+            let mut LegalVTSize: u32 = LegalVT.getStoreSize().operator unsigned long long();
+            let mut NumOfSrcs: u32 = (VecTySize + LegalVTSize - 1) / LegalVTSize;
+            let mut NumOfDests: InstructionCost = ;
+            let mut SingleOpTy: *mut auto = get(SrcTy.getElementType(), LegalVT.getVectorNumElements());
+            if !Mask.is_empty() && NumOfDests.isValid() {
+                NumOfDests = getTypeLegalizationCost(get(SrcTy.getElementType(), Mask.len));
+                let mut E: u32 = NumOfDests.getValue();
+                let mut NormalizedVF: u32 = LegalVT.getVectorNumElements() * max(NumOfSrcs, E);
+                let mut NumOfSrcRegs: u32 = NormalizedVF / LegalVT.getVectorNumElements();
+                let mut NumOfDestRegs: u32 = NormalizedVF / LegalVT.getVectorNumElements();
+                let mut NormalizedMask: i32 = NormalizedVF;
+                copy(Mask);
+                let mut PrevSrcReg: u32 = 0;
+                let mut PrevRegMask: ArrayRef<int> = ArrayRef<int> {};
+                let mut Cost: InstructionCost = InstructionCost { 0 };
+                processShuffleMasks(NumOfSrcRegs, NumOfDestRegs, NumOfDestRegs, Closure_8 {}, Closure_9 { cap_0: self, CostKind: CostKind, PrevSrcReg: &mut PrevSrcReg, PrevRegMask: &mut PrevRegMask, Cost: &mut Cost }, Closure_10 { cap_0: self, CostKind: CostKind, Cost: &mut Cost });
+                return Cost;
+            }
+            let mut NumOfShuffles: InstructionCost = InstructionCost { (NumOfSrcs - 1) } * NumOfDests;
+            return NumOfShuffles * self.getShuffleCost(SK_PermuteTwoSrc, CostKind, void {}, 0, null);
+        }
+    }
+    if LT() == 1 && IsInLaneShuffle && IsSingleElementMask {
+        return InstructionCost { TCC_Basic };
+    }
+    let mut AVX512VBMIShuffleTbl: []CostKindTblEntry = zeroed();
+    if self.ST() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX512BWShuffleTbl: []CostKindTblEntry = zeroed();
+    if self.ST() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX512InLaneShuffleTbl: []CostKindTblEntry = zeroed();
+    if IsInLaneShuffle && self.ST.hasAVX512() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX512ShuffleTbl: []CostKindTblEntry = zeroed();
+    if self.ST.hasAVX512() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX2InLaneShuffleTbl: []CostKindTblEntry = zeroed();
+    if IsInLaneShuffle && self.ST.hasAVX2() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX2ShuffleTbl: []CostKindTblEntry = zeroed();
+    if self.ST.hasAVX2() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut XOPShuffleTbl: []CostKindTblEntry = zeroed();
+    if self.ST() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX1InLaneShuffleTbl: []CostKindTblEntry = zeroed();
+    if IsInLaneShuffle && self.ST.hasAVX() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut AVX1ShuffleTbl: []CostKindTblEntry = zeroed();
+    if self.ST.hasAVX() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut SSE41ShuffleTbl: []CostKindTblEntry = zeroed();
+    if self.ST.hasSSE41() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut SSSE3ShuffleTbl: []CostKindTblEntry = zeroed();
+    if self.ST.hasSSSE3() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut SSE2ShuffleTbl: []CostKindTblEntry = zeroed();
+    let mut SSE3BroadcastLoadTbl: []CostTblEntry = zeroed();
+    if self.ST.hasSSE2() {
+        let mut IsLoad: bool = any_of(Closure_11 {});
+        if self.ST.hasSSE3() && IsLoad {
+            if  {
+                (((operator!(operator!((self.isLegalBroadcastLoad(SrcTy.getElementType()) && "Table entry missing from isLegalBroadcastLoad()")))) || (_wassert(L"isLegalBroadcastLoad(SrcTy->getElementType(), LT.second.getVectorElementCount()) && \"Table entry missing from isLegalBroadcastLoad()\"", L"llvm\\lib\\Target\\X86\\X86TargetTransformInfo.cpp", (2736) as u32) , 0)) as void);
+                return  * ;
+            }
+        }
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    let mut SSE1ShuffleTbl: []CostKindTblEntry = zeroed();
+    if self.ST.hasSSE1() {
+        if LT() == 1 &&  == v4f32 && Mask.len == 4 {
+            let mut MatchSHUFPS: Closure_12 = Closure_12 {};
+            if MatchSHUFPS.call(Mask[0], Mask[1]) && MatchSHUFPS.call(Mask[2], Mask[3]) {
+                return InstructionCost { 1 };
+            }
+        }
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+}
+
+fn X86TTIImpl::getCastInstrCost(self: *X86TTIImpl, Opcode: u32, Dst: *mut Type, Src: *mut Type, CCH: CastContextHint, CostKind: TargetCostKind, I: *Instruction) -> InstructionCost {
+    let mut ISD: i32 = self.TLI.InstructionOpcodeToISD;
+    assert!(ISD, "Invalid opcode");
+    if ISD == ZERO_EXTEND && I && I.hasOneUse() && Src.isIntegerTy() && Src.getScalarSizeInBits() < 32 {
+        let mut U: *Use = operator(I.use_begin());
+        if isa(U.getUser()) && U.getOperandNo() != getPointerOperandIndex() {
+            let mut Op: *Value = I.getOperand(0);
+            if isa(Op) {
+                return InstructionCost { TCC_Free };
+            }
+            if  {
+                if A()(ZExt) {
+                    return InstructionCost { TCC_Free };
+                }
+            }
+            if computeKnownBits(Op, I.getDataLayout(), null, I, null, true, 0).countMinLeadingZeros() > 0 {
+                return InstructionCost { TCC_Free };
+            }
+        }
+    }
+    let mut AVX512BWConversionTbl: []TypeConversionCostKindTblEntry = zeroed();
+    let mut AVX512DQConversionTbl: []TypeConversionCostKindTblEntry = zeroed();
+    let mut AVX512FConversionTbl: []TypeConversionCostKindTblEntry = zeroed();
+    let mut AVX512BWVLConversionTbl: []TypeConversionCostKindTblEntry = zeroed();
+    let mut AVX512DQVLConversionTbl: []TypeConversionCostKindTblEntry = zeroed();
+    let mut AVX512VLConversionTbl: []TypeConversionCostKindTblEntry = zeroed();
+    let mut AVX2ConversionTbl: []TypeConversionCostKindTblEntry = zeroed();
+    let mut AVXConversionTbl: []TypeConversionCostKindTblEntry = zeroed();
+    let mut SSE41ConversionTbl: []TypeConversionCostKindTblEntry = zeroed();
+    let mut SSE2ConversionTbl: []TypeConversionCostKindTblEntry = zeroed();
+    let mut F16ConversionTbl: []TypeConversionCostKindTblEntry = zeroed();
+    let mut SrcTy: EVT = self.TLI.getValueType;
+    let mut DstTy: EVT = self.TLI.getValueType;
+    if !self.ST.hasAVX512() || (operator!(self.ST()) && DstTy.getScalarSizeInBits() < 32) {
+        if I && Opcode == SExt && SrcTy.isFixedLengthVectorOf(EVT { i1 }) {
+            if  {
+                let mut CmpTy: *mut Type = (0)();
+                if CmpTy.getScalarSizeInBits() == DstTy.getScalarSizeInBits() {
+                    return InstructionCost { TCC_Free };
+                }
+            }
+        }
+    }
+    if SrcTy.isSimple() && DstTy.isSimple() {
+        let mut SimpleSrcTy: MVT = SrcTy.getSimpleVT();
+        let mut SimpleDstTy: MVT = DstTy.getSimpleVT();
+        if self.ST.useAVX512Regs() {
+            if self.ST() {
+                if  {
+                    if  {
+                        return operator*();
+                    }
+                }
+            }
+            if self.ST() {
+                if  {
+                    if  {
+                        return operator*();
+                    }
+                }
+            }
+            if self.ST.hasAVX512() {
+                if  {
+                    if  {
+                        return operator*();
+                    }
+                }
+            }
+        }
+        if self.ST() {
+            if  {
+                if  {
+                    return operator*();
+                }
+            }
+        }
+        if self.ST() {
+            if  {
+                if  {
+                    return operator*();
+                }
+            }
+        }
+        if self.ST.hasAVX512() {
+            if  {
+                if  {
+                    return operator*();
+                }
+            }
+        }
+        if self.ST.hasAVX2() {
+            if  {
+                if  {
+                    return operator*();
+                }
+            }
+        }
+        if self.ST.hasAVX() {
+            if  {
+                if  {
+                    return operator*();
+                }
+            }
+        }
+        if self.ST() {
+            if  {
+                if  {
+                    return operator*();
+                }
+            }
+        }
+        if self.ST.hasSSE41() {
+            if  {
+                if  {
+                    return operator*();
+                }
+            }
+        }
+        if self.ST.hasSSE2() {
+            if  {
+                if  {
+                    return operator*();
+                }
+            }
+        }
+        if (ISD == FP_ROUND && SimpleDstTy == f16) || (ISD == FP_EXTEND && SimpleSrcTy == f16) {
+            return InstructionCost { 64 };
+        }
+    }
+    let mut LTSrc: pair<InstructionCost, MVT> = zeroed();
+    let mut LTDest: pair<InstructionCost, MVT> = zeroed();
+    if ISD == TRUNCATE &&  ==  {
+        return InstructionCost { TCC_Free };
+    }
+    if self.ST.useAVX512Regs() {
+        if self.ST() {
+            if  {
+                if  {
+                    return if  >  {  } else {  } * operator*();
+                }
+            }
+        }
+        if self.ST() {
+            if  {
+                if  {
+                    return if  >  {  } else {  } * operator*();
+                }
+            }
+        }
+        if self.ST.hasAVX512() {
+            if  {
+                if  {
+                    return if  >  {  } else {  } * operator*();
+                }
+            }
+        }
+    }
+    if self.ST() {
+        if  {
+            if  {
+                return if  >  {  } else {  } * operator*();
+            }
+        }
+    }
+    if self.ST() {
+        if  {
+            if  {
+                return if  >  {  } else {  } * operator*();
+            }
+        }
+    }
+    if self.ST.hasAVX512() {
+        if  {
+            if  {
+                return if  >  {  } else {  } * operator*();
+            }
+        }
+    }
+    if self.ST.hasAVX2() {
+        if  {
+            if  {
+                return if  >  {  } else {  } * operator*();
+            }
+        }
+    }
+    if self.ST.hasAVX() {
+        if  {
+            if  {
+                return if  >  {  } else {  } * operator*();
+            }
+        }
+    }
+    if self.ST() {
+        if  {
+            if  {
+                return if  >  {  } else {  } * operator*();
+            }
+        }
+    }
+    if self.ST.hasSSE41() {
+        if  {
+            if  {
+                return if  >  {  } else {  } * operator*();
+            }
+        }
+    }
+    if self.ST.hasSSE2() {
+        if  {
+            if  {
+                return if  >  {  } else {  } * operator*();
+            }
+        }
+    }
+    if (ISD == SINT_TO_FP || ISD == UINT_TO_FP) && 1 < Src.getScalarSizeInBits() && Src.getScalarSizeInBits() < 32 {
+        let mut ExtSrc: *mut Type = Src.getWithNewBitWidth(32);
+        let mut ExtOpc: u32 = if (ISD == SINT_TO_FP) { SExt } else { ZExt };
+        let mut ExtCost: InstructionCost = InstructionCost { 0 };
+        if !(Src.isIntegerTy() && I && isa(I.getOperand(0))) {
+            ExtCost = self.getCastInstrCost(ExtOpc, ExtSrc, Src, CCH, CostKind, null);
+        }
+        return ExtCost + self.getCastInstrCost(SIToFP, Dst, ExtSrc, None, CostKind, null);
+    }
+    if (ISD == FP_TO_SINT || ISD == FP_TO_UINT) && 1 < Dst.getScalarSizeInBits() && Dst.getScalarSizeInBits() < 32 {
+        let mut TruncDst: *mut Type = Dst.getWithNewBitWidth(32);
+        return self.getCastInstrCost(FPToSI, TruncDst, Src, CCH, CostKind, null) + self.getCastInstrCost(Trunc, Dst, TruncDst, None, CostKind, null);
+    }
+    let mut AdjustCost: Closure_13 = Closure_13 { CostKind: &mut CostKind };
+    return AdjustCost();
+}
+
+fn X86TTIImpl::getCmpSelInstrCost(self: *X86TTIImpl, Opcode: u32, ValTy: *mut Type, CondTy: *mut Type, VecPred: Predicate, CostKind: TargetCostKind, Op1Info: OperandValueInfo, Op2Info: OperandValueInfo, I: *Instruction) -> InstructionCost {
+    let mut LT: pair<InstructionCost, MVT> = zeroed();
+    let mut MTy: MVT = ;
+    let mut ISD: i32 = self.TLI.InstructionOpcodeToISD;
+    assert!(ISD, "Invalid opcode");
+    let mut ExtraCost: InstructionCost = InstructionCost { 0 };
+    if Opcode == ICmp || Opcode == FCmp {
+        if MTy.isVector() && operator!(((self.ST() && (!self.ST.hasAVX2() || MTy.is128BitVector())) || (self.ST.hasAVX512() && 32 <= MTy.getScalarSizeInBits()) || self.ST())) {
+            let mut Pred: Predicate = VecPred;
+            if I && (Pred == BAD_ICMP_PREDICATE || Pred == BAD_FCMP_PREDICATE) {
+                Pred = cast(I)();
+            }
+            let mut CmpWithConstant: bool = false;
+            if  {
+                CmpWithConstant = isa((1));
+            }
+            match Pred {
+                ICMP_NE => {
+                    ExtraCost = InstructionCost { if CmpWithConstant { 0 } else { 1 } };
+                },
+                ICMP_SGE => {
+                    ICMP_SLE;
+                },
+                ICMP_ULT => {
+                    ICMP_UGT;
+                },
+                ICMP_ULE => {
+                    ICMP_UGE;
+                },
+                FCMP_ONE => {
+                    FCMP_UEQ;
+                },
+                BAD_ICMP_PREDICATE => {
+                    BAD_FCMP_PREDICATE;
+                },
+                _ => {
+                    break;
+                },
+            }
+        }
+    }
+    let mut SLMCostTbl: []CostKindTblEntry = zeroed();
+    let mut AVX512BWCostTbl: []CostKindTblEntry = zeroed();
+    let mut AVX512CostTbl: []CostKindTblEntry = zeroed();
+    let mut AVX2CostTbl: []CostKindTblEntry = zeroed();
+    let mut XOPCostTbl: []CostKindTblEntry = zeroed();
+    let mut AVX1CostTbl: []CostKindTblEntry = zeroed();
+    let mut SSE42CostTbl: []CostKindTblEntry = zeroed();
+    let mut SSE41CostTbl: []CostKindTblEntry = zeroed();
+    let mut SSE2CostTbl: []CostKindTblEntry = zeroed();
+    let mut SSE1CostTbl: []CostKindTblEntry = zeroed();
+    if self.ST() {
+        if  {
+            if  {
+                return  * (ExtraCost + operator*());
+            }
+        }
+    }
+    if self.ST() {
+        if  {
+            if  {
+                return  * (ExtraCost + operator*());
+            }
+        }
+    }
+    if self.ST.hasAVX512() {
+        if  {
+            if  {
+                return  * (ExtraCost + operator*());
+            }
+        }
+    }
+    if self.ST.hasAVX2() {
+        if  {
+            if  {
+                return  * (ExtraCost + operator*());
+            }
+        }
+    }
+    if self.ST() {
+        if  {
+            if  {
+                return  * (ExtraCost + operator*());
+            }
+        }
+    }
+    if self.ST.hasAVX() {
+        if  {
+            if  {
+                return  * (ExtraCost + operator*());
+            }
+        }
+    }
+    if self.ST.hasSSE42() {
+        if  {
+            if  {
+                return  * (ExtraCost + operator*());
+            }
+        }
+    }
+    if self.ST.hasSSE41() {
+        if  {
+            if  {
+                return  * (ExtraCost + operator*());
+            }
+        }
+    }
+    if self.ST.hasSSE2() {
+        if  {
+            if  {
+                return  * (ExtraCost + operator*());
+            }
+        }
+    }
+    if self.ST.hasSSE1() {
+        if  {
+            if  {
+                return  * (ExtraCost + operator*());
+            }
+        }
+    }
+    if CostKind == TCK_Latency && Opcode == Select {
+        if ValTy.getScalarType().isFloatingPointTy() {
+            return InstructionCost { 3 };
+        }
+    }
+}
+
+fn X86TTIImpl::getAtomicMemIntrinsicMaxElementSize(self: *X86TTIImpl) -> u32 {
+    return 16;
+}
+
+fn X86TTIImpl::getIntrinsicInstrCost(self: *X86TTIImpl, ICA: *IntrinsicCostAttributes, CostKind: TargetCostKind) -> InstructionCost {
+    let mut AVX512VBMI2CostTbl: []CostKindTblEntry = zeroed();
+    let mut AVX512BITALGCostTbl: []CostKindTblEntry = zeroed();
+    let mut AVX512VPOPCNTDQCostTbl: []CostKindTblEntry = zeroed();
+    let mut AVX512CDCostTbl: []CostKindTblEntry = zeroed();
+    let mut AVX512BWCostTbl: []CostKindTblEntry = zeroed();
+    let mut AVX512CostTbl: []CostKindTblEntry = zeroed();
+    let mut XOPCostTbl: []CostKindTblEntry = zeroed();
+    let mut AVX2CostTbl: []CostKindTblEntry = zeroed();
+    let mut AVX1CostTbl: []CostKindTblEntry = zeroed();
+    let mut GFNICostTbl: []CostKindTblEntry = zeroed();
+    let mut GLMCostTbl: []CostKindTblEntry = zeroed();
+    let mut SLMCostTbl: []CostKindTblEntry = zeroed();
+    let mut SSE42CostTbl: []CostKindTblEntry = zeroed();
+    let mut SSE41CostTbl: []CostKindTblEntry = zeroed();
+    let mut SSSE3CostTbl: []CostKindTblEntry = zeroed();
+    let mut SSE2CostTbl: []CostKindTblEntry = zeroed();
+    let mut SSE1CostTbl: []CostKindTblEntry = zeroed();
+    let mut BMI64CostTbl: []CostKindTblEntry = zeroed();
+    let mut BMI32CostTbl: []CostKindTblEntry = zeroed();
+    let mut LZCNT64CostTbl: []CostKindTblEntry = zeroed();
+    let mut LZCNT32CostTbl: []CostKindTblEntry = zeroed();
+    let mut POPCNT64CostTbl: []CostKindTblEntry = zeroed();
+    let mut POPCNT32CostTbl: []CostKindTblEntry = zeroed();
+    let mut PCLMULCostTbl: []CostKindTblEntry = zeroed();
+    let mut X64CostTbl: []CostKindTblEntry = zeroed();
+    let mut X86CostTbl: []CostKindTblEntry = zeroed();
+    let mut RetTy: *mut Type = ICA.getReturnType();
+    let mut OpTy: *mut Type = RetTy;
+    let mut IID: ID = ICA.getID();
+    let mut ISD: u32 = DELETED_NODE;
+    match IID {
+        _ => {
+            break;
+        },
+        abs => {
+            ISD = ABS;
+        },
+        bitreverse => {
+            ISD = BITREVERSE;
+        },
+        bswap => {
+            ISD = BSWAP;
+        },
+        ctlz => {
+            ISD = CTLZ;
+        },
+        ctpop => {
+            ISD = CTPOP;
+        },
+        cttz => {
+            ISD = CTTZ;
+        },
+        fshl => {
+            ISD = FSHL;
+        },
+        fshr => {
+            ISD = FSHL;
+        },
+        lrint => {
+            llrint;
+        },
+        maxnum => {
+            minnum;
+        },
+        sadd_sat => {
+            ISD = SADDSAT;
+        },
+        smax => {
+            ISD = SMAX;
+        },
+        smin => {
+            ISD = SMIN;
+        },
+        smulh => {
+            ISD = MULHS;
+        },
+        ssub_sat => {
+            ISD = SSUBSAT;
+        },
+        uadd_sat => {
+            ISD = UADDSAT;
+        },
+        umax => {
+            ISD = UMAX;
+        },
+        umin => {
+            ISD = UMIN;
+        },
+        usub_sat => {
+            ISD = USUBSAT;
+        },
+        umulh => {
+            ISD = MULHU;
+        },
+        sqrt => {
+            ISD = FSQRT;
+        },
+        sadd_with_overflow => {
+            ssub_with_overflow;
+        },
+        uadd_with_overflow => {
+            usub_with_overflow;
+        },
+        smul_with_overflow => {
+            ISD = SMULO;
+        },
+        umul_with_overflow => {
+            ISD = UMULO;
+        },
+        clmul => {
+            ISD = CLMUL;
+        },
+    }
+    if ISD != DELETED_NODE {
+        let mut adjustTableCost: Closure_14 = Closure_14 { cap_0: self, ICA: &mut ICA };
+        let mut LT: pair<InstructionCost, MVT> = zeroed();
+        let mut MTy: MVT = ;
+        if ((ISD == CTTZ && operator!(self.ST())) || (ISD == CTLZ && operator!(self.ST()))) && !MTy.isVector() && !ICA.isTypeBasedOnly() {
+            let mut Args: *SmallVectorImpl<const Value *> = ICA.getArgs();
+            if  {
+                if Cst()() {
+                    ISD = if ISD == CTTZ { CTTZ_ZERO_POISON } else { CTLZ_ZERO_POISON };
+                }
+            }
+        }
+        if ISD == FSQRT && CostKind == TCK_CodeSize {
+            return ;
+        }
+        if self.ST() {
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST() {
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST() {
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST() {
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST() {
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST() {
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST() {
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST() {
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST.hasAVX512() {
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST() {
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST.hasAVX2() {
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST.hasAVX() {
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST.hasSSE42() {
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST.hasSSE41() {
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST.hasSSSE3() {
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST.hasSSE2() {
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST.hasSSE1() {
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST() {
+            if self.ST() {
+                if  {
+                    if  {
+                        return adjustTableCost(operator*(), ICA.getFlags());
+                    }
+                }
+            }
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST() {
+            if self.ST() {
+                if  {
+                    if  {
+                        return adjustTableCost(operator*(), ICA.getFlags());
+                    }
+                }
+            }
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST() {
+            if self.ST() {
+                if  {
+                    if  {
+                        return adjustTableCost(operator*(), ICA.getFlags());
+                    }
+                }
+            }
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST() {
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if self.ST() {
+            if  {
+                if  {
+                    return adjustTableCost(operator*(), ICA.getFlags());
+                }
+            }
+        }
+        if  {
+            if  {
+                return adjustTableCost(operator*(), ICA.getFlags());
+            }
+        }
+        if ICA.isTypeBasedOnly() && (IID == fshl || IID == fshr) {
+            let mut CondTy: *mut Type = RetTy.getWithNewBitWidth(1);
+            let mut Cost: InstructionCost = InstructionCost { 0 };
+            operator(Cost, self.getArithmeticInstrCost(Or, RetTy, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, OperandValueInfo { OK_AnyValue, OP_None }, void {}, null));
+            operator(Cost, self.getArithmeticInstrCost(Sub, RetTy, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, OperandValueInfo { OK_AnyValue, OP_None }, void {}, null));
+            operator(Cost, self.getArithmeticInstrCost(Shl, RetTy, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, OperandValueInfo { OK_AnyValue, OP_None }, void {}, null));
+            operator(Cost, self.getArithmeticInstrCost(LShr, RetTy, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, OperandValueInfo { OK_AnyValue, OP_None }, void {}, null));
+            operator(Cost, self.getArithmeticInstrCost(And, RetTy, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, OperandValueInfo { OK_AnyValue, OP_None }, void {}, null));
+            operator(Cost, self.getCmpSelInstrCost(ICmp, RetTy, CondTy, ICMP_EQ, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, OperandValueInfo { OK_AnyValue, OP_None }, null));
+            operator(Cost, self.getCmpSelInstrCost(Select, RetTy, CondTy, ICMP_EQ, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, OperandValueInfo { OK_AnyValue, OP_None }, null));
+            return Cost;
+        }
+    }
+}
+
+fn X86TTIImpl::getVectorInstrCost(self: *X86TTIImpl, Opcode: u32, Val: *mut Type, CostKind: TargetCostKind, Index: u32, Op0: *Value, Op1: *Value, VIC: VectorInstrContext) -> InstructionCost {
+    let mut SLMCostTbl: []CostTblEntry = zeroed();
+    assert!(Val.isVectorTy(), "This must be a vector type");
+    let mut VT: *mut auto = cast(Val);
+    if VT()() {
+        return getInvalid(0);
+    }
+    let mut ScalarType: *mut Type = Val.getScalarType();
+    let mut RegisterFileMoveCost: InstructionCost = InstructionCost { 0 };
+    if Index == -1 && (Opcode == ExtractElement || Opcode == InsertElement) {
+        assert!(isa(Val), "Fixed vector type expected");
+        let mut VecAlign: Align = zeroed();
+        let mut SclAlign: Align = zeroed();
+        if Opcode == ExtractElement {
+            return self.getMemoryOpCost(Store, Val, VecAlign, 0, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, null) + self.getMemoryOpCost(Load, ScalarType, SclAlign, 0, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, null);
+        }
+        if Opcode == InsertElement {
+            return self.getMemoryOpCost(Store, Val, VecAlign, 0, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, null) + self.getMemoryOpCost(Store, ScalarType, SclAlign, 0, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, null) + self.getMemoryOpCost(Load, Val, VecAlign, 0, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, null);
+        }
+    }
+    if Index != -1 && (Opcode == ExtractElement || Opcode == InsertElement) {
+        if Opcode == ExtractElement && ScalarType.getScalarSizeInBits() == 1 && cast(Val)() > 1 {
+            return InstructionCost { 1 };
+        }
+        let mut LT: pair<InstructionCost, MVT> = zeroed();
+        if operator!() {
+            return InstructionCost { TCC_Free };
+        }
+        let mut SizeInBits: u32 = ();
+        let mut NumElts: u32 = ();
+        let mut SubNumElts: u32 = NumElts;
+        Index = Index % NumElts;
+        if SizeInBits > 128 {
+            assert!((SizeInBits % 128) == 0, "Illegal vector");
+            let mut NumSubVecs: u32 = SizeInBits / 128;
+            SubNumElts = NumElts / NumSubVecs;
+            if SubNumElts <= Index {
+                operator(RegisterFileMoveCost, (if Opcode == InsertElement { 2 } else { 1 }));
+                Index %= SubNumElts;
+            }
+        }
+        let mut MScalarTy: MVT = ();
+        let mut IsCheapPInsrPExtrInsertPS: Closure_15 = Closure_15 { MScalarTy: &mut MScalarTy, cap_1: self, Index: &mut Index, Opcode: &mut Opcode };
+        if Index == 0 {
+            if ScalarType.isFloatingPointTy() && (Opcode != InsertElement || !Op0 || isa(Op0)) {
+                return RegisterFileMoveCost;
+            }
+            if Opcode == InsertElement && isa_and_nonnull(Op0) {
+                if isa_and_nonnull(Op1) {
+                    return RegisterFileMoveCost;
+                }
+                if operator!(IsCheapPInsrPExtrInsertPS()) {
+                    if isa_and_nonnull(Op1) && Op1.getType().isIntegerTy() {
+                        return InstructionCost { 2 } + RegisterFileMoveCost;
+                    }
+                    return InstructionCost { 1 } + RegisterFileMoveCost;
+                }
+            }
+            if ScalarType.isIntegerTy() && Opcode == ExtractElement {
+                return InstructionCost { 1 } + RegisterFileMoveCost;
+            }
+        }
+        let mut ISD: i32 = self.TLI.InstructionOpcodeToISD;
+        assert!(ISD, "Unexpected vector opcode");
+        if self.ST() {
+            if  {
+                return  + RegisterFileMoveCost;
+            }
+        }
+        if IsCheapPInsrPExtrInsertPS() {
+            return InstructionCost { 1 } + RegisterFileMoveCost;
+        }
+        let mut ShuffleCost: InstructionCost = InstructionCost { 1 };
+        if Opcode == InsertElement {
+            let mut SubTy: *mut auto = cast(Val);
+            let mut VT: EVT = self.TLI.getValueType;
+            if VT.getScalarType() != EVT { MScalarTy } || VT.getSizeInBits().operator unsigned long long() >= 128 {
+                SubTy() = get(ScalarType, SubNumElts);
+            }
+            ShuffleCost = self.getShuffleCost(SK_PermuteTwoSrc, CostKind, void {}, 0);
+        }
+        let mut IntOrFpCost: i32 = if ScalarType.isFloatingPointTy() { 0 } else { 1 };
+        return ShuffleCost + InstructionCost { IntOrFpCost } + RegisterFileMoveCost;
+    }
+}
+
+fn X86TTIImpl::getScalarizationOverhead(self: *X86TTIImpl, Ty: *mut VectorType, DemandedElts: *APInt, Insert: bool, Extract: bool, CostKind: TargetCostKind, ForPoisonSrc: bool, VL: ArrayRef<Value *>, VIC: VectorInstrContext) -> InstructionCost {
+    (((operator!(operator!((DemandedElts.getBitWidth() == cast(Ty)() && "Vector size mismatch")))) || (_wassert(L"DemandedElts.getBitWidth() == cast<FixedVectorType>(Ty)->getNumElements() && \"Vector size mismatch\"", L"llvm\\lib\\Target\\X86\\X86TargetTransformInfo.cpp", (5523) as u32) , 0)) as void);
+    let mut LT: pair<InstructionCost, MVT> = zeroed();
+    let mut MScalarTy: MVT = ();
+    let mut LegalVectorBitWidth: u32 = ();
+    let mut Cost: InstructionCost = InstructionCost { 0 };
+    let mut LaneBitWidth: u32 = 128;
+    assert!((LegalVectorBitWidth < LaneBitWidth || (LegalVectorBitWidth % LaneBitWidth) == 0), "Illegal vector");
+    let mut NumLegalVectors: i32 = ();
+    assert!(NumLegalVectors >= 0, "Negative cost!");
+    if Insert && !ForPoisonSrc {
+        return Cost;
+    }
+    if Insert {
+        if (MScalarTy == i16 && self.ST.hasSSE2()) || (MScalarTy.isInteger() && self.ST.hasSSE41()) || (MScalarTy == f32 && self.ST.hasSSE41()) {
+            if LegalVectorBitWidth <= LaneBitWidth {} else {
+                assert!((LegalVectorBitWidth % LaneBitWidth) == 0, "Illegal vector");
+                let mut NumLegalLanes: u32 = LegalVectorBitWidth / LaneBitWidth;
+                let mut NumLanesTotal: u32 = NumLegalLanes * NumLegalVectors;
+                let mut NumLegalElts: u32 = () * NumLegalVectors;
+                assert!(NumLegalElts >= DemandedElts.getBitWidth(), "Vector has been legalized to smaller element count");
+                assert!((NumLegalElts % NumLanesTotal) == 0, "Unexpected elts per lane");
+                let mut NumEltsPerLane: u32 = NumLegalElts / NumLanesTotal;
+                let mut WidenedDemandedElts: APInt = DemandedElts.zext(NumLegalElts);
+                let mut LaneTy: *mut auto = get(Ty.getElementType(), NumEltsPerLane);
+                for let mut I: u32 = 0; I != NumLanesTotal; I += 1 {
+                    let mut LaneEltMask: APInt = WidenedDemandedElts.extractBits(NumEltsPerLane, NumEltsPerLane * I);
+                    if LaneEltMask.isZero() {
+                        continue;
+                    }
+                    if !LaneEltMask.isAllOnes() {
+                        operator+=(Cost, self.getShuffleCost(SK_ExtractSubvector, Ty, Ty, CostKind, void {}, I * NumEltsPerLane));
+                    }
+                }
+                let mut AffectedLanes: APInt = ScaleBitMask(WidenedDemandedElts, NumLanesTotal, false);
+                let mut FullyAffectedLegalVectors: APInt = ScaleBitMask(AffectedLanes, NumLegalVectors, true);
+                for let mut LegalVec: i32 = 0; LegalVec != NumLegalVectors; LegalVec += 1 {
+                    for let mut Lane: u32 = 0; Lane != NumLegalLanes; Lane += 1 {
+                        let mut I: u32 = NumLegalLanes * LegalVec + Lane;
+                        if !AffectedLanes[I] || (Lane == 0 && FullyAffectedLegalVectors[LegalVec]) {
+                            continue;
+                        }
+                        operator+=(Cost, self.getShuffleCost(SK_InsertSubvector, Ty, Ty, CostKind, void {}, I * NumEltsPerLane));
+                    }
+                }
+            }
+        } else if LT()() {
+            if Ty.isIntOrIntVectorTy() {
+                operator(Cost, DemandedElts.popcount());
+            }
+            let mut NumElts: u32 = ();
+            let mut Pow2Elts: u32 = PowerOf2Ceil(cast(Ty)());
+            operator+=(Cost, (min(NumElts, Pow2Elts) - 1) * );
+        }
+    }
+    if Extract {
+        if !Insert && Ty.getScalarSizeInBits() == 1 && !self.ST.hasAVX512() {
+            let mut NumElts: u32 = cast(Ty)();
+            let mut MaxElts: u32 = if self.ST.hasAVX2() { 32 } else { 16 };
+            let mut MOVMSKCost: u32 = (NumElts + MaxElts - 1) / MaxElts;
+            return InstructionCost { MOVMSKCost };
+        }
+        if LT()() {
+            let mut NumLegalElts: u32 = () * NumLegalVectors;
+            assert!(NumLegalElts >= DemandedElts.getBitWidth(), "Vector has been legalized to smaller element count");
+            if LegalVectorBitWidth > LaneBitWidth {
+                let mut NumLegalLanes: u32 = LegalVectorBitWidth / LaneBitWidth;
+                let mut NumLanesTotal: u32 = NumLegalLanes * NumLegalVectors;
+                assert!((NumLegalElts % NumLanesTotal) == 0, "Unexpected elts per lane");
+                let mut NumEltsPerLane: u32 = NumLegalElts / NumLanesTotal;
+                let mut WidenedDemandedElts: APInt = DemandedElts.zext(NumLegalElts);
+                let mut LaneTy: *mut auto = get(Ty.getElementType(), NumEltsPerLane);
+                for let mut I: u32 = 0; I != NumLanesTotal; I += 1 {
+                    let mut LaneEltMask: APInt = WidenedDemandedElts.extractBits(NumEltsPerLane, I * NumEltsPerLane);
+                    if LaneEltMask.isZero() {
+                        continue;
+                    }
+                    operator+=(Cost, self.getShuffleCost(SK_ExtractSubvector, Ty, Ty, CostKind, void {}, I * NumEltsPerLane));
+                }
+                return Cost;
+            }
+        }
+    }
+    return Cost;
+}
+
+fn X86TTIImpl::getReplicationShuffleCost(self: *X86TTIImpl, EltTy: *mut Type, ReplicationFactor: i32, VF: i32, DemandedDstElts: *APInt, CostKind: TargetCostKind) -> InstructionCost {
+    let mut EltTyBits: u32 = 0;
+    EltTy = getIntNTy(EltTy.getContext(), EltTyBits);
+    let mut bailout: Closure_16 = Closure_16 { EltTy: &mut EltTy, ReplicationFactor: &mut ReplicationFactor, VF: &mut VF, DemandedDstElts: &mut DemandedDstElts, CostKind: &mut CostKind };
+    if !self.ST.hasAVX512() {
+        return bailout.call();
+    }
+    let mut PromEltTyBits: u32 = EltTyBits;
+    match EltTyBits {
+        32 => {
+            64;
+        },
+        16 => {
+            if operator!(self.ST()) {
+                PromEltTyBits = 32;
+            }
+        },
+        8 => {
+            if operator!(self.ST()) {
+                PromEltTyBits = 32;
+            }
+        },
+        1 => {
+            if self.ST() {
+                if self.ST() {
+                    PromEltTyBits = 8;
+                } else {
+                    PromEltTyBits = 16;
+                }
+                break;
+            }
+        },
+        _ => {
+            return bailout.call();
+        },
+    }
+    let mut PromEltTy: *mut IntegerType = getIntNTy(EltTy.getContext(), PromEltTyBits);
+    let mut SrcVecTy: *mut FixedVectorType = get(EltTy, VF);
+    let mut PromSrcVecTy: *mut FixedVectorType = get(PromEltTy, VF);
+    let mut NumDstElements: i32 = VF * ReplicationFactor;
+    let mut PromDstVecTy: *mut FixedVectorType = get(PromEltTy, NumDstElements);
+    let mut DstVecTy: *mut FixedVectorType = get(EltTy, NumDstElements);
+    let mut LegalSrcVecTy: MVT = getTypeLegalizationCost(SrcVecTy);
+    let mut LegalPromSrcVecTy: MVT = getTypeLegalizationCost(PromSrcVecTy);
+    let mut LegalPromDstVecTy: MVT = getTypeLegalizationCost(PromDstVecTy);
+    let mut LegalDstVecTy: MVT = getTypeLegalizationCost(DstVecTy);
+    if !LegalSrcVecTy.isVector() || !LegalPromSrcVecTy.isVector() || !LegalPromDstVecTy.isVector() || !LegalDstVecTy.isVector() {
+        return bailout.call();
+    }
+    if PromEltTyBits != EltTyBits {
+        let mut PromotionCost: InstructionCost = InstructionCost {};
+        operator(PromotionCost, self.getCastInstrCost(SExt, PromSrcVecTy, SrcVecTy, None, CostKind, null));
+        operator(PromotionCost, self.getCastInstrCost(Trunc, DstVecTy, PromDstVecTy, None, CostKind, null));
+        return PromotionCost + self.getReplicationShuffleCost(PromEltTy, ReplicationFactor, VF, DemandedDstElts, CostKind);
+    }
+    assert!(LegalSrcVecTy.getScalarSizeInBits() == EltTyBits && LegalSrcVecTy.getScalarType() == LegalDstVecTy.getScalarType(), "We expect that the legalization doesn't affect the element width, doesn't coalesce/split elements.");
+    let mut NumEltsPerDstVec: u32 = LegalDstVecTy.getVectorNumElements();
+    let mut NumDstVectors: u32 = divideCeil(DstVecTy.getNumElements(), NumEltsPerDstVec);
+    let mut SingleDstVecTy: *mut auto = get(EltTy, NumEltsPerDstVec);
+    let mut DemandedDstVectors: APInt = ScaleBitMask(DemandedDstElts.zext(NumDstVectors * NumEltsPerDstVec), NumDstVectors, false);
+    let mut NumDstVectorsDemanded: u32 = DemandedDstVectors.popcount();
+    let mut SingleShuffleCost: InstructionCost = self.getShuffleCost(SK_PermuteSingleSrc, CostKind, void {}, 0, null);
+    return InstructionCost { NumDstVectorsDemanded } * SingleShuffleCost;
+}
+
+fn X86TTIImpl::getMemoryOpCost(self: *X86TTIImpl, Opcode: u32, Src: *mut Type, Alignment: Align, AddressSpace: u32, CostKind: TargetCostKind, OpInfo: OperandValueInfo, I: *Instruction) -> InstructionCost {
+    if CostKind != TCK_RecipThroughput {
+        if  {
+            if  {
+                if operator!(all_of(Closure_17 {})) {
+                    return InstructionCost { TCC_Basic * 2 };
+                }
+            }
+        }
+        return InstructionCost { TCC_Basic };
+    }
+    assert!((Opcode == Load || Opcode == Store), "Invalid Opcode");
+    let mut LT: pair<InstructionCost, MVT> = zeroed();
+    let mut VTy: *mut auto = dyn_cast(Src);
+    let mut Cost: InstructionCost = InstructionCost { 0 };
+    if Opcode == Store && OpInfo.isConstant() {
+        operator+=(Cost, self.getMemoryOpCost);
+    }
+    if operator!() || operator!() {
+        return (if LT()() { Cost } else { 0 }) +  * 1;
+    }
+    let mut IsLoad: bool = Opcode == Load;
+    let mut EltTy: *mut Type = ();
+    let mut EltTyBits: i32 = 0;
+    let mut SrcNumElt: u32 = ();
+    let mut NumEltRemaining: i32 = SrcNumElt;
+    let mut NumEltDone: Closure_18 = Closure_18 { SrcNumElt: &mut SrcNumElt, NumEltRemaining: &mut NumEltRemaining };
+    let mut MaxLegalOpSizeBytes: i32 = divideCeil(8);
+    let mut XMMBits: u32 = 128;
+    let mut NumEltPerXMM: i32 = XMMBits / EltTyBits;
+    let mut XMMVecTy: *mut auto = get(EltTy, NumEltPerXMM);
+    for let mut CurrOpSizeBytes: i32 = MaxLegalOpSizeBytes;
+let mut SubVecEltsLeft: i32 = 0; NumEltRemaining > 0; CurrOpSizeBytes /= 2 {
+        let mut CurrNumEltPerOp: i32 = (8 * CurrOpSizeBytes) / EltTyBits;
+        assert!(CurrOpSizeBytes > 0 && CurrNumEltPerOp > 0, "How'd we get here?");
+        assert!((((NumEltRemaining * EltTyBits) < (2 * 8 * CurrOpSizeBytes)) || (CurrOpSizeBytes == MaxLegalOpSizeBytes)), "Unless we haven't halved the op size yet, we have less than two op's sized units of work left.");
+        let mut CurrVecTy: *mut auto = if CurrNumEltPerOp > NumEltPerXMM { get(EltTy, CurrNumEltPerOp) } else {  };
+        (((operator!(operator!((CurrVecTy()() % CurrNumEltPerOp == 0 && "After halving sizes, the vector elt count is no longer a multiple of number of elements per operation?")))) || (_wassert(L"CurrVecTy->getNumElements() % CurrNumEltPerOp == 0 && \"After halving sizes, the vector elt count is no longer a multiple \" \"of number of elements per operation?\"", L"llvm\\lib\\Target\\X86\\X86TargetTransformInfo.cpp", (5903) as u32) , 0)) as void);
+        let mut CoalescedVecTy: *mut auto = if CurrNumEltPerOp == 1 {  } else { get(get(Src.getContext(), EltTyBits * CurrNumEltPerOp), () / CurrNumEltPerOp) };
+        while NumEltRemaining > 0 {
+            assert!(SubVecEltsLeft >= 0, "Subreg element count overconsumtion?");
+            if NumEltRemaining < CurrNumEltPerOp && (!IsLoad || Alignment < CurrOpSizeBytes) && CurrOpSizeBytes != 1 {
+                break;
+            }
+            let mut Is0thSubVec: bool = (NumEltDone() % ()) == 0;
+            let mut FoldedInLaneInsert: bool = IsLoad && !Is0thSubVec && ((CurrOpSizeBytes == 1 && self.ST.hasSSE41()) || (CurrOpSizeBytes == 2 && self.ST.hasSSE2()) || (CurrOpSizeBytes == 4 && self.ST.hasSSE41()));
+            if CurrOpSizeBytes == 32 && self.ST() {
+                operator(Cost, 2);
+            } else if CurrOpSizeBytes < 4 && !FoldedInLaneInsert {
+                operator(Cost, 2);
+            } else {
+                operator(Cost, 1);
+            }
+            if IsLoad && OpInfo.isUniform() {
+                return Cost;
+            }
+            if SubVecEltsLeft == 0 {
+                operator+=(SubVecEltsLeft);
+                if !Is0thSubVec {
+                    operator+=(Cost, self.getShuffleCost(if IsLoad { SK_InsertSubvector } else { SK_ExtractSubvector }, CostKind, void {}, NumEltDone()));
+                }
+            }
+            if CurrOpSizeBytes <= 32 / 8 && !Is0thSubVec && !FoldedInLaneInsert {
+                let mut NumEltDoneInCurrXMM: i32 = NumEltDone() % NumEltPerXMM;
+                assert!(NumEltDoneInCurrXMM % CurrNumEltPerOp == 0, "");
+                let mut CoalescedVecEltIdx: i32 = NumEltDoneInCurrXMM / CurrNumEltPerOp;
+                let mut DemandedElts: APInt = getBitsSet(CoalescedVecEltIdx, CoalescedVecEltIdx + 1);
+                assert!(DemandedElts.popcount() == 1, "Inserting single value");
+                operator+=(Cost, self.getScalarizationOverhead(DemandedElts, IsLoad, !IsLoad, CostKind));
+            }
+            SubVecEltsLeft -= CurrNumEltPerOp;
+            NumEltRemaining -= CurrNumEltPerOp;
+            Alignment = commonAlignment(Alignment, CurrOpSizeBytes);
+        }
+    }
+    assert!(NumEltRemaining <= 0, "Should have processed all the elements.");
+    return Cost;
+}
+
+fn X86TTIImpl::getMemIntrinsicInstrCost(self: *X86TTIImpl, MICA: *MemIntrinsicCostAttributes, CostKind: TargetCostKind) -> InstructionCost {
+    match MICA.getID() {
+        masked_scatter => {
+            masked_gather;
+        },
+        masked_load => {
+            masked_store;
+        },
+    }
+    let mut AVX512VBMI2CostTable: []CostKindTblEntry = zeroed();
+    let mut AVX512CostTable: []CostKindTblEntry = zeroed();
+    let mut LT: pair<InstructionCost, MVT> = zeroed();
+    if self.ST() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+    if self.ST.hasAVX512() {
+        if  {
+            if  {
+                return  * operator*();
+            }
+        }
+    }
+}
+
+fn X86TTIImpl::getMaskedMemoryOpCost(self: *X86TTIImpl, MICA: *MemIntrinsicCostAttributes, CostKind: TargetCostKind) -> InstructionCost {
+    let mut Opcode: u32 = if MICA.getID() == masked_load { Load } else { Store };
+    let mut SrcTy: *mut Type = MICA.getDataType();
+    let mut Alignment: Align = MICA.getAlignment();
+    let mut AddressSpace: u32 = MICA.getAddressSpace();
+    let mut IsLoad: bool = (Load == Opcode);
+    let mut IsStore: bool = (Store == Opcode);
+    let mut SrcVTy: *mut auto = dyn_cast(SrcTy);
+    if operator!() {
+        return self.getMemoryOpCost(Opcode, SrcTy, Alignment, AddressSpace, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, null);
+    }
+    let mut NumElem: u32 = ();
+    let mut MaskTy: *mut auto = get(getInt8Ty(), NumElem);
+    if (IsLoad && operator!(self.isLegalMaskedLoad(Alignment, AddressSpace))) || (IsStore && operator!(self.isLegalMaskedStore(Alignment, AddressSpace))) {
+        let mut DemandedElts: APInt = getAllOnes(NumElem);
+        let mut MaskSplitCost: InstructionCost = self.getScalarizationOverhead(DemandedElts, false, true, CostKind);
+        let mut ScalarCompareCost: InstructionCost = self.getCmpSelInstrCost(ICmp, getInt8Ty(), null, BAD_ICMP_PREDICATE, CostKind);
+        let mut BranchCost: InstructionCost = self.getCFInstrCost(CondBr, CostKind, null);
+        let mut MaskCmpCost: InstructionCost = InstructionCost { NumElem } * (BranchCost + ScalarCompareCost);
+        let mut ValueSplitCost: InstructionCost = self.getScalarizationOverhead(DemandedElts, IsLoad, IsStore, CostKind);
+        let mut MemopCost: InstructionCost = zeroed();
+        return MemopCost + ValueSplitCost + MaskSplitCost + MaskCmpCost;
+    }
+    let mut LT: pair<InstructionCost, MVT> = zeroed();
+    let mut VT: auto = self.TLI.getValueType;
+    let mut Cost: InstructionCost = InstructionCost { 0 };
+    let mut Ty: MVT = ;
+    if Ty == i16 || Ty == i32 || Ty == i64 {
+        return Cost + ;
+    }
+    if VT()() && Ty != () && () == NumElem {
+        operator+=(Cost, self.getShuffleCost(SK_PermuteTwoSrc, CostKind, void {}, 0, null) + self.getShuffleCost(SK_PermuteTwoSrc, CostKind, void {}, 0, null));
+    } else if LT() * Ty.getVectorNumElements() > NumElem {
+        let mut NewMaskTy: *mut auto = get(() as u32 * Ty.getVectorNumElements());
+        operator+=(Cost, self.getShuffleCost(SK_InsertSubvector, CostKind, void {}, 0));
+    }
+    if !self.ST.hasAVX512() {
+        return Cost +  * (if IsLoad { 2 } else { 8 });
+    }
+    return Cost + ;
+}
+
+fn X86TTIImpl::getPointersChainCost(self: *X86TTIImpl, Ptrs: ArrayRef<const Value *>, Base: *Value, Info: *PointersChainInfo, AccessTy: *mut Type, CostKind: TargetCostKind) -> InstructionCost {
+    if Info.isSameBase() && Info.isKnownStride() {
+        if  {
+            let mut Indices: i32 = BaseGEP()();
+            return getGEPCost(CostKind, null);
+        }
+        return InstructionCost { TCC_Free };
+    }
+}
+
+fn X86TTIImpl::getAddressComputationCost(self: *X86TTIImpl, PtrTy: *mut Type, SE: *mut ScalarEvolution, Ptr: *SCEV, CostKind: TargetCostKind) -> InstructionCost {
+    let mut NumVectorInstToHideOverhead: u32 = 10;
+    if PtrTy.isVectorTy() && SE {
+        if  {
+            return InstructionCost { 1 };
+        }
+        if !self.ST.hasAVX2() {
+            if  {
+                return InstructionCost { NumVectorInstToHideOverhead };
+            }
+        }
+    }
+}
+
+fn X86TTIImpl::getPartialReductionCost(self: *X86TTIImpl, Opcode: u32, InputTypeA: *mut Type, InputTypeB: *mut Type, AccumType: *mut Type, VF: ElementCount, OpAExtend: PartialReductionExtendKind, OpBExtend: PartialReductionExtendKind, BinOp: optional<unsigned int>, CostKind: TargetCostKind, FMF: optional<FastMathFlags>) -> InstructionCost {
+    let mut ExpandCost: Closure_19 = Closure_19 { Opcode: &mut Opcode, InputTypeA: &mut InputTypeA, InputTypeB: &mut InputTypeB, AccumType: &mut AccumType, VF: &mut VF, OpAExtend: &mut OpAExtend, OpBExtend: &mut OpBExtend, BinOp: &mut BinOp, CostKind: &mut CostKind };
+    if VF.isScalable() || !BinOp || OpAExtend == PR_None || OpBExtend == PR_None || InputTypeA != InputTypeB {
+        return ExpandCost.call();
+    }
+    let mut Opc: u32 = 0;
+    if Opcode == Add && operator(BinOp) == Mul && AccumType.isIntegerTy(32) && (InputTypeA.isIntegerTy(8) || InputTypeA.isIntegerTy(16)) {
+        if OpAExtend != OpBExtend {
+            Opc = PARTIAL_REDUCE_SUMLA;
+        } else if OpAExtend == PR_SignExtend {
+            Opc = PARTIAL_REDUCE_SMLA;
+        } else {
+            Opc = PARTIAL_REDUCE_UMLA;
+        }
+    } else if Opcode == FAdd && operator(BinOp) == FMul && AccumType.isFloatTy() && (InputTypeA.isBFloatTy() || InputTypeA.isHalfTy()) {
+        if operator!() || operator!() || operator!() {
+            return getInvalid(0);
+        }
+        Opc = PARTIAL_REDUCE_FMLA;
+    } else {
+        return ExpandCost.call();
+    }
+    let mut Ratio: u32 = AccumType.getScalarSizeInBits() / InputTypeA.getScalarSizeInBits();
+    if !VF.isKnownMultipleOf(Ratio) {
+        return ExpandCost.call();
+    }
+    let mut AccVecTy: *mut VectorType = get(AccumType, VF.divideCoefficientBy(Ratio));
+    let mut InputVecTy: *mut VectorType = get(InputTypeA, VF);
+    let mut AccLT: pair<InstructionCost, MVT> = zeroed();
+    let mut InputLT: pair<InstructionCost, MVT> = zeroed();
+    if AccLT()() > AccVecTy.getPrimitiveSizeInBits().getFixedValue() || operator!(self.TLI.isPartialReduceMLALegalOrCustom(Opc)) {
+        return ExpandCost.call();
+    }
+    return ;
+}
+
+fn X86TTIImpl::getArithmeticReductionCost(self: *X86TTIImpl, Opcode: u32, ValTy: *mut VectorType, FMF: optional<FastMathFlags>, CostKind: TargetCostKind) -> InstructionCost {
+    let mut SLMCostTbl: []CostKindTblEntry = zeroed();
+    let mut SSE2CostTbl: []CostKindTblEntry = zeroed();
+    let mut AVX1CostTbl: []CostKindTblEntry = zeroed();
+    let mut AVX2CostTbl: []CostKindTblEntry = zeroed();
+    let mut AVX512FCostTbl: []CostKindTblEntry = zeroed();
+    let mut AVX512BWCostTbl: []CostKindTblEntry = zeroed();
+    let mut ISD: i32 = self.TLI.InstructionOpcodeToISD;
+    assert!(ISD, "Invalid opcode");
+    let mut VT: EVT = self.TLI.getValueType;
+    if VT.isSimple() {
+        let mut MTy: MVT = VT.getSimpleVT();
+        if self.ST() {
+            if  {
+                if  {
+                    return operator*();
+                }
+            }
+        }
+        if self.ST() {
+            if  {
+                if  {
+                    return operator*();
+                }
+            }
+        }
+        if self.ST.hasAVX512() {
+            if  {
+                if  {
+                    return operator*();
+                }
+            }
+        }
+        if self.ST.hasAVX2() {
+            if  {
+                if  {
+                    return operator*();
+                }
+            }
+        }
+        if self.ST.hasAVX() {
+            if  {
+                if  {
+                    return operator*();
+                }
+            }
+        }
+        if self.ST.hasSSE2() {
+            if  {
+                if  {
+                    return operator*();
+                }
+            }
+        }
+    }
+    let mut LT: pair<InstructionCost, MVT> = zeroed();
+    let mut MTy: MVT = ;
+    let mut ValVTy: *mut auto = cast(ValTy);
+    let mut ArithmeticCost: InstructionCost = InstructionCost { 0 };
+    if LT() != 1 && MTy.isVector() && MTy.getVectorNumElements() < () {
+        let mut SingleOpTy: *mut auto = get(MTy.getVectorNumElements());
+        ArithmeticCost = self.getArithmeticInstrCost(Opcode, CostKind);
+        ArithmeticCost *=  - 1;
+    }
+    let mut AVX512BoolReduction: []CostKindTblEntry = zeroed();
+    let mut AVX2BoolReduction: []CostKindTblEntry = zeroed();
+    let mut AVX1BoolReduction: []CostKindTblEntry = zeroed();
+    let mut SSE2BoolReduction: []CostKindTblEntry = zeroed();
+    if ValVTy()()(1) {
+        if ISD == ADD {
+            let mut IntTy: *mut auto = getIntNTy();
+            let mut ICA: IntrinsicCostAttributes = ctpop;
+            return self.getCastInstrCost(BitCast, None, CostKind) + self.getIntrinsicInstrCost(ICA, CostKind);
+        }
+        if self.ST.hasAVX512() {
+            if  {
+                if  {
+                    return ArithmeticCost + operator*();
+                }
+            }
+        }
+        if self.ST.hasAVX2() {
+            if  {
+                if  {
+                    return ArithmeticCost + operator*();
+                }
+            }
+        }
+        if self.ST.hasAVX() {
+            if  {
+                if  {
+                    return ArithmeticCost + operator*();
+                }
+            }
+        }
+        if self.ST.hasSSE2() {
+            if  {
+                if  {
+                    return ArithmeticCost + operator*();
+                }
+            }
+        }
+    }
+    if ISD == MUL && MTy.getScalarType() == i8 {
+        let mut WideSclTy: *mut auto = get(16);
+        let mut WideVecTy: *mut auto = get();
+        return self.getCastInstrCost(ZExt, ValTy, None, CostKind) + self.getArithmeticReductionCost(Opcode, CostKind);
+    }
+    if self.ST() {
+        if  {
+            if  {
+                return ArithmeticCost + operator*();
+            }
+        }
+    }
+    if self.ST() {
+        if  {
+            if  {
+                return ArithmeticCost + operator*();
+            }
+        }
+    }
+    if self.ST.hasAVX512() {
+        if  {
+            if  {
+                return ArithmeticCost + operator*();
+            }
+        }
+    }
+    if self.ST.hasAVX2() {
+        if  {
+            if  {
+                return ArithmeticCost + operator*();
+            }
+        }
+    }
+    if self.ST.hasAVX() {
+        if  {
+            if  {
+                return ArithmeticCost + operator*();
+            }
+        }
+    }
+    if self.ST.hasSSE2() {
+        if  {
+            if  {
+                return ArithmeticCost + operator*();
+            }
+        }
+    }
+    let mut NumVecElts: u32 = ();
+    let mut ScalarSize: u32 = ();
+    let mut ReductionCost: InstructionCost = InstructionCost { 0 };
+    let mut Ty: *mut auto = ;
+    if LT() != 1 && MTy.isVector() && MTy.getVectorNumElements() < () {
+        Ty() = get(MTy.getVectorNumElements());
+        ReductionCost = self.getArithmeticInstrCost(Opcode, CostKind);
+        ReductionCost *=  - 1;
+        NumVecElts = MTy.getVectorNumElements();
+    }
+    while NumVecElts > 1 {
+        let mut Size: u32 = NumVecElts * ScalarSize;
+        NumVecElts /= 2;
+        if Size > 128 {
+            let mut SubTy: *mut auto = get(NumVecElts);
+            operator+=(ReductionCost, self.getShuffleCost(SK_ExtractSubvector, CostKind, void {}, NumVecElts));
+            Ty() = ;
+        } else if Size == 128 {
+            let mut ShufTy: *mut FixedVectorType = null;
+            if ValVTy()() {
+                ShufTy = get(getDoubleTy(), 2);
+            } else {
+                ShufTy = get(getInt64Ty(), 2);
+            }
+            operator(ReductionCost, self.getShuffleCost(SK_PermuteSingleSrc, ShufTy, ShufTy, CostKind, ArrayRef<int> {}, 0, null, void {}, null, None));
+        } else if Size == 64 {
+            let mut ShufTy: *mut FixedVectorType = null;
+            if ValVTy()() {
+                ShufTy = get(getFloatTy(), 4);
+            } else {
+                ShufTy = get(getInt32Ty(), 4);
+            }
+            operator(ReductionCost, self.getShuffleCost(SK_PermuteSingleSrc, ShufTy, ShufTy, CostKind, ArrayRef<int> {}, 0, null, void {}, null, None));
+        } else {
+            let mut ShiftTy: *mut auto = get(getIntNTy(Size), 128 / Size);
+            operator+=(ReductionCost, self.getArithmeticInstrCost(LShr, CostKind, void { OK_AnyValue, OP_None }, void { OK_UniformConstantValue, OP_None }));
+        }
+        operator+=(ReductionCost, self.getArithmeticInstrCost(Opcode, CostKind));
+    }
+    return ReductionCost + self.getVectorInstrCost(ExtractElement, CostKind, 0, null, null, None);
+}
+
+fn X86TTIImpl::getMinMaxCost(self: *X86TTIImpl, IID: ID, Ty: *mut Type, CostKind: TargetCostKind, FMF: FastMathFlags) -> InstructionCost {
+    let mut ICA: IntrinsicCostAttributes = IID(Ty, void { Ty, Ty }, FMF);
+    return self.getIntrinsicInstrCost(ICA, CostKind);
+}
+
+fn X86TTIImpl::getMinMaxReductionCost(self: *X86TTIImpl, IID: ID, ValTy: *mut VectorType, FMF: FastMathFlags, CostKind: TargetCostKind) -> InstructionCost {
+    let mut LT: pair<InstructionCost, MVT> = zeroed();
+    let mut MTy: MVT = ;
+    let mut ISD: NodeType = zeroed();
+    if ValTy.isIntOrIntVectorTy() {
+        ISD = if (IID == umin || IID == umax) { UMIN } else { SMIN };
+    } else {
+        assert!(ValTy.isFPOrFPVectorTy(), "Expected float point or integer vector type.");
+        ISD = if (IID == minnum || IID == maxnum) { FMINNUM } else { FMINIMUM };
+    }
+    let mut SSE2CostTbl: []CostKindTblEntry = zeroed();
+    let mut SSE41CostTbl: []CostKindTblEntry = zeroed();
+    let mut AVX1CostTbl: []CostKindTblEntry = zeroed();
+    let mut AVX2CostTbl: []CostKindTblEntry = zeroed();
+    let mut AVX512FCostTbl: []CostKindTblEntry = zeroed();
+    let mut AVX512BWCostTbl: []CostKindTblEntry = zeroed();
+    let mut VT: EVT = self.TLI.getValueType;
+    if VT.isSimple() {
+        let mut MTy: MVT = VT.getSimpleVT();
+        if self.ST() {
+            if  {
+                if  {
+                    return operator*();
+                }
+            }
+        }
+        if self.ST.hasAVX512() {
+            if  {
+                if  {
+                    return operator*();
+                }
+            }
+        }
+        if self.ST.hasAVX2() {
+            if  {
+                if  {
+                    return operator*();
+                }
+            }
+        }
+        if self.ST.hasAVX() {
+            if  {
+                if  {
+                    return operator*();
+                }
+            }
+        }
+        if self.ST.hasSSE41() {
+            if  {
+                if  {
+                    return operator*();
+                }
+            }
+        }
+        if self.ST.hasSSE2() {
+            if  {
+                if  {
+                    return operator*();
+                }
+            }
+        }
+    }
+    let mut ValVTy: *mut auto = cast(ValTy);
+    let mut NumVecElts: u32 = ();
+    let mut Ty: *mut auto = ;
+    let mut MinMaxCost: InstructionCost = InstructionCost { 0 };
+    if LT() != 1 && MTy.isVector() && MTy.getVectorNumElements() < () {
+        Ty() = get(MTy.getVectorNumElements());
+        MinMaxCost = self.getMinMaxCost(IID, CostKind, FMF);
+        MinMaxCost *=  - 1;
+        NumVecElts = MTy.getVectorNumElements();
+    }
+    if self.ST() {
+        if  {
+            if  {
+                return MinMaxCost + operator*();
+            }
+        }
+    }
+    if self.ST.hasAVX512() {
+        if  {
+            if  {
+                return MinMaxCost + operator*();
+            }
+        }
+    }
+    if self.ST.hasAVX2() {
+        if  {
+            if  {
+                return MinMaxCost + operator*();
+            }
+        }
+    }
+    if self.ST.hasAVX() {
+        if  {
+            if  {
+                return MinMaxCost + operator*();
+            }
+        }
+    }
+    if self.ST.hasSSE41() {
+        if  {
+            if  {
+                return MinMaxCost + operator*();
+            }
+        }
+    }
+    if self.ST.hasSSE2() {
+        if  {
+            if  {
+                return MinMaxCost + operator*();
+            }
+        }
+    }
+    let mut ScalarSize: u32 = ValTy.getScalarSizeInBits();
+    while NumVecElts > 1 {
+        let mut Size: u32 = NumVecElts * ScalarSize;
+        NumVecElts /= 2;
+        if Size > 128 {
+            let mut SubTy: *mut auto = get(NumVecElts);
+            operator+=(MinMaxCost, self.getShuffleCost(SK_ExtractSubvector, CostKind, void {}, NumVecElts));
+            Ty() = ;
+        } else if Size == 128 {
+            let mut ShufTy: *mut VectorType = null;
+            if ValTy.isFloatingPointTy() {
+                ShufTy = get(getDoubleTy(ValTy.getContext()), 2);
+            } else {
+                ShufTy = get(getInt64Ty(ValTy.getContext()), 2);
+            }
+            operator(MinMaxCost, self.getShuffleCost(SK_PermuteSingleSrc, ShufTy, ShufTy, CostKind, ArrayRef<int> {}, 0, null, void {}, null, None));
+        } else if Size == 64 {
+            let mut ShufTy: *mut FixedVectorType = null;
+            if ValTy.isFloatingPointTy() {
+                ShufTy = get(getFloatTy(ValTy.getContext()), 4);
+            } else {
+                ShufTy = get(getInt32Ty(ValTy.getContext()), 4);
+            }
+            operator(MinMaxCost, self.getShuffleCost(SK_PermuteSingleSrc, ShufTy, ShufTy, CostKind, ArrayRef<int> {}, 0, null, void {}, null, None));
+        } else {
+            let mut ShiftTy: *mut auto = get(getIntNTy(ValTy.getContext(), Size), 128 / Size);
+            operator+=(MinMaxCost, self.getArithmeticInstrCost(LShr, TCK_RecipThroughput, void { OK_AnyValue, OP_None }, void { OK_UniformConstantValue, OP_None }));
+        }
+        operator+=(MinMaxCost, self.getMinMaxCost(IID, CostKind, FMF));
+    }
+    return MinMaxCost + self.getVectorInstrCost(ExtractElement, CostKind, 0, null, null, None);
+}
+
+fn X86TTIImpl::getIntImmCost(self: *X86TTIImpl, Val: i64) -> InstructionCost {
+    if Val == 0 {
+        return InstructionCost { TCC_Free };
+    }
+    if isInt(Val) {
+        return InstructionCost { TCC_Basic };
+    }
+    return InstructionCost { 2 * TCC_Basic };
+}
+
+fn X86TTIImpl::getIntImmCost(self: *X86TTIImpl, Imm: *APInt, Ty: *mut Type, CostKind: TargetCostKind) -> InstructionCost {
+    assert!(Ty.isIntegerTy();
+    let mut BitSize: u32 = Ty.getPrimitiveSizeInBits().operator unsigned long long();
+    if BitSize == 0 {
+        return InstructionCost { ~0 };
+    }
+    if BitSize > 128 {
+        return InstructionCost { TCC_Free };
+    }
+    if Imm == 0 {
+        return InstructionCost { TCC_Free };
+    }
+    let mut ImmVal: APInt = Imm;
+    if BitSize % 64 != 0 {
+        ImmVal = Imm.sext(alignTo(BitSize, 64));
+    }
+    let mut Cost: InstructionCost = InstructionCost { 0 };
+    for let mut ShiftVal: u32 = 0; ShiftVal < BitSize; ShiftVal += 64 {
+        let mut Tmp: APInt = ImmVal.ashr(ShiftVal).sextOrTrunc(64);
+        let mut Val: i64 = Tmp.getSExtValue();
+        operator(Cost, self.getIntImmCost(Val));
+    }
+    return max(1, Cost);
+}
+
+fn X86TTIImpl::getIntImmCostInst(self: *X86TTIImpl, Opcode: u32, Idx: u32, Imm: *APInt, Ty: *mut Type, CostKind: TargetCostKind, Inst: *mut Instruction) -> InstructionCost {
+    assert!(Ty.isIntegerTy();
+    let mut BitSize: u32 = Ty.getPrimitiveSizeInBits().operator unsigned long long();
+    let mut ImmBitWidth: u32 = Imm.getBitWidth();
+    if BitSize == 0 {
+        return InstructionCost { TCC_Free };
+    }
+    let mut ImmIdx: u32 = ~0;
+    match Opcode {
+        _ => {
+            return InstructionCost { TCC_Free };
+        },
+        GetElementPtr => {
+            if Idx == 0 {
+                return InstructionCost { 2 * TCC_Basic };
+            }
+        },
+        Store => {
+            ImmIdx = 0;
+        },
+        ICmp => {
+            if Idx == 1 && ImmBitWidth == 64 {
+                let mut ImmVal: u64 = Imm.getZExtValue();
+                if ImmVal == 4294967296 || ImmVal == 4294967295 {
+                    return InstructionCost { TCC_Free };
+                }
+                if  {
+                    if Cmp()() {
+                        let mut Known: KnownBits = computeKnownBits((0));
+                        if Known.countMinTrailingZeros() >= 32 {
+                            return InstructionCost { TCC_Free };
+                        }
+                    }
+                }
+            }
+        },
+        And => {
+            if Idx == 1 && ImmBitWidth == 64 && Imm.isIntN(32) {
+                return InstructionCost { TCC_Free };
+            }
+        },
+        Add => {
+            Sub;
+        },
+        UDiv => {
+            SDiv;
+        },
+        Mul => {
+            Or;
+        },
+        Shl => {
+            LShr;
+        },
+        Trunc => {
+            ZExt;
+        },
+    }
+    if Idx == ImmIdx {
+        let mut NumConstants: u64 = divideCeil(BitSize, 64);
+        let mut Cost: InstructionCost = self.getIntImmCost(Imm, Ty, CostKind);
+        return if (Cost <= NumConstants * TCC_Basic) { InstructionCost { TCC_Free as i32 } } else { Cost };
+    }
+    return self.getIntImmCost(Imm, Ty, CostKind);
+}
+
+fn X86TTIImpl::getIntImmCostIntrin(self: *X86TTIImpl, IID: ID, Idx: u32, Imm: *APInt, Ty: *mut Type, CostKind: TargetCostKind) -> InstructionCost {
+    assert!(Ty.isIntegerTy();
+    let mut BitSize: u32 = Ty.getPrimitiveSizeInBits().operator unsigned long long();
+    if BitSize == 0 {
+        return InstructionCost { TCC_Free };
+    }
+    match IID {
+        _ => {
+            return InstructionCost { TCC_Free };
+        },
+        sadd_with_overflow => {
+            uadd_with_overflow;
+        },
+        experimental_stackmap => {
+            if (Idx < 2) || (Imm.getBitWidth() <= 64 && Imm.isSignedIntN(64)) {
+                return InstructionCost { TCC_Free };
+            }
+        },
+        experimental_patchpoint_void => {
+            experimental_patchpoint;
+        },
+    }
+    return self.getIntImmCost(Imm, Ty, CostKind);
+}
+
+fn X86TTIImpl::getCFInstrCost(self: *X86TTIImpl, Opcode: u32, CostKind: TargetCostKind, I: *Instruction) -> InstructionCost {
+    if CostKind != TCK_RecipThroughput {
+        return InstructionCost { if Opcode == PHI { TCC_Free } else { TCC_Basic } };
+    }
+    return InstructionCost { TCC_Free };
+}
+
+fn X86TTIImpl::getGatherOverhead(self: *X86TTIImpl) -> i32 {
+    if self.ST.hasAVX512() || (self.ST.hasAVX2() && self.ST()) {
+        return 2;
+    }
+    return 1024;
+}
+
+fn X86TTIImpl::getScatterOverhead(self: *X86TTIImpl) -> i32 {
+    if self.ST.hasAVX512() {
+        return 2;
+    }
+    return 1024;
+}
+
+fn X86TTIImpl::getGSVectorCost(self: *X86TTIImpl, Opcode: u32, CostKind: TargetCostKind, SrcVTy: *mut Type, Ptr: *Value, Alignment: Align, AddressSpace: u32) -> InstructionCost {
+    assert!(isa(SrcVTy), "Unexpected type in getGSVectorCost");
+    let mut VF: u32 = cast(SrcVTy)();
+    let mut getIndexSizeInBits: Closure_20 = Closure_20 {};
+    let mut IndexSize: u32 = 0;
+    let mut IndexVTy: *mut auto = get(get(SrcVTy.getContext(), IndexSize), VF);
+    let mut IdxsLT: pair<InstructionCost, MVT> = zeroed();
+    let mut SrcLT: pair<InstructionCost, MVT> = zeroed();
+    let mut SplitFactor: CostType = if  >  {  } else {  }();
+    if SplitFactor > 1 {
+        let mut SplitSrcTy: *mut auto = get(SrcVTy.getScalarType(), VF / SplitFactor);
+        return SplitFactor * self.getGSVectorCost(Opcode, CostKind, Ptr, Alignment, AddressSpace);
+    }
+    if CostKind == TCK_CodeSize {
+        return InstructionCost { 1 };
+    }
+    let mut GSOverhead: i32 = if (Opcode == Load) { self.getGatherOverhead() } else { self.getScatterOverhead() };
+    return InstructionCost { GSOverhead } + InstructionCost { VF } * self.getMemoryOpCost(Opcode, SrcVTy.getScalarType(), Alignment, AddressSpace, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, null);
+}
+
+fn X86TTIImpl::getGatherScatterOpCost(self: *X86TTIImpl, MICA: *MemIntrinsicCostAttributes, CostKind: TargetCostKind) -> InstructionCost {
+    let mut IsLoad: bool = MICA.getID() == masked_gather || MICA.getID() == vp_gather;
+    let mut Opcode: u32 = if IsLoad { Load } else { Store };
+    let mut SrcVTy: *mut Type = MICA.getDataType();
+    let mut Ptr: *Value = MICA.getPointer();
+    let mut Alignment: Align = MICA.getAlignment();
+    assert!(SrcVTy.isVectorTy(), "Unexpected data type for Gather/Scatter");
+    let mut AddressSpace: u32 = MICA.getAddressSpace();
+    return self.getGSVectorCost(Opcode, CostKind, SrcVTy, Ptr, Alignment, AddressSpace);
+}
+
+fn X86TTIImpl::isLSRCostLess(self: *X86TTIImpl, C1: *LSRCost, C2: *LSRCost) -> bool {
+    return tie(C1.Insns, C1.NumRegs, C1.AddRecCost, C1.NumIVMuls, C1.NumBaseAdds, C1.ScaleCost, C1.ImmCost, C1.SetupCost) < tie(C2.Insns, C2.NumRegs, C2.AddRecCost, C2.NumIVMuls, C2.NumBaseAdds, C2.ScaleCost, C2.ImmCost, C2.SetupCost);
+}
+
+fn X86TTIImpl::canMacroFuseCmp(self: *X86TTIImpl) -> bool {
+    return self.ST() || self.ST();
+}
+
+fn isLegalMaskedLoadStore(ScalarTy: *mut Type, ST: *X86Subtarget) -> bool {
+    if !ST.hasAVX() {
+        return false;
+    }
+    if ScalarTy.isPointerTy() {
+        return true;
+    }
+    if ScalarTy.isFloatTy() || ScalarTy.isDoubleTy() {
+        return true;
+    }
+    if ScalarTy.isHalfTy() && ST()() {
+        return true;
+    }
+    if ScalarTy.isBFloatTy() && ST()() {
+        return true;
+    }
+    if !ScalarTy.isIntegerTy() {
+        return false;
+    }
+    let mut IntWidth: u32 = ScalarTy.getIntegerBitWidth();
+    return IntWidth == 32 || IntWidth == 64 || ((IntWidth == 8 || IntWidth == 16) && ST()());
+}
+
+fn X86TTIImpl::isLegalMaskedLoad(self: *X86TTIImpl, DataTy: *mut Type, Alignment: Align, AddressSpace: u32, MaskKind: MaskKind) -> bool {
+    let mut ScalarTy: *mut Type = DataTy.getScalarType();
+    if isa(DataTy) && cast(DataTy)() == 1 {
+        return self.ST() && self.hasConditionalLoadStoreForType(ScalarTy, false);
+    }
+    return isLegalMaskedLoadStore(ScalarTy, self.ST);
+}
+
+fn X86TTIImpl::isLegalMaskedStore(self: *X86TTIImpl, DataTy: *mut Type, Alignment: Align, AddressSpace: u32, MaskKind: MaskKind) -> bool {
+    let mut ScalarTy: *mut Type = DataTy.getScalarType();
+    if isa(DataTy) && cast(DataTy)() == 1 {
+        return self.ST() && self.hasConditionalLoadStoreForType(ScalarTy, true);
+    }
+    return isLegalMaskedLoadStore(ScalarTy, self.ST);
+}
+
+fn X86TTIImpl::isLegalNTLoad(self: *X86TTIImpl, DataType: *mut Type, Alignment: Align) -> bool {
+    let mut DataSize: u32 = 0;
+    if Alignment >= DataSize && (DataSize == 16 || DataSize == 32) {
+        return if DataSize == 16 { self.ST.hasSSE1() } else { self.ST.hasAVX2() };
+    }
+    return false;
+}
+
+fn X86TTIImpl::isLegalNTStore(self: *X86TTIImpl, DataType: *mut Type, Alignment: Align) -> bool {
+    let mut DataSize: u32 = 0;
+    if self.ST() && (DataType.isFloatTy() || DataType.isDoubleTy()) {
+        return true;
+    }
+    if Alignment < DataSize || DataSize < 4 || DataSize > 32 || !isPowerOf2_32(DataSize) {
+        return false;
+    }
+    if DataSize == 32 {
+        return self.ST.hasAVX();
+    }
+    if DataSize == 16 {
+        return self.ST.hasSSE1();
+    }
+    return true;
+}
+
+fn X86TTIImpl::isLegalBroadcastLoad(self: *X86TTIImpl, ElementTy: *mut Type, NumElements: ElementCount) -> bool {
+    return self.ST.hasSSE3() && !NumElements.isScalable() && NumElements.getFixedValue() == 2 && ElementTy == getDoubleTy(ElementTy.getContext());
+}
+
+fn X86TTIImpl::isLegalMaskedExpandLoad(self: *X86TTIImpl, DataTy: *mut Type, Alignment: Align) -> bool {
+    if !isa(DataTy) {
+        return false;
+    }
+    if !self.ST.hasAVX512() {
+        return false;
+    }
+    if cast(DataTy)() == 1 {
+        return false;
+    }
+    let mut ScalarTy: *mut Type = cast(DataTy)();
+    if ScalarTy.isFloatTy() || ScalarTy.isDoubleTy() {
+        return true;
+    }
+    if !ScalarTy.isIntegerTy() {
+        return false;
+    }
+    let mut IntWidth: u32 = ScalarTy.getIntegerBitWidth();
+    return IntWidth == 32 || IntWidth == 64 || ((IntWidth == 8 || IntWidth == 16) && self.ST());
+}
+
+fn X86TTIImpl::isLegalMaskedCompressStore(self: *X86TTIImpl, DataTy: *mut Type, Alignment: Align) -> bool {
+    return self.isLegalMaskedExpandLoad(DataTy, Alignment);
+}
+
+fn X86TTIImpl::supportsGather(self: *X86TTIImpl) -> bool {
+    return self.ST.hasAVX512() || (self.ST() && self.ST.hasAVX2());
+}
+
+fn X86TTIImpl::forceScalarizeMaskedGather(self: *X86TTIImpl, VTy: *mut VectorType, Alignment: Align) -> bool {
+    let mut NumElts: u32 = cast(VTy)();
+    return NumElts == 1 || (self.ST.hasAVX512() && (NumElts == 2 || (NumElts == 4 && operator!(self.ST()))));
+}
+
+fn X86TTIImpl::isLegalMaskedGatherScatter(self: *X86TTIImpl, DataTy: *mut Type, Alignment: Align) -> bool {
+    let mut ScalarTy: *mut Type = DataTy.getScalarType();
+    if ScalarTy.isPointerTy() {
+        return true;
+    }
+    if ScalarTy.isFloatTy() || ScalarTy.isDoubleTy() {
+        return true;
+    }
+    if !ScalarTy.isIntegerTy() {
+        return false;
+    }
+    let mut IntWidth: u32 = ScalarTy.getIntegerBitWidth();
+    return IntWidth == 32 || IntWidth == 64;
+}
+
+fn X86TTIImpl::isLegalMaskedGather(self: *X86TTIImpl, DataTy: *mut Type, Alignment: Align) -> bool {
+    if !self.supportsGather() || operator!(self.ST()) {
+        return false;
+    }
+    return self.isLegalMaskedGatherScatter(DataTy, Alignment);
+}
+
+fn X86TTIImpl::isLegalAltInstr(self: *X86TTIImpl, VecTy: *mut VectorType, Opcode0: u32, Opcode1: u32, OpcodeMask: *SmallBitVector) -> bool {
+    let mut NumElements: u32 = cast(VecTy)();
+    assert!(OpcodeMask.len == NumElements, "Mask and VecTy are incompatible");
+    if !isPowerOf2_32(NumElements) {
+        return false;
+    }
+    let mut ElemTy: *mut Type = cast(VecTy)();
+    if ElemTy.isFloatTy() {
+        return self.ST.hasSSE3() && NumElements % 4 == 0;
+    }
+    if ElemTy.isDoubleTy() {
+        return self.ST.hasSSE3() && NumElements % 2 == 0;
+    }
+    return false;
+}
+
+fn X86TTIImpl::isLegalMaskedScatter(self: *X86TTIImpl, DataType: *mut Type, Alignment: Align) -> bool {
+    if !self.ST.hasAVX512() || operator!(self.ST()) {
+        return false;
+    }
+    return self.isLegalMaskedGatherScatter(DataType, Alignment);
+}
+
+fn X86TTIImpl::hasDivRemOp(self: *X86TTIImpl, DataType: *mut Type, IsSigned: bool) -> bool {
+    let mut VT: EVT = self.TLI.getValueType;
+    return self.TLI.isOperationLegal;
+}
+
+fn X86TTIImpl::isExpensiveToSpeculativelyExecute(self: *X86TTIImpl, I: *Instruction) -> bool {
+    if I.getOpcode() == FDiv {
+        return true;
+    }
+}
+
+fn X86TTIImpl::isFCmpOrdCheaperThanFCmpZero(self: *X86TTIImpl, Ty: *mut Type) -> bool {
+    return false;
+}
+
+fn X86TTIImpl::areInlineCompatible(self: *X86TTIImpl, Caller: *Function, Callee: *Function) -> bool {
+    let mut TM: *TargetMachine = self.getTLI().getTargetMachine;
+    let mut CallerSubtarget: *X86Subtarget = TM;
+    let mut CalleeSubtarget: *X86Subtarget = TM;
+    let mut CallerBits: *FeatureBitset = CallerSubtarget()();
+    let mut CalleeBits: *FeatureBitset = CalleeSubtarget()();
+    let mut InlineIgnoreFeatures: *FeatureBitset = CallerSubtarget()();
+    let mut RealCallerBits: FeatureBitset = CallerBits & operator(InlineIgnoreFeatures);
+    let mut RealCalleeBits: FeatureBitset = CalleeBits & operator(InlineIgnoreFeatures);
+    if (RealCallerBits & RealCalleeBits) != RealCalleeBits {
+        return false;
+    }
+    if RealCallerBits == RealCalleeBits && CallerSubtarget.useAVX512Regs() == CalleeSubtarget.useAVX512Regs() {
+        return true;
+    }
+    return true;
+}
+
+fn X86TTIImpl::areTypesABICompatible(self: *X86TTIImpl, Caller: *Function, Callee: *Function, Types: ArrayRef<Type *>) -> bool {
+    let mut TM: *TargetMachine = self.getTLI().getTargetMachine;
+    let mut CallerTLI: *TargetLowering = TM.getSubtargetImpl(*Caller).getTargetLowering();
+    let mut CalleeTLI: *TargetLowering = TM.getSubtargetImpl(*Callee).getTargetLowering();
+    let mut Ctx: *mut LLVMContext = Caller.getContext();
+    let mut DL: *DataLayout = Caller.getDataLayout();
+    let mut CC: ID = Callee.getCallingConv();
+    return all_of(Types, Closure_21 { CallerTLI: &mut CallerTLI, DL: &mut DL, Ctx: &mut Ctx, CC: &mut CC, CalleeTLI: &mut CalleeTLI });
+}
+
+fn X86TTIImpl::enableMemCmpExpansion(self: *X86TTIImpl, OptSize: bool, IsZeroCmp: bool) -> MemCmpExpansionOptions {
+    let mut Options: MemCmpExpansionOptions = MemCmpExpansionOptions {};
+    Options.MaxNumLoads = self.TLI.getMaxExpandSizeMemcmp;
+    Options.NumLoadsPerBlock = if IsZeroCmp { 2 } else { 1 };
+    Options.AllowOverlappingLoads = true;
+    if IsZeroCmp {
+        let mut PreferredWidth: u32 = self.ST.getPreferVectorWidth();
+        if PreferredWidth >= 512 && self.ST.hasAVX512() {
+            Options.LoadSizes.push(64);
+        }
+        if PreferredWidth >= 256 && self.ST.hasAVX() {
+            Options.LoadSizes.push(32);
+        }
+        if PreferredWidth >= 128 && self.ST.hasSSE2() {
+            Options.LoadSizes.push(16);
+        }
+    }
+    if self.ST() {
+        Options.LoadSizes.push(8);
+    }
+    Options.LoadSizes.push(4);
+    Options.LoadSizes.push(2);
+    Options.LoadSizes.push(1);
+    return Options;
+}
+
+fn X86TTIImpl::prefersVectorizedAddressing(self: *X86TTIImpl) -> bool {
+    return self.supportsGather();
+}
+
+fn X86TTIImpl::supportsEfficientVectorElementLoadStore(self: *X86TTIImpl) -> bool {
+    return false;
+}
+
+fn X86TTIImpl::enableInterleavedAccessVectorization(self: *X86TTIImpl) -> bool {
+    return operator!((self.ST()));
+}
+
+fn X86TTIImpl::shouldExpandReduction(self: *X86TTIImpl, II: *IntrinsicInst) -> bool {
+    match II.getIntrinsicID() {
+        _ => {
+            return true;
+        },
+        vector_reduce_and => {
+            vector_reduce_or;
+        },
+    }
+}
+
+fn X86TTIImpl::getInterleavedMemoryOpCostAVX512(self: *X86TTIImpl, Opcode: u32, VecTy: *mut FixedVectorType, Factor: u32, Indices: ArrayRef<unsigned int>, Alignment: Align, AddressSpace: u32, CostKind: TargetCostKind, UseMaskForCond: bool, UseMaskForGaps: bool) -> InstructionCost {
+    let mut LegalVT: MVT = getTypeLegalizationCost(VecTy);
+    let mut VecTySize: u32 = 0;
+    let mut LegalVTSize: u32 = LegalVT.getStoreSize().operator unsigned long long();
+    let mut NumOfMemOps: u32 = (VecTySize + LegalVTSize - 1) / LegalVTSize;
+    let mut SingleMemOpTy: *mut auto = get(VecTy.getElementType(), LegalVT.getVectorNumElements());
+    let mut MemOpCost: InstructionCost = InstructionCost {};
+    let mut UseMaskedMemOp: bool = UseMaskForCond || UseMaskForGaps;
+    if UseMaskedMemOp {
+        let mut IID: u32 = if Opcode == Load { masked_load } else { masked_store };
+        MemOpCost = self.getMaskedMemoryOpCost(void { IID, Alignment, AddressSpace }, CostKind);
+    } else {
+        MemOpCost = self.getMemoryOpCost(Opcode, Alignment, AddressSpace, CostKind);
+    }
+    let mut VF: u32 = VecTy.getNumElements() / Factor;
+    let mut VT: MVT = getVectorVT(self.TLI.getSimpleValueType, VF);
+    let mut MaskCost: InstructionCost = InstructionCost {};
+    if UseMaskedMemOp {
+        let mut DemandedLoadStoreElts: APInt = getZero(VecTy.getNumElements());
+        for Index in Indices {
+            assert!(Index < Factor, "Invalid index for interleaved memory op");
+            for let mut Elm: u32 = 0; Elm < VF; Elm += 1 {
+                DemandedLoadStoreElts.setBit(Index + Elm * Factor);
+            }
+        }
+        let mut I1Type: *mut Type = getInt1Ty(VecTy.getContext());
+        MaskCost = self.getReplicationShuffleCost(I1Type, Factor, VF, if UseMaskForGaps { DemandedLoadStoreElts } else { getAllOnes(VecTy.getNumElements()) }, CostKind);
+        if UseMaskForGaps {
+            let mut MaskVT: *mut FixedVectorType = get(I1Type, VecTy.getNumElements());
+            operator(MaskCost, self.getArithmeticInstrCost(And, MaskVT, CostKind, OperandValueInfo { OK_AnyValue, OP_None }, OperandValueInfo { OK_AnyValue, OP_None }, void {}, null));
+        }
+    }
+    if Opcode == Load {
+        let mut AVX512InterleavedLoadTbl: []CostTblEntry = zeroed();
+        if  {
+            return MaskCost + InstructionCost { NumOfMemOps } * MemOpCost + ;
+        }
+        let mut ShuffleKind: ShuffleKind = if (NumOfMemOps > 1) { SK_PermuteTwoSrc } else { SK_PermuteSingleSrc };
+        let mut ShuffleCost: InstructionCost = self.getShuffleCost(ShuffleKind, CostKind, void {}, 0, null);
+        let mut NumOfLoadsInInterleaveGrp: u32 = if Indices.len { Indices.len } else { Factor };
+        let mut ResultTy: *mut FixedVectorType = get(VecTy.getElementType(), VecTy.getNumElements() / Factor);
+        let mut NumOfResults: InstructionCost = getTypeLegalizationCost(ResultTy) * NumOfLoadsInInterleaveGrp;
+        let mut NumOfUnfoldedLoads: u32 = if UseMaskedMemOp || NumOfResults > 1 { NumOfMemOps } else { NumOfMemOps / 2 };
+        let mut NumOfShufflesPerResult: u32 = max(1 as u32, (NumOfMemOps - 1) as u32);
+        let mut NumOfMoves: InstructionCost = InstructionCost { 0 };
+        if NumOfResults > 1 && ShuffleKind == SK_PermuteTwoSrc {
+            NumOfMoves = NumOfResults * InstructionCost { NumOfShufflesPerResult } / InstructionCost { 2 };
+        }
+        let mut Cost: InstructionCost = NumOfResults * InstructionCost { NumOfShufflesPerResult } * ShuffleCost + MaskCost + InstructionCost { NumOfUnfoldedLoads } * MemOpCost + NumOfMoves;
+        return Cost;
+    }
+    assert!(Opcode == Store, "Expected Store Instruction at this  point");
+    let mut AVX512InterleavedStoreTbl: []CostTblEntry = zeroed();
+    if  {
+        return MaskCost + InstructionCost { NumOfMemOps } * MemOpCost + ;
+    }
+    let mut NumOfSources: u32 = Factor;
+    let mut ShuffleCost: InstructionCost = self.getShuffleCost(SK_PermuteTwoSrc, CostKind, void {}, 0, null);
+    let mut NumOfShufflesPerStore: u32 = NumOfSources - 1;
+    let mut NumOfMoves: u32 = NumOfMemOps * NumOfShufflesPerStore / 2;
+    let mut Cost: InstructionCost = MaskCost + InstructionCost { NumOfMemOps } * (MemOpCost + InstructionCost { NumOfShufflesPerStore } * ShuffleCost) + InstructionCost { NumOfMoves };
+    return Cost;
+}
+
+fn X86TTIImpl::getInterleavedMemoryOpCost(self: *X86TTIImpl, Opcode: u32, BaseTy: *mut Type, Factor: u32, Indices: ArrayRef<unsigned int>, Alignment: Align, AddressSpace: u32, CostKind: TargetCostKind, UseMaskForCond: bool, UseMaskForGaps: bool) -> InstructionCost {
+    let mut VecTy: *mut auto = cast(BaseTy);
+    let mut isSupportedOnAVX512: Closure_22 = Closure_22 { cap_0: self };
+    if self.ST.hasAVX512() && isSupportedOnAVX512() {
+        return self.getInterleavedMemoryOpCostAVX512(Opcode, Factor, Indices, Alignment, AddressSpace, CostKind, UseMaskForCond, UseMaskForGaps);
+    }
+    let mut LegalVT: MVT = getTypeLegalizationCost();
+    let mut VF: u32 = () / Factor;
+    let mut ScalarTy: *mut Type = ();
+    if !ScalarTy.isIntegerTy() {
+        ScalarTy = getIntNTy(ScalarTy.getContext());
+    }
+    let mut MemOpCosts: InstructionCost = self.getMemoryOpCost(Opcode, Alignment, AddressSpace, CostKind);
+    let mut VT: *mut auto = get(ScalarTy, VF);
+    let mut ETy: EVT = self.TLI.getValueType;
+    let mut AVX2InterleavedLoadTbl: []CostTblEntry = zeroed();
+    let mut SSSE3InterleavedLoadTbl: []CostTblEntry = zeroed();
+    let mut SSE2InterleavedLoadTbl: []CostTblEntry = zeroed();
+    let mut AVX2InterleavedStoreTbl: []CostTblEntry = zeroed();
+    let mut SSE2InterleavedStoreTbl: []CostTblEntry = zeroed();
+    if Opcode == Load {
+        let mut GetDiscountedCost: Closure_23 = Closure_23 { Factor: Factor, cap_1: Indices.len, cap_2: MemOpCosts };
+        if self.ST.hasAVX2() {
+            if  {
+                return GetDiscountedCost();
+            }
+        }
+        if self.ST.hasSSSE3() {
+            if  {
+                return GetDiscountedCost();
+            }
+        }
+        if self.ST.hasSSE2() {
+            if  {
+                return GetDiscountedCost();
+            }
+        }
+    } else {
+        assert!(Opcode == Store, "Expected Store Instruction at this point");
+        assert!((!Indices.len || Indices.len == Factor), "Interleaved store only supports fully-interleaved groups.");
+        if self.ST.hasAVX2() {
+            if  {
+                return MemOpCosts + ;
+            }
+        }
+        if self.ST.hasSSE2() {
+            if  {
+                return MemOpCosts + ;
+            }
+        }
+    }
+}
+
+fn X86TTIImpl::getScalingFactorCost(self: *X86TTIImpl, Ty: *mut Type, BaseGV: *mut GlobalValue, BaseOffset: StackOffset, HasBaseReg: bool, Scale: i64, AddrSpace: u32) -> InstructionCost {
+    let mut AM: AddrMode = AddrMode {};
+    AM.BaseGV = BaseGV;
+    AM.BaseOffs = BaseOffset.getFixed();
+    AM.HasBaseReg = HasBaseReg;
+    AM.Scale = Scale;
+    AM.ScalableOffset = BaseOffset.getScalable();
+    if self.getTLI().isLegalAddressingMode {
+        return InstructionCost { AM.Scale != 0 };
+    }
+    return getInvalid(0);
+}
+
+fn X86TTIImpl::getBranchMispredictPenalty(self: *X86TTIImpl) -> InstructionCost {
+    return InstructionCost { 14 };
+}
+
+fn X86TTIImpl::isVectorShiftByScalarCheap(self: *X86TTIImpl, Ty: *mut Type) -> bool {
+    let mut Bits: u32 = Ty.getScalarSizeInBits();
+    if self.ST() && (Bits == 8 || Bits == 16 || Bits == 32 || Bits == 64) {
+        return false;
+    }
+    if self.ST.hasAVX2() && (Bits == 32 || Bits == 64) {
+        return false;
+    }
+    if self.ST() && Bits == 16 {
+        return false;
+    }
+    return true;
+}
+
+fn X86TTIImpl::getStoreMinimumVF(self: *X86TTIImpl, VF: u32, ScalarMemTy: *mut Type, ScalarValTy: *mut Type, Alignment: Align, AddrSpace: u32) -> u32 {
+    if self.ST() && ScalarMemTy.isHalfTy() {
+        return 4;
+    }
+}
+
+fn X86TTIImpl::isProfitableToSinkOperands(self: *X86TTIImpl, I: *mut Instruction, Ops: *mut SmallVectorImpl<Use *>) -> bool {
+    if I.getOpcode() == And && (self.ST() || (I.getType().isVectorTy() && self.ST.hasSSE2())) {
+        for Op in I.operands() {
+            if match(Op.get(), m_Not(m_Value())) && !I.getType().isIntegerTy(8) {
+                Ops()(&mut Op);
+                return true;
+            }
+            if match(Op.get(), m_Shuffle(m_InsertElt(m_Value(), m_Not(m_Value())), m_Value(), m_ZeroMask {})) {
+                let mut InsertElt: *mut Use = cast(Op)(0);
+                let mut Not: *mut Use = cast(InsertElt)(1);
+                Ops()(&mut Not);
+                Ops()(&mut InsertElt);
+                Ops()(&mut Op);
+                return true;
+            }
+        }
+    }
+    let mut VTy: *mut FixedVectorType = dyn_cast(I.getType());
+    if !VTy {
+        return false;
+    }
+    if I.getOpcode() == Mul && VTy.getElementType().isIntegerTy(64) {
+        for Op in I.operands() {
+            if any_of(Ops, Closure_24 { Op: &mut Op }) {
+                continue;
+            }
+            if self.ST.hasSSE41() && match(Op.get(), m_AShr(m_Shl(m_Value()))) {
+                Ops()(operator&(cast(Op)(0)));
+                Ops()(&mut Op);
+            } else if self.ST.hasSSE2() && match(Op.get(), m_And(m_Value())) {
+                Ops()(&mut Op);
+            }
+        }
+        return operator!(Ops()());
+    }
+    let mut ShiftAmountOpNum: i32 = -1;
+    if I.isShift() {
+        ShiftAmountOpNum = 1;
+    } else if  {
+        if II()() == fshl || () == fshr {
+            ShiftAmountOpNum = 2;
+        }
+    }
+    if ShiftAmountOpNum == -1 {
+        return false;
+    }
+    let mut Shuf: *mut auto = dyn_cast(I.getOperand(ShiftAmountOpNum));
+    if Shuf() && getSplatIndex() >= 0 && self.isVectorShiftByScalarCheap(I.getType()) {
+        Ops()(&mut I.getOperandUse(ShiftAmountOpNum));
+        return true;
+    }
+    return false;
+}
+
+fn X86TTIImpl::useFastCCForInternalCall(self: *X86TTIImpl, F: *mut Function) -> bool {
+    let mut HasEGPR: bool = self.ST();
+    let mut TM: *TargetMachine = self.getTLI().getTargetMachine;
+    for U in F.users() {
+        let mut CB: *mut CallBase = dyn_cast(U);
+        if !CB || CB.getCalledOperand() != &mut F {
+            continue;
+        }
+        let mut CallerFunc: *mut Function = CB.getFunction();
+        if TM() != HasEGPR {
+            return false;
+        }
+    }
+    return true;
+}
+
+struct Closure_2 {
+    IsSignedDiv: *mut bool,
+    DL: *mut DataLayout,
+    CtxI: *mut *Instruction,
+    Mantissa: *mut u32,
+    EltBits: *mut u32,
+}
+
+unsafe fn Closure_2::call(self: *mut Closure_2, V: *Value) -> auto {}
+
+struct Closure_1 {
+    CtxI: *mut *Instruction,
+    IsSignedDiv: *mut bool,
+}
+
+unsafe fn Closure_1::call(self: *mut Closure_1, Mantissa: u32) -> bool {
+        if Args()() != 2 || !(*self.CtxI) {
+            return false;
+        }
+        let mut EltBits: u32 = ();
+        let mut DL: *DataLayout = (*self.CtxI).getDataLayout();
+        let mut Fits: Closure_2 = Closure_2 { IsSignedDiv: &mut (*self.IsSignedDiv), DL: &mut DL, CtxI: &mut (*self.CtxI), Mantissa: &mut Mantissa, EltBits: &mut EltBits };
+    }
+
+struct Closure_3 {}
+
+fn Closure_3::call(self: *Closure_3, Arg: *Value) -> auto {}
+
+struct Closure_4 {}
+
+fn Closure_4::call(self: *Closure_4, U: *User) -> bool {
+            if isa(U) && U.getOperand(1) == [0] {
+                return true;
+            }
+            if U.getType().isVectorTy() {
+                return false;
+            }
+            if  {
+                if I()() || isa() {
+                    return false;
+                }
+            }
+        }
+
+struct Closure_5 {
+    DstTy: *mut *mut VectorType,
+    IsBroadcastLoadFoldUser: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86TargetTransformInfo.cpp:1995:36),
+}
+
+unsafe fn Closure_5::call(self: *mut Closure_5) -> bool {
+            if operator!(match([0], m_Load(m_Value()))) {
+                return false;
+            }
+            let mut FVT: *mut auto = dyn_cast((*self.DstTy));
+            if operator!() {
+                return false;
+            }
+            if Args()[0]() != () {
+                return false;
+            }
+        }
+
+struct Closure_6 {
+    Mask: *mut ArrayRef<int>,
+    NumEltsPerLane: *mut u32,
+}
+
+unsafe fn Closure_6::call(self: *mut Closure_6) {
+                return P() == PoisonMaskElem || ((P() % (*self.Mask).len) / (*self.NumEltsPerLane)) == (P() / (*self.NumEltsPerLane));
+            }
+
+struct Closure_7 {}
+
+fn Closure_7::call(self: *Closure_7, M: i32) -> bool {
+                return M == PoisonMaskElem;
+            }
+
+struct Closure_8 {}
+
+fn Closure_8::call(self: *Closure_8) {}
+
+struct Closure_9 {
+    cap_0: *X86TTIImpl,
+    CostKind: TargetCostKind,
+    PrevSrcReg: *mut u32,
+    PrevRegMask: *mut ArrayRef<int>,
+    Cost: *mut InstructionCost,
+}
+
+unsafe fn Closure_9::call(self: *mut Closure_9, RegMask: ArrayRef<int>, SrcReg: u32, DestReg: u32) {
+                    if !isIdentityMask(RegMask, RegMask.len) {
+                        if (*self.PrevRegMask).len == 0 || (*self.PrevSrcReg) != SrcReg || (*self.PrevRegMask)(RegMask) {
+                            operator+=((*self.Cost), self.getShuffleCost(SK_PermuteSingleSrc, self.CostKind, RegMask, 0, null));
+                        } else {
+                            operator((*self.Cost), TCC_Basic);
+                        }
+                        return;
+                    }
+                    if SrcReg != DestReg && any_of(RegMask, not_equal_to(PoisonMaskElem)) {
+                        operator((*self.Cost), TCC_Free);
+                    }
+                    (*self.PrevSrcReg) = SrcReg;
+                    (*self.PrevRegMask) = RegMask;
+                }
+
+struct Closure_10 {
+    cap_0: *X86TTIImpl,
+    CostKind: TargetCostKind,
+    Cost: *mut InstructionCost,
+}
+
+unsafe fn Closure_10::call(self: *mut Closure_10, RegMask: ArrayRef<int>, arg: u32, arg: u32, arg: bool) {
+                    operator+=((*self.Cost), self.getShuffleCost(SK_PermuteTwoSrc, self.CostKind, RegMask, 0, null));
+                }
+
+struct Closure_11 {}
+
+fn Closure_11::call(self: *Closure_11) {
+            return isa(V);
+        }
+
+struct Closure_12 {}
+
+fn Closure_12::call(self: *Closure_12, X: i32, Y: i32) -> bool {
+                return X < 0 || Y < 0 || ((X & 4) == (Y & 4));
+            }
+
+struct Closure_13 {
+    CostKind: *mut TargetCostKind,
+}
+
+unsafe fn Closure_13::call(self: *mut Closure_13, Cost: InstructionCost, N: InstructionCost) -> auto {
+        if (*self.CostKind) != TCK_RecipThroughput {
+            return if Cost == 0 { InstructionCost { 0 } } else { N };
+        }
+        return Cost * N;
+    }
+
+struct Closure_14 {
+    cap_0: *X86TTIImpl,
+    ICA: *mut IntrinsicCostAttributes,
+}
+
+unsafe fn Closure_14::call(self: *mut Closure_14, ISD: i32, Cost: u32, LT: pair<InstructionCost, MVT>, FMF: FastMathFlags) -> auto {
+            let mut LegalizationCost: InstructionCost = ;
+            let mut MTy: MVT = ;
+            if ISD == FMAXNUM || ISD == FMINNUM {
+                if FMF.noNaNs() {
+                    return LegalizationCost * InstructionCost { 1 };
+                }
+            }
+            if MTy.isScalarInteger() {
+                if ISD == BSWAP && self.ST() && self.ST() {
+                    if (*self.ICA).getInst() {
+                        II;
+                    } else {
+                        if II.hasOneUse() && isa(II.user_back()) {
+                            return InstructionCost { TCC_Free };
+                        }
+                        if  {
+                            if LI()() {
+                                return InstructionCost { TCC_Free };
+                            }
+                        }
+                    }
+                }
+            }
+            return LegalizationCost * InstructionCost { Cost as i32 };
+        }
+
+struct Closure_15 {
+    MScalarTy: *mut MVT,
+    cap_1: *X86TTIImpl,
+    Index: *mut u32,
+    Opcode: *mut u32,
+}
+
+unsafe fn Closure_15::call(self: *mut Closure_15) -> auto {}
+
+struct Closure_16 {
+    EltTy: *mut *mut Type,
+    ReplicationFactor: *mut i32,
+    VF: *mut i32,
+    DemandedDstElts: *mut APInt,
+    CostKind: *mut TargetCostKind,
+}
+
+unsafe fn Closure_16::call(self: *mut Closure_16) {}
+
+struct Closure_17 {}
+
+fn Closure_17::call(self: *Closure_17, V: *mut Value) -> auto {}
+
+struct Closure_18 {
+    SrcNumElt: *mut u32,
+    NumEltRemaining: *mut i32,
+}
+
+unsafe fn Closure_18::call(self: *mut Closure_18) -> auto {}
+
+struct Closure_19 {
+    Opcode: *mut u32,
+    InputTypeA: *mut *mut Type,
+    InputTypeB: *mut *mut Type,
+    AccumType: *mut *mut Type,
+    VF: *mut ElementCount,
+    OpAExtend: *mut PartialReductionExtendKind,
+    OpBExtend: *mut PartialReductionExtendKind,
+    BinOp: *mut optional<unsigned int>,
+    CostKind: *mut TargetCostKind,
+}
+
+unsafe fn Closure_19::call(self: *mut Closure_19) {}
+
+struct Closure_20 {}
+
+fn Closure_20::call(self: *Closure_20, Ptr: *Value, DL: *DataLayout) -> u32 {
+        let mut IndexSize: u32 = DL.getPointerSizeInBits(0);
+        let mut GEP: *GetElementPtrInst = dyn_cast_or_null(Ptr);
+        if IndexSize < 64 || !GEP {
+            return IndexSize;
+        }
+        let mut NumOfVarIndices: u32 = 0;
+        let mut Ptrs: *Value = GEP.getPointerOperand();
+        if Ptrs.getType().isVectorTy() && !getSplatValue(Ptrs) {
+            return IndexSize;
+        }
+        for let mut I: u32 = 1;
+let mut E: u32 = GEP.getNumOperands(); I != E; I += 1 {
+            if isa(GEP.getOperand(I)) {
+                continue;
+            }
+            let mut IndxTy: *mut Type = GEP.getOperand(I).getType();
+            if  {
+                IndxTy = ();
+            }
+            if (IndxTy.getPrimitiveSizeInBits().operator unsigned long long() == 64 && !isa(GEP.getOperand(I))) || NumOfVarIndices += 1 > 1 {
+                return IndexSize;
+            }
+        }
+        return 32 as u32;
+    }
+
+struct Closure_21 {
+    CallerTLI: *mut *TargetLowering,
+    DL: *mut DataLayout,
+    Ctx: *mut LLVMContext,
+    CC: *mut ID,
+    CalleeTLI: *mut *TargetLowering,
+}
+
+unsafe fn Closure_21::call(self: *mut Closure_21, Ty: *mut Type) -> auto {
+        let mut VTs: i32 = 0;
+        ComputeValueVTs(*(*self.CallerTLI), (*self.DL), Ty);
+    }
+
+struct Closure_22 {
+    cap_0: *X86TTIImpl,
+}
+
+fn Closure_22::call(self: *Closure_22, VecTy: *mut Type) -> bool {
+        let mut EltTy: *mut Type = cast(VecTy)();
+        if EltTy.isFloatTy() || EltTy.isDoubleTy() || EltTy.isIntegerTy(64) || EltTy.isIntegerTy(32) || EltTy.isPointerTy() {
+            return true;
+        }
+    }
+
+struct Closure_23 {
+    Factor: u32,
+    cap_1: u64,
+    cap_2: InstructionCost,
+}
+
+fn Closure_23::call(self: *Closure_23, Entry: *CostTblEntry) -> auto {}
+
+struct Closure_24 {
+    Op: *mut Use,
+}
+
+unsafe fn Closure_24::call(self: *mut Closure_24, U: *mut Use) -> bool {
+                return U.get() == (*self.Op).operator llvm::Value *();
+            }

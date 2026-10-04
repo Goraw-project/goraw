@@ -1,0 +1,1916 @@
+// Внешние системные функции libc
+extern fn memcpy(dest: *mut u8, src: *u8, n: u64) -> *mut u8;
+
+static mut NumTailCalls: Statistic = Statistic { "x86-isel", "NumTailCalls", "Number of tail calls" };
+
+fn errorUnsupported(DAG: *mut SelectionDAG, dl: *SDLoc, Msg: *u8) {
+    let mut MF: *mut MachineFunction = DAG.getMachineFunction();
+    DAG.getContext().diagnose(DiagnosticInfoUnsupported { MF.getFunction(), Msg, DiagnosticLocation { dl.getDebugLoc() }, DS_Error });
+}
+
+fn shouldDisableRetRegFromCSR(CC: ID) -> bool {
+    match CC {
+        _ => {
+            return false;
+        },
+        X86_RegCall => {
+            PreserveMost;
+        },
+    }
+}
+
+fn shouldDisableArgRegFromCSR(CC: ID) -> bool {
+    return CC == X86_RegCall;
+}
+
+fn handleMaskRegisterForCallingConv(NumElts: u32, CC: ID, Subtarget: *X86Subtarget) -> pair<MVT, unsigned int> {
+    if NumElts == 2 {
+        return void { v2i64, 1 };
+    }
+    if NumElts == 4 {
+        return void { v4i32, 1 };
+    }
+    if NumElts == 8 && CC != X86_RegCall && CC != Intel_OCL_BI {
+        return void { v8i16, 1 };
+    }
+    if NumElts == 16 && CC != X86_RegCall && CC != Intel_OCL_BI {
+        return void { v16i8, 1 };
+    }
+    if NumElts == 32 && (operator!(Subtarget()()) || CC != X86_RegCall) {
+        return void { v32i8, 1 };
+    }
+    if NumElts == 64 && Subtarget()() && CC != X86_RegCall {
+        if Subtarget.useAVX512Regs() {
+            return void { v64i8, 1 };
+        }
+        return void { v32i8, 2 };
+    }
+    if !isPowerOf2_32(NumElts) || (NumElts == 64 && operator!(Subtarget()())) || NumElts > 64 {
+        return void { i8, NumElts };
+    }
+    return void { INVALID_SIMPLE_VALUE_TYPE, 0 };
+}
+
+fn X86TargetLowering::getRegisterTypeForCallingConv(self: *X86TargetLowering, Context: *mut LLVMContext, CC: ID, VT: EVT) -> MVT {
+    if VT.isVector() {
+        if VT.getVectorElementType() == EVT { i1 } && self.Subtarget.hasAVX512() {
+            let mut NumElts: u32 = VT.getVectorNumElements();
+            let mut RegisterVT: MVT = MVT {};
+            let mut NumRegisters: u32 = 0;
+            if RegisterVT != INVALID_SIMPLE_VALUE_TYPE {
+                return RegisterVT;
+            }
+        }
+        if VT.getVectorElementType() == EVT { f16 } && VT.getVectorNumElements() < 8 {
+            return MVT { SimpleTy: v8f16 };
+        }
+    }
+    if (VT == EVT { f64 } || VT == EVT { f80 }) && operator!(self.Subtarget()) && operator!(self.Subtarget()) {
+        return MVT { SimpleTy: i32 };
+    }
+    if self.isTypeLegal {
+        if VT.isVectorOf(EVT { bf16 }) {
+            return self.getRegisterTypeForCallingConv(Context, CC, VT.changeVectorElementType(Context, EVT { f16 }));
+        }
+        if VT == EVT { bf16 } {
+            return MVT { SimpleTy: f16 };
+        }
+    }
+    return self.getRegisterTypeForCallingConv;
+}
+
+fn X86TargetLowering::getNumRegistersForCallingConv(self: *X86TargetLowering, Context: *mut LLVMContext, CC: ID, VT: EVT) -> u32 {
+    if VT.isVector() {
+        if VT.getVectorElementType() == EVT { i1 } && self.Subtarget.hasAVX512() {
+            let mut NumElts: u32 = VT.getVectorNumElements();
+            let mut RegisterVT: MVT = MVT {};
+            let mut NumRegisters: u32 = 0;
+            if RegisterVT != INVALID_SIMPLE_VALUE_TYPE {
+                return NumRegisters;
+            }
+        }
+        if VT.getVectorElementType() == EVT { f16 } && VT.getVectorNumElements() < 8 {
+            return 1;
+        }
+    }
+    if operator!(self.Subtarget()) && operator!(self.Subtarget()) {
+        if VT == EVT { f64 } {
+            return 2;
+        }
+        if VT == EVT { f80 } {
+            return 3;
+        }
+    }
+    if VT.isVectorOf(EVT { bf16 }) && self.isTypeLegal {
+        return self.getNumRegistersForCallingConv(Context, CC, VT.changeVectorElementType(Context, EVT { f16 }));
+    }
+    return self.getNumRegistersForCallingConv;
+}
+
+fn X86TargetLowering::getVectorTypeBreakdownForCallingConv(self: *X86TargetLowering, Context: *mut LLVMContext, CC: ID, VT: EVT, IntermediateVT: *mut EVT, NumIntermediates: *mut u32, RegisterVT: *mut MVT) -> u32 {
+    if VT.isVectorOf(EVT { i1 }) && self.Subtarget.hasAVX512() && (!isPowerOf2_32(VT.getVectorNumElements()) || (VT.getVectorNumElements() == 64 && operator!(self.Subtarget())) || VT.getVectorNumElements() > 64) {
+        RegisterVT = MVT { SimpleTy: i8 };
+        IntermediateVT = EVT { i1 };
+        NumIntermediates = VT.getVectorNumElements();
+        return NumIntermediates;
+    }
+    if VT == EVT { v64i1 } && self.Subtarget() && !self.Subtarget.useAVX512Regs() && CC != X86_RegCall {
+        RegisterVT = MVT { SimpleTy: v32i8 };
+        IntermediateVT = EVT { v32i1 };
+        NumIntermediates = 2;
+        return 2;
+    }
+    if VT.isVectorOf(EVT { bf16 }) && self.isTypeLegal {
+        VT = VT.changeVectorElementType(Context, EVT { f16 });
+    }
+    return self.getVectorTypeBreakdownForCallingConv;
+}
+
+fn X86TargetLowering::getSetCCResultType(self: *X86TargetLowering, DL: *DataLayout, Context: *mut LLVMContext, VT: EVT) -> EVT {
+    if !VT.isVector() {
+        return EVT { i8 };
+    }
+    if self.Subtarget.hasAVX512() {
+        let mut LegalVT: EVT = VT;
+        while  != TypeLegal {
+            LegalVT = self.getTypeToTransformTo(Context, LegalVT);
+        }
+        if LegalVT.getSimpleVT().is512BitVector() {
+            return getVectorVT(Context, EVT { i1 }, VT.getVectorElementCount());
+        }
+        if LegalVT.getSimpleVT().isVector() && self.Subtarget() {
+            let mut EltVT: MVT = LegalVT.getSimpleVT().getVectorElementType();
+            if self.Subtarget() || EltVT.getSizeInBits().operator unsigned long long() >= 32 {
+                return getVectorVT(Context, EVT { i1 }, VT.getVectorElementCount());
+            }
+        }
+    }
+    return VT.changeVectorElementTypeToInteger();
+}
+
+fn X86TargetLowering::functionArgumentNeedsConsecutiveRegisters(self: *X86TargetLowering, Ty: *mut Type, CallConv: ID, isVarArg: bool, DL: *DataLayout) -> bool {
+    if Ty.isIntegerTy(128) {
+        return true;
+    }
+    if self.Subtarget() && Ty.isFP128Ty() {
+        return true;
+    }
+    return false;
+}
+
+fn getMaxByValAlign(Ty: *mut Type, MaxAlign: *mut Align) {
+    if MaxAlign == 16 {
+        return;
+    }
+    if dyn_cast(Ty) {
+        VTy;
+    } else {
+        if VTy.getPrimitiveSizeInBits().getFixedValue() == 128 {
+            MaxAlign = Align { ShiftValue: 16 };
+        }
+    }
+}
+
+fn X86TargetLowering::getByValTypeAlignment(self: *X86TargetLowering, Ty: *mut Type, DL: *DataLayout) -> Align {
+    if self.Subtarget() {
+        return max(DL.getABITypeAlign(Ty), Constant());
+    }
+    let mut Alignment: Align = Align { ShiftValue: 4 };
+    if self.Subtarget.hasSSE1() {
+        getMaxByValAlign(Ty, Alignment);
+    }
+    return Alignment;
+}
+
+fn X86TargetLowering::getOptimalMemOpType(self: *X86TargetLowering, Context: *mut LLVMContext, Op: *MemOp, FuncAttributes: *AttributeList) -> EVT {
+    if !FuncAttributes.hasFnAttr(NoImplicitFloat) {
+        if Op.len >= 16 && (operator!(self.Subtarget()) || Op.isAligned(Align { ShiftValue: 16 })) {
+            if Op.len >= 64 && self.Subtarget.hasAVX512() && (self.Subtarget.getPreferVectorWidth() >= 512) {
+                return if self.Subtarget() { v64i8 } else { v16i32 };
+            }
+            if Op.len >= 32 && self.Subtarget.hasAVX() && self.Subtarget.useLight256BitInstructions() {
+                return EVT { v32i8 };
+            }
+            if self.Subtarget.hasSSE2() && (self.Subtarget.getPreferVectorWidth() >= 128) {
+                return EVT { v16i8 };
+            }
+            if self.Subtarget.hasSSE1() && (self.Subtarget() || self.Subtarget()) && (self.Subtarget.getPreferVectorWidth() >= 128) {
+                return EVT { v4f32 };
+            }
+        } else if ((Op.isMemcpyOrMemmove() && !Op.isMemcpyStrSrc()) || Op.isZeroMemset()) && Op.len >= 8 && operator!(self.Subtarget()) && self.Subtarget.hasSSE2() {
+            return EVT { f64 };
+        }
+    }
+    if self.Subtarget() && Op.len >= 8 {
+        return EVT { i64 };
+    }
+    return EVT { i32 };
+}
+
+fn X86TargetLowering::isSafeMemOpType(self: *X86TargetLowering, VT: MVT) -> bool {
+    if VT == f32 {
+        return self.Subtarget.hasSSE1();
+    }
+    if VT == f64 {
+        return self.Subtarget.hasSSE2();
+    }
+    return true;
+}
+
+fn isBitAligned(Alignment: Align, SizeInBits: u64) -> bool {
+    return (8 * Alignment.value()) % SizeInBits == 0;
+}
+
+fn X86TargetLowering::isMemoryAccessFast(self: *X86TargetLowering, VT: EVT, Alignment: Align) -> bool {
+    if isBitAligned(Alignment, VT.getSizeInBits().operator unsigned long long()) {
+        return true;
+    }
+    match VT.getSizeInBits().operator unsigned long long() {
+        _ => {
+            return true;
+        },
+        128 => {
+            return operator!(self.Subtarget());
+        },
+        256 => {
+            return operator!(self.Subtarget());
+        },
+    }
+}
+
+fn X86TargetLowering::allowsMisalignedMemoryAccesses(self: *X86TargetLowering, VT: EVT, arg: u32, Alignment: Align, Flags: Flags, Fast: *mut u32) -> bool {
+    if Fast {
+        *Fast = self.isMemoryAccessFast(VT, Alignment);
+    }
+    if !!(Flags & MONonTemporal) && VT.isVector() {
+        if !!(Flags & MOLoad) {
+            return (Alignment < 16 || !self.Subtarget.hasSSE41());
+        }
+        return false;
+    }
+    return true;
+}
+
+fn X86TargetLowering::allowsMemoryAccess(self: *X86TargetLowering, Context: *mut LLVMContext, DL: *DataLayout, VT: EVT, AddrSpace: u32, Alignment: Align, Flags: Flags, Fast: *mut u32) -> bool {
+    if Fast {
+        *Fast = self.isMemoryAccessFast(VT, Alignment);
+    }
+    if !!(Flags & MONonTemporal) && VT.isVector() {
+        if self.allowsMisalignedMemoryAccesses(VT, AddrSpace, Alignment, Flags, null) {
+            return true;
+        }
+        if !isBitAligned(Alignment, VT.getSizeInBits().operator unsigned long long()) {
+            return false;
+        }
+        match VT.getSizeInBits().operator unsigned long long() {
+            128 => {
+                if !!(Flags & MOLoad) && self.Subtarget.hasSSE41() {
+                    return true;
+                }
+            },
+            256 => {
+                if !!(Flags & MOLoad) && self.Subtarget.hasAVX2() {
+                    return true;
+                }
+            },
+            512 => {
+                if self.Subtarget.hasAVX512() {
+                    return true;
+                }
+            },
+            _ => {
+                return false;
+            },
+        }
+    }
+    return true;
+}
+
+fn X86TargetLowering::getJumpTableEncoding(self: *X86TargetLowering) -> u32 {
+    if self.isPositionIndependent && self.Subtarget.isPICStyleGOT() {
+        return EK_Custom32;
+    }
+    if self.isPositionIndependent && self.getTargetMachine() == Large && !self.Subtarget.isTargetCOFF() {
+        return EK_LabelDifference64;
+    }
+    return self.getJumpTableEncoding;
+}
+
+fn X86TargetLowering::useSoftFloat(self: *X86TargetLowering) -> bool {
+    return self.Subtarget();
+}
+
+fn X86TargetLowering::markLibCallAttributes(self: *X86TargetLowering, MF: *mut MachineFunction, CC: u32, Args: *mut i32) {
+    if self.Subtarget() {
+        return;
+    }
+    if CC != C && CC != X86_StdCall {
+        return;
+    }
+    let mut ParamRegs: u32 = 0;
+    if MF.getFunction().getParent() {
+        M;
+    } else {
+        ParamRegs = M.getNumberRegisterParameters();
+    }
+}
+
+fn X86TargetLowering::LowerCustomJumpTableEntry(self: *X86TargetLowering, MJTI: *MachineJumpTableInfo, MBB: *MachineBasicBlock, uid: u32, Ctx: *mut MCContext) -> *MCExpr {
+    (((operator!(operator!((self.isPositionIndependent && self.Subtarget.isPICStyleGOT())))) || (_wassert(L"isPositionIndependent() && Subtarget.isPICStyleGOT()", L"llvm\\lib\\Target\\X86\\X86ISelLoweringCall.cpp", (481) as u32) , 0)) as void);
+    return create(MBB.getSymbol(), S_GOTOFF, Ctx, SMLoc {});
+}
+
+fn X86TargetLowering::getPICJumpTableRelocBase(self: *X86TargetLowering, Table: SDValue, DAG: *mut SelectionDAG) -> SDValue {
+    if operator!(self.Subtarget()) {
+        return DAG(GlobalBaseReg, SDLoc {}, self.getPointerTy);
+    }
+    return Table;
+}
+
+fn X86TargetLowering::getPICJumpTableRelocBaseExpr(self: *X86TargetLowering, MF: *MachineFunction, JTI: u32, Ctx: *mut MCContext) -> *MCExpr {
+    if self.Subtarget.isPICStyleRIPRel() || (self.Subtarget() && self.getTargetMachine() == Large) {
+        return self.getPICJumpTableRelocBaseExpr;
+    }
+    return create(MF.getPICBaseSymbol(), Ctx, SMLoc {});
+}
+
+fn X86TargetLowering::findRepresentativeClass(self: *X86TargetLowering, TRI: *TargetRegisterInfo, VT: MVT) -> pair<const TargetRegisterClass *, uint8_t> {
+    let mut RRC: *TargetRegisterClass = null;
+    let mut Cost: u8 = 1;
+    match VT.SimpleTy {
+        _ => {
+            return self.findRepresentativeClass;
+        },
+        i8 => {
+            i16;
+        },
+        x86mmx => {
+            
+        },
+        f32 => {
+            f64;
+        },
+    }
+    return make_pair(RRC, Cost);
+}
+
+fn X86TargetLowering::getAddressSpace(self: *X86TargetLowering) -> u32 {
+    if self.Subtarget() {
+        return if (self.getTargetMachine() == Kernel) { GS } else { FS };
+    }
+    return GS;
+}
+
+fn hasStackGuardSlotTLS(TargetTriple: *Triple) -> bool {
+    return TargetTriple.isOSGlibc() || TargetTriple.isMusl() || TargetTriple.isOSFuchsia() || TargetTriple.isAndroid();
+}
+
+fn SegmentOffset(IRB: *mut IRBuilderBase, Offset: i32, AddressSpace: u32) -> *mut Constant {
+    return getIntToPtr(getSigned(getInt32Ty(IRB.getContext()), Offset, false), IRB.getPtrTy(AddressSpace), false);
+}
+
+fn X86TargetLowering::getIRStackGuard(self: *X86TargetLowering, IRB: *mut IRBuilderBase, Libcalls: *LibcallLoweringInfo) -> *mut Value {
+    if hasStackGuardSlotTLS(self.Subtarget.getTargetTriple()) {
+        let mut AddressSpace: u32 = self.getAddressSpace();
+        if self.Subtarget.isTargetFuchsia() {
+            return SegmentOffset(IRB, 16, AddressSpace);
+        }
+        let mut M: *mut Module = IRB.GetInsertBlock().getParent().getParent();
+        let mut Offset: i32 = M.getStackProtectorGuardOffset();
+        if Offset == 2147483647 {
+            Offset = if (self.Subtarget()) { 40 } else { 20 };
+        }
+        let mut GuardReg: str = M.getStackProtectorGuardReg();
+        if GuardReg == "fs" {
+            AddressSpace = FS;
+        } else if GuardReg == "gs" {
+            AddressSpace = GS;
+        }
+        let mut GuardSymb: str = M.getStackProtectorGuardSymbol();
+        if !GuardSymb.is_empty() {
+            let mut GV: *mut GlobalVariable = M.getGlobalVariable(GuardSymb, false);
+            if !GV {
+                let mut Ty: *mut Type = if self.Subtarget() { getInt64Ty(M.getContext()) } else { getInt32Ty(M.getContext()) };
+                if !self.Subtarget.isTargetDarwin() {
+                    GV.setDSOLocal(M.getDirectAccessExternalData());
+                }
+            }
+            return GV;
+        }
+        return SegmentOffset(IRB, Offset, AddressSpace);
+    }
+    return self.getIRStackGuard;
+}
+
+fn X86TargetLowering::insertSSPDeclarations(self: *X86TargetLowering, M: *mut Module, Libcalls: *LibcallLoweringInfo) {
+    let mut SecurityCheckCookieLibcall: LibcallImpl = Libcalls.getLibcallImpl(SECURITY_CHECK_COOKIE);
+    let mut SecurityCookieVar: LibcallImpl = Libcalls.getLibcallImpl(STACK_CHECK_GUARD);
+    if SecurityCheckCookieLibcall != Unsupported && SecurityCookieVar != Unsupported {
+        M.getOrInsertGlobal(getLibcallImplName(SecurityCookieVar), getUnqual(M.getContext()));
+        let mut SecurityCheckCookie: FunctionCallee = M;
+        if dyn_cast(SecurityCheckCookie.getCallee()) {
+            F;
+        } else {
+            F.setCallingConv(X86_FastCall);
+            F.addParamAttr(0, InReg);
+        }
+        return;
+    }
+    let mut GuardMode: str = M.getStackProtectorGuard();
+    if (GuardMode == "tls" || GuardMode.len == 0) && hasStackGuardSlotTLS(self.Subtarget.getTargetTriple()) {
+        return;
+    }
+    self.insertSSPDeclarations;
+}
+
+fn X86TargetLowering::getSafeStackPointerLocation(self: *X86TargetLowering, IRB: *mut IRBuilderBase, Libcalls: *LibcallLoweringInfo) -> *mut Value {
+    if self.Subtarget.isTargetAndroid() {
+        let mut Offset: i32 = if (self.Subtarget()) { 72 } else { 36 };
+        return SegmentOffset(IRB, Offset, self.getAddressSpace());
+    }
+    if self.Subtarget.isTargetFuchsia() {
+        return SegmentOffset(IRB, 24, self.getAddressSpace());
+    }
+    return self.getSafeStackPointerLocation;
+}
+
+fn X86TargetLowering::CanLowerReturn(self: *X86TargetLowering, CallConv: ID, MF: *mut MachineFunction, isVarArg: bool, Outs: *OutputArg>, Context: *mut LLVMContext, RetTy: *Type) -> bool {
+    let mut IsWin64F128StackCC: Closure_1 = Closure_1 { cap_0: self };
+    if IsWin64F128StackCC.call(CallConv) && any_of(Outs, Closure_2 {}) {
+        return false;
+    }
+    let mut RVLocs: SmallVector<CCValAssign, 16> = zeroed();
+    let mut CCInfo: CCState = CallConv;
+    return CCInfo.CheckReturn(Outs, RetCC_X86);
+}
+
+fn X86TargetLowering::getScratchRegisters(self: *X86TargetLowering, arg: ID) -> *MCPhysReg {
+    let mut ScratchRegs: []MCPhysReg = zeroed();
+    return ScratchRegs;
+}
+
+fn X86TargetLowering::getRoundingControlRegisters(self: *X86TargetLowering) -> ArrayRef<MCPhysReg> {
+    let mut RCRegs: []MCPhysReg = zeroed();
+    return RCRegs();
+}
+
+fn lowerMasksToReg(ValArg: *SDValue, ValLoc: *EVT, DL: *SDLoc, DAG: *mut SelectionDAG) -> SDValue {
+    let mut ValVT: EVT = ValArg.getValueType();
+    if ValVT == EVT { v1i1 } {
+        return DAG.getNode(EXTRACT_VECTOR_ELT, DL, ValLoc, ValArg, DAG.getIntPtrConstant(0, DL, false));
+    }
+    if (ValVT == EVT { v8i1 } && (ValLoc == EVT { i8 } || ValLoc == EVT { i32 })) || (ValVT == EVT { v16i1 } && (ValLoc == EVT { i16 } || ValLoc == EVT { i32 })) {
+        let mut TempValLoc: EVT = EVT { if ValVT == EVT { v8i1 } { i8 } else { i16 } };
+        let mut ValToCopy: SDValue = DAG.getBitcast(TempValLoc, ValArg);
+        if ValLoc == EVT { i32 } {
+            ValToCopy = DAG.getNode(ANY_EXTEND, DL, ValLoc, ValToCopy);
+        }
+        return ValToCopy;
+    }
+    if (ValVT == EVT { v32i1 } && ValLoc == EVT { i32 }) || (ValVT == EVT { v64i1 } && ValLoc == EVT { i64 }) {
+        return DAG.getBitcast(ValLoc, ValArg);
+    }
+    return DAG.getNode(ANY_EXTEND, DL, ValLoc, ValArg);
+}
+
+fn Passv64i1ArgInRegs(DL: *SDLoc, DAG: *mut SelectionDAG, Arg: *mut SDValue, RegsToPass: *mut pair<Register, SDValue>>, VA: *mut CCValAssign, NextVA: *mut CCValAssign, Subtarget: *X86Subtarget) {
+    (((operator!(operator!((Subtarget()() && "Expected AVX512BW target!")))) || (_wassert(L"Subtarget.hasBWI() && \"Expected AVX512BW target!\"", L"llvm\\lib\\Target\\X86\\X86ISelLoweringCall.cpp", (763) as u32) , 0)) as void);
+    (((operator!(operator!((Subtarget()() && "Expecting 32 bit target")))) || (_wassert(L"Subtarget.is32Bit() && \"Expecting 32 bit target\"", L"llvm\\lib\\Target\\X86\\X86ISelLoweringCall.cpp", (764) as u32) , 0)) as void);
+    assert!(Arg.getValueType() == EVT { i64 }, "Expecting 64 bit value");
+    assert!(VA.isRegLoc() && NextVA.isRegLoc(), "The value should reside in two registers");
+    Arg = DAG.getBitcast(EVT { i64 }, Arg);
+    let mut Lo: SDValue = SDValue {};
+    let mut Hi: SDValue = SDValue {};
+    tie(Lo, Hi) = DAG.SplitScalar(Arg, DL, EVT { i32 }, EVT { i32 });
+    RegsToPass()(make_pair(VA.getLocReg(), Lo));
+    RegsToPass()(make_pair(NextVA.getLocReg(), Hi));
+}
+
+fn X86TargetLowering::LowerReturn(self: *X86TargetLowering, Chain: SDValue, CallConv: ID, isVarArg: bool, Outs: *OutputArg>, OutVals: *SmallVectorImpl<SDValue>, dl: *SDLoc, DAG: *mut SelectionDAG) -> SDValue {
+    let mut MF: *mut MachineFunction = DAG.getMachineFunction();
+    let mut FuncInfo: *mut X86MachineFunctionInfo = MF;
+    let mut ShouldDisableCalleeSavedRegister: bool = shouldDisableRetRegFromCSR(CallConv) || MF.getFunction().hasFnAttribute("no_caller_saved_registers");
+    if CallConv == X86_INTR && operator!(Outs()()) {
+        report_fatal_error("X86 interrupts may not return any value", true);
+    }
+    let mut RVLocs: SmallVector<CCValAssign, 16> = zeroed();
+    let mut CCInfo: CCState = CallConv;
+    CCInfo.AnalyzeReturn(Outs, RetCC_X86);
+    let mut RetVals: pair<Register, SDValue>, 4> = zeroed();
+    for let mut I: u32 = 0;
+let mut OutsIndex: u32 = 0;
+let mut E: u32 = (); I != E; I += 1 , OutsIndex += 1 {
+        let mut VA: *mut CCValAssign = [I];
+        assert!(VA.isRegLoc(), "Can only return in registers!");
+        if ShouldDisableCalleeSavedRegister {
+            MF.getRegInfo().disableCalleeSavedRegister(VA.getLocReg().operator MCRegister());
+        }
+        let mut ValToCopy: SDValue = OutVals[OutsIndex];
+        let mut ValVT: EVT = ValToCopy.getValueType();
+        if VA.getLocInfo() == SExt {
+            ValToCopy = DAG.getNode(SIGN_EXTEND, dl, EVT { VA.getLocVT() }, ValToCopy);
+        } else if VA.getLocInfo() == ZExt {
+            ValToCopy = DAG.getNode(ZERO_EXTEND, dl, EVT { VA.getLocVT() }, ValToCopy);
+        } else if VA.getLocInfo() == AExt {
+            if ValVT.isVectorOf(EVT { i1 }) {
+                ValToCopy = lowerMasksToReg(ValToCopy, EVT { VA.getLocVT() }, dl, DAG);
+            } else {
+                ValToCopy = DAG.getNode(ANY_EXTEND, dl, EVT { VA.getLocVT() }, ValToCopy);
+            }
+        } else if VA.getLocInfo() == BCvt {
+            ValToCopy = DAG.getBitcast(EVT { VA.getLocVT() }, ValToCopy);
+        }
+        assert!(VA.getLocInfo() != FPExt, "Unexpected FP-extend for return value.");
+        if  {
+            errorUnsupported(DAG, dl, "SSE register return with SSE disabled");
+            VA.convertToReg;
+        } else if  {
+            errorUnsupported(DAG, dl, "SSE2 register return with SSE2 disabled");
+            VA.convertToReg;
+        }
+        if  {
+            if self.isScalarFPTypeInSSEReg(EVT { VA.getValVT() }) {
+                ValToCopy = DAG.getNode(FP_EXTEND, dl, EVT { f80 }, ValToCopy);
+            }
+            RetVals()(make_pair(VA.getLocReg(), ValToCopy));
+            continue;
+        }
+        if self.Subtarget() {
+            if ValVT == EVT { x86mmx } {
+                if  {
+                    ValToCopy = DAG.getBitcast(EVT { i64 }, ValToCopy);
+                    ValToCopy = DAG.getNode(SCALAR_TO_VECTOR, dl, EVT { v2i64 }, ValToCopy);
+                    if !self.Subtarget.hasSSE2() {
+                        ValToCopy = DAG.getBitcast(EVT { v4f32 }, ValToCopy);
+                    }
+                }
+            }
+        }
+        if VA.needsCustom() {
+            assert!(VA.getValVT() == v64i1, "Currently the only custom case is when we split v64i1 to 2 regs");
+            Passv64i1ArgInRegs(dl, DAG, ValToCopy, VA, [I += 1], self.Subtarget);
+            if ShouldDisableCalleeSavedRegister {
+                MF.getRegInfo().disableCalleeSavedRegister([I]());
+            }
+        } else {
+            RetVals()(make_pair(VA.getLocReg(), ValToCopy));
+        }
+    }
+    let mut Glue: SDValue = SDValue {};
+    let mut RetOps: SmallVector<SDValue, 6> = zeroed();
+    RetOps()(Chain);
+    RetOps()(DAG.getTargetConstant(FuncInfo.getBytesToPopOnReturn(), dl, EVT { i32 }, false));
+    if FuncInfo.getSRetReturnReg() {
+        SRetReg.operator unsigned int();
+    } else {
+        let mut Val: SDValue = DAG([0], dl, SRetReg, self.getPointerTy);
+        let mut RetValReg: Register = zeroed();
+        Chain = DAG.getCopyToReg(Chain, dl, RetValReg, Val, Glue);
+        Glue = Chain.getValue(1);
+        RetOps()(DAG.getRegister(RetValReg, self.getPointerTy));
+        if ShouldDisableCalleeSavedRegister && CallConv != PreserveAll && CallConv != PreserveMost {
+            MF.getRegInfo().disableCalleeSavedRegister(RetValReg.operator MCRegister());
+        }
+    }
+    let mut TRI: *X86RegisterInfo = self.Subtarget.getRegisterInfo();
+    let mut I: *MCPhysReg = TRI.getCalleeSavedRegsViaCopy(&mut DAG.getMachineFunction());
+    if I {
+        for ; *I; I += 1 {
+            if  {
+                RetOps()(DAG.getRegister(Register { Reg: *I }, EVT { i64 }));
+            } else {
+                llvm_unreachable_internal("Unexpected register class in CSRsViaCopy!", "llvm\\lib\\Target\\X86\\X86ISelLoweringCall.cpp", 974);
+            }
+        }
+    }
+    RetOps()[0] = Chain;
+    if Glue.getNode() {
+        RetOps()(Glue);
+    }
+    let mut RetOpcode: u32 = 0;
+    return DAG(RetOpcode, dl, Other);
+}
+
+fn X86TargetLowering::isUsedByReturnOnly(self: *X86TargetLowering, N: *mut SDNode, Chain: *mut SDValue) -> bool {
+    if N.getNumValues() != 1 || !N.hasNUsesOfValue(1, 0) {
+        return false;
+    }
+    let mut TCChain: SDValue = Chain;
+    let mut Copy: *mut SDNode = operator(N.user_begin());
+    if Copy.getOpcode() == CopyToReg {
+        if Copy.getOperand(Copy.getNumOperands() - 1).getValueType() == EVT { Glue } {
+            return false;
+        }
+        TCChain = Copy.getOperand(0);
+    } else if Copy.getOpcode() != FP_EXTEND {
+        return false;
+    }
+    let mut HasRet: bool = false;
+    for U in Copy.users() {
+        if  {
+            return false;
+        }
+        if U.getNumOperands() > 4 {
+            return false;
+        }
+        if U.getNumOperands() == 4 && U.getOperand(U.getNumOperands() - 1).getValueType() != EVT { Glue } {
+            return false;
+        }
+        HasRet = true;
+    }
+    if !HasRet {
+        return false;
+    }
+    Chain = TCChain;
+    return true;
+}
+
+fn X86TargetLowering::getTypeForExtReturn(self: *X86TargetLowering, Context: *mut LLVMContext, VT: EVT, ExtendKind: NodeType) -> EVT {
+    let mut ReturnMVT: MVT = MVT { SimpleTy: i32 };
+    let mut Darwin: bool = self.Subtarget.getTargetTriple().isOSDarwin();
+    if VT == EVT { i1 } || (!Darwin && (VT == EVT { i8 } || VT == EVT { i16 })) {
+        ReturnMVT = MVT { SimpleTy: i8 };
+    }
+    let mut MinVT: EVT = self.getRegisterType;
+    return if VT.bitsLT(MinVT) { MinVT } else { VT };
+}
+
+fn getv64i1Argument(VA: *mut CCValAssign, NextVA: *mut CCValAssign, Root: *mut SDValue, DAG: *mut SelectionDAG, DL: *SDLoc, Subtarget: *X86Subtarget, InGlue: *mut SDValue) -> SDValue {
+    (((operator!(operator!(((Subtarget()()) && "Expected AVX512BW target!")))) || (_wassert(L"(Subtarget.hasBWI()) && \"Expected AVX512BW target!\"", L"llvm\\lib\\Target\\X86\\X86ISelLoweringCall.cpp", (1057) as u32) , 0)) as void);
+    (((operator!(operator!((Subtarget()() && "Expecting 32 bit target")))) || (_wassert(L"Subtarget.is32Bit() && \"Expecting 32 bit target\"", L"llvm\\lib\\Target\\X86\\X86ISelLoweringCall.cpp", (1058) as u32) , 0)) as void);
+    assert!(VA.getValVT() == v64i1, "Expecting first location of 64 bit width type");
+    assert!(NextVA.getValVT() == VA.getValVT(), "The locations should have the same type");
+    assert!(VA.isRegLoc() && NextVA.isRegLoc(), "The values should reside in two registers");
+    let mut Lo: SDValue = SDValue {};
+    let mut Hi: SDValue = SDValue {};
+    let mut ArgValueLo: SDValue = SDValue {};
+    let mut ArgValueHi: SDValue = SDValue {};
+    let mut MF: *mut MachineFunction = DAG.getMachineFunction();
+    let mut RC: *TargetRegisterClass = null;
+    if null == InGlue {
+        let mut Reg: Register = MF.addLiveIn(VA.getLocReg().operator MCRegister(), RC);
+        ArgValueLo = DAG.getCopyFromReg(Root, DL, Reg, EVT { i32 });
+        Reg = MF.addLiveIn(NextVA.getLocReg().operator MCRegister(), RC);
+        ArgValueHi = DAG.getCopyFromReg(Root, DL, Reg, EVT { i32 });
+    } else {
+        ArgValueLo = DAG.getCopyFromReg(Root, DL, VA.getLocReg(), EVT { i32 }, *InGlue);
+        *InGlue = ArgValueLo.getValue(2);
+        ArgValueHi = DAG.getCopyFromReg(Root, DL, NextVA.getLocReg(), EVT { i32 }, *InGlue);
+        *InGlue = ArgValueHi.getValue(2);
+    }
+    Lo = DAG.getBitcast(EVT { v32i1 }, ArgValueLo);
+    Hi = DAG.getBitcast(EVT { v32i1 }, ArgValueHi);
+    return DAG.getNode(CONCAT_VECTORS, DL, EVT { v64i1 }, Lo, Hi);
+}
+
+fn lowerRegToMasks(ValArg: *SDValue, ValVT: *EVT, ValLoc: *EVT, DL: *SDLoc, DAG: *mut SelectionDAG) -> SDValue {
+    let mut ValReturned: SDValue = ValArg;
+    if ValVT == EVT { v1i1 } {
+        return DAG.getNode(SCALAR_TO_VECTOR, DL, EVT { v1i1 }, ValReturned);
+    }
+    if ValVT == EVT { v64i1 } {
+        assert!(ValLoc == EVT { i64 }, "Expecting only i64 locations");
+    } else {
+        let mut MaskLenVT: MVT = MVT {};
+        match ValVT.getSimpleVT().SimpleTy {
+            v8i1 => {
+                MaskLenVT = MVT { SimpleTy: i8 };
+            },
+            v16i1 => {
+                MaskLenVT = MVT { SimpleTy: i16 };
+            },
+            v32i1 => {
+                MaskLenVT = MVT { SimpleTy: i32 };
+            },
+            _ => {
+                llvm_unreachable_internal("Expecting a vector of i1 types", "llvm\\lib\\Target\\X86\\X86ISelLoweringCall.cpp", 1129);
+            },
+        }
+        ValReturned = DAG.getNode(TRUNCATE, DL, EVT { MaskLenVT }, ValReturned);
+    }
+    return DAG.getBitcast(ValVT, ValReturned);
+}
+
+fn getPopFromX87Reg(DAG: *mut SelectionDAG, Chain: SDValue, dl: *SDLoc, Reg: Register, VT: EVT, Glue: SDValue) -> SDValue {
+    let mut VTs: SDVTList = DAG.getVTList(VT, EVT { Other }, EVT { Glue });
+    let mut Ops: [3]SDValue = [Chain, DAG.getRegister(Reg, VT), Glue];
+    return DAG(POP_FROM_X87_REG, dl, VTs, Ops(if Glue.getNode() { 3 } else { 2 }));
+}
+
+fn X86TargetLowering::LowerCallResult(self: *X86TargetLowering, Chain: SDValue, InGlue: SDValue, CallConv: ID, isVarArg: bool, Ins: *InputArg>, dl: *SDLoc, DAG: *mut SelectionDAG, InVals: *mut SmallVectorImpl<SDValue>, RegMask: *mut u32) -> SDValue {
+    let mut TRI: *TargetRegisterInfo = self.Subtarget.getRegisterInfo();
+    let mut RVLocs: SmallVector<CCValAssign, 16> = zeroed();
+    let mut CCInfo: CCState = CallConv;
+    CCInfo.AnalyzeCallResult(Ins, RetCC_X86);
+    for let mut I: u32 = 0;
+let mut E: u32 = (); I != E; I += 1 {
+        let mut VA: *mut CCValAssign = [I];
+        let mut CopyVT: EVT = EVT { VA.getLocVT() };
+        if RegMask {}
+        if  {
+            errorUnsupported(DAG, dl, "SSE register return with SSE disabled");
+            if  {
+                VA.convertToReg;
+            } else {
+                VA.convertToReg;
+            }
+        } else if  {
+            errorUnsupported(DAG, dl, "SSE2 register return with SSE2 disabled");
+            if  {
+                VA.convertToReg;
+            } else {
+                VA.convertToReg;
+            }
+        }
+        let mut RoundAfterCopy: bool = false;
+        let mut X87Result: bool = false;
+        if X87Result && self.isScalarFPTypeInSSEReg(EVT { VA.getValVT() }) {
+            if operator!(self.Subtarget()) {
+                report_fatal_error("X87 register return with X87 disabled", true);
+            }
+            CopyVT = EVT { f80 };
+            RoundAfterCopy = (CopyVT != EVT { VA.getLocVT() });
+        }
+        let mut Val: SDValue = SDValue {};
+        if VA.needsCustom() {
+            assert!(VA.getValVT() == v64i1, "Currently the only custom case is when we split v64i1 to 2 regs");
+            Val = getv64i1Argument(VA, [I += 1], Chain, DAG, dl, self.Subtarget, &mut InGlue);
+        } else {
+            Chain = if X87Result { getPopFromX87Reg(DAG, Chain, dl, VA.getLocReg(), CopyVT, InGlue).getValue(1) } else { DAG.getCopyFromReg(Chain, dl, VA.getLocReg(), CopyVT, InGlue).getValue(1) };
+            Val = Chain.getValue(0);
+            InGlue = Chain.getValue(2);
+        }
+        if RoundAfterCopy {
+            Val = DAG.getNode(FP_ROUND, dl, EVT { VA.getValVT() }, Val, DAG.getIntPtrConstant(1, dl, true));
+        }
+        if VA.isExtInLoc() {
+            if VA.getValVT().isVector() && VA.getValVT().getScalarType() == i1 && ((VA.getLocVT() == i64) || (VA.getLocVT() == i32) || (VA.getLocVT() == i16) || (VA.getLocVT() == i8)) {
+                Val = lowerRegToMasks(Val, EVT { VA.getValVT() }, EVT { VA.getLocVT() }, dl, DAG);
+            } else {
+                Val = DAG.getNode(TRUNCATE, dl, EVT { VA.getValVT() }, Val);
+            }
+        }
+        if VA.getLocInfo() == BCvt {
+            Val = DAG.getBitcast(EVT { VA.getValVT() }, Val);
+        }
+        InVals.push(ValueParamT { Val });
+    }
+    return Chain;
+}
+
+// ========================================================
+// [C++ Template - Неинстанциированный шаблон функции: hasCalleePopSRet]
+// template <typename T>
+// fn hasCalleePopSRet(Args: *SmallVectorImpl<T>, ArgLocs: *SmallVectorImpl<CCValAssign>, Subtarget: *X86Subtarget) -> bool {
+//     let mut TT: *Triple = Subtarget.getTargetTriple();
+//     if !TT.isX86_32() || TT.isOSMSVCRT() || TT.isOSIAMCU() {
+//         return false;
+//     }
+//     let mut IsSRetInMem: bool = false;
+//     if operator!(Args()) {
+//         IsSRetInMem = Args()() && ArgLocs()()();
+//     }
+//     return IsSRetInMem;
+// }
+// ========================================================
+
+fn CreateCopyOfByValArgument(Src: SDValue, Dst: SDValue, Chain: SDValue, Flags: ArgFlagsTy, DAG: *mut SelectionDAG, dl: *SDLoc) -> SDValue {
+    let mut SizeNode: SDValue = DAG.getIntPtrConstant(Flags.getByValSize(), dl, false);
+    let mut Alignment: Align = Flags.getNonZeroByValAlign();
+    return DAG.getMemcpy(Chain, dl, Dst, Src, SizeNode, Alignment, Alignment, false, true, null, optional<bool> { nullopt }, MachinePointerInfo { 0, 0 }, MachinePointerInfo { 0, 0 }, AAMDNodes {}, null);
+}
+
+fn canGuaranteeTCO(CC: ID) -> bool {
+    return (CC == Fast || CC == GHC || CC == X86_RegCall || CC == HiPE || CC == Tail || CC == SwiftTail);
+}
+
+fn mayTailCallThisCC(CC: ID) -> bool {
+    match CC {
+        C => {
+            Win64;
+        },
+        _ => {
+            return canGuaranteeTCO(CC);
+        },
+    }
+}
+
+fn shouldGuaranteeTCO(CC: ID, GuaranteedTailCallOpt: bool) -> bool {
+    return (GuaranteedTailCallOpt && canGuaranteeTCO(CC)) || CC == Tail || CC == SwiftTail;
+}
+
+fn X86TargetLowering::mayBeEmittedAsTailCall(self: *X86TargetLowering, CI: *CallInst) -> bool {
+    if !CI.isTailCall() {
+        return false;
+    }
+    let mut CalleeCC: ID = CI.getCallingConv();
+    if !mayTailCallThisCC(CalleeCC) {
+        return false;
+    }
+    return true;
+}
+
+fn X86TargetLowering::LowerMemArgument(self: *X86TargetLowering, Chain: SDValue, CallConv: ID, Ins: *InputArg>, dl: *SDLoc, DAG: *mut SelectionDAG, VA: *CCValAssign, MFI: *mut MachineFrameInfo, i: u32) -> SDValue {
+    let mut Flags: ArgFlagsTy = zeroed();
+    let mut AlwaysUseMutable: bool = shouldGuaranteeTCO(CallConv, DAG.getTarget().Options.GuaranteedTailCallOpt);
+    let mut isImmutable: bool = !AlwaysUseMutable && !Flags.isByVal();
+    let mut ValVT: EVT = EVT {};
+    let mut PtrVT: MVT = self.getPointerTy;
+    let mut ExtendedInMem: bool = VA.isExtInLoc() && VA.getValVT().getScalarType() == i1 && VA.getValVT().getSizeInBits() != VA.getLocVT().getSizeInBits();
+    if VA.getLocInfo() == Indirect || ExtendedInMem {
+        ValVT = EVT { VA.getLocVT() };
+    } else {
+        ValVT = EVT { VA.getValVT() };
+    }
+    if Flags.isByVal() {
+        let mut Bytes: u32 = Flags.getByValSize();
+        if Bytes == 0 {
+            Bytes = 1;
+        }
+        let mut FI: i32 = MFI.CreateFixedObject(Bytes, VA.getLocMemOffset(), isImmutable, true);
+        return DAG.getFrameIndex(FI, EVT { PtrVT }, false);
+    }
+    let mut ArgVT: EVT = zeroed();
+    let mut ScalarizedVector: bool = ArgVT.isVector() && !VA.getLocVT().isVector();
+    if Flags.isCopyElisionCandidate() && VA.getLocInfo() != Indirect && !ExtendedInMem && !ScalarizedVector {
+        let mut PartAddr: SDValue = SDValue {};
+        if  {
+            let mut FI: i32 = MFI.CreateFixedObject(ArgVT.getStoreSize().operator unsigned long long(), VA.getLocMemOffset(), false, false);
+            PartAddr = DAG.getFrameIndex(FI, EVT { PtrVT }, false);
+            return DAG.getLoad(ValVT, dl, Chain, PartAddr, getFixedStack(DAG.getMachineFunction(), FI, 0), MaybeAlign {}, MONone, MMOMetadata {});
+        }
+        let mut PartBegin: i64 = VA.getLocMemOffset();
+        let mut PartEnd: i64 = PartBegin + ValVT.getSizeInBits().operator unsigned long long() / 8;
+        let mut FI: i32 = MFI.getObjectIndexBegin();
+        for ; MFI.isFixedObjectIndex(FI); FI += 1 {
+            let mut ObjBegin: i64 = MFI.getObjectOffset(FI);
+            let mut ObjEnd: i64 = ObjBegin + MFI.getObjectSize(FI);
+            if ObjBegin <= PartBegin && PartEnd <= ObjEnd {
+                break;
+            }
+        }
+        if MFI.isFixedObjectIndex(FI) {
+            let mut Addr: SDValue = DAG(ADD, dl, PtrVT, DAG.getFrameIndex(FI, EVT { PtrVT }, false), DAG.getIntPtrConstant);
+            return DAG(ValVT, dl, Chain, Addr, getFixedStack(DAG.getMachineFunction(), FI));
+        }
+    }
+    let mut FI: i32 = MFI.CreateFixedObject(ValVT.getSizeInBits().operator unsigned long long() / 8, VA.getLocMemOffset(), isImmutable, false);
+    if VA.getLocInfo() == ZExt {
+        MFI.setObjectZExt(FI, true);
+    } else if VA.getLocInfo() == SExt {
+        MFI.setObjectSExt(FI, true);
+    }
+    let mut Alignment: MaybeAlign = MaybeAlign {};
+    if self.Subtarget.isTargetWindowsMSVC() && operator!(self.Subtarget()) && ValVT != EVT { f80 } {
+        Alignment = MaybeAlign { 4 };
+    }
+    let mut FIN: SDValue = DAG.getFrameIndex(FI, EVT { PtrVT }, false);
+    let mut Val: SDValue = DAG.getLoad(ValVT, dl, Chain, FIN, getFixedStack(DAG.getMachineFunction(), FI, 0), Alignment, MONone, MMOMetadata {});
+    return if ExtendedInMem { (if VA.getValVT().isVector() { DAG.getNode(SCALAR_TO_VECTOR, dl, EVT { VA.getValVT() }, Val) } else { DAG.getNode(TRUNCATE, dl, EVT { VA.getValVT() }, Val) }) } else { Val };
+}
+
+fn get64BitArgumentGPRs(CallConv: ID, Subtarget: *X86Subtarget) -> ArrayRef<MCPhysReg> {
+    (((operator!(operator!((Subtarget()())))) || (_wassert(L"Subtarget.is64Bit()", L"llvm\\lib\\Target\\X86\\X86ISelLoweringCall.cpp", (1453) as u32) , 0)) as void);
+    if Subtarget.isCallingConvWin64(CallConv) {
+        let mut GPR64ArgRegsWin64: []MCPhysReg = zeroed();
+        return GPR64ArgRegsWin64();
+    }
+    let mut GPR64ArgRegs64Bit: []MCPhysReg = zeroed();
+    return GPR64ArgRegs64Bit();
+}
+
+fn get64BitArgumentXMMs(MF: *mut MachineFunction, CallConv: ID, Subtarget: *X86Subtarget) -> ArrayRef<MCPhysReg> {
+    (((operator!(operator!((Subtarget()())))) || (_wassert(L"Subtarget.is64Bit()", L"llvm\\lib\\Target\\X86\\X86ISelLoweringCall.cpp", (1472) as u32) , 0)) as void);
+    if Subtarget.isCallingConvWin64(CallConv) {
+        return ArrayRef<MCPhysReg> {};
+    }
+    let mut isSoftFloat: bool = Subtarget()();
+    if isSoftFloat || !Subtarget.hasSSE1() {
+        return ArrayRef<MCPhysReg> {};
+    }
+    let mut XMMArgRegs64Bit: []MCPhysReg = zeroed();
+    return XMMArgRegs64Bit();
+}
+
+fn isSortedByValueNo(ArgLocs: ArrayRef<CCValAssign>) -> bool {
+    return is_sorted(Closure_3 {});
+}
+
+struct VarArgsLoweringHelper {
+    FuncInfo: *mut X86MachineFunctionInfo,
+    DL: *SDLoc,
+    DAG: *mut SelectionDAG,
+    Subtarget: *X86Subtarget,
+    TheMachineFunction: *mut MachineFunction,
+    TheFunction: *Function,
+    FrameInfo: *mut MachineFrameInfo,
+    FrameLowering: *TargetFrameLowering,
+    TargLowering: *TargetLowering,
+    CallConv: ID,
+    CCInfo: *mut CCState,
+}
+
+fn VarArgsLoweringHelper::is64Bit(self: *VarArgsLoweringHelper) -> bool {
+    return self.Subtarget();
+}
+
+fn VarArgsLoweringHelper::isWin64(self: *VarArgsLoweringHelper) -> bool {
+    return self.Subtarget.isCallingConvWin64(self.CallConv);
+}
+
+fn VarArgsLoweringHelper::createVarArgAreaAndStoreRegisters(self, Chain: *mut SDValue, StackSize: u32) {
+    if self.is64Bit() || (self.CallConv != X86_FastCall && self.CallConv != X86_ThisCall) {
+        self.FuncInfo.setVarArgsFrameIndex(self.FrameInfo.CreateFixedObject(1, StackSize, true, false));
+    }
+    if self.is64Bit() {
+        let mut ArgGPRs: ArrayRef<MCPhysReg> = get64BitArgumentGPRs(self.CallConv, self.Subtarget);
+        let mut ArgXMMs: ArrayRef<MCPhysReg> = get64BitArgumentXMMs(self.TheMachineFunction, self.CallConv, self.Subtarget);
+        let mut NumIntRegs: u32 = self.CCInfo.getFirstUnallocated(ArrayRef<MCPhysReg> { ArgGPRs });
+        let mut NumXMMRegs: u32 = self.CCInfo.getFirstUnallocated(ArrayRef<MCPhysReg> { ArgXMMs });
+        assert!(!(NumXMMRegs && !self.Subtarget.hasSSE1()), "SSE register cannot be used when SSE is disabled!");
+        if self.isWin64() {
+            let mut HomeOffset: i32 = self.FrameLowering.getOffsetOfLocalArea() + 8;
+            self.FuncInfo.setRegSaveFrameIndex(self.FrameInfo.CreateFixedObject(1, NumIntRegs * 8 + HomeOffset, false, false));
+            if NumIntRegs < 4 {
+                self.FuncInfo.setVarArgsFrameIndex(self.FuncInfo.getRegSaveFrameIndex());
+            }
+        } else {
+            self.FuncInfo.setVarArgsGPOffset(NumIntRegs * 8);
+            self.FuncInfo.setVarArgsFPOffset(ArgGPRs.len * 8 + NumXMMRegs * 16);
+            self.FuncInfo.setRegSaveFrameIndex(self.FrameInfo.CreateStackObject(ArgGPRs.len * 8 + ArgXMMs.len * 16, Align { ShiftValue: 16 }, false, null, 0));
+        }
+        let mut LiveGPRs: SmallVector<SDValue, 6> = zeroed();
+        let mut LiveXMMRegs: SmallVector<SDValue, 8> = zeroed();
+        let mut ALVal: SDValue = SDValue {};
+        for Reg in ArgGPRs.slice(NumIntRegs) {
+            let mut GPR: Register = self.TheMachineFunction.addLiveIn;
+            LiveGPRs()(self.DAG.getCopyFromReg(Chain, self.DL, GPR, EVT { i64 }));
+        }
+        let mut AvailableXmms: *ArrayRef<unsigned short> = ArgXMMs.slice(NumXMMRegs);
+        if !AvailableXmms.is_empty() {
+            let mut AL: Register = self.TheMachineFunction.addLiveIn;
+            ALVal = self.DAG.getCopyFromReg(Chain, self.DL, AL, EVT { i8 });
+            for Reg in AvailableXmms {
+                self.TheMachineFunction.getRegInfo().addLiveIn(MCRegister { Reg: Reg }, Register { Reg: 0 });
+                LiveXMMRegs()(self.DAG.getRegister(Register { Reg: Reg }, EVT { v4f32 }));
+            }
+        }
+        let mut MemOps: SmallVector<SDValue, 8> = zeroed();
+        let mut RSFIN: SDValue = self.DAG.getFrameIndex(self.FuncInfo.getRegSaveFrameIndex(), self.TargLowering.getPointerTy);
+        let mut Offset: u32 = self.FuncInfo.getVarArgsGPOffset();
+        if operator!() {
+            let mut SaveXMMOps: SmallVector<SDValue, 12> = zeroed();
+            SaveXMMOps()(Chain);
+            SaveXMMOps()(ALVal);
+            SaveXMMOps()(RSFIN);
+            SaveXMMOps()(self.DAG.getTargetConstant(self.FuncInfo.getVarArgsFPOffset(), self.DL, EVT { i32 }, false));
+            append_range();
+            let mut StoreMMO: *mut MachineMemOperand = self.DAG.getMachineFunction().getMachineMemOperand(getFixedStack(self.DAG.getMachineFunction(), self.FuncInfo.getRegSaveFrameIndex(), Offset), MOStore, 128, Align { ShiftValue: 16 }, MMOMetadata {}, System, NotAtomic, NotAtomic);
+            MemOps()(self.DAG);
+        }
+        if operator!() {
+            Chain = self.DAG(TokenFactor, self.DL, Other);
+        }
+    }
+}
+
+fn VarArgsLoweringHelper::forwardMustTailParameters(self, Chain: *mut SDValue) {
+    let mut VecVT: MVT = MVT { SimpleTy: Other };
+    if self.Subtarget.useAVX512Regs() && (self.is64Bit() || (self.CallConv == X86_VectorCall || self.CallConv == Intel_OCL_BI)) {
+        VecVT = MVT { SimpleTy: v16f32 };
+    } else if self.Subtarget.hasAVX() {
+        VecVT = MVT { SimpleTy: v8f32 };
+    } else if self.Subtarget.hasSSE2() {
+        VecVT = MVT { SimpleTy: v4f32 };
+    }
+    let mut RegParmTypes: SmallVector<MVT, 2> = zeroed();
+    let mut IntVT: MVT = MVT { SimpleTy: if self.is64Bit() { i64 } else { i32 } };
+    RegParmTypes()(IntVT);
+    if VecVT != Other {
+        RegParmTypes()(VecVT);
+    }
+    let mut Forwards: *mut SmallVectorImpl<ForwardedRegister> = self.FuncInfo.getForwardedMustTailRegParms();
+    self.CCInfo.analyzeMustTailForwardedRegisters(Forwards, CC_X86);
+    if self.is64Bit() && !self.isWin64() && operator!(self.CCInfo.isAllocated) {
+        let mut ALVReg: Register = self.TheMachineFunction.addLiveIn;
+        Forwards();
+    }
+}
+
+fn VarArgsLoweringHelper::lowerVarArgsParameters(self, Chain: *mut SDValue, StackSize: u32) {
+    self.FuncInfo.setVarArgsFrameIndex(178956970);
+    self.FuncInfo.setRegSaveFrameIndex(178956970);
+    if self.FrameInfo.hasVAStart() {
+        self.createVarArgAreaAndStoreRegisters(Chain, StackSize);
+    }
+    if self.FrameInfo.hasMustTailInVarArgFunc() {
+        self.forwardMustTailParameters(Chain);
+    }
+}
+
+fn X86TargetLowering::LowerFormalArguments(self: *X86TargetLowering, Chain: SDValue, CallConv: ID, IsVarArg: bool, Ins: *InputArg>, dl: *SDLoc, DAG: *mut SelectionDAG, InVals: *mut SmallVectorImpl<SDValue>) -> SDValue {
+    let mut MF: *mut MachineFunction = DAG.getMachineFunction();
+    let mut FuncInfo: *mut X86MachineFunctionInfo = MF;
+    let mut F: *Function = MF.getFunction();
+    if F.hasExternalLinkage() && self.Subtarget.isTargetCygMing() && F.getName() == "main" {
+        FuncInfo.setForceFramePointer(true);
+    }
+    let mut MFI: *mut MachineFrameInfo = MF.getFrameInfo();
+    let mut Is64Bit: bool = self.Subtarget();
+    let mut IsWin64: bool = self.Subtarget.isCallingConvWin64(CallConv);
+    if Is64Bit && operator!(self.Subtarget()) {
+        if F.getReturnType().isX86_FP80Ty() || any_of(F.args(), Closure_4 {}) {
+            reportFatalUsageError("cannot use x86_fp80 type with x87 disabled on x86_64 target");
+        }
+    }
+    assert!(!(IsVarArg && canGuaranteeTCO(CallConv)), "Var args not supported with calling conv' regcall, fastcc, ghc or hipe");
+    let mut ArgLocs: SmallVector<CCValAssign, 16> = zeroed();
+    let mut CCInfo: CCState = CallConv;
+    if IsWin64 {
+        CCInfo.AllocateStack(32, Align { ShiftValue: 8 });
+    }
+    CCInfo.AnalyzeArguments(Ins, CC_X86);
+    if X86_VectorCall == CallConv {
+        CCInfo;
+    }
+    (((operator!(operator!((isSortedByValueNo() && "Argument Location list must be sorted before lowering")))) || (_wassert(L"isSortedByValueNo(ArgLocs) && \"Argument Location list must be sorted before lowering\"", L"llvm\\lib\\Target\\X86\\X86ISelLoweringCall.cpp", (1762) as u32) , 0)) as void);
+    let mut ArgValue: SDValue = SDValue {};
+    for let mut I: u32 = 0;
+let mut InsIndex: u32 = 0;
+let mut E: u32 = (); I != E; I += 1 , InsIndex += 1 {
+        (((operator!(operator!((InsIndex < Ins()() && "Invalid Ins index")))) || (_wassert(L"InsIndex < Ins.size() && \"Invalid Ins index\"", L"llvm\\lib\\Target\\X86\\X86ISelLoweringCall.cpp", (1767) as u32) , 0)) as void);
+        let mut VA: *mut CCValAssign = [I];
+        if VA.isRegLoc() {
+            let mut RegVT: EVT = EVT { VA.getLocVT() };
+            if VA.needsCustom() {
+                assert!(VA.getValVT() == v64i1, "Currently the only custom case is when we split v64i1 to 2 regs");
+                ArgValue = getv64i1Argument(VA, [I += 1], Chain, DAG, dl, self.Subtarget);
+            } else {
+                let mut RC: *TargetRegisterClass = null;
+                if RegVT == EVT { i8 } {
+                    
+                } else if RegVT == EVT { i16 } {
+                    
+                } else if RegVT == EVT { i32 } {
+                    
+                } else if Is64Bit && RegVT == EVT { i64 } {
+                    
+                } else if RegVT == EVT { f16 } {
+                    
+                } else if RegVT == EVT { f32 } {
+                    
+                } else if RegVT == EVT { f64 } {
+                    
+                } else if RegVT == EVT { f80 } {
+                    
+                } else if RegVT == EVT { f128 } {
+                    
+                } else if RegVT.is512BitVector() {
+                    
+                } else if RegVT.is256BitVector() {
+                    
+                } else if RegVT.is128BitVector() {
+                    
+                } else if RegVT == EVT { x86mmx } {
+                    
+                } else if RegVT == EVT { v1i1 } {
+                    
+                } else if RegVT == EVT { v8i1 } {
+                    
+                } else if RegVT == EVT { v16i1 } {
+                    
+                } else if RegVT == EVT { v32i1 } {
+                    
+                } else if RegVT == EVT { v64i1 } {
+                    
+                } else {
+                    llvm_unreachable_internal("Unknown argument type!", "llvm\\lib\\Target\\X86\\X86ISelLoweringCall.cpp", 1820);
+                }
+                let mut Reg: Register = MF.addLiveIn(VA.getLocReg().operator MCRegister(), RC);
+                ArgValue = DAG.getCopyFromReg(Chain, dl, Reg, RegVT);
+            }
+            if VA.getLocInfo() == SExt {
+                ArgValue = DAG.getNode(AssertSext, dl, RegVT, ArgValue, DAG.getValueType(EVT { VA.getValVT() }));
+            } else if VA.getLocInfo() == ZExt {
+                ArgValue = DAG.getNode(AssertZext, dl, RegVT, ArgValue, DAG.getValueType(EVT { VA.getValVT() }));
+            } else if VA.getLocInfo() == BCvt {
+                ArgValue = DAG.getBitcast(EVT { VA.getValVT() }, ArgValue);
+            }
+            if VA.isExtInLoc() {
+                if RegVT.isVector() && VA.getValVT().getScalarType() != i1 {
+                    ArgValue = DAG;
+                } else if VA.getValVT().isVector() && VA.getValVT().getScalarType() == i1 && ((VA.getLocVT() == i64) || (VA.getLocVT() == i32) || (VA.getLocVT() == i16) || (VA.getLocVT() == i8)) {
+                    ArgValue = lowerRegToMasks(ArgValue, EVT { VA.getValVT() }, RegVT, dl, DAG);
+                } else {
+                    ArgValue = DAG.getNode(TRUNCATE, dl, EVT { VA.getValVT() }, ArgValue);
+                }
+            }
+        } else {
+            assert!(VA.isMemLoc();
+            ArgValue = self.LowerMemArgument(Chain, CallConv, Ins, dl, DAG, VA, MFI, InsIndex);
+        }
+        if  {
+            ArgValue = DAG.getLoad(EVT { VA.getValVT() }, dl, Chain, ArgValue, MachinePointerInfo { 0, 0 }, MaybeAlign {}, MONone, MMOMetadata {});
+        }
+        InVals.push(ValueParamT { ArgValue });
+    }
+    for let mut I: u32 = 0;
+let mut E: u32 = Ins()(); I != E; I += 1 {
+        if  {
+            let mut X86FI: auto = MF;
+            if isExtendedSwiftAsyncFrameSupported(self.Subtarget, MF) {
+                X86FI()(true);
+            } else {
+                let mut PtrSize: i32 = if self.Subtarget() { 8 } else { 4 };
+                let mut FI: i32 = MF.getFrameInfo().CreateStackObject(PtrSize, Align { ShiftValue: PtrSize }, false, null, 0);
+                X86FI()(FI);
+                let mut St: SDValue = DAG.getStore(DAG.getEntryNode(), dl, InVals[I], DAG.getFrameIndex(FI, EVT { if PtrSize == 8 { i64 } else { i32 } }, false), getFixedStack(MF, FI, 0), MaybeAlign {}, MONone, MMOMetadata {});
+                Chain = DAG.getNode(TokenFactor, dl, EVT { Other }, St, Chain);
+            }
+        }
+        if CallConv == Swift || CallConv == SwiftTail {
+            continue;
+        }
+        if  {
+            assert!(!FuncInfo.getSRetReturnReg().operator unsigned int(), "SRet return has already been set");
+            let mut PtrTy: MVT = self.getPointerTy;
+            let mut Reg: Register = MF.getRegInfo()(self.getRegClassFor);
+            FuncInfo.setSRetReturnReg(Reg);
+            let mut Copy: SDValue = DAG.getCopyToReg(DAG.getEntryNode(), dl, Reg, InVals[I]);
+            Chain = DAG.getNode(TokenFactor, dl, EVT { Other }, Copy, Chain);
+            break;
+        }
+    }
+    let mut StackSize: u32 = CCInfo.getStackSize();
+    if shouldGuaranteeTCO(CallConv, MF.getTarget().Options.GuaranteedTailCallOpt) {
+        StackSize = self.GetAlignedArgumentStackSize(StackSize, DAG);
+    }
+    if IsVarArg {
+        VarArgsLoweringHelper { FuncInfo, dl, DAG, self.Subtarget, CallConv, CCInfo }.lowerVarArgsParameters(Chain, StackSize);
+    }
+    if isCalleePop(CallConv, Is64Bit, IsVarArg, MF.getTarget().Options.GuaranteedTailCallOpt) {
+        FuncInfo.setBytesToPopOnReturn(StackSize);
+    } else if CallConv == X86_INTR && Ins()() == 2 {
+        FuncInfo.setBytesToPopOnReturn(if Is64Bit { 16 } else { 4 });
+    } else {
+        FuncInfo.setBytesToPopOnReturn(0);
+        if hasCalleePopSRet(Ins, self.Subtarget) {
+            FuncInfo.setBytesToPopOnReturn(4);
+        }
+    }
+    if !Is64Bit {
+        FuncInfo.setRegSaveFrameIndex(178956970);
+    }
+    FuncInfo.setArgumentStackSize(StackSize);
+    if MF.getWinEHFuncInfo() {
+        EHInfo;
+    } else {
+        let mut Personality: EHPersonality = classifyEHPersonality(F.getPersonalityFn());
+        if Personality == CoreCLR {
+            assert!(Is64Bit);
+            let mut PSPSymFI: i32 = MFI.CreateStackObject(8, Align { ShiftValue: 8 }, false, null, 0);
+            EHInfo.PSPSymFrameIdx = PSPSymFI;
+        }
+    }
+    if shouldDisableArgRegFromCSR(CallConv) || F.hasFnAttribute("no_caller_saved_registers") {
+        let mut MRI: *mut MachineRegisterInfo = MF.getRegInfo();
+    }
+    return Chain;
+}
+
+fn X86TargetLowering::LowerMemOpCallTo(self: *X86TargetLowering, Chain: SDValue, StackPtr: SDValue, Arg: SDValue, dl: *SDLoc, DAG: *mut SelectionDAG, VA: *CCValAssign, Flags: ArgFlagsTy, isByVal: bool) -> SDValue {
+    let mut LocMemOffset: u32 = VA.getLocMemOffset();
+    let mut PtrOff: SDValue = DAG.getIntPtrConstant(LocMemOffset, dl, false);
+    PtrOff = DAG(ADD, dl, self.getPointerTy, StackPtr, PtrOff);
+    if isByVal {
+        return CreateCopyOfByValArgument(Arg, PtrOff, Chain, Flags, DAG, dl);
+    }
+    let mut Alignment: MaybeAlign = MaybeAlign {};
+    if self.Subtarget.isTargetWindowsMSVC() && operator!(self.Subtarget()) && Arg.getSimpleValueType() != f80 {
+        Alignment = MaybeAlign { 4 };
+    }
+    return DAG.getStore(Chain, dl, Arg, PtrOff, getStack(DAG.getMachineFunction(), LocMemOffset, 0), Alignment, MONone, MMOMetadata {});
+}
+
+fn X86TargetLowering::EmitTailCallLoadRetAddr(self: *X86TargetLowering, DAG: *mut SelectionDAG, OutRetAddr: *mut SDValue, Chain: SDValue, IsTailCall: bool, Is64Bit: bool, FPDiff: i32, dl: *SDLoc) -> SDValue {
+    let mut VT: EVT = self.getPointerTy;
+    OutRetAddr = self.getReturnAddressFrameIndex(DAG);
+    OutRetAddr = DAG.getLoad(VT, dl, Chain, OutRetAddr, MachinePointerInfo { 0, 0 }, MaybeAlign {}, MONone, MMOMetadata {});
+    return SDValue { Node: OutRetAddr.getNode(), ResNo: 1 };
+}
+
+fn EmitTailCallStoreRetAddr(DAG: *mut SelectionDAG, MF: *mut MachineFunction, Chain: SDValue, RetAddrFrIdx: SDValue, PtrVT: EVT, SlotSize: u32, FPDiff: i32, dl: *SDLoc) -> SDValue {
+    if !FPDiff {
+        return Chain;
+    }
+    let mut NewReturnAddrFI: i32 = MF.getFrameInfo().CreateFixedObject(SlotSize, FPDiff as i64 - SlotSize, false, false);
+    let mut NewRetAddrFrIdx: SDValue = DAG.getFrameIndex(NewReturnAddrFI, PtrVT, false);
+    Chain = DAG.getStore(Chain, dl, RetAddrFrIdx, NewRetAddrFrIdx, getFixedStack(DAG.getMachineFunction(), NewReturnAddrFI, 0), MaybeAlign {}, MONone, MMOMetadata {});
+    return Chain;
+}
+
+fn X86TargetLowering::getMOVL(self: *X86TargetLowering, DAG: *mut SelectionDAG, dl: *SDLoc, VT: MVT, V1: SDValue, V2: SDValue) -> SDValue {
+    let mut NumElems: u32 = VT.getVectorNumElements();
+    let mut Mask: SmallVector<int, 8> = zeroed();
+    Mask()(NumElems);
+    for let mut i: u32 = 1; i != NumElems; i += 1 {
+        Mask()(i);
+    }
+    return DAG.getVectorShuffle(VT, dl, V1, V2);
+}
+
+fn X86TargetLowering::ByValNeedsCopyForTailCall(self: *X86TargetLowering, DAG: *mut SelectionDAG, Src: SDValue, Dst: SDValue, Flags: ArgFlagsTy) -> ByValCopyKind {
+    let mut MFI: *mut MachineFrameInfo = DAG.getMachineFunction().getFrameInfo();
+    if isa(Src) || isa(Src) {
+        return CopyOnce;
+    }
+    let mut SrcFrameIdxNode: *mut auto = dyn_cast(Src);
+    let mut DstFrameIdxNode: *mut auto = dyn_cast(Dst);
+    if operator!() || operator!() {
+        return CopyViaTemp;
+    }
+    let mut SrcFI: i32 = ();
+    let mut DstFI: i32 = ();
+    assert!(MFI.isFixedObjectIndex(DstFI), "byval passed in non-fixed stack slot");
+    let mut SrcOffset: i64 = MFI.getObjectOffset(SrcFI);
+    let mut DstOffset: i64 = MFI.getObjectOffset(DstFI);
+    let mut FixedSrc: bool = MFI.isFixedObjectIndex(SrcFI);
+    if !FixedSrc || (FixedSrc && SrcOffset < 0) {
+        return CopyOnce;
+    }
+    if SrcOffset == DstOffset {
+        return NoCopy;
+    } else {
+        return CopyViaTemp;
+    }
+}
+
+fn X86TargetLowering::LowerCall(self: *X86TargetLowering, CLI: *mut CallLoweringInfo, InVals: *mut SmallVectorImpl<SDValue>) -> SDValue {
+    let mut DAG: *mut SelectionDAG = CLI.DAG;
+    let mut dl: *mut SDLoc = CLI.DL;
+    let mut Outs: *mut OutputArg> = CLI();
+    let mut OutVals: *mut SmallVectorImpl<SDValue> = CLI();
+    let mut Ins: *mut InputArg> = CLI();
+    let mut Chain: SDValue = CLI.Chain;
+    let mut Callee: SDValue = CLI.Callee;
+    let mut CallConv: ID = CLI.CallConv;
+    let mut isTailCall: *mut bool = CLI.IsTailCall;
+    let mut isVarArg: bool = CLI.IsVarArg;
+    let mut CB: *CallBase = CLI.CB;
+    let mut MF: *mut MachineFunction = DAG.getMachineFunction();
+    let mut Is64Bit: bool = self.Subtarget();
+    let mut IsWin64: bool = self.Subtarget.isCallingConvWin64(CallConv);
+    let mut ShouldGuaranteeTCO: bool = shouldGuaranteeTCO(CallConv, MF.getTarget().Options.GuaranteedTailCallOpt);
+    let mut X86Info: *mut X86MachineFunctionInfo = MF;
+    let mut HasNCSR: bool = (CB && isa(CB) && CB.hasFnAttr("no_caller_saved_registers"));
+    let mut IsIndirectCall: bool = (CB && isa(CB) && CB.isIndirectCall());
+    let mut IsCFICall: bool = IsIndirectCall && CLI.CFIType;
+    let mut M: *Module = MF.getFunction().getParent();
+    let mut IsNoTrackIndirectCall: bool = IsIndirectCall && CB.doesNoCfCheck() && M.getModuleFlag("cf-protection-branch");
+    if IsNoTrackIndirectCall {
+        isTailCall = false;
+    }
+    let mut CSInfo: CallSiteInfo = CallSiteInfo {};
+    if CallConv == X86_INTR {
+        report_fatal_error("X86 interrupts may not be called directly", true);
+    }
+    self.setTypeIdForCallsiteInfo;
+    if IsIndirectCall && !IsWin64 && M.getModuleFlag("import-call-optimization") {
+        errorUnsupported(DAG, dl, "Indirect calls must have a normal calling convention if Import Call Optimization is enabled");
+    }
+    let mut ArgLocs: SmallVector<CCValAssign, 16> = zeroed();
+    let mut CCInfo: CCState = CallConv;
+    if IsWin64 {
+        CCInfo.AllocateStack(32, Align { ShiftValue: 8 });
+    }
+    CCInfo.AnalyzeArguments(Outs, CC_X86);
+    if X86_VectorCall == CallConv {
+        CCInfo;
+    }
+    if isTailCall && ShouldGuaranteeTCO {
+        let mut CallerCC: ID = MF.getFunction().getCallingConv();
+        isTailCall = (CallConv == CallerCC);
+    }
+    let mut IsMustTail: bool = CLI.CB && CLI.CB.isMustTailCall();
+    let mut IsSibcall: bool = false;
+    if isTailCall {
+        IsSibcall = self.isEligibleForSiblingCallOpt(CLI, CCInfo);
+        isTailCall = IsSibcall || IsMustTail || ShouldGuaranteeTCO;
+    }
+    if isTailCall {
+        operator(NumTailCalls);
+    }
+    if IsMustTail && !isTailCall {
+        report_fatal_error("failed to perform tail call elimination on a call site marked musttail", true);
+    }
+    assert!(!(isVarArg && canGuaranteeTCO(CallConv)), "Var args not supported with calling convention fastcc, ghc or hipe");
+    let mut NumBytes: u32 = CCInfo.getAlignedCallFrameSize();
+    if IsSibcall {
+        NumBytes = 0;
+    } else if ShouldGuaranteeTCO && canGuaranteeTCO(CallConv) {
+        NumBytes = self.GetAlignedArgumentStackSize(NumBytes, DAG);
+    }
+    let mut FPDiff: i32 = 0;
+    if isTailCall && ShouldGuaranteeTCO && !IsSibcall {
+        let mut NumBytesCallerPushed: u32 = X86Info.getBytesToPopOnReturn();
+        FPDiff = NumBytesCallerPushed - NumBytes;
+        if FPDiff < X86Info.getTCReturnAddrDelta() {
+            X86Info.setTCReturnAddrDelta(FPDiff);
+        }
+    }
+    let mut NumBytesToPush: u32 = NumBytes;
+    let mut NumBytesToPop: u32 = NumBytes;
+    let mut StackPtr: SDValue = SDValue {};
+    let mut RegInfo: *X86RegisterInfo = self.Subtarget.getRegisterInfo();
+    let mut ByValTemporaries: SmallVector<SDValue, 8> = zeroed();
+    let mut ByValTempChain: SDValue = SDValue {};
+    if isTailCall {
+        ByValTemporaries()(OutVals.len, SDValue {});
+        let mut ByValCopyChains: SmallVector<SDValue, 8> = zeroed();
+        if operator!() {
+            ByValTempChain = DAG(TokenFactor, dl, Other);
+        }
+    }
+    if operator!(Outs()()) && Outs()()() {
+        NumBytesToPush = 0;
+        if operator!(()()) {
+            report_fatal_error("cannot use inalloca attribute on a register parameter", true);
+        }
+        if ArgLocs()()() != 0 {
+            report_fatal_error("any parameter with the inalloca attribute must be the only memory argument", true);
+        }
+    } else if CLI.IsPreallocated {
+        (((operator!(operator!((ArgLocs()()() && "cannot use preallocated attribute on a register parameter")))) || (_wassert(L"ArgLocs.back().isMemLoc() && \"cannot use preallocated attribute on a register \" \"parameter\"", L"llvm\\lib\\Target\\X86\\X86ISelLoweringCall.cpp", (2294) as u32) , 0)) as void);
+        let mut PreallocatedOffsets: SmallVector<size_t, 4> = zeroed();
+        for let mut i: u64 = 0; i < CLI()(); i += 1 {
+            if CLI.CB.paramHasAttr(i, Preallocated) {
+                PreallocatedOffsets()([i]());
+            }
+        }
+        let mut MFI: *mut auto = DAG.getMachineFunction();
+        let mut PreallocatedId: u64 = (CLI.CB);
+        MFI()(PreallocatedId, NumBytes);
+        MFI()(PreallocatedId);
+        NumBytesToPush = 0;
+    }
+    if !IsSibcall && !IsMustTail {
+        Chain = DAG.getCALLSEQ_START(Chain, NumBytesToPush, NumBytes - NumBytesToPush, dl);
+    }
+    let mut RetAddrFrIdx: SDValue = SDValue {};
+    if isTailCall && FPDiff {
+        Chain = self.EmitTailCallLoadRetAddr(DAG, RetAddrFrIdx, Chain, isTailCall, Is64Bit, FPDiff, dl);
+    }
+    let mut RegsToPass: pair<Register, SDValue>, 8> = zeroed();
+    let mut MemOpChains: SmallVector<SDValue, 8> = zeroed();
+    (((operator!(operator!((isSortedByValueNo() && "Argument Location list must be sorted before lowering")))) || (_wassert(L"isSortedByValueNo(ArgLocs) && \"Argument Location list must be sorted before lowering\"", L"llvm\\lib\\Target\\X86\\X86ISelLoweringCall.cpp", (2324) as u32) , 0)) as void);
+    for let mut I: u32 = 0;
+let mut OutIndex: u32 = 0;
+let mut E: u32 = (); I != E; I += 1 , OutIndex += 1 {
+        (((operator!(operator!((OutIndex < Outs()() && "Invalid Out index")))) || (_wassert(L"OutIndex < Outs.size() && \"Invalid Out index\"", L"llvm\\lib\\Target\\X86\\X86ISelLoweringCall.cpp", (2330) as u32) , 0)) as void);
+        let mut Flags: ArgFlagsTy = zeroed();
+        if Flags.isInAlloca() || Flags.isPreallocated() {
+            continue;
+        }
+        let mut VA: *mut CCValAssign = [I];
+        let mut RegVT: EVT = EVT { VA.getLocVT() };
+        let mut Arg: SDValue = OutVals[OutIndex];
+        let mut isByVal: bool = Flags.isByVal();
+        match VA.getLocInfo() {
+            _ => {
+                llvm_unreachable_internal("Unknown loc info!", "llvm\\lib\\Target\\X86\\X86ISelLoweringCall.cpp", 2343);
+            },
+            Full => {
+                break;
+            },
+            SExt => {
+                Arg = DAG.getNode(SIGN_EXTEND, dl, RegVT, Arg);
+            },
+            ZExt => {
+                Arg = DAG.getNode(ZERO_EXTEND, dl, RegVT, Arg);
+            },
+            AExt => {
+                if Arg.getValueType().isVector() && Arg.getValueType().getVectorElementType() == EVT { i1 } {
+                    Arg = lowerMasksToReg(Arg, RegVT, dl, DAG);
+                } else if RegVT.is128BitVector() {
+                    Arg = DAG.getBitcast(EVT { i64 }, Arg);
+                    Arg = DAG.getNode(SCALAR_TO_VECTOR, dl, EVT { v2i64 }, Arg);
+                    Arg = self.getMOVL(DAG, dl, MVT { SimpleTy: v2i64 }, DAG.getUNDEF(EVT { v2i64 }), Arg);
+                } else {
+                    Arg = DAG.getNode(ANY_EXTEND, dl, RegVT, Arg);
+                }
+            },
+            BCvt => {
+                Arg = DAG.getBitcast(RegVT, Arg);
+            },
+            Indirect => {
+                if isByVal {
+                    let mut FrameIdx: i32 = MF.getFrameInfo().CreateStackObject(Flags.getByValSize(), max(Align { ShiftValue: 16 }, Flags.getNonZeroByValAlign()), false);
+                    let mut StackSlot: SDValue = DAG.getFrameIndex(FrameIdx, self.getPointerTy);
+                    Chain = CreateCopyOfByValArgument(Arg, StackSlot, Chain, Flags, DAG, dl);
+                    Arg = StackSlot;
+                    isByVal = false;
+                } else {
+                    let mut SpillSlot: SDValue = DAG.CreateStackTemporary(EVT { VA.getValVT() }, 1);
+                    let mut FI: i32 = cast(SpillSlot)();
+                    Chain = DAG.getStore(Chain, dl, Arg, SpillSlot, getFixedStack(DAG.getMachineFunction(), FI, 0), MaybeAlign {}, MONone, MMOMetadata {});
+                    Arg = SpillSlot;
+                }
+                break;
+            },
+        }
+        if VA.needsCustom() {
+            assert!(VA.getValVT() == v64i1, "Currently the only custom case is when we split v64i1 to 2 regs");
+            Passv64i1ArgInRegs(dl, DAG, Arg, VA, [I += 1], self.Subtarget);
+        } else if VA.isRegLoc() {
+            RegsToPass()(make_pair(VA.getLocReg(), Arg));
+            let mut Options: *TargetOptions = DAG.getTarget().Options;
+            if Options.EmitCallSiteInfo {
+                CSInfo.ArgRegPairs;
+            }
+            if isVarArg && IsWin64 {
+                let mut ShadowReg: Register = Register { Reg: 0 };
+                match VA.getLocReg().operator unsigned int() {
+
+                }
+                if ShadowReg.operator unsigned int() {
+                    RegsToPass()(make_pair(ShadowReg, Arg));
+                }
+            }
+        } else if !IsSibcall && (!isTailCall || (isByVal && !IsMustTail)) {
+            assert!(VA.isMemLoc();
+            if !StackPtr.getNode() {
+                StackPtr = DAG(Chain, dl, RegInfo.getStackRegister(), self.getPointerTy);
+            }
+            MemOpChains()(self.LowerMemOpCallTo(Chain, StackPtr, Arg, dl, DAG, VA, Flags, isByVal));
+        }
+    }
+    if operator!() {
+        Chain = DAG(TokenFactor, dl, Other);
+    }
+    if self.Subtarget.isPICStyleGOT() {
+        if !isTailCall {
+            if (operator(Callee).getOpcode() == GlobalAddress || operator(Callee).getOpcode() == ExternalSymbol) {
+                RegsToPass()(make_pair(DAG(GlobalBaseReg, SDLoc {}, self.getPointerTy)));
+            }
+        } else {
+            let mut G: *mut GlobalAddressSDNode = dyn_cast(Callee);
+            if G && !G.getGlobal().hasLocalLinkage() && G.getGlobal().hasDefaultVisibility() {
+                Callee = self.LowerGlobalAddress(Callee, DAG);
+            } else if isa(Callee) {
+                Callee = self.LowerExternalSymbol(Callee, DAG);
+            }
+        }
+    }
+    if Is64Bit && isVarArg && !IsWin64 && !IsMustTail && (self.Subtarget.hasSSE1() || !M.getModuleFlag("SkipRaxSetup")) {
+        let mut XMMArgRegs: []MCPhysReg = zeroed();
+        let mut NumXMMRegs: u32 = CCInfo.getFirstUnallocated;
+        assert!((self.Subtarget.hasSSE1() || !NumXMMRegs), "SSE registers cannot be used when SSE is disabled");
+        RegsToPass()(make_pair(DAG.getConstant(NumXMMRegs, dl, EVT { i8 }, false, false)));
+    }
+    if isVarArg && IsMustTail {
+        let mut Forwards: *auto = X86Info.getForwardedMustTailRegParms();
+    }
+    if isTailCall && !IsSibcall {
+        Chain = DAG.getStackArgumentTokenFactor(Chain);
+        if ByValTempChain {
+            Chain = DAG.getNode(TokenFactor, dl, EVT { Other }, Chain, ByValTempChain);
+        }
+        let mut MemOpChains2: SmallVector<SDValue, 8> = zeroed();
+        let mut FIN: SDValue = SDValue {};
+        let mut FI: i32 = 0;
+        for let mut I: u32 = 0;
+let mut OutsIndex: u32 = 0;
+let mut E: u32 = (); I != E; I += 1 , OutsIndex += 1 {
+            let mut VA: *mut CCValAssign = [I];
+            if VA.isRegLoc() {
+                if VA.needsCustom() {
+                    assert!((CallConv == X86_RegCall), "Expecting custom case only in regcall calling convention");
+                    I += 1;
+                }
+                continue;
+            }
+            assert!(VA.isMemLoc();
+            let mut Arg: SDValue = OutVals[OutsIndex];
+            let mut Flags: ArgFlagsTy = zeroed();
+            if Flags.isInAlloca() || Flags.isPreallocated() {
+                continue;
+            }
+            let mut Offset: i32 = VA.getLocMemOffset() + FPDiff;
+            let mut OpSize: u32 = (VA.getLocVT().getSizeInBits().operator unsigned long long() + 7) / 8;
+            FI = MF.getFrameInfo().CreateFixedObject(OpSize, Offset, true, false);
+            FIN = DAG.getFrameIndex(FI, self.getPointerTy);
+            if Flags.isByVal() {
+                if [OutsIndex] {
+                    ByValSrc;
+                } else {
+                    let mut PtrVT: auto = self.getPointerTy;
+                    let mut DstAddr: SDValue = DAG.getFrameIndex(FI);
+                    MemOpChains2()(CreateCopyOfByValArgument(ByValSrc, DstAddr, Chain, Flags, DAG, dl));
+                }
+            } else {
+                MemOpChains2()(DAG.getStore(Chain, dl, Arg, FIN, getFixedStack(DAG.getMachineFunction(), FI, 0), MaybeAlign {}, MONone, MMOMetadata {}));
+            }
+        }
+        if operator!() {
+            Chain = DAG(TokenFactor, dl, Other);
+        }
+        Chain = EmitTailCallStoreRetAddr(DAG, MF, Chain, RetAddrFrIdx, self.getPointerTy, RegInfo.getSlotSize(), FPDiff, dl);
+    }
+    let mut InGlue: SDValue = SDValue {};
+    let mut IsImpCall: bool = false;
+    let mut IsCFGuardCall: bool = false;
+    if DAG.getTarget().getCodeModel() == Large {
+        assert!(Is64Bit, "Large code model is only legal in 64-bit mode.");
+    } else if operator(Callee).getOpcode() == GlobalAddress || operator(Callee).getOpcode() == ExternalSymbol {
+        Callee = self.LowerGlobalOrExternal(Callee, DAG, true, &mut IsImpCall);
+    } else if self.Subtarget.isTarget64BitILP32() && Callee.getValueType() == EVT { i32 } {
+        Callee = DAG.getNode(ZERO_EXTEND, dl, EVT { i64 }, Callee);
+    } else if Is64Bit && CB && isCFGuardCall(CB) {
+        IsCFGuardCall = true;
+        let mut LoadNode: *mut auto = cast(Callee);
+        let mut GA: *mut GlobalAddressSDNode = cast(self.unwrapAddress());
+        assert!(isCFGuardFunction(GA.getGlobal()), "CFG Call should be to a guard function");
+        (((operator!(operator!((LoadNode()()() && "CFG Function load should not have an offset")))) || (_wassert(L"LoadNode->getOffset()->isUndef() && \"CFG Function load should not have an offset\"", L"llvm\\lib\\Target\\X86\\X86ISelLoweringCall.cpp", (2604) as u32) , 0)) as void);
+        Callee = DAG.getTargetGlobalAddress(GA.getGlobal(), dl, GA.getValueType(0), 0, MO_NO_FLAG);
+    }
+    let mut Ops: SmallVector<SDValue, 8> = zeroed();
+    if !IsSibcall && isTailCall && !IsMustTail {
+        Chain = DAG.getCALLSEQ_END(Chain, NumBytesToPop, 0, InGlue, dl);
+        InGlue = Chain.getValue(1);
+    }
+    Ops()(Chain);
+    Ops()(Callee);
+    if isTailCall {
+        Ops()(DAG.getSignedTargetConstant(FPDiff, dl, EVT { i32 }, false));
+    }
+    let mut Mask: *u32 = Closure_5 { CallConv: &mut CallConv, HasNCSR: &mut HasNCSR, CB: &mut CB, RegInfo: &mut RegInfo, MF: &mut MF }.call();
+    assert!(Mask, "Missing call preserved mask for calling convention");
+    if clobbersPhysReg(Mask, RegInfo.getFramePtr().operator MCRegister()) {
+        X86Info.setFPClobberedByCall(true);
+        if CLI.CB && isa(CLI.CB) {
+            X86Info.setFPClobberedByInvoke(true);
+        }
+    }
+    if clobbersPhysReg(Mask, RegInfo.getBaseRegister().operator MCRegister()) {
+        X86Info.setBPClobberedByCall(true);
+        if CLI.CB && isa(CLI.CB) {
+            X86Info.setBPClobberedByInvoke(true);
+        }
+    }
+    if !Is64Bit && CLI.CB && isa(CLI.CB) {
+        let mut CallerFn: *Function = MF.getFunction();
+        let mut Pers: EHPersonality = if CallerFn.hasPersonalityFn() { classifyEHPersonality(CallerFn.getPersonalityFn()) } else { Unknown };
+        if isFuncletEHPersonality(Pers) {
+            Mask = RegInfo.getNoPreservedMask();
+        }
+    }
+    let mut RegMask: *mut u32 = null;
+    let mut ShouldDisableArgRegs: bool = shouldDisableArgRegFromCSR(CallConv) || HasNCSR;
+    if ShouldDisableArgRegs || shouldDisableRetRegFromCSR(CallConv) {
+        let mut TRI: *TargetRegisterInfo = self.Subtarget.getRegisterInfo();
+        RegMask = MF.allocateRegMask();
+        let mut RegMaskSize: u32 = getRegMaskSize(TRI.getNumRegs);
+        memcpy(RegMask, Mask, (RegMask[0]) * RegMaskSize);
+        if ShouldDisableArgRegs {}
+        Ops()(DAG.getRegisterMask(RegMask));
+    } else {
+        Ops()(DAG.getRegisterMask(Mask));
+    }
+    if InGlue.getNode() {
+        Ops()(InGlue);
+    }
+    if isTailCall {
+        MF.getFrameInfo().setHasTailCall(true);
+        let mut Opcode: auto = zeroed();
+        let mut Ret: SDValue = DAG(dl, Other);
+        if IsCFICall {
+            Ret.getNode().setCFIType(CLI.CFIType.getZExtValue());
+        }
+        DAG.addNoMergeSiteInfo(Ret.getNode(), CLI.NoMerge);
+        DAG.addCallSiteInfo(Ret.getNode(), move(CSInfo));
+        return Ret;
+    }
+    let mut NodeTys: SDVTList = DAG.getVTList(EVT { Other }, EVT { Glue });
+    if IsImpCall {
+        Chain = DAG;
+    } else if IsNoTrackIndirectCall {
+        Chain = DAG;
+    } else if IsCFGuardCall {
+        Chain = DAG;
+    } else if CLI.CB && hasAttachedCallOpBundle(CLI.CB) {
+        assert!(!isTailCall, "tail calls cannot be marked with clang.arc.attachedcall");
+        assert!(Is64Bit, "clang.arc.attachedcall is only supported in 64bit mode");
+        let mut ARCFn: *mut Function = operator*((CLI.CB));
+        let mut PtrVT: auto = self.getPointerTy;
+        let mut GA: auto = DAG.getTargetGlobalAddress(ARCFn, dl);
+        Ops()(() + 1);
+        Chain = DAG;
+    } else {
+        Chain = DAG;
+    }
+    if IsCFICall {
+        Chain.getNode().setCFIType(CLI.CFIType.getZExtValue());
+    }
+    InGlue = Chain.getValue(1);
+    DAG.addNoMergeSiteInfo(Chain.getNode(), CLI.NoMerge);
+    DAG.addCallSiteInfo(Chain.getNode(), move(CSInfo));
+    if CLI.CB {
+        if CLI.CB.getMetadata("heapallocsite") {
+            HeapAlloc;
+        } else {
+            DAG.addHeapAllocSite(Chain.getNode(), HeapAlloc);
+        }
+    }
+    let mut NumBytesForCalleeToPop: u32 = 0;
+    if isCalleePop(CallConv, Is64Bit, isVarArg, DAG.getTarget().Options.GuaranteedTailCallOpt) {
+        NumBytesForCalleeToPop = NumBytes;
+    } else if hasCalleePopSRet(Outs, self.Subtarget) {
+        NumBytesForCalleeToPop = 4;
+    }
+    if !IsSibcall {
+        Chain = DAG.getCALLSEQ_END(Chain, NumBytesToPop, NumBytesForCalleeToPop, InGlue, dl);
+        InGlue = Chain.getValue(1);
+    }
+    return self.LowerCallResult(Chain, InGlue, CallConv, isVarArg, Ins, dl, DAG, InVals, RegMask);
+}
+
+fn X86TargetLowering::GetAlignedArgumentStackSize(self: *X86TargetLowering, StackSize: u32, DAG: *mut SelectionDAG) -> u32 {
+    let mut StackAlignment: Align = self.Subtarget.getFrameLowering().getStackAlign();
+    let mut SlotSize: u64 = self.Subtarget.getRegisterInfo().getSlotSize();
+    assert!(StackSize % SlotSize == 0, "StackSize must be a multiple of SlotSize");
+    return alignTo(StackSize + SlotSize, StackAlignment) - SlotSize;
+}
+
+fn MatchingStackOffset(Arg: SDValue, Offset: u32, Flags: ArgFlagsTy, MFI: *mut MachineFrameInfo, MRI: *MachineRegisterInfo, TII: *X86InstrInfo, VA: *CCValAssign) -> bool {
+    let mut Bytes: u32 = Arg.getValueSizeInBits().operator unsigned long long() / 8;
+    for {
+        let mut Op: u32 = Arg.getOpcode();
+        if Op == ZERO_EXTEND || Op == ANY_EXTEND || Op == BITCAST || Op == AssertZext {
+            Arg = Arg.getOperand(0);
+            continue;
+        }
+        if Op == TRUNCATE {
+            let mut TruncInput: *SDValue = Arg.getOperand(0);
+            if TruncInput.getOpcode() == AssertZext && cast(TruncInput.getOperand(1))() == Arg.getValueType() {
+                Arg = TruncInput.getOperand(0);
+                continue;
+            }
+        }
+        break;
+    }
+    let mut FI: i32 = 2147483647;
+    if Arg.getOpcode() == CopyFromReg {
+        let mut VR: Register = cast(Arg.getOperand(1))();
+        if !VR.isVirtual() {
+            return false;
+        }
+        let mut Def: *mut MachineInstr = MRI.getVRegDef(VR);
+        if !Def {
+            return false;
+        }
+        if !Flags.isByVal() {
+            if !TII.isLoadFromStackSlot(*Def, FI).operator unsigned int() {
+                return false;
+            }
+        } else {
+            let mut Opcode: u32 = Def.getOpcode();
+            if  {
+                FI = Def.getOperand(1).getIndex();
+                Bytes = Flags.getByValSize();
+            } else {
+                return false;
+            }
+        }
+    } else if dyn_cast(Arg) {
+        Ld;
+    } else {
+        if Flags.isByVal() {
+            return false;
+        }
+        let mut Ptr: SDValue = Ld.getBasePtr();
+        let mut FINode: *mut FrameIndexSDNode = dyn_cast(Ptr);
+        if !FINode {
+            return false;
+        }
+        FI = FINode.getIndex();
+    }
+    assert!(FI != 2147483647);
+    if !MFI.isFixedObjectIndex(FI) {
+        return false;
+    }
+    if Offset != MFI.getObjectOffset(FI) {
+        return false;
+    }
+    if !Flags.isByVal() && !MFI.isImmutableObjectIndex(FI) {
+        return false;
+    }
+    if VA.getLocVT().getFixedSizeInBits() > Arg.getValueSizeInBits().getFixedValue() {
+        if Flags.isZExt() != MFI.isObjectZExt(FI) || Flags.isSExt() != MFI.isObjectSExt(FI) {
+            return false;
+        }
+    }
+    return Bytes == MFI.getObjectSize(FI);
+}
+
+fn mayBeSRetTailCallCompatible(CLI: *CallLoweringInfo, CallerSRetReg: Register) -> bool {
+    let mut Outs: *auto = CLI();
+    let mut OutVals: *auto = CLI();
+    let mut Pos: u32 = 0;
+    for let mut E: u32 = (); Pos != E; Pos += 1 {
+        if Outs()[Pos]() {
+            break;
+        }
+    }
+    if Pos == () {
+        return false;
+    }
+    let mut SRetArgVal: SDValue = [Pos];
+    return false;
+}
+
+fn X86TargetLowering::isEligibleForSiblingCallOpt(self: *X86TargetLowering, CLI: *mut CallLoweringInfo, CCInfo: *mut CCState, ArgLocs: *mut SmallVectorImpl<CCValAssign>) -> bool {
+    let mut DAG: *mut SelectionDAG = CLI.DAG;
+    let mut Outs: *OutputArg> = CLI();
+    let mut OutVals: *SmallVectorImpl<SDValue> = CLI();
+    let mut Ins: *InputArg> = CLI();
+    let mut Callee: SDValue = CLI.Callee;
+    let mut CalleeCC: ID = CLI.CallConv;
+    let mut isVarArg: bool = CLI.IsVarArg;
+    if !mayTailCallThisCC(CalleeCC) {
+        return false;
+    }
+    let mut MF: *mut MachineFunction = DAG.getMachineFunction();
+    let mut FuncInfo: *mut X86MachineFunctionInfo = MF;
+    let mut CallerF: *Function = MF.getFunction();
+    if CallerF.getReturnType().isX86_FP80Ty() && !CLI.RetTy.isX86_FP80Ty() {
+        return false;
+    }
+    let mut CallerCC: ID = CallerF.getCallingConv();
+    let mut IsCalleeWin64: bool = self.Subtarget.isCallingConvWin64(CalleeCC);
+    let mut IsCallerWin64: bool = self.Subtarget.isCallingConvWin64(CallerCC);
+    if IsCalleeWin64 != IsCallerWin64 {
+        return false;
+    }
+    if self.Subtarget.isLFI() && ArgLocs()() > 5 {
+        return false;
+    }
+    if self.Subtarget.isPICStyleGOT() {
+        if isa(Callee) {
+            return false;
+        }
+        if dyn_cast(Callee) {
+            G;
+        } else {
+            if !G.getGlobal().hasLocalLinkage() && G.getGlobal().hasDefaultVisibility() {
+                return false;
+            }
+        }
+    }
+    let mut RegInfo: *X86RegisterInfo = self.Subtarget.getRegisterInfo();
+    if RegInfo()(MF) {
+        return false;
+    }
+    if FuncInfo.getSRetReturnReg() {
+        SRetReg.operator unsigned int();
+    } else {
+        if !mayBeSRetTailCallCompatible(CLI, SRetReg) {
+            return false;
+        }
+    }
+    let mut C: *mut LLVMContext = *DAG.getContext();
+    if isVarArg && operator!(Outs()()) {
+        if IsCalleeWin64 || IsCallerWin64 {
+            return false;
+        }
+    }
+    let mut Unused: bool = false;
+    if Unused {
+        let mut RVLocs: SmallVector<CCValAssign, 16> = zeroed();
+        let mut RVCCInfo: CCState = CalleeCC;
+        RVCCInfo.AnalyzeCallResult(Ins, RetCC_X86);
+    }
+    if !resultsCompatible(CalleeCC, CallerCC, MF, C, Ins, RetCC_X86, RetCC_X86) {
+        return false;
+    }
+    let mut TRI: *X86RegisterInfo = self.Subtarget.getRegisterInfo();
+    let mut CallerPreserved: *u32 = TRI.getCallPreservedMask(MF, CallerCC);
+    if CallerCC != CalleeCC {
+        let mut CalleePreserved: *u32 = TRI.getCallPreservedMask(MF, CalleeCC);
+        if operator!(TRI()(CallerPreserved, CalleePreserved)) {
+            return false;
+        }
+    }
+    if CallerF.hasFnAttribute("no_caller_saved_registers") {
+        return false;
+    }
+    let mut StackArgsSize: u32 = CCInfo.getStackSize();
+    if operator!(Outs()()) {
+        if StackArgsSize > 0 {
+            let mut MFI: *mut MachineFrameInfo = MF.getFrameInfo();
+            let mut MRI: *MachineRegisterInfo = &mut MF.getRegInfo();
+            let mut TII: *X86InstrInfo = self.Subtarget.getInstrInfo();
+            for let mut I: u32 = 0;
+let mut E: u32 = ArgLocs()(); I != E; I += 1 {
+                let mut VA: *CCValAssign = null;
+                let mut Arg: SDValue = OutVals[I];
+                let mut Flags: ArgFlagsTy = zeroed();
+                if VA.getLocInfo() == Indirect {
+                    return false;
+                }
+                if !VA.isRegLoc() {
+                    if !MatchingStackOffset(Arg, VA.getLocMemOffset(), Flags, MFI, MRI, TII, VA) {
+                        return false;
+                    }
+                }
+            }
+        }
+        let mut PositionIndependent: bool = self.isPositionIndependent;
+        if operator!(self.Subtarget()) && ((!isa(Callee) && !isa(Callee)) || PositionIndependent) {
+            let mut NumInRegs: u32 = 0;
+            let mut MaxInRegs: u32 = if PositionIndependent { 2 } else { 3 };
+        }
+        let mut MRI: *MachineRegisterInfo = MF.getRegInfo();
+        if operator!(self.parametersInCSRMatch) {
+            return false;
+        }
+    }
+    let mut CalleeWillPop: bool = isCalleePop(CalleeCC, self.Subtarget(), isVarArg, MF.getTarget().Options.GuaranteedTailCallOpt);
+    if FuncInfo.getBytesToPopOnReturn() {
+        BytesToPop;
+    } else {
+        let mut CalleePopMatches: bool = CalleeWillPop && BytesToPop == StackArgsSize;
+        if !CalleePopMatches {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn isCalleePop(CallingConv: ID, is64Bit: bool, IsVarArg: bool, GuaranteeTCO: bool) -> bool {
+    if !IsVarArg && shouldGuaranteeTCO(CallingConv, GuaranteeTCO) {
+        return true;
+    }
+    match CallingConv {
+        _ => {
+            return false;
+        },
+        X86_StdCall => {
+            X86_FastCall;
+        },
+    }
+}
+
+struct Closure_1 {
+    cap_0: *X86TargetLowering,
+}
+
+fn Closure_1::call(self: *mut Closure_1, CC: ID) -> auto {
+        match CC {
+            Win64 => {
+                return true;
+            },
+            C => {
+                return self.Subtarget.isOSWindowsOrUEFI();
+            },
+            _ => {
+                return false;
+            },
+        }
+    }
+
+struct Closure_2 {}
+
+fn Closure_2::call(self: *Closure_2, Out: *OutputArg) -> bool {
+        return Out.VT == f128;
+    }
+
+struct Closure_3 {}
+
+fn Closure_3::call(self: *mut Closure_3, A: *CCValAssign, B: *CCValAssign) -> auto {
+        return A.getValNo() < B.getValNo();
+    }
+
+struct Closure_4 {}
+
+fn Closure_4::call(self: *Closure_4, Arg: *Argument) -> bool {
+            return Arg.getType().isX86_FP80Ty();
+        }
+
+struct Closure_5 {
+    CallConv: *mut ID,
+    HasNCSR: *mut bool,
+    CB: *mut *CallBase,
+    RegInfo: *mut *X86RegisterInfo,
+    MF: *mut MachineFunction,
+}
+
+unsafe fn Closure_5::call(self: *mut Closure_5) -> *u32 {
+        let mut AdaptedCC: ID = (*self.CallConv);
+        if (*self.HasNCSR) {
+            AdaptedCC = X86_INTR as ID;
+        }
+        if (*self.CB) && (*self.CB).hasFnAttr("no_callee_saved_registers") {
+            AdaptedCC = GHC as ID;
+        }
+        return (*self.RegInfo).getCallPreservedMask((*self.MF), AdaptedCC);
+    }

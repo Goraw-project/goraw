@@ -1,0 +1,2116 @@
+fn Parser::MaybeSkipAttributes(self, Kind: ObjCKeywordKind) {
+    let mut attrs: ParsedAttributes = zeroed();
+    if self.Tok.is(kw___attribute) {
+        if Kind == objc_interface || Kind == objc_protocol {
+            << (Kind == objc_protocol);
+        } else {
+            
+        }
+        self.ParseGNUAttributes(attrs, null, null);
+    }
+}
+
+fn Parser::ParseObjCAtDirectives(self, DeclAttrs: *mut ParsedAttributes, DeclSpecAttrs: *mut ParsedAttributes) -> DeclGroupPtrTy {
+    DeclAttrs.takeAllPrependingFrom(DeclSpecAttrs);
+    let mut AtLoc: SourceLocation = self.ConsumeToken();
+    if self.Tok.is(code_completion) {
+        self.cutOffParsing();
+        self.Actions.CodeCompletion().CodeCompleteObjCAtDirective(self.getCurScope());
+        return null;
+    }
+    match self.Tok.getObjCKeywordID() {
+        objc_interface => {
+            objc_protocol;
+        },
+        _ => {
+            
+        },
+    }
+    let mut SingleDecl: *mut Decl = null;
+    match self.Tok.getObjCKeywordID() {
+        objc_class => {
+            return self.ParseObjCAtClassDeclaration;
+        },
+        objc_interface => {
+            SingleDecl = self.ParseObjCAtInterfaceDeclaration(AtLoc, DeclAttrs);
+        },
+        objc_protocol => {
+            return self.ParseObjCAtProtocolDeclaration;
+        },
+        objc_implementation => {
+            return self.ParseObjCAtImplementationDeclaration;
+        },
+        objc_end => {
+            return self.ParseObjCAtEndDeclaration;
+        },
+        objc_compatibility_alias => {
+            SingleDecl = self.ParseObjCAtAliasDeclaration(AtLoc);
+        },
+        objc_synthesize => {
+            SingleDecl = self.ParseObjCPropertySynthesize(AtLoc);
+        },
+        objc_dynamic => {
+            SingleDecl = self.ParseObjCPropertyDynamic(AtLoc);
+        },
+        objc_import => {
+            if self.getLangOpts() || self.getLangOpts() {
+                let mut IS: ModuleImportState = NotACXX20Module;
+                SingleDecl = self.ParseModuleImport(AtLoc, IS);
+                break;
+            }
+        },
+        _ => {
+            
+        },
+    }
+    return self.Actions.ConvertDeclToDeclGroup;
+}
+
+struct ObjCTypeParamListScope {
+    Actions: *mut Sema,
+    S: *mut Scope,
+    Params: *mut ObjCTypeParamList,
+}
+
+fn ObjCTypeParamListScope::~ObjCTypeParamListScope(self) {
+    self.leave();
+}
+
+fn ObjCTypeParamListScope::enter(self, P: *mut ObjCTypeParamList) {
+    assert!(!self.Params);
+    self.Params = P;
+}
+
+fn ObjCTypeParamListScope::leave(self) {
+    if self.Params {
+        self.Actions.ObjC().popObjCTypeParamList(self.S, self.Params);
+    }
+    self.Params = null;
+}
+
+fn Parser::ParseObjCAtClassDeclaration(self, atLoc: SourceLocation) -> DeclGroupPtrTy {
+    self.ConsumeToken();
+    let mut ClassNames: SmallVector<IdentifierInfo *, 8> = zeroed();
+    let mut ClassLocs: SmallVector<SourceLocation, 8> = zeroed();
+    let mut ClassTypeParams: SmallVector<ObjCTypeParamList *, 8> = zeroed();
+    while true {
+        self.MaybeSkipAttributes(objc_class);
+        if self.Tok.is(code_completion) {
+            self.cutOffParsing();
+            self.Actions.CodeCompletion().CodeCompleteObjCClassForwardDecl(self.getCurScope());
+            return self.Actions.ConvertDeclToDeclGroup;
+        }
+        if self.expectIdentifier() {
+            self.SkipUntil(semi, 0 as SkipUntilFlags);
+            return self.Actions.ConvertDeclToDeclGroup;
+        }
+        ClassNames()(self.Tok.getIdentifierInfo());
+        ClassLocs()(self.Tok.getLocation());
+        self.ConsumeToken();
+        let mut TypeParams: *mut ObjCTypeParamList = null;
+        if self.Tok.is(less) {
+            TypeParams = self.parseObjCTypeParamList();
+        }
+        ClassTypeParams()(TypeParams);
+        if !self.TryConsumeToken(comma) {
+            break;
+        }
+    }
+    if self.ExpectAndConsume {
+        return self.Actions.ConvertDeclToDeclGroup;
+    }
+    return self.Actions.ObjC().ActOnForwardClassDeclaration(atLoc);
+}
+
+fn Parser::CheckNestedObjCContexts(self, AtLoc: SourceLocation) {
+    let mut ock: ObjCContainerKind = self.Actions.ObjC().getObjCContainerKind();
+    if ock == OCK_None {
+        return;
+    }
+    let mut Decl: *mut Decl = self.Actions.ObjC().getObjCDeclContext();
+    if self.CurParsedObjCImpl {
+        self.CurParsedObjCImpl.finish(AtLoc);
+    } else {
+        self.Actions.ObjC().ActOnAtEnd(self.getCurScope(), AtLoc, void {}, void {});
+    }
+     << CreateInsertion(AtLoc, "@end\n", false);
+    if Decl {
+        << ock as i32;
+    }
+}
+
+fn Parser::ParseObjCAtInterfaceDeclaration(self, AtLoc: SourceLocation, attrs: *mut ParsedAttributes) -> *mut Decl {
+    assert!(self.Tok.isObjCAtKeyword(objc_interface), "ParseObjCAtInterfaceDeclaration(): Expected @interface");
+    self.CheckNestedObjCContexts(AtLoc);
+    self.ConsumeToken();
+    if self.Tok.is(code_completion) {
+        self.cutOffParsing();
+        self.Actions.CodeCompletion().CodeCompleteObjCInterfaceDecl(self.getCurScope());
+        return null;
+    }
+    self.MaybeSkipAttributes(objc_interface);
+    if self.expectIdentifier() {
+        return null;
+    }
+    let mut nameId: *mut IdentifierInfo = self.Tok.getIdentifierInfo();
+    let mut nameLoc: SourceLocation = self.ConsumeToken();
+    let mut LAngleLoc: SourceLocation = SourceLocation {};
+    let mut EndProtoLoc: SourceLocation = SourceLocation {};
+    let mut ProtocolIdents: SmallVector<IdentifierLoc, 8> = zeroed();
+    let mut typeParameterList: *mut ObjCTypeParamList = null;
+    let mut typeParamScope: ObjCTypeParamListScope = ObjCTypeParamListScope { self.Actions, self.getCurScope() };
+    if self.Tok.is(less) {
+        typeParameterList = self.parseObjCTypeParamListOrProtocolRefs(typeParamScope, LAngleLoc, EndProtoLoc);
+    }
+    if self.Tok.is(l_paren) && !self.isKnownToBeTypeSpecifier(self.GetLookAheadToken(1)) {
+        let mut T: BalancedDelimiterTracker = BalancedDelimiterTracker { *self, l_paren, semi };
+        T.consumeOpen();
+        let mut categoryLoc: SourceLocation = SourceLocation {};
+        let mut categoryId: *mut IdentifierInfo = null;
+        if self.Tok.is(code_completion) {
+            self.cutOffParsing();
+            self.Actions.CodeCompletion().CodeCompleteObjCInterfaceCategory(self.getCurScope(), nameId, nameLoc);
+            return null;
+        }
+        if self.Tok.is(identifier) {
+            categoryId = self.Tok.getIdentifierInfo();
+            categoryLoc = self.ConsumeToken();
+        } else if operator!(self.getLangOpts()) {
+             << identifier;
+            return null;
+        }
+        T.consumeClose();
+        if T.getCloseLocation().isInvalid() {
+            return null;
+        }
+        assert!(LAngleLoc.isInvalid(), "Cannot have already parsed protocols");
+        let mut ProtocolRefs: SmallVector<Decl *, 8> = zeroed();
+        let mut ProtocolLocs: SmallVector<SourceLocation, 8> = zeroed();
+        if self.Tok.is(less) && self.ParseObjCProtocolReferences(true, true, LAngleLoc, EndProtoLoc, true) {
+            return null;
+        }
+        let mut CategoryType: *mut ObjCCategoryDecl = self.Actions.ObjC().ActOnStartCategoryInterface(AtLoc, nameId, nameLoc, typeParameterList, categoryId, categoryLoc, EndProtoLoc, attrs);
+        if self.Tok.is(l_brace) {
+            self.ParseObjCClassInstanceVariables;
+        }
+        self.ParseObjCInterfaceDeclList;
+        return CategoryType();
+    }
+    let mut superClassId: *mut IdentifierInfo = null;
+    let mut superClassLoc: SourceLocation = SourceLocation {};
+    let mut typeArgsLAngleLoc: SourceLocation = SourceLocation {};
+    let mut typeArgs: SmallVector<ParsedType, 4> = zeroed();
+    let mut typeArgsRAngleLoc: SourceLocation = SourceLocation {};
+    let mut protocols: SmallVector<Decl *, 4> = zeroed();
+    let mut protocolLocs: SmallVector<SourceLocation, 4> = zeroed();
+    if self.Tok.is(colon) {
+        self.ConsumeToken();
+        if self.Tok.is(code_completion) {
+            self.cutOffParsing();
+            self.Actions.CodeCompletion().CodeCompleteObjCSuperclass(self.getCurScope(), nameId, nameLoc);
+            return null;
+        }
+        if self.expectIdentifier() {
+            return null;
+        }
+        superClassId = self.Tok.getIdentifierInfo();
+        superClassLoc = self.ConsumeToken();
+        if self.Tok.is(less) {
+            self.parseObjCTypeArgsOrProtocolQualifiers(null, typeArgsLAngleLoc, typeArgsRAngleLoc, LAngleLoc, EndProtoLoc, true, true);
+            if self.Tok.is(eof) {
+                return null;
+            }
+        }
+    }
+    if LAngleLoc.isValid() {
+        if operator!() {
+            self.Actions.ObjC().FindProtocolDeclaration(true, true);
+        }
+    } else if protocols()() && self.Tok.is(less) && self.ParseObjCProtocolReferences(true, true, LAngleLoc, EndProtoLoc, true) {
+        return null;
+    }
+    if self.Tok.isNot(less) {
+        self.Actions.ObjC().ActOnTypedefedProtocols(superClassId, superClassLoc);
+    }
+    let mut SkipBody: SkipBodyInfo = SkipBodyInfo {};
+    let mut ClsType: *mut ObjCInterfaceDecl = self.Actions.ObjC().ActOnStartClassInterface(self.getCurScope(), AtLoc, nameId, nameLoc, typeParameterList, superClassId, superClassLoc, SourceRange { B: typeArgsLAngleLoc, E: typeArgsRAngleLoc }, EndProtoLoc, attrs, &mut SkipBody);
+    if self.Tok.is(l_brace) {
+        self.ParseObjCClassInstanceVariables;
+    }
+    self.ParseObjCInterfaceDeclList;
+    if SkipBody.CheckSameAsPrevious {
+        let mut PreviousDef: *mut auto = cast(SkipBody.Previous);
+        if self.Actions(ClsType) {
+            ClsType.mergeDuplicateDefinitionWithCommon();
+        } else {
+            let mut DiagsEmitter: ODRDiagsEmitter = ODRDiagsEmitter { Diags: self.Diags, Context: self.Actions.getASTContext(), LangOpts: self.getPreprocessor().getLangOpts() };
+            DiagsEmitter(ClsType);
+            ClsType.setInvalidDecl;
+        }
+    }
+    return ClsType();
+}
+
+fn addContextSensitiveTypeNullability(P: *mut Parser, D: *mut Declarator, nullability: NullabilityKind, nullabilityLoc: SourceLocation, addedToDeclSpec: *mut bool) {
+    let mut getNullabilityAttr: Closure_1 = Closure_1 { P: &mut P, nullability: &mut nullability, nullabilityLoc: &mut nullabilityLoc };
+    if D.getNumTypeObjects() > 0 {
+        D.getTypeObject(0).getAttrs().addAtEnd(getNullabilityAttr.call(D.getAttributePool()));
+    } else if !addedToDeclSpec {
+        D.getMutableDeclSpec().getAttributes().addAtEnd;
+        addedToDeclSpec = true;
+    }
+}
+
+fn Parser::parseObjCTypeParamListOrProtocolRefs(self, Scope: *mut ObjCTypeParamListScope, lAngleLoc: *mut SourceLocation, protocolIdents: *mut SmallVectorImpl<IdentifierLoc>, rAngleLoc: *mut SourceLocation, mayBeProtocolList: bool) -> *mut ObjCTypeParamList {
+    assert!(self.Tok.is(less), "Not at the beginning of a type parameter list");
+    let mut G: GreaterThanIsOperatorScope = GreaterThanIsOperatorScope { GreaterThanIsOperator: self.GreaterThanIsOperator, OldGreaterThanIsOperator: false };
+    let mut typeParams: SmallVector<Decl *, 4> = zeroed();
+    let mut makeProtocolIdentsIntoTypeParameters: Closure_2 = Closure_2 { protocolIdents: &mut protocolIdents, cap_1: self, mayBeProtocolList: &mut mayBeProtocolList };
+    let mut invalid: bool = false;
+    lAngleLoc = self.ConsumeToken();
+    while true {
+        {
+        let mut varianceLoc: SourceLocation = SourceLocation {};
+        let mut variance: ObjCTypeParamVariance = Invariant;
+        if self.Tok.is(kw___covariant) || self.Tok.is(kw___contravariant) {
+            variance = if self.Tok.is(kw___covariant) { Covariant } else { Contravariant };
+            varianceLoc = self.ConsumeToken();
+            if mayBeProtocolList {
+                makeProtocolIdentsIntoTypeParameters.call();
+            }
+        }
+        if !self.Tok.is(identifier) {
+            if self.Tok.is(code_completion) {
+                self.cutOffParsing();
+                self.Actions.CodeCompletion().CodeCompleteObjCProtocolReferences;
+                return null;
+            }
+            invalid = true;
+            break;
+        }
+        let mut paramName: *mut IdentifierInfo = self.Tok.getIdentifierInfo();
+        let mut paramLoc: SourceLocation = self.ConsumeToken();
+        let mut colonLoc: SourceLocation = SourceLocation {};
+        let mut boundType: i32 = 0;
+        if self.TryConsumeToken(colon, colonLoc) {
+            if mayBeProtocolList {
+                makeProtocolIdentsIntoTypeParameters.call();
+            }
+            if boundType()() {
+                invalid = true;
+            }
+        } else if mayBeProtocolList {
+            protocolIdents()(paramLoc, paramName);
+            continue;
+        }
+        let mut typeParam: i32 = self.Actions.ObjC()(self.getCurScope(), variance, varianceLoc, paramName, paramLoc, colonLoc, if () { () } else { null });
+        if typeParam()() {
+            typeParams()();
+        }
+    }
+        if !(self.TryConsumeToken(comma)) { break; }
+    }
+    if invalid {
+        self.SkipUntil(greater, at, StopBeforeMatch);
+        if self.Tok.is(greater) {
+            self.ConsumeToken();
+        }
+    } else if self.ParseGreaterThanInTemplateList(lAngleLoc, rAngleLoc, true, true) {
+        if self.Tok.is(greater) {
+            self.ConsumeToken();
+        }
+    }
+    if mayBeProtocolList {
+        if self.Tok.isNot(colon) && self.Tok.isNot(l_paren) {
+            return null;
+        }
+        makeProtocolIdentsIntoTypeParameters.call();
+    }
+    let mut list: *mut ObjCTypeParamList = self.Actions.ObjC().actOnObjCTypeParamList(self.getCurScope(), lAngleLoc, rAngleLoc);
+    Scope.enter(list);
+    lAngleLoc = SourceLocation {};
+    rAngleLoc = SourceLocation {};
+    return if invalid { null } else { list };
+}
+
+fn Parser::parseObjCTypeParamList(self) -> *mut ObjCTypeParamList {
+    let mut lAngleLoc: SourceLocation = SourceLocation {};
+    let mut protocolIdents: SmallVector<IdentifierLoc, 1> = zeroed();
+    let mut rAngleLoc: SourceLocation = SourceLocation {};
+    let mut Scope: ObjCTypeParamListScope = ObjCTypeParamListScope { self.Actions, self.getCurScope() };
+    return self.parseObjCTypeParamListOrProtocolRefs(Scope, lAngleLoc, rAngleLoc, false);
+}
+
+fn isTopLevelObjCKeyword(DirectiveKind: ObjCKeywordKind) -> bool {
+    match DirectiveKind {
+        objc_class => {
+            objc_compatibility_alias;
+        },
+        _ => {
+            return false;
+        },
+    }
+}
+
+fn Parser::ParseObjCInterfaceDeclList(self, contextKey: ObjCKeywordKind, CDecl: *mut Decl) {
+    let mut allMethods: SmallVector<Decl *, 32> = zeroed();
+    let mut allTUVariables: SmallVector<DeclGroupPtrTy, 8> = zeroed();
+    let mut MethodImplKind: ObjCKeywordKind = objc_not_keyword;
+    let mut AtEnd: SourceRange = SourceRange {};
+    while true {
+        if self.Tok {
+            if self.ParseObjCMethodPrototype(MethodImplKind, false) {
+                methodPrototype;
+            } else {
+                allMethods()(methodPrototype);
+            }
+            if self.ExpectAndConsumeSemi {
+                self.SkipUntil(at, StopAtSemi | StopBeforeMatch);
+                if self.Tok.is(semi) {
+                    self.ConsumeToken();
+                }
+            }
+            continue;
+        }
+        if self.Tok.is(l_paren) {
+            self.ParseObjCMethodDecl(self.Tok.getLocation(), minus, MethodImplKind, false);
+            continue;
+        }
+        if self.Tok.is(semi) {
+            self.ConsumeToken();
+            continue;
+        }
+        if self.isEofOrEom() {
+            break;
+        }
+        if self.Tok.is(code_completion) {
+            self.cutOffParsing();
+            self.Actions.CodeCompletion().CodeCompleteOrdinaryName(self.getCurScope(), if self.CurParsedObjCImpl { PCC_ObjCImplementation } else { PCC_ObjCInterface });
+            return;
+        }
+        if self.Tok.isNot(at) {
+            if self.Tok.is(r_brace) {
+                break;
+            }
+            let mut EmptyDeclAttrs: ParsedAttributes = zeroed();
+            let mut EmptyDeclSpecAttrs: ParsedAttributes = zeroed();
+            if self.Tok {
+                let mut DeclEnd: SourceLocation = SourceLocation {};
+                let mut EmptyDeclSpecAttrs: ParsedAttributes = zeroed();
+                allTUVariables()(self.ParseDeclaration);
+                continue;
+            }
+            allTUVariables()(self.ParseDeclarationOrFunctionDefinition);
+            continue;
+        }
+        let mut AtLoc: SourceLocation = self.Tok.getLocation();
+        let mut NextTok: *Token = self.NextToken();
+        if NextTok.is(code_completion) {
+            self.cutOffParsing();
+            self.Actions.CodeCompletion().CodeCompleteObjCAtDirective(self.getCurScope());
+            return;
+        }
+        let mut DirectiveKind: ObjCKeywordKind = NextTok.getObjCKeywordID();
+        if DirectiveKind == objc_end {
+            self.ConsumeToken();
+            AtEnd.setBegin(AtLoc);
+            AtEnd.setEnd(self.Tok.getLocation());
+            break;
+        } else if DirectiveKind == objc_not_keyword {
+            self.SkipUntil(semi, 0 as SkipUntilFlags);
+            continue;
+        }
+        if isTopLevelObjCKeyword(DirectiveKind) {
+            break;
+        }
+        self.ConsumeToken();
+        self.ConsumeToken();
+        match DirectiveKind {
+            _ => {
+                
+            },
+            objc_required => {
+                objc_optional;
+            },
+            objc_property => {
+                let mut OCDS: ObjCDeclSpec = ObjCDeclSpec {};
+            },
+        }
+    }
+    if self.Tok.isObjCAtKeyword(objc_end) {
+        self.ConsumeToken();
+    } else {
+         << CreateInsertion(self.Tok.getLocation(), "\n@end\n", false);
+         << self.Actions.ObjC().getObjCContainerKind() as i32;
+        AtEnd.setBegin(self.Tok.getLocation());
+        AtEnd.setEnd(self.Tok.getLocation());
+    }
+    self.Actions.ObjC().ActOnAtEnd(self.getCurScope(), AtEnd);
+}
+
+fn diagnoseRedundantPropertyNullability(P: *mut Parser, DS: *mut ObjCDeclSpec, nullability: NullabilityKind, nullabilityLoc: SourceLocation) {
+    if DS.getNullability() == nullability {
+        P << nullability(true) << DS.getNullabilityLoc();
+        return;
+    }
+    P << nullability(true) << DS.getNullability() << DS.getNullabilityLoc();
+}
+
+fn Parser::ParseObjCPropertyAttribute(self, DS: *mut ObjCDeclSpec) {
+    assert!(self.Tok.getKind() == l_paren);
+    let mut T: BalancedDelimiterTracker = BalancedDelimiterTracker { *self, l_paren, semi };
+    T.consumeOpen();
+    while true {
+        if self.Tok.is(code_completion) {
+            self.cutOffParsing();
+            self.Actions.CodeCompletion().CodeCompleteObjCPropertyFlags(self.getCurScope(), DS);
+            return;
+        }
+        let mut II: *IdentifierInfo = self.Tok.getIdentifierInfo();
+        if !II {
+            T.consumeClose();
+            return;
+        }
+        let mut AttrName: SourceLocation = self.ConsumeToken();
+        if II.isStr("readonly") {
+            DS.setPropertyAttributes(kind_readonly);
+        } else if II.isStr("assign") {
+            DS.setPropertyAttributes(kind_assign);
+        } else if II.isStr("unsafe_unretained") {
+            DS.setPropertyAttributes(kind_unsafe_unretained);
+        } else if II.isStr("readwrite") {
+            DS.setPropertyAttributes(kind_readwrite);
+        } else if II.isStr("retain") {
+            DS.setPropertyAttributes(kind_retain);
+        } else if II.isStr("strong") {
+            DS.setPropertyAttributes(kind_strong);
+        } else if II.isStr("copy") {
+            DS.setPropertyAttributes(kind_copy);
+        } else if II.isStr("nonatomic") {
+            DS.setPropertyAttributes(kind_nonatomic);
+        } else if II.isStr("atomic") {
+            DS.setPropertyAttributes(kind_atomic);
+        } else if II.isStr("weak") {
+            DS.setPropertyAttributes(kind_weak);
+        } else if II.isStr("getter") || II.isStr("setter") {
+            let mut IsSetter: bool = II.getNameStart()[0] == 's';
+            let mut DiagID: u32 = 0;
+            if self.ExpectAndConsume(equal, DiagID, "") {
+                self.SkipUntil(r_paren, StopAtSemi);
+                return;
+            }
+            if self.Tok.is(code_completion) {
+                self.cutOffParsing();
+                if IsSetter {
+                    self.Actions.CodeCompletion().CodeCompleteObjCPropertySetter(self.getCurScope());
+                } else {
+                    self.Actions.CodeCompletion().CodeCompleteObjCPropertyGetter(self.getCurScope());
+                }
+                return;
+            }
+            let mut SelLoc: SourceLocation = SourceLocation {};
+            let mut SelIdent: *mut IdentifierInfo = self.ParseObjCSelectorPiece(SelLoc);
+            if !SelIdent {
+                 << IsSetter;
+                self.SkipUntil(r_paren, StopAtSemi);
+                return;
+            }
+            if IsSetter {
+                DS.setPropertyAttributes(kind_setter);
+                DS.setSetterName(SelIdent, SelLoc);
+                if self.ExpectAndConsume {
+                    self.SkipUntil(r_paren, StopAtSemi);
+                    return;
+                }
+            } else {
+                DS.setPropertyAttributes(kind_getter);
+                DS.setGetterName(SelIdent, SelLoc);
+            }
+        } else if II.isStr("nonnull") {
+            if DS.getPropertyAttributes() & kind_nullability {
+                diagnoseRedundantPropertyNullability(*self, DS, NonNull, self.Tok.getLocation());
+            }
+            DS.setPropertyAttributes(kind_nullability);
+            DS.setNullability(self.Tok.getLocation(), NonNull);
+        } else if II.isStr("nullable") {
+            if DS.getPropertyAttributes() & kind_nullability {
+                diagnoseRedundantPropertyNullability(*self, DS, Nullable, self.Tok.getLocation());
+            }
+            DS.setPropertyAttributes(kind_nullability);
+            DS.setNullability(self.Tok.getLocation(), Nullable);
+        } else if II.isStr("null_unspecified") {
+            if DS.getPropertyAttributes() & kind_nullability {
+                diagnoseRedundantPropertyNullability(*self, DS, Unspecified, self.Tok.getLocation());
+            }
+            DS.setPropertyAttributes(kind_nullability);
+            DS.setNullability(self.Tok.getLocation(), Unspecified);
+        } else if II.isStr("null_resettable") {
+            if DS.getPropertyAttributes() & kind_nullability {
+                diagnoseRedundantPropertyNullability(*self, DS, Unspecified, self.Tok.getLocation());
+            }
+            DS.setPropertyAttributes(kind_nullability);
+            DS.setNullability(self.Tok.getLocation(), Unspecified);
+            DS.setPropertyAttributes(kind_null_resettable);
+        } else if II.isStr("class") {
+            DS.setPropertyAttributes(kind_class);
+        } else if II.isStr("direct") {
+            DS.setPropertyAttributes(kind_direct);
+        } else {
+             << II;
+            self.SkipUntil(r_paren, StopAtSemi);
+            return;
+        }
+        if self.Tok.isNot(comma) {
+            break;
+        }
+        self.ConsumeToken();
+    }
+    T.consumeClose();
+}
+
+fn Parser::ParseObjCMethodPrototype(self, MethodImplKind: ObjCKeywordKind, MethodDefinition: bool) -> *mut Decl {
+    assert!(self.Tok, "expected +/-");
+    let mut methodType: TokenKind = self.Tok.getKind();
+    let mut mLoc: SourceLocation = self.ConsumeToken();
+    let mut MDecl: *mut Decl = self.ParseObjCMethodDecl(mLoc, methodType, MethodImplKind, MethodDefinition);
+    return MDecl;
+}
+
+fn Parser::ParseObjCSelectorPiece(self, SelectorLoc: *mut SourceLocation) -> *mut IdentifierInfo {
+    match self.Tok.getKind() {
+        colon => {
+            SelectorLoc = self.Tok.getLocation();
+        },
+        ampamp => {
+            ampequal;
+        },
+        kw___attribute => {
+            return null;
+        },
+        _ => {
+            let mut II: *mut IdentifierInfo = self.Tok.getIdentifierInfo();
+        },
+    }
+}
+
+fn Parser::isTokIdentifier_in(self: *Parser) -> bool {}
+
+fn Parser::ParseObjCTypeQualifierList(self, DS: *mut ObjCDeclSpec, Context: DeclaratorContext) {
+    assert!(Context == ObjCParameter || Context == ObjCResult);
+    while true {
+        if self.Tok.is(code_completion) {
+            self.cutOffParsing();
+            self.Actions.CodeCompletion().CodeCompleteObjCPassingType(self.getCurScope(), DS, Context == ObjCParameter);
+            return;
+        }
+        if self.Tok.isNot(identifier) {
+            return;
+        }
+        let mut II: *IdentifierInfo = self.Tok.getIdentifierInfo();
+        for let mut i: u32 = 0; i != to_underlying(NumQuals); i += 1 {
+            let mut TQ: ObjCTypeQual = i as ObjCTypeQual;
+            if  {
+                continue;
+            }
+            let mut Qual: ObjCDeclQualifier = zeroed();
+            let mut Nullability: NullabilityKind = zeroed();
+            match TQ {
+                _ => {
+                    llvm_unreachable_internal("Unknown decl qualifier", "clang\\lib\\Parse\\ParseObjc.cpp", 1015);
+                },
+                in => {
+                    Qual = DQ_In;
+                },
+                out => {
+                    Qual = DQ_Out;
+                },
+                inout => {
+                    Qual = DQ_Inout;
+                },
+                oneway => {
+                    Qual = DQ_Oneway;
+                },
+                bycopy => {
+                    Qual = DQ_Bycopy;
+                },
+                byref => {
+                    Qual = DQ_Byref;
+                },
+                nonnull => {
+                    Qual = DQ_CSNullability;
+                },
+                nullable => {
+                    Qual = DQ_CSNullability;
+                },
+                null_unspecified => {
+                    Qual = DQ_CSNullability;
+                },
+            }
+            DS.setObjCDeclQualifier(Qual);
+            if Qual == DQ_CSNullability {
+                DS.setNullability(self.Tok.getLocation(), Nullability);
+            }
+            self.ConsumeToken();
+            II = null;
+            break;
+        }
+        if II {
+            return;
+        }
+    }
+}
+
+fn takeDeclAttributesAppend(attrs: *mut ParsedAttributesView, from: *mut ParsedAttributesView) {}
+
+fn takeDeclAttributes(attrs: *mut ParsedAttributes, D: *mut Declarator) {
+    assert!(D.getDeclarationAttributes().is_empty();
+    attrs.getPool().takeAllFrom(D.getAttributePool());
+    attrs.getPool().takeAllFrom(D.getDeclSpec().getAttributePool());
+    takeDeclAttributesAppend(attrs, D.getMutableDeclSpec().getAttributes());
+    takeDeclAttributesAppend(attrs, D.getAttributes());
+    for let mut i: u32 = 0;
+let mut e: u32 = D.getNumTypeObjects(); i != e; i += 1 {
+        takeDeclAttributesAppend(attrs, D.getTypeObject(i).getAttrs());
+    }
+}
+
+fn Parser::ParseObjCTypeName(self, DS: *mut ObjCDeclSpec, context: DeclaratorContext, paramAttrs: *mut ParsedAttributes) -> ParsedType {
+    assert!(context == ObjCParameter || context == ObjCResult);
+    assert!((paramAttrs != null) == (context == ObjCParameter);
+    assert!(self.Tok.is(l_paren), "expected (");
+    let mut T: BalancedDelimiterTracker = BalancedDelimiterTracker { *self, l_paren, semi };
+    T.consumeOpen();
+    let mut ObjCDC: ObjCDeclContextSwitch = *self;
+    self.ParseObjCTypeQualifierList(DS, context);
+    let mut TypeStartLoc: SourceLocation = self.Tok.getLocation();
+    let mut Ty: ParsedType = zeroed();
+    if self.isTypeSpecifierQualifier(self.Tok) || self.isObjCInstancetype() {
+        let mut declSpec: DeclSpec = zeroed();
+        declSpec.setObjCQualifiers(&mut DS);
+        let mut dsContext: DeclSpecContext = DSC_normal;
+        if context == ObjCResult {
+            dsContext = DSC_objc_method_result;
+        }
+        self.ParseSpecifierQualifierList(declSpec, AS_none, dsContext);
+        let mut declarator: Declarator = Declarator { declSpec, none(), context };
+        self.ParseDeclarator(declarator);
+        if !declarator.isInvalidType() {
+            let mut addedToDeclSpec: bool = false;
+            if DS.getObjCDeclQualifier() & DQ_CSNullability {
+                addContextSensitiveTypeNullability(*self, declarator, DS.getNullability(), DS.getNullabilityLoc(), addedToDeclSpec);
+            }
+            let mut type: i32 = self.Actions(declarator);
+            if operator!() {
+                Ty() = ();
+            }
+            if context == ObjCParameter {
+                takeDeclAttributes(*paramAttrs, declarator);
+            }
+        }
+    }
+    if self.Tok.is(r_paren) {
+        T.consumeClose();
+    } else if self.Tok.getLocation() == TypeStartLoc {
+        self.SkipUntil(r_paren, StopAtSemi);
+    } else {
+        T.consumeClose();
+    }
+    return ;
+}
+
+fn Parser::ParseObjCMethodDecl(self, mLoc: SourceLocation, mType: TokenKind, MethodImplKind: ObjCKeywordKind, MethodDefinition: bool) -> *mut Decl {
+    let mut PD: ParsingDeclRAIIObject = ParsingDeclRAIIObject { *self, NoParent };
+    if self.Tok.is(code_completion) {
+        self.cutOffParsing();
+        self.Actions.CodeCompletion().CodeCompleteObjCMethodDecl;
+        return null;
+    }
+    let mut ReturnType: ParsedType = zeroed();
+    let mut DSRet: ObjCDeclSpec = ObjCDeclSpec {};
+    let mut methodAttrs: ParsedAttributes = zeroed();
+    self.MaybeParseAttributes(PAKM_CXX11 | (if self.getLangOpts() { PAKM_GNU } else { 0 }), methodAttrs);
+    if self.Tok.is(code_completion) {
+        self.cutOffParsing();
+        self.Actions.CodeCompletion().CodeCompleteObjCMethodDecl(self.getCurScope(), mType == minus);
+        return null;
+    }
+    let mut selLoc: SourceLocation = SourceLocation {};
+    let mut SelIdent: *mut IdentifierInfo = self.ParseObjCSelectorPiece(selLoc);
+    if !SelIdent && self.Tok.isNot(colon) {
+         << SourceRange { B: mLoc, E: self.Tok.getLocation() };
+        self.SkipUntil(at, StopAtSemi | StopBeforeMatch);
+        return null;
+    }
+    let mut CParamInfo: ParamInfo, 8> = zeroed();
+    if self.Tok.isNot(colon) {
+        self.MaybeParseAttributes(PAKM_CXX11 | (if self.getLangOpts() { PAKM_GNU } else { 0 }), methodAttrs);
+        let mut Sel: Selector = self.PP.getSelectorTable().getNullarySelector(SelIdent);
+        let mut Result: *mut Decl = self.Actions.ObjC().ActOnMethodDeclaration(self.getCurScope(), mLoc, self.Tok.getLocation(), mType, DSRet, selLoc, Sel, null, methodAttrs, MethodImplKind, false, MethodDefinition);
+        PD.complete(Result);
+        return Result;
+    }
+    let mut KeyIdents: SmallVector<const IdentifierInfo *, 12> = zeroed();
+    let mut KeyLocs: SmallVector<SourceLocation, 12> = zeroed();
+    let mut ArgInfos: ObjCArgInfo, 12> = zeroed();
+    let mut PrototypeScope: ParseScope = ParseScope { self, FunctionPrototypeScope | FunctionDeclarationScope | DeclScope, true, false };
+    let mut allParamAttrs: AttributePool = zeroed();
+    while true {
+        let mut paramAttrs: ParsedAttributes = zeroed();
+        let mut ArgInfo: ObjCArgInfo = ObjCArgInfo {};
+        if self.ExpectAndConsume(colon, "") {
+            break;
+        }
+        ArgInfo() = null;
+        self.MaybeParseAttributes(PAKM_CXX11 | (if self.getLangOpts() { PAKM_GNU } else { 0 }), paramAttrs);
+        ArgInfo() = paramAttrs;
+        if self.Tok.is(code_completion) {
+            self.cutOffParsing();
+            KeyIdents()(SelIdent);
+            self.Actions.CodeCompletion().CodeCompleteObjCMethodDeclSelector(self.getCurScope(), mType == minus, true);
+            return null;
+        }
+        if self.expectIdentifier() {
+            break;
+        }
+        ArgInfo.Name = self.Tok.getIdentifierInfo();
+        ArgInfo.NameLoc = self.Tok.getLocation();
+        self.ConsumeToken();
+        ArgInfos()(ArgInfo);
+        KeyIdents()(SelIdent);
+        KeyLocs()(selLoc);
+        allParamAttrs.takeAllFrom(paramAttrs.getPool());
+        if self.Tok.is(code_completion) {
+            self.cutOffParsing();
+            self.Actions.CodeCompletion().CodeCompleteObjCMethodDeclSelector(self.getCurScope(), mType == minus, false);
+            return null;
+        }
+        SelIdent = self.ParseObjCSelectorPiece(selLoc);
+        if !SelIdent && self.Tok.isNot(colon) {
+            break;
+        }
+        if !SelIdent {
+            let mut ColonLoc: SourceLocation = self.Tok.getLocation();
+            if self.PP.getLocForEndOfToken(ArgInfo.NameLoc, 0) == ColonLoc {
+                 << ArgInfo.Name;
+                 << ArgInfo.Name;
+                 << ArgInfo.Name;
+            }
+        }
+    }
+    let mut isVariadic: bool = false;
+    let mut cStyleParamWarned: bool = false;
+    while self.Tok.is(comma) {
+        self.ConsumeToken();
+        if self.Tok.is(ellipsis) {
+            isVariadic = true;
+            self.ConsumeToken();
+            break;
+        }
+        if !cStyleParamWarned {
+            cStyleParamWarned = true;
+        }
+        let mut DS: DeclSpec = zeroed();
+        let mut TemplateInfo: ParsedTemplateInfo = ParsedTemplateInfo {};
+        self.ParseDeclarationSpecifiers(DS, TemplateInfo, AS_none, DSC_normal, null);
+        let mut ParmDecl: Declarator = Declarator { DS, none(), Prototype };
+        self.ParseDeclarator(ParmDecl);
+        let mut ParmII: *IdentifierInfo = ParmDecl.getIdentifier();
+        let mut Param: *mut Decl = self.Actions.ActOnParamDeclarator(self.getCurScope(), ParmDecl, SourceLocation {});
+        CParamInfo()(ParmII(ParmDecl.getIdentifierLoc(), Param, null));
+    }
+    let mut ObjCParamInfo: SmallVector<ParmVarDecl *, 12> = zeroed();
+    self.MaybeParseAttributes(PAKM_CXX11 | (if self.getLangOpts() { PAKM_GNU } else { 0 }), methodAttrs);
+    if KeyIdents()() == 0 {
+        return null;
+    }
+    let mut Sel: Selector = self.PP.getSelectorTable().getSelector(operator&([0]));
+    let mut Result: *mut Decl = self.Actions.ObjC().ActOnMethodDeclaration(self.getCurScope(), mLoc, self.Tok.getLocation(), mType, DSRet, Sel, methodAttrs, MethodImplKind, isVariadic, MethodDefinition);
+    PD.complete(Result);
+    return Result;
+}
+
+fn Parser::ParseObjCProtocolReferences(self, Protocols: *mut SmallVectorImpl<Decl *>, ProtocolLocs: *mut SmallVectorImpl<SourceLocation>, WarnOnDeclarations: bool, ForObjCContainer: bool, LAngleLoc: *mut SourceLocation, EndLoc: *mut SourceLocation, consumeLastToken: bool) -> bool {
+    assert!(self.Tok.is(less), "expected <");
+    LAngleLoc = self.ConsumeToken();
+    let mut ProtocolIdents: SmallVector<IdentifierLoc, 8> = zeroed();
+    while true {
+        if self.Tok.is(code_completion) {
+            self.cutOffParsing();
+            self.Actions.CodeCompletion().CodeCompleteObjCProtocolReferences();
+            return true;
+        }
+        if self.expectIdentifier() {
+            self.SkipUntil(greater, StopAtSemi);
+            return true;
+        }
+        ProtocolIdents()(self.Tok.getLocation(), self.Tok.getIdentifierInfo());
+        ProtocolLocs()(self.Tok.getLocation());
+        self.ConsumeToken();
+        if !self.TryConsumeToken(comma) {
+            break;
+        }
+    }
+    if self.ParseGreaterThanInTemplateList(LAngleLoc, EndLoc, consumeLastToken, false) {
+        return true;
+    }
+    self.Actions.ObjC().FindProtocolDeclaration(WarnOnDeclarations, ForObjCContainer, Protocols);
+    return false;
+}
+
+fn Parser::parseObjCProtocolQualifierType(self, rAngleLoc: *mut SourceLocation) -> i32 {
+    assert!(self.Tok.is(less), "Protocol qualifiers start with '<'");
+    (((operator!(operator!((self.getLangOpts() && "Protocol qualifiers only exist in Objective-C")))) || (_wassert(L"getLangOpts().ObjC && \"Protocol qualifiers only exist in Objective-C\"", L"clang\\lib\\Parse\\ParseObjc.cpp", (1402) as u32) , 0)) as void);
+    let mut lAngleLoc: SourceLocation = SourceLocation {};
+    let mut protocols: SmallVector<Decl *, 8> = zeroed();
+    let mut protocolLocs: SmallVector<SourceLocation, 8> = zeroed();
+    self.ParseObjCProtocolReferences(false, false, lAngleLoc, rAngleLoc, true) as void;
+    let mut result: i32 = self.Actions.ObjC()(lAngleLoc, rAngleLoc);
+    if result()() {
+         << CreateInsertion(lAngleLoc, "id", false) << SourceRange { B: lAngleLoc, E: rAngleLoc };
+    }
+    return ;
+}
+
+fn Parser::parseObjCTypeArgsOrProtocolQualifiers(self, baseType: ParsedType, typeArgsLAngleLoc: *mut SourceLocation, typeArgs: *mut SmallVectorImpl<ParsedType>, typeArgsRAngleLoc: *mut SourceLocation, protocolLAngleLoc: *mut SourceLocation, protocols: *mut SmallVectorImpl<Decl *>, protocolLocs: *mut SmallVectorImpl<SourceLocation>, protocolRAngleLoc: *mut SourceLocation, consumeLastToken: bool, warnOnIncompleteProtocols: bool) {
+    assert!(self.Tok.is(less), "Not at the start of type args or protocols");
+    let mut lAngleLoc: SourceLocation = self.ConsumeToken();
+    let mut allSingleIdentifiers: bool = true;
+    let mut identifiers: SmallVector<IdentifierInfo *, 4> = zeroed();
+    let mut identifierLocs: *mut SmallVectorImpl<SourceLocation> = protocolLocs;
+    while true {
+        {
+        if self.Tok.is(identifier) && (self.NextToken().is(comma) || self.NextToken().is(greater) || self.NextToken().is(greatergreater)) {
+            identifiers()(self.Tok.getIdentifierInfo());
+            identifierLocs()(self.ConsumeToken());
+            continue;
+        }
+        if self.Tok.is(code_completion) {
+            let mut identifierLocPairs: SmallVector<IdentifierLoc, 4> = zeroed();
+            for let mut i: u32 = 0;
+let mut n: u32 = (); i != n; i += 1 {
+                identifierLocPairs();
+            }
+            let mut BaseT: QualType = self.Actions.GetTypeFromParser();
+            self.cutOffParsing();
+            if !BaseT.isNull() && operator(BaseT).acceptsObjCTypeParams() {
+                self.Actions.CodeCompletion().CodeCompleteOrdinaryName(self.getCurScope(), PCC_Type);
+            } else {
+                self.Actions.CodeCompletion().CodeCompleteObjCProtocolReferences();
+            }
+            return;
+        }
+        allSingleIdentifiers = false;
+        break;
+    }
+        if !(self.TryConsumeToken(comma)) { break; }
+    }
+    if allSingleIdentifiers {
+        let mut rAngleLoc: SourceLocation = SourceLocation {};
+        self.ParseGreaterThanInTemplateList(lAngleLoc, rAngleLoc, consumeLastToken, true) as void;
+        self.Actions.ObjC().actOnObjCTypeArgsOrProtocolQualifiers(self.getCurScope(), lAngleLoc, identifierLocs, rAngleLoc, typeArgsLAngleLoc, typeArgs, typeArgsRAngleLoc, protocolLAngleLoc, protocols, protocolRAngleLoc, warnOnIncompleteProtocols);
+        return;
+    }
+    let mut invalid: bool = false;
+    let mut foundProtocolId: *mut IdentifierInfo = null;
+    let mut foundValidTypeId: *mut IdentifierInfo = null;
+    let mut foundProtocolSrcLoc: SourceLocation = SourceLocation {};
+    let mut foundValidTypeSrcLoc: SourceLocation = SourceLocation {};
+    let mut unknownTypeArgs: SmallVector<IdentifierInfo *, 2> = zeroed();
+    let mut unknownTypeArgsLoc: SmallVector<SourceLocation, 2> = zeroed();
+    for let mut i: u32 = 0;
+let mut n: u32 = (); i != n; i += 1 {
+        let mut typeArg: ParsedType = zeroed();
+        if typeArg() {
+            let mut DS: DeclSpec = zeroed();
+            let mut prevSpec: *u8 = null;
+            let mut diagID: u32 = 0;
+            DS;
+            let mut D: Declarator = Declarator { DS, none(), TypeName };
+            let mut fullTypeArg: i32 = self.Actions(D);
+            if fullTypeArg()() {
+                typeArgs()();
+                if !foundValidTypeId {
+                    foundValidTypeId = [i];
+                }
+            } else {
+                invalid = true;
+                unknownTypeArgs()([i]);
+                unknownTypeArgsLoc();
+            }
+        } else {
+            invalid = true;
+            if operator!(self.Actions.ObjC().LookupProtocol) {
+                unknownTypeArgs()([i]);
+                unknownTypeArgsLoc();
+            } else if !foundProtocolId {
+                foundProtocolId = [i];
+            }
+        }
+    }
+    while true {
+        {
+        let mut CurTypeTok: Token = self.Tok;
+        let mut typeArg: i32 = 0;
+        let mut ellipsisLoc: SourceLocation = SourceLocation {};
+        self.TryConsumeToken(ellipsis, ellipsisLoc);
+        if typeArg()() && ellipsisLoc.isValid() {
+            typeArg() = self.Actions.ActOnPackExpansion(ellipsisLoc);
+        }
+        if typeArg()() {
+            typeArgs()();
+            if !foundValidTypeId {
+                foundValidTypeId = CurTypeTok.getIdentifierInfo();
+                foundValidTypeSrcLoc = CurTypeTok.getLocation();
+            }
+        } else {
+            invalid = true;
+        }
+    }
+        if !(self.TryConsumeToken(comma)) { break; }
+    }
+    if foundProtocolId && foundValidTypeId {
+        self.Actions.ObjC().DiagnoseTypeArgsAndProtocols(foundProtocolId, foundProtocolSrcLoc, foundValidTypeId, foundValidTypeSrcLoc, false);
+    }
+    let mut T: ParsedType = zeroed();
+    if unknownTypeArgs()() {
+        for let mut i: u32 = 0;
+let mut e: u32 = (); i < e; i += 1 {
+            self.Actions.DiagnoseUnknownTypeName([i], [i], self.getCurScope(), null);
+        }
+    }
+    let mut rAngleLoc: SourceLocation = SourceLocation {};
+    self.ParseGreaterThanInTemplateList(lAngleLoc, rAngleLoc, consumeLastToken, true) as void;
+    if invalid {
+        typeArgs()();
+        return;
+    }
+    typeArgsLAngleLoc = lAngleLoc;
+    typeArgsRAngleLoc = rAngleLoc;
+}
+
+fn Parser::parseObjCTypeArgsAndProtocolQualifiers(self, baseType: ParsedType, typeArgsLAngleLoc: *mut SourceLocation, typeArgs: *mut SmallVectorImpl<ParsedType>, typeArgsRAngleLoc: *mut SourceLocation, protocolLAngleLoc: *mut SourceLocation, protocols: *mut SmallVectorImpl<Decl *>, protocolLocs: *mut SmallVectorImpl<SourceLocation>, protocolRAngleLoc: *mut SourceLocation, consumeLastToken: bool) {
+    assert!(self.Tok.is(less);
+    self.parseObjCTypeArgsOrProtocolQualifiers(typeArgsLAngleLoc, typeArgs, typeArgsRAngleLoc, protocolLAngleLoc, protocols, protocolLocs, protocolRAngleLoc, consumeLastToken, false);
+    if self.Tok.is(eof) {
+        return;
+    }
+    if (consumeLastToken && self.Tok.is(less)) || (!consumeLastToken && self.NextToken().is(less)) {
+        if !consumeLastToken {
+            self.ConsumeToken();
+        }
+        if operator!(protocols()()) {
+            let mut skipFlags: SkipUntilFlags = ;
+            if !consumeLastToken {
+                skipFlags = skipFlags | StopBeforeMatch;
+            }
+             << SourceRange { B: protocolLAngleLoc, E: protocolRAngleLoc };
+            self.SkipUntil(greater, greatergreater, skipFlags);
+        } else {
+            self.ParseObjCProtocolReferences(protocols, protocolLocs, false, false, protocolLAngleLoc, protocolRAngleLoc, consumeLastToken);
+        }
+    }
+}
+
+fn Parser::parseObjCTypeArgsAndProtocolQualifiers(self, loc: SourceLocation, type: ParsedType, consumeLastToken: bool, endLoc: *mut SourceLocation) -> i32 {
+    assert!(self.Tok.is(less);
+    let mut typeArgsLAngleLoc: SourceLocation = SourceLocation {};
+    let mut typeArgs: SmallVector<ParsedType, 4> = zeroed();
+    let mut typeArgsRAngleLoc: SourceLocation = SourceLocation {};
+    let mut protocolLAngleLoc: SourceLocation = SourceLocation {};
+    let mut protocols: SmallVector<Decl *, 4> = zeroed();
+    let mut protocolLocs: SmallVector<SourceLocation, 4> = zeroed();
+    let mut protocolRAngleLoc: SourceLocation = SourceLocation {};
+    self.parseObjCTypeArgsAndProtocolQualifiers(typeArgsLAngleLoc, typeArgsRAngleLoc, protocolLAngleLoc, protocolRAngleLoc, consumeLastToken);
+    if self.Tok.is(eof) {
+        return true;
+    }
+    if consumeLastToken {
+        endLoc = self.PrevTokLocation;
+    } else {
+        endLoc = self.Tok.getLocation();
+    }
+    return self.Actions.ObjC()(self.getCurScope(), loc, typeArgsLAngleLoc, typeArgsRAngleLoc, protocolLAngleLoc, protocolRAngleLoc);
+}
+
+fn Parser::HelperActionsForIvarDeclarations(self, interfaceDecl: *mut ObjCContainerDecl, atLoc: SourceLocation, T: *mut BalancedDelimiterTracker, AllIvarDecls: *mut SmallVectorImpl<Decl *>, RBraceMissing: bool) {
+    if !RBraceMissing {
+        T.consumeClose();
+    }
+    assert!(self.getObjCDeclContext() == interfaceDecl, "Ivars should have interfaceDecl as their decl context");
+    self.Actions.ActOnLastBitfield(T.getCloseLocation(), AllIvarDecls);
+    self.Actions.ActOnFields;
+}
+
+fn Parser::ParseObjCClassInstanceVariables(self, interfaceDecl: *mut ObjCContainerDecl, visibility: ObjCKeywordKind, atLoc: SourceLocation) {
+    assert!(self.Tok.is(l_brace), "expected {");
+    let mut AllIvarDecls: SmallVector<Decl *, 32> = zeroed();
+    let mut ClassScope: ParseScope = ParseScope { self, DeclScope | ClassScope, true, false };
+    let mut T: BalancedDelimiterTracker = BalancedDelimiterTracker { *self, l_brace, semi };
+    T.consumeOpen();
+    while self.Tok.isNot(r_brace) && !self.isEofOrEom() {
+        if self.Tok.is(semi) {
+            self.ConsumeExtraSemi(InstanceVariableList, TST_unspecified);
+            continue;
+        }
+        if self.TryConsumeToken(at) {
+            if self.Tok.is(code_completion) {
+                self.cutOffParsing();
+                self.Actions.CodeCompletion().CodeCompleteObjCAtVisibility(self.getCurScope());
+                return;
+            }
+            match self.Tok.getObjCKeywordID() {
+                objc_private => {
+                    objc_public;
+                },
+                objc_end => {
+                    
+                },
+                _ => {
+                    
+                },
+            }
+        }
+        if self.Tok.is(code_completion) {
+            self.cutOffParsing();
+            self.Actions.CodeCompletion().CodeCompleteOrdinaryName(self.getCurScope(), PCC_ObjCInstanceVariableList);
+            return;
+        }
+        if self.Tok {
+            let mut DeclEnd: SourceLocation = SourceLocation {};
+            self.ParseStaticAssertDeclaration(DeclEnd);
+            continue;
+        }
+        let mut ObjCIvarCallback: Closure_3 = Closure_3 { cap_0: self, interfaceDecl: &mut interfaceDecl, visibility: &mut visibility };
+        let mut DS: ParsingDeclSpec = *self;
+        self.ParseStructDeclaration;
+        if self.Tok.is(semi) {
+            self.ConsumeToken();
+        } else {
+            self.SkipUntil(r_brace, StopAtSemi | StopBeforeMatch);
+        }
+    }
+    self.HelperActionsForIvarDeclarations(interfaceDecl, atLoc, T, false);
+}
+
+fn Parser::ParseObjCAtProtocolDeclaration(self, AtLoc: SourceLocation, attrs: *mut ParsedAttributes) -> DeclGroupPtrTy {
+    assert!(self.Tok.isObjCAtKeyword(objc_protocol), "ParseObjCAtProtocolDeclaration(): Expected @protocol");
+    self.ConsumeToken();
+    if self.Tok.is(code_completion) {
+        self.cutOffParsing();
+        self.Actions.CodeCompletion().CodeCompleteObjCProtocolDecl(self.getCurScope());
+        return null;
+    }
+    self.MaybeSkipAttributes(objc_protocol);
+    if self.expectIdentifier() {
+        return null;
+    }
+    let mut protocolName: *mut IdentifierInfo = self.Tok.getIdentifierInfo();
+    let mut nameLoc: SourceLocation = self.ConsumeToken();
+    if self.TryConsumeToken(semi) {
+        let mut ProtoInfo: IdentifierLoc = IdentifierLoc { Loc: nameLoc, II: protocolName };
+        return self.Actions.ObjC().ActOnForwardProtocolDeclaration;
+    }
+    self.CheckNestedObjCContexts(AtLoc);
+    if self.Tok.is(comma) {
+        let mut ProtocolRefs: SmallVector<IdentifierLoc, 8> = zeroed();
+        ProtocolRefs()(nameLoc, protocolName);
+        while true {
+            self.ConsumeToken();
+            if self.expectIdentifier() {
+                self.SkipUntil(semi, 0 as SkipUntilFlags);
+                return null;
+            }
+            ProtocolRefs()(self.Tok.getLocation(), self.Tok.getIdentifierInfo());
+            self.ConsumeToken();
+            if self.Tok.isNot(comma) {
+                break;
+            }
+        }
+        if self.ExpectAndConsume {
+            return null;
+        }
+        return self.Actions.ObjC().ActOnForwardProtocolDeclaration(AtLoc, attrs);
+    }
+    let mut LAngleLoc: SourceLocation = SourceLocation {};
+    let mut EndProtoLoc: SourceLocation = SourceLocation {};
+    let mut ProtocolRefs: SmallVector<Decl *, 8> = zeroed();
+    let mut ProtocolLocs: SmallVector<SourceLocation, 8> = zeroed();
+    if self.Tok.is(less) && self.ParseObjCProtocolReferences(false, true, LAngleLoc, EndProtoLoc, true) {
+        return null;
+    }
+    let mut SkipBody: SkipBodyInfo = SkipBodyInfo {};
+    let mut ProtoType: *mut ObjCProtocolDecl = self.Actions.ObjC().ActOnStartProtocolInterface(AtLoc, protocolName, nameLoc, EndProtoLoc, attrs, &mut SkipBody);
+    self.ParseObjCInterfaceDeclList;
+    if SkipBody.CheckSameAsPrevious {
+        let mut PreviousDef: *mut auto = cast(SkipBody.Previous);
+        if self.Actions(ProtoType) {
+            ProtoType.mergeDuplicateDefinitionWithCommon();
+        } else {
+            let mut DiagsEmitter: ODRDiagsEmitter = ODRDiagsEmitter { Diags: self.Diags, Context: self.Actions.getASTContext(), LangOpts: self.getPreprocessor().getLangOpts() };
+            DiagsEmitter(ProtoType);
+        }
+    }
+    return self.Actions.ConvertDeclToDeclGroup;
+}
+
+fn Parser::ParseObjCAtImplementationDeclaration(self, AtLoc: SourceLocation, Attrs: *mut ParsedAttributes) -> DeclGroupPtrTy {
+    assert!(self.Tok.isObjCAtKeyword(objc_implementation), "ParseObjCAtImplementationDeclaration(): Expected @implementation");
+    self.CheckNestedObjCContexts(AtLoc);
+    self.ConsumeToken();
+    if self.Tok.is(code_completion) {
+        self.cutOffParsing();
+        self.Actions.CodeCompletion().CodeCompleteObjCImplementationDecl(self.getCurScope());
+        return null;
+    }
+    self.MaybeSkipAttributes(objc_implementation);
+    if self.expectIdentifier() {
+        return null;
+    }
+    let mut nameId: *mut IdentifierInfo = self.Tok.getIdentifierInfo();
+    let mut nameLoc: SourceLocation = self.ConsumeToken();
+    let mut ObjCImpDecl: *mut ObjCImplDecl = null;
+    if self.Tok.is(less) {
+        let mut lAngleLoc: SourceLocation = SourceLocation {};
+        let mut rAngleLoc: SourceLocation = SourceLocation {};
+        let mut protocolIdents: SmallVector<IdentifierLoc, 8> = zeroed();
+        let mut diagLoc: SourceLocation = self.Tok.getLocation();
+        let mut typeParamScope: ObjCTypeParamListScope = ObjCTypeParamListScope { self.Actions, self.getCurScope() };
+        if self.parseObjCTypeParamListOrProtocolRefs(typeParamScope, lAngleLoc, rAngleLoc) {
+             << SourceRange { B: diagLoc, E: self.PrevTokLocation };
+        } else if lAngleLoc.isValid() {
+             << CreateRemoval(SourceRange { B: lAngleLoc, E: rAngleLoc });
+        }
+    }
+    if self.Tok.is(l_paren) {
+        self.ConsumeParen();
+        let mut categoryLoc: SourceLocation = SourceLocation {};
+        let mut rparenLoc: SourceLocation = SourceLocation {};
+        let mut categoryId: *mut IdentifierInfo = null;
+        if self.Tok.is(code_completion) {
+            self.cutOffParsing();
+            self.Actions.CodeCompletion().CodeCompleteObjCImplementationCategory(self.getCurScope(), nameId, nameLoc);
+            return null;
+        }
+        if self.Tok.is(identifier) {
+            categoryId = self.Tok.getIdentifierInfo();
+            categoryLoc = self.ConsumeToken();
+        } else {
+             << identifier;
+            return null;
+        }
+        if self.Tok.isNot(r_paren) {
+             << r_paren;
+            self.SkipUntil(r_paren, 0 as SkipUntilFlags);
+            return null;
+        }
+        rparenLoc = self.ConsumeParen();
+        if self.Tok.is(less) {
+            let mut protocolLAngleLoc: SourceLocation = SourceLocation {};
+            let mut protocolRAngleLoc: SourceLocation = SourceLocation {};
+            let mut protocols: SmallVector<Decl *, 4> = zeroed();
+            let mut protocolLocs: SmallVector<SourceLocation, 4> = zeroed();
+            self.ParseObjCProtocolReferences(false, false, protocolLAngleLoc, protocolRAngleLoc, true) as void;
+        }
+        ObjCImpDecl(self.Actions.ObjC().ActOnStartCategoryImplementation);
+    } else {
+        let mut superClassLoc: SourceLocation = SourceLocation {};
+        let mut superClassId: *mut IdentifierInfo = null;
+        if self.TryConsumeToken(colon) {
+            if self.expectIdentifier() {
+                return null;
+            }
+            superClassId = self.Tok.getIdentifierInfo();
+            superClassLoc = self.ConsumeToken();
+        }
+        ObjCImpDecl(self.Actions.ObjC().ActOnStartClassImplementation);
+        if self.Tok.is(l_brace) {
+            self.ParseObjCClassInstanceVariables;
+        } else if self.Tok.is(less) {
+            let mut protocolLAngleLoc: SourceLocation = SourceLocation {};
+            let mut protocolRAngleLoc: SourceLocation = SourceLocation {};
+            let mut protocols: SmallVector<Decl *, 4> = zeroed();
+            let mut protocolLocs: SmallVector<SourceLocation, 4> = zeroed();
+            self.ParseObjCProtocolReferences(false, false, protocolLAngleLoc, protocolRAngleLoc, true) as void;
+        }
+    }
+    assert!(ObjCImpDecl);
+    let mut DeclsInGroup: SmallVector<Decl *, 8> = zeroed();
+    {
+        let mut ObjCImplParsing: ObjCImplParsingDataRAII = *self;
+        while !ObjCImplParsing.isFinished() && !self.isEofOrEom() {
+            let mut DeclAttrs: ParsedAttributes = zeroed();
+            self.MaybeParseCXX11Attributes(DeclAttrs, false);
+            let mut EmptyDeclSpecAttrs: ParsedAttributes = zeroed();
+            if  {
+                let mut DG: DeclGroupRef = ();
+                DeclsInGroup()(DG.begin(), DG.end());
+            }
+        }
+    }
+    return self.Actions.ObjC().ActOnFinishObjCImplementation(ObjCImpDecl);
+}
+
+fn Parser::ParseObjCAtEndDeclaration(self, atEnd: SourceRange) -> DeclGroupPtrTy {
+    assert!(self.Tok.isObjCAtKeyword(objc_end), "ParseObjCAtEndDeclaration(): Expected @end");
+    self.ConsumeToken();
+    if self.CurParsedObjCImpl {
+        self.CurParsedObjCImpl.finish(atEnd);
+    } else {
+        
+    }
+    return null;
+}
+
+fn Parser@clang::~ObjCImplParsingDataRAII(self) {
+    if !self.Finished {
+        self.finish(self.P.Tok.getLocation());
+        if self.P.isEofOrEom() {
+            self.P << CreateInsertion(self.P.Tok.getLocation(), "\n@end\n", false);
+            self.P << OCK_Implementation;
+        }
+    }
+}
+
+fn ObjCImplParsingDataRAII@Parser@clang::finish(self, AtEnd: SourceRange) {
+    assert!(!self.Finished);
+    self.P.Actions.ObjC().DefaultSynthesizeProperties(self.P.getCurScope(), self.Dcl, AtEnd.getBegin());
+    for let mut i: u64 = 0; ; i += 1 {
+        self.P.ParseLexedObjCMethodDefs;
+    }
+    self.P.Actions.ObjC().ActOnAtEnd(self.P.getCurScope(), AtEnd, void {}, void {});
+    if self.HasCFunction {
+        for let mut i: u64 = 0; ; i += 1 {
+            self.P.ParseLexedObjCMethodDefs;
+        }
+    }
+    for let mut I: i32 = ; ;  {
+        
+    }
+    self.P.CurParsedObjCImpl = self.PrevParsedObjCImpl;
+    self.Finished = true;
+}
+
+fn Parser::ParseObjCAtAliasDeclaration(self, atLoc: SourceLocation) -> *mut Decl {
+    assert!(self.Tok.isObjCAtKeyword(objc_compatibility_alias), "ParseObjCAtAliasDeclaration(): Expected @compatibility_alias");
+    self.ConsumeToken();
+    if self.expectIdentifier() {
+        return null;
+    }
+    let mut aliasId: *mut IdentifierInfo = self.Tok.getIdentifierInfo();
+    let mut aliasLoc: SourceLocation = self.ConsumeToken();
+    if self.expectIdentifier() {
+        return null;
+    }
+    let mut classId: *mut IdentifierInfo = self.Tok.getIdentifierInfo();
+    let mut classLoc: SourceLocation = self.ConsumeToken();
+    self.ExpectAndConsume;
+    return self.Actions.ObjC().ActOnCompatibilityAlias(atLoc, aliasId, aliasLoc, classId, classLoc);
+}
+
+fn Parser::ParseObjCPropertySynthesize(self, atLoc: SourceLocation) -> *mut Decl {
+    assert!(self.Tok.isObjCAtKeyword(objc_synthesize), "ParseObjCPropertySynthesize(): Expected '@synthesize'");
+    self.ConsumeToken();
+    while true {
+        if self.Tok.is(code_completion) {
+            self.cutOffParsing();
+            self.Actions.CodeCompletion().CodeCompleteObjCPropertyDefinition(self.getCurScope());
+            return null;
+        }
+        if self.Tok.isNot(identifier) {
+            self.SkipUntil(semi, 0 as SkipUntilFlags);
+            return null;
+        }
+        let mut propertyIvar: *mut IdentifierInfo = null;
+        let mut propertyId: *mut IdentifierInfo = self.Tok.getIdentifierInfo();
+        let mut propertyLoc: SourceLocation = self.ConsumeToken();
+        let mut propertyIvarLoc: SourceLocation = SourceLocation {};
+        if self.TryConsumeToken(equal) {
+            if self.Tok.is(code_completion) {
+                self.cutOffParsing();
+                self.Actions.CodeCompletion().CodeCompleteObjCPropertySynthesizeIvar(self.getCurScope(), propertyId);
+                return null;
+            }
+            if self.expectIdentifier() {
+                break;
+            }
+            propertyIvar = self.Tok.getIdentifierInfo();
+            propertyIvarLoc = self.ConsumeToken();
+        }
+        self.Actions.ObjC().ActOnPropertyImplDecl(self.getCurScope(), atLoc, propertyLoc, true, propertyId, propertyIvar, propertyIvarLoc, OBJC_PR_query_unknown);
+        if self.Tok.isNot(comma) {
+            break;
+        }
+        self.ConsumeToken();
+    }
+    self.ExpectAndConsume;
+    return null;
+}
+
+fn Parser::ParseObjCPropertyDynamic(self, atLoc: SourceLocation) -> *mut Decl {
+    assert!(self.Tok.isObjCAtKeyword(objc_dynamic), "ParseObjCPropertyDynamic(): Expected '@dynamic'");
+    self.ConsumeToken();
+    let mut isClassProperty: bool = false;
+    if self.Tok.is(l_paren) {
+        self.ConsumeParen();
+        let mut II: *IdentifierInfo = self.Tok.getIdentifierInfo();
+        if !II {
+             << II;
+            self.SkipUntil(r_paren, StopAtSemi);
+        } else {
+            let mut AttrName: SourceLocation = self.ConsumeToken();
+            if II.isStr("class") {
+                isClassProperty = true;
+                if self.Tok.isNot(r_paren) {
+                     << r_paren;
+                    self.SkipUntil(r_paren, StopAtSemi);
+                } else {
+                    self.ConsumeParen();
+                }
+            } else {
+                 << II;
+                self.SkipUntil(r_paren, StopAtSemi);
+            }
+        }
+    }
+    while true {
+        if self.Tok.is(code_completion) {
+            self.cutOffParsing();
+            self.Actions.CodeCompletion().CodeCompleteObjCPropertyDefinition(self.getCurScope());
+            return null;
+        }
+        if self.expectIdentifier() {
+            self.SkipUntil(semi, 0 as SkipUntilFlags);
+            return null;
+        }
+        let mut propertyId: *mut IdentifierInfo = self.Tok.getIdentifierInfo();
+        let mut propertyLoc: SourceLocation = self.ConsumeToken();
+        self.Actions.ObjC().ActOnPropertyImplDecl(self.getCurScope(), atLoc, propertyLoc, false, propertyId, null, SourceLocation {}, if isClassProperty { OBJC_PR_query_class } else { OBJC_PR_query_unknown });
+        if self.Tok.isNot(comma) {
+            break;
+        }
+        self.ConsumeToken();
+    }
+    self.ExpectAndConsume;
+    return null;
+}
+
+fn Parser::ParseObjCThrowStmt(self, atLoc: SourceLocation) -> i32 {
+    let mut Res: i32 = 0;
+    self.ConsumeToken();
+    if self.Tok.isNot(semi) {
+        if Res()() {
+            self.SkipUntil(semi, 0 as SkipUntilFlags);
+        }
+    }
+    self.ExpectAndConsume;
+    return self.Actions.ObjC()(atLoc, self.getCurScope());
+}
+
+fn Parser::ParseObjCSynchronizedStmt(self, atLoc: SourceLocation) -> i32 {
+    self.ConsumeToken();
+    if self.Tok.isNot(l_paren) {
+         << "@synchronized";
+    }
+    self.ConsumeParen();
+    let mut operand: i32 = 0;
+    if self.Tok.is(r_paren) {
+        self.ConsumeParen();
+    } else {
+        if operator!() {
+            << r_paren;
+        }
+        self.SkipUntil(l_brace, StopAtSemi | StopBeforeMatch);
+    }
+    if self.Tok.isNot(l_brace) {
+        if operator!() {
+            << l_brace;
+        }
+    }
+    if operator!() {
+        operand() = self.Actions.ObjC()(atLoc);
+    }
+    let mut bodyScope: ParseScope = ParseScope { self, DeclScope | CompoundStmtScope, true, false };
+    let mut body: i32 = 0;
+    bodyScope.Exit();
+    if body()() {
+        body() = self.Actions(self.Tok.getLocation());
+    }
+    return self.Actions.ObjC()(atLoc);
+}
+
+fn Parser::ParseObjCTryStmt(self, atLoc: SourceLocation) -> i32 {
+    let mut catch_or_finally_seen: bool = false;
+    self.ConsumeToken();
+    if self.Tok.isNot(l_brace) {
+         << l_brace;
+    }
+    let mut CatchStmts: StmtVector = zeroed();
+    let mut FinallyStmt: i32 = 0;
+    let mut TryScope: ParseScope = ParseScope { self, DeclScope | CompoundStmtScope, true, false };
+    let mut TryBody: i32 = 0;
+    TryScope.Exit();
+    if TryBody()() {
+        TryBody() = self.Actions(self.Tok.getLocation());
+    }
+    while self.Tok.is(at) {
+        let mut AfterAt: Token = self.GetLookAheadToken(1);
+        if !AfterAt.isObjCAtKeyword(objc_catch) && !AfterAt.isObjCAtKeyword(objc_finally) {
+            break;
+        }
+        let mut AtCatchFinallyLoc: SourceLocation = self.ConsumeToken();
+        if self.Tok.isObjCAtKeyword(objc_catch) {
+            let mut FirstPart: *mut Decl = null;
+            self.ConsumeToken();
+            if self.Tok.is(l_paren) {
+                self.ConsumeParen();
+                let mut CatchScope: ParseScope = ParseScope { self, DeclScope | CompoundStmtScope | AtCatchScope, true, false };
+                if self.Tok.isNot(ellipsis) {
+                    let mut DS: DeclSpec = zeroed();
+                    let mut TemplateInfo: ParsedTemplateInfo = ParsedTemplateInfo {};
+                    self.ParseDeclarationSpecifiers(DS, TemplateInfo, AS_none, DSC_normal, null);
+                    let mut ParmDecl: Declarator = Declarator { DS, none(), ObjCCatch };
+                    self.ParseDeclarator(ParmDecl);
+                    FirstPart = self.Actions.ObjC().ActOnObjCExceptionDecl(self.getCurScope(), ParmDecl);
+                } else {
+                    self.ConsumeToken();
+                }
+                let mut RParenLoc: SourceLocation = SourceLocation {};
+                if self.Tok.is(r_paren) {
+                    RParenLoc = self.ConsumeParen();
+                } else {
+                    self.SkipUntil(r_paren, StopAtSemi);
+                }
+                let mut CatchBody: i32 = true;
+                if self.Tok.is(l_brace) {
+                    
+                } else {
+                    << l_brace;
+                }
+                if CatchBody()() {
+                    CatchBody() = self.Actions(self.Tok.getLocation());
+                }
+                let mut Catch: i32 = self.Actions.ObjC()(AtCatchFinallyLoc, RParenLoc, FirstPart);
+                if operator!() {
+                    CatchStmts()();
+                }
+            } else {
+                 << "@catch clause";
+            }
+            catch_or_finally_seen = true;
+        } else {
+            assert!(self.Tok.isObjCAtKeyword(objc_finally), "Lookahead confused?");
+            self.ConsumeToken();
+            let mut FinallyScope: ParseScope = ParseScope { self, DeclScope | CompoundStmtScope, true, false };
+            let mut ShouldCapture: bool = self.getTargetInfo().getTriple().isWindowsMSVCEnvironment();
+            if ShouldCapture {
+                self.Actions.ActOnCapturedRegionStart(self.Tok.getLocation(), self.getCurScope(), CR_ObjCAtFinally, 1);
+            }
+            let mut FinallyBody: i32 = true;
+            if self.Tok.is(l_brace) {
+                
+            } else {
+                << l_brace;
+            }
+            if FinallyBody()() {
+                FinallyBody() = self.Actions(self.Tok.getLocation());
+                if ShouldCapture {
+                    self.Actions.ActOnCapturedRegionError();
+                }
+            } else if ShouldCapture {
+                FinallyBody() = self.Actions();
+            }
+            FinallyStmt() = self.Actions.ObjC()(AtCatchFinallyLoc);
+            catch_or_finally_seen = true;
+            break;
+        }
+    }
+    if !catch_or_finally_seen {}
+    return self.Actions.ObjC()(atLoc);
+}
+
+fn Parser::ParseObjCAutoreleasePoolStmt(self, atLoc: SourceLocation) -> i32 {
+    self.ConsumeToken();
+    if self.Tok.isNot(l_brace) {
+         << l_brace;
+    }
+    let mut BodyScope: ParseScope = ParseScope { self, DeclScope | CompoundStmtScope, true, false };
+    let mut AutoreleasePoolBody: i32 = 0;
+    BodyScope.Exit();
+    if AutoreleasePoolBody()() {
+        AutoreleasePoolBody() = self.Actions(self.Tok.getLocation());
+    }
+    return self.Actions.ObjC()(atLoc);
+}
+
+fn Parser::StashAwayMethodOrFunctionBodyTokens(self, MDecl: *mut Decl) {
+    if self.SkipFunctionBodies && (!MDecl || self.Actions.canSkipFunctionBody(MDecl)) && self.trySkippingFunctionBody() {
+        self.Actions.ActOnSkippedFunctionBody(MDecl);
+        return;
+    }
+    let mut LM: *mut LexedMethod = LexedMethod { self, MDecl };
+    self.CurParsedObjCImpl(LM);
+    let mut Toks: *mut CachedTokens = LM();
+    Toks()(self.Tok);
+    if self.Tok.is(kw_try) {
+        self.ConsumeToken();
+        if self.Tok.is(colon) {
+            Toks()(self.Tok);
+            self.ConsumeToken();
+            while self.Tok.isNot(l_brace) {
+                self.ConsumeAndStoreUntil(l_paren, Toks, false, true);
+                self.ConsumeAndStoreUntil(r_paren, Toks, false, true);
+            }
+        }
+        Toks()(self.Tok);
+    } else if self.Tok.is(colon) {
+        self.ConsumeToken();
+        while self.Tok.isNot(l_brace) {
+            self.ConsumeAndStoreUntil(l_paren, Toks, false, true);
+            self.ConsumeAndStoreUntil(r_paren, Toks, false, true);
+        }
+        Toks()(self.Tok);
+    }
+    self.ConsumeBrace();
+    self.ConsumeAndStoreUntil(r_brace, Toks, false, true);
+    while self.Tok.is(kw_catch) {
+        self.ConsumeAndStoreUntil(l_brace, Toks, false, true);
+        self.ConsumeAndStoreUntil(r_brace, Toks, false, true);
+    }
+}
+
+fn Parser::ParseObjCMethodDefinition(self) -> *mut Decl {
+    let mut MDecl: *mut Decl = self.ParseObjCMethodPrototype(objc_not_keyword, true);
+    let mut CrashInfo: PrettyDeclStackTraceEntry = PrettyDeclStackTraceEntry { self.Actions.Context, MDecl, self.Tok.getLocation(), "parsing Objective-C method" };
+    if self.Tok.is(semi) {
+        if self.CurParsedObjCImpl {
+             << CreateRemoval(self.Tok.getLocation());
+        }
+        self.ConsumeToken();
+    }
+    if self.Tok.isNot(l_brace) {
+        self.SkipUntil(l_brace, StopAtSemi | StopBeforeMatch);
+        if self.Tok.isNot(l_brace) {
+            return null;
+        }
+    }
+    if !MDecl {
+        self.ConsumeBrace();
+        self.SkipUntil(r_brace, 0 as SkipUntilFlags);
+        return null;
+    }
+    self.Actions.ObjC().AddAnyMethodToGlobalPool(MDecl);
+    assert!(self.CurParsedObjCImpl, "ParseObjCMethodDefinition - Method out of @implementation");
+    self.StashAwayMethodOrFunctionBodyTokens(MDecl);
+    return MDecl;
+}
+
+fn Parser::ParseObjCAtStatement(self, AtLoc: SourceLocation, StmtCtx: ParsedStmtContext) -> i32 {
+    if self.Tok.is(code_completion) {
+        self.cutOffParsing();
+        self.Actions.CodeCompletion().CodeCompleteObjCAtStatement(self.getCurScope());
+    }
+    if self.Tok.isObjCAtKeyword(objc_import) && self.getLangOpts() {
+        self.SkipUntil(semi, 0 as SkipUntilFlags);
+        return self.Actions(self.Tok.getLocation());
+    }
+    self.ExprStatementTokLoc = AtLoc;
+    let mut Res: i32 = 0;
+    if Res()() {
+        self.SkipUntil(semi, 0 as SkipUntilFlags);
+    }
+    self.ExpectAndConsumeSemi;
+}
+
+fn Parser::ParseObjCAtExpression(self, AtLoc: SourceLocation) -> i32 {
+    match self.Tok.getKind() {
+        code_completion => {
+            self.cutOffParsing();
+        },
+        minus => {
+            plus;
+        },
+        string_literal => {
+            wide_string_literal;
+        },
+        char_constant => {
+            
+        },
+        numeric_constant => {
+            
+        },
+        kw_true => {
+            kw___objc_yes;
+        },
+        kw_false => {
+            kw___objc_no;
+        },
+        l_square => {
+            
+        },
+        l_brace => {
+            
+        },
+        l_paren => {
+            
+        },
+        _ => {
+            
+        },
+    }
+}
+
+fn Parser::ParseObjCXXMessageReceiver(self, IsExpr: *mut bool, TypeOrExpr: *mut *mut void) -> bool {
+    let mut InMessage: InMessageExpressionRAIIObject = InMessageExpressionRAIIObject { InMessageExpression: *self, OldValue: true };
+    if self.Tok {
+        self.TryAnnotateTypeOrScopeToken(No, false);
+    }
+    if !self.Tok.isSimpleTypeSpecifier(self.getLangOpts()) {
+        let mut Receiver: i32 = 0;
+        if Receiver()() {
+            return true;
+        }
+        IsExpr = true;
+        TypeOrExpr = ();
+        return false;
+    }
+    let mut DS: DeclSpec = zeroed();
+    self.ParseCXXSimpleTypeSpecifier(DS);
+    if self.Tok.is(l_paren) {
+        let mut Receiver: i32 = 0;
+        if Receiver()() {
+            return true;
+        }
+        IsExpr = true;
+        TypeOrExpr = ();
+        return false;
+    }
+    let mut DeclaratorInfo: Declarator = Declarator { DS, none(), TypeName };
+    let mut Type: i32 = self.Actions(DeclaratorInfo);
+    if Type()() {
+        return true;
+    }
+    IsExpr = false;
+    TypeOrExpr = ()();
+    return false;
+}
+
+fn Parser::isSimpleObjCMessageExpression(self) -> bool {
+    (((operator!(operator!((self.Tok.is(l_square) && self.getLangOpts() && "Incorrect start for isSimpleObjCMessageExpression")))) || (_wassert(L"Tok.is(tok::l_square) && getLangOpts().ObjC && \"Incorrect start for isSimpleObjCMessageExpression\"", L"clang\\lib\\Parse\\ParseObjc.cpp", (2693) as u32) , 0)) as void);
+    return self.GetLookAheadToken(1).is(identifier) && self.GetLookAheadToken(2).is(identifier);
+}
+
+fn Parser::isStartOfObjCClassMessageMissingOpenBracket(self) -> bool {
+    if operator!(self.getLangOpts()) || !self.NextToken().is(identifier) || self.InMessageExpression {
+        return false;
+    }
+    let mut Type: i32 = 0;
+    if self.Tok.is(annot_typename) {
+        Type() = (self.Tok);
+    } else if self.Tok.is(identifier) {
+        Type() = self.Actions.getTypeName;
+    } else {
+        return false;
+    }
+    if Type()() && ()()() {
+        let mut AfterNext: *Token = self.GetLookAheadToken(2);
+        if AfterNext {
+            if self.Tok.is(identifier) {
+                self.TryAnnotateTypeOrScopeToken(No, false);
+            }
+            return self.Tok.is(annot_typename);
+        }
+    }
+    return false;
+}
+
+fn Parser::ParseObjCMessageExpression(self) -> i32 {
+    assert!(self.Tok.is(l_square), "'[' expected");
+    let mut LBracLoc: SourceLocation = self.ConsumeBracket();
+    if self.Tok.is(code_completion) {
+        self.cutOffParsing();
+        self.Actions.CodeCompletion().CodeCompleteObjCMessageReceiver(self.getCurScope());
+    }
+    let mut InMessage: InMessageExpressionRAIIObject = InMessageExpressionRAIIObject { InMessageExpression: *self, OldValue: true };
+    if self.getLangOpts() {
+        let mut IsExpr: bool = false;
+        let mut TypeOrExpr: *mut void = null;
+        if self.ParseObjCXXMessageReceiver(IsExpr, TypeOrExpr) {
+            self.SkipUntil(r_square, StopAtSemi);
+        }
+    }
+    if self.Tok.is(identifier) {
+        let mut Name: *mut IdentifierInfo = self.Tok.getIdentifierInfo();
+        let mut NameLoc: SourceLocation = self.Tok.getLocation();
+        let mut ReceiverType: ParsedType = zeroed();
+        match self.Actions.ObjC().getObjCMessageKind(self.getCurScope(), Name, NameLoc, Name == self.Ident_super, self.NextToken().is(period)) {
+            ObjCSuperMessage => {
+                
+            },
+            ObjCClassMessage => {
+                if operator!() {
+                    self.SkipUntil(r_square, StopAtSemi);
+                }
+            },
+            ObjCInstanceMessage => {
+                break;
+            },
+        }
+    }
+    let mut Res: i32 = 0;
+    if Res()() {
+        self.SkipUntil(r_square, StopAtSemi);
+        return ;
+    }
+}
+
+fn Parser::ParseObjCMessageExpressionBody(self, LBracLoc: SourceLocation, SuperLoc: SourceLocation, ReceiverType: ParsedType, ReceiverExpr: *mut Expr) -> i32 {
+    let mut InMessage: InMessageExpressionRAIIObject = InMessageExpressionRAIIObject { InMessageExpression: *self, OldValue: true };
+    if self.Tok.is(code_completion) {
+        self.cutOffParsing();
+        if SuperLoc.isValid() {
+            self.Actions.CodeCompletion().CodeCompleteObjCSuperMessage;
+        } else if ReceiverType() {
+            self.Actions.CodeCompletion().CodeCompleteObjCClassMessage(self.getCurScope(), void {}, false);
+        } else {
+            self.Actions.CodeCompletion().CodeCompleteObjCInstanceMessage;
+        }
+    }
+    let mut Loc: SourceLocation = SourceLocation {};
+    let mut selIdent: *mut IdentifierInfo = self.ParseObjCSelectorPiece(Loc);
+    let mut KeyIdents: SmallVector<const IdentifierInfo *, 12> = zeroed();
+    let mut KeyLocs: SmallVector<SourceLocation, 12> = zeroed();
+    let mut KeyExprs: ExprVector = zeroed();
+    if self.Tok.is(colon) {
+        while true {
+            KeyIdents()(selIdent);
+            KeyLocs()(Loc);
+            if self.ExpectAndConsume(colon, "") {
+                self.SkipUntil(r_square, StopAtSemi);
+            }
+            if self.Tok.is(code_completion) {
+                self.cutOffParsing();
+                if SuperLoc.isValid() {
+                    self.Actions.CodeCompletion().CodeCompleteObjCSuperMessage(self.getCurScope(), SuperLoc, true);
+                } else if ReceiverType() {
+                    self.Actions.CodeCompletion().CodeCompleteObjCClassMessage(self.getCurScope(), true);
+                } else {
+                    self.Actions.CodeCompletion().CodeCompleteObjCInstanceMessage(self.getCurScope(), ReceiverExpr, true);
+                }
+            }
+            let mut Expr: i32 = 0;
+            if self.getLangOpts() && self.Tok.is(l_brace) {} else {
+                
+            }
+            let mut Res: i32 = Expr();
+            if Res()() {
+                self.SkipUntil(r_square, StopAtSemi);
+                return ;
+            }
+            KeyExprs()();
+            if self.Tok.is(code_completion) {
+                self.cutOffParsing();
+                if SuperLoc.isValid() {
+                    self.Actions.CodeCompletion().CodeCompleteObjCSuperMessage(self.getCurScope(), SuperLoc, false);
+                } else if ReceiverType() {
+                    self.Actions.CodeCompletion().CodeCompleteObjCClassMessage(self.getCurScope(), false);
+                } else {
+                    self.Actions.CodeCompletion().CodeCompleteObjCInstanceMessage(self.getCurScope(), ReceiverExpr, false);
+                }
+            }
+            selIdent = self.ParseObjCSelectorPiece(Loc);
+            if !selIdent && self.Tok.isNot(colon) {
+                break;
+            }
+        }
+        while self.Tok.is(comma) {
+            let mut commaLoc: SourceLocation = self.ConsumeToken();
+            let mut Res: i32 = ;
+            if Res()() {
+                if self.Tok.is(colon) {
+                     << CreateRemoval(commaLoc);
+                }
+                self.SkipUntil(r_square, StopAtSemi);
+                return ;
+            }
+            KeyExprs()();
+        }
+    } else if !selIdent {
+         << identifier;
+        self.SkipUntil(r_square, StopAtSemi);
+    }
+    if self.Tok.isNot(r_square) {
+         << (if self.Tok.is(identifier) { colon } else { r_square });
+        self.SkipUntil(r_square, StopAtSemi);
+    }
+    let mut RBracLoc: SourceLocation = self.ConsumeBracket();
+    let mut nKeys: u32 = ();
+    if nKeys == 0 {
+        KeyIdents()(selIdent);
+        KeyLocs()(Loc);
+    }
+    let mut Sel: Selector = self.PP.getSelectorTable().getSelector(nKeys, operator&([0]));
+    if SuperLoc.isValid() {
+        return self.Actions.ObjC()(self.getCurScope(), SuperLoc, Sel, LBracLoc, RBracLoc);
+    } else if ReceiverType() {
+        return self.Actions.ObjC()(self.getCurScope(), Sel, LBracLoc, RBracLoc);
+    }
+    return self.Actions.ObjC()(self.getCurScope(), ReceiverExpr, Sel, LBracLoc, RBracLoc);
+}
+
+fn Parser::ParseObjCStringLiteral(self, AtLoc: SourceLocation) -> i32 {
+    let mut Res: i32 = 0;
+    if Res()() {
+        return ;
+    }
+    let mut AtLocs: SmallVector<SourceLocation, 4> = zeroed();
+    let mut AtStrings: ExprVector = zeroed();
+    AtLocs()(AtLoc);
+    AtStrings()();
+    while self.Tok.is(at) {
+        AtLocs()(self.ConsumeToken());
+        let mut Lit: i32 = 0;
+        if Lit()() {
+            return ;
+        }
+        AtStrings()();
+    }
+    return self.Actions.ObjC()();
+}
+
+fn Parser::ParseObjCBooleanLiteral(self, AtLoc: SourceLocation, ArgValue: bool) -> i32 {
+    let mut EndLoc: SourceLocation = self.ConsumeToken();
+    return self.Actions.ObjC()(AtLoc, EndLoc, ArgValue);
+}
+
+fn Parser::ParseObjCCharacterLiteral(self, AtLoc: SourceLocation) -> i32 {
+    let mut Lit: i32 = self.Actions(self.Tok);
+    if Lit()() {
+        return ;
+    }
+    self.ConsumeToken();
+    return self.Actions.ObjC()(AtLoc);
+}
+
+fn Parser::ParseObjCNumericLiteral(self, AtLoc: SourceLocation) -> i32 {
+    let mut Lit: i32 = self.Actions(self.Tok);
+    if Lit()() {
+        return ;
+    }
+    self.ConsumeToken();
+    return self.Actions.ObjC()(AtLoc);
+}
+
+fn Parser::ParseObjCBoxedExpr(self, AtLoc: SourceLocation) -> i32 {
+    let mut T: BalancedDelimiterTracker = BalancedDelimiterTracker { *self, l_paren, semi };
+    T.consumeOpen();
+    let mut ValueExpr: i32 = 0;
+    let mut LPLoc: SourceLocation = T.getOpenLocation();
+    let mut RPLoc: SourceLocation = T.getCloseLocation();
+    ValueExpr() = self.Actions(LPLoc, RPLoc);
+    return self.Actions.ObjC()(SourceRange { B: AtLoc, E: RPLoc });
+}
+
+fn Parser::ParseObjCArrayLiteral(self, AtLoc: SourceLocation) -> i32 {
+    let mut ElementExprs: ExprVector = zeroed();
+    self.ConsumeBracket();
+    let mut HasInvalidEltExpr: bool = false;
+    while self.Tok.isNot(r_square) {
+        let mut Res: i32 = 0;
+        if Res()() {
+            self.SkipUntil(r_square, StopAtSemi);
+            return ;
+        }
+        if self.Tok.is(ellipsis) {
+            Res() = self.Actions.ActOnPackExpansion(self.ConsumeToken());
+        }
+        if Res()() {
+            HasInvalidEltExpr = true;
+        }
+        ElementExprs()();
+        if self.Tok.is(comma) {
+            self.ConsumeToken();
+        } else {
+            
+        }
+    }
+    let mut EndLoc: SourceLocation = self.ConsumeBracket();
+    let mut Args: MultiExprArg = zeroed();
+    return self.Actions.ObjC()(SourceRange { B: AtLoc, E: EndLoc });
+}
+
+fn Parser::ParseObjCDictionaryLiteral(self, AtLoc: SourceLocation) -> i32 {
+    let mut Elements: SmallVector<ObjCDictionaryElement, 4> = zeroed();
+    self.ConsumeBrace();
+    while self.Tok.isNot(r_brace) {
+        let mut KeyExpr: i32 = 0;
+        {
+            let mut X: ColonProtectionRAIIObject = ColonProtectionRAIIObject { P: *self, OldVal: true };
+            if KeyExpr()() {
+                self.SkipUntil(r_brace, StopAtSemi);
+                return ;
+            }
+        }
+        if self.ExpectAndConsume(colon, "") {
+            self.SkipUntil(r_brace, StopAtSemi);
+        }
+        let mut ValueExpr: i32 = 0;
+        if ValueExpr()() {
+            self.SkipUntil(r_brace, StopAtSemi);
+            return ;
+        }
+        let mut EllipsisLoc: SourceLocation = SourceLocation {};
+        if self.getLangOpts() {
+            self.TryConsumeToken(ellipsis, EllipsisLoc);
+        }
+        let mut Element: ObjCDictionaryElement = void { (), EllipsisLoc, nullopt };
+        Elements()(Element);
+    }
+    let mut EndLoc: SourceLocation = self.ConsumeBrace();
+    return self.Actions.ObjC()(SourceRange { B: AtLoc, E: EndLoc });
+}
+
+fn Parser::ParseObjCEncodeExpression(self, AtLoc: SourceLocation) -> i32 {
+    assert!(self.Tok.isObjCAtKeyword(objc_encode), "Not an @encode expression!");
+    let mut EncLoc: SourceLocation = self.ConsumeToken();
+    let mut T: BalancedDelimiterTracker = BalancedDelimiterTracker { *self, l_paren, semi };
+    T.consumeOpen();
+    let mut Ty: i32 = 0;
+    T.consumeClose();
+    return self.Actions.ObjC()(AtLoc, EncLoc, T.getOpenLocation(), T.getCloseLocation());
+}
+
+fn Parser::ParseObjCProtocolExpression(self, AtLoc: SourceLocation) -> i32 {
+    let mut ProtoLoc: SourceLocation = self.ConsumeToken();
+    let mut T: BalancedDelimiterTracker = BalancedDelimiterTracker { *self, l_paren, semi };
+    T.consumeOpen();
+    let mut protocolId: *mut IdentifierInfo = self.Tok.getIdentifierInfo();
+    let mut ProtoIdLoc: SourceLocation = self.ConsumeToken();
+    T.consumeClose();
+    return self.Actions.ObjC()(protocolId, AtLoc, ProtoLoc, T.getOpenLocation(), ProtoIdLoc, T.getCloseLocation());
+}
+
+fn Parser::ParseObjCSelectorExpression(self, AtLoc: SourceLocation) -> i32 {
+    let mut SelectorKeywordLoc: SourceLocation = self.ConsumeToken();
+    let mut KeyIdents: SmallVector<const IdentifierInfo *, 12> = zeroed();
+    let mut SelectorNameLoc: SourceLocation = SourceLocation {};
+    let mut T: BalancedDelimiterTracker = BalancedDelimiterTracker { *self, l_paren, semi };
+    T.consumeOpen();
+    let mut HasOptionalParen: bool = self.Tok.is(l_paren);
+    if HasOptionalParen {
+        self.ConsumeParen();
+    }
+    if self.Tok.is(code_completion) {
+        self.cutOffParsing();
+        self.Actions.CodeCompletion().CodeCompleteObjCSelector(self.getCurScope());
+    }
+    let mut SelIdent: *mut IdentifierInfo = self.ParseObjCSelectorPiece(SelectorNameLoc);
+    KeyIdents()(SelIdent);
+    let mut nColons: u32 = 0;
+    if self.Tok.isNot(r_paren) {
+        while true {
+            if self.TryConsumeToken(coloncolon) {
+                nColons += 1;
+                KeyIdents()(null);
+            } else {
+                
+            }
+            nColons += 1;
+            if self.Tok.is(r_paren) {
+                break;
+            }
+            if self.Tok.is(code_completion) {
+                self.cutOffParsing();
+                self.Actions.CodeCompletion().CodeCompleteObjCSelector(self.getCurScope());
+            }
+            let mut Loc: SourceLocation = SourceLocation {};
+            SelIdent = self.ParseObjCSelectorPiece(Loc);
+            KeyIdents()(SelIdent);
+            if !SelIdent && self.Tok.isNot(colon) && self.Tok.isNot(coloncolon) {
+                break;
+            }
+        }
+    }
+    if HasOptionalParen && self.Tok.is(r_paren) {
+        self.ConsumeParen();
+    }
+    T.consumeClose();
+    let mut Sel: Selector = self.PP.getSelectorTable().getSelector(nColons, operator&([0]));
+    return self.Actions.ObjC()(Sel, AtLoc, SelectorKeywordLoc, SelectorNameLoc, T.getOpenLocation(), T.getCloseLocation(), !HasOptionalParen);
+}
+
+fn Parser::ParseLexedObjCMethodDefs(self, LM: *mut LexedMethod, parseMethod: bool) {
+    let mut MCDecl: *mut Decl = LM.D;
+    let mut skip: bool = MCDecl && ((parseMethod && !self.Actions.ObjC().isObjCMethodDecl(MCDecl)) || (!parseMethod && self.Actions.ObjC().isObjCMethodDecl(MCDecl)));
+    if skip {
+        return;
+    }
+    let mut OrigLoc: SourceLocation = self.Tok.getLocation();
+    (((operator!(operator!((operator!(LM()()) && "ParseLexedObjCMethodDef - Empty body!")))) || (_wassert(L"!LM.Toks.empty() && \"ParseLexedObjCMethodDef - Empty body!\"", L"clang\\lib\\Parse\\ParseObjc.cpp", (3281) as u32) , 0)) as void);
+    let mut Eof: Token = Token {};
+    Eof.startToken();
+    Eof.setKind(eof);
+    Eof.setEofData(MCDecl);
+    Eof.setLocation(OrigLoc);
+    LM()(Eof);
+    LM()(self.Tok);
+    self.PP(LM(), true, true);
+    self.ConsumeAnyToken(true);
+    assert!(self.Tok, "Inline objective-c method not starting with '{' or 'try' or ':'");
+    let mut BodyScope: ParseScope = ParseScope { self, (if parseMethod { ObjCMethodScope } else { NoScope }) | FnScope | DeclScope | CompoundStmtScope, true, false };
+    let mut SaveFPFeatures: FPFeaturesStateRAII = self.Actions;
+    if parseMethod {
+        self.Actions.ObjC().ActOnStartOfObjCMethodDef(self.getCurScope(), MCDecl);
+    } else {
+        self.Actions.ActOnStartOfFunctionDef(self.getCurScope(), MCDecl, null, Other);
+    }
+    self.ParseFunctionBody(MCDecl, BodyScope);
+    if self.Tok.getLocation() != OrigLoc {
+        if self.PP.getSourceManager().isBeforeInTranslationUnit(self.Tok.getLocation(), OrigLoc) {
+            while self.Tok.getLocation() != OrigLoc && self.Tok.isNot(eof) {
+                self.ConsumeAnyToken(false);
+            }
+        }
+    }
+    if self.Tok.is(eof) && self.Tok.getEofData() == MCDecl {
+        self.ConsumeAnyToken(false);
+    }
+}
+
+struct Closure_1 {
+    P: *mut Parser,
+    nullability: *mut NullabilityKind,
+    nullabilityLoc: *mut SourceLocation,
+}
+
+unsafe fn Closure_1::call(self: *mut Closure_1, Pool: *mut AttributePool) -> auto {
+        return Pool.create((*self.P).getNullabilityKeyword((*self.nullability)), (*self.nullabilityLoc), AttributeScopeInfo {}, null, 0, ContextSensitiveKeyword(), SourceLocation {});
+    }
+
+struct Closure_2 {
+    protocolIdents: *mut SmallVectorImpl<IdentifierLoc>,
+    cap_1: *mut Parser,
+    mayBeProtocolList: *mut bool,
+}
+
+unsafe fn Closure_2::call(self: *mut Closure_2) {
+        let mut index: u32 = 0;
+        (*self.protocolIdents)()();
+        (*self.mayBeProtocolList) = false;
+    }
+
+struct Closure_3 {
+    cap_0: *mut Parser,
+    interfaceDecl: *mut *mut ObjCContainerDecl,
+    visibility: *mut ObjCKeywordKind,
+}
+
+unsafe fn Closure_3::call(self: *mut Closure_3, FD: *mut ParsingFieldDeclarator) -> auto {
+            assert!(self.getObjCDeclContext() == (*self.interfaceDecl), "Ivar should have interfaceDecl as its decl context");
+            FD()(true);
+            let mut Field: *mut Decl = self.Actions.ObjC().ActOnIvar(self.getCurScope(), FD()()()(), FD(), FD(), (*self.visibility));
+            if Field {
+                AllIvarDecls()(Field);
+            }
+            FD.complete(Field);
+            return Field;
+        }

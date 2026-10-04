@@ -77,6 +77,9 @@ enum CVal {
     Int(i64, Ty),
     Float(f64, Ty),
     Bool(bool),
+    Str(String, Ty),
+    Zero(Ty),
+    Null(Ty),
 }
 
 impl CVal {
@@ -85,6 +88,9 @@ impl CVal {
             CVal::Int(_, t) => t.clone(),
             CVal::Float(_, t) => t.clone(),
             CVal::Bool(_) => Ty::Bool,
+            CVal::Str(_, t) => t.clone(),
+            CVal::Zero(t) => t.clone(),
+            CVal::Null(t) => t.clone(),
         }
     }
     fn render(&self) -> String {
@@ -92,6 +98,9 @@ impl CVal {
             CVal::Int(n, _) => n.to_string(),
             CVal::Float(f, t) => fmt_float(*f, t),
             CVal::Bool(b) => if *b { "true".into() } else { "false".into() },
+            CVal::Str(s, _) => format!("c\"{s}\\00\""),
+            CVal::Zero(t) => if is_aggregate(t) { "zeroinitializer".into() } else if t.is_float() { "0.0".into() } else if t.is_ptr() { "null".into() } else { "0".into() },
+            CVal::Null(_) => "null".into(),
         }
     }
 }
@@ -191,7 +200,18 @@ impl<'a> Codegen<'a> {
                     if !compat(&ty, &cv.ty()) && cv.ty() != Ty::Err && ty != Ty::Err {
                         self.err("E0088", s.value.span(), format!("инициализатор static типа `{}`, а объявлен `{}`", cv.ty().name(), ty.name()), None);
                     }
-                    cv.render()
+                    match &cv {
+                        CVal::Str(text, _) => {
+                            let g = self.intern_string(text);
+                            let len = text.as_bytes().len();
+                            if matches!(ty, Ty::Slice(..)) {
+                                format!("{{ ptr {g}, i64 {len} }}")
+                            } else {
+                                g
+                            }
+                        }
+                        _ => cv.render(),
+                    }
                 }
                 None => {
                     self.err("E0089", s.value.span(), format!("`static {}` требует константный инициализатор", s.name), None);
@@ -1388,6 +1408,10 @@ impl<'a> Codegen<'a> {
                     }
                     // Глобальная константа (свёрнута заранее).
                     if let Some(cv) = self.consts.get(name) {
+                        if let CVal::Str(s, _) = cv {
+                            let s = s.clone();
+                            return self.gen_expr(&Expr::Str(s, *span), expected);
+                        }
                         return (cv.render(), cv.ty());
                     }
                     // Захваченная в jit-шаблоне переменная -> плейсхолдер-константа.
@@ -3684,10 +3708,32 @@ impl<'a> Codegen<'a> {
                 _ => CVal::Float(*f, Ty::F64),
             }),
             Expr::Bool(b, _) => Some(CVal::Bool(*b)),
+            Expr::Str(s, _) => {
+                let ty = match expected {
+                    Some(Ty::Ptr(..)) => Ty::Ptr(Box::new(Ty::U8), false),
+                    _ => Ty::Slice(Box::new(Ty::U8)),
+                };
+                Some(CVal::Str(s.clone(), ty))
+            }
             Expr::Path(en, var, _) => {
                 self.ctx.enums.get(en).and_then(|m| m.get(var)).map(|v| CVal::Int(*v, Ty::I32))
             }
-            Expr::Ident(name, _) => self.consts.get(name).cloned(),
+            Expr::Null(_) => {
+                expected.cloned().map(CVal::Null).or(Some(CVal::Null(Ty::Ptr(Box::new(Ty::U8), true))))
+            }
+            Expr::Ident(name, _) => {
+                if name == "null" {
+                    expected.cloned().map(CVal::Null).or(Some(CVal::Null(Ty::Ptr(Box::new(Ty::U8), true))))
+                } else {
+                    self.consts.get(name).cloned()
+                }
+            }
+            Expr::ArrayLit(items, _) if items.is_empty() => {
+                expected.cloned().map(CVal::Zero)
+            }
+            Expr::StructLit { name, .. } => {
+                Some(CVal::Zero(Ty::Struct(name.clone())))
+            }
             Expr::Unary { op, expr, .. } => {
                 let v = self.eval_const(expr, expected)?;
                 match op {
@@ -3733,6 +3779,23 @@ impl<'a> Codegen<'a> {
                     CVal::Bool(b) => {
                         if dst.is_int() {
                             Some(CVal::Int(b as i64, dst))
+                        } else {
+                            None
+                        }
+                    }
+                    CVal::Null(_) => {
+                        if dst.is_ptr() {
+                            Some(CVal::Null(dst))
+                        } else {
+                            None
+                        }
+                    }
+                    CVal::Zero(_) => Some(CVal::Zero(dst)),
+                    CVal::Str(s, _) => {
+                        if matches!(dst, Ty::Ptr(..)) {
+                            Some(CVal::Str(s, Ty::Ptr(Box::new(Ty::U8), false)))
+                        } else if matches!(dst, Ty::Slice(..)) {
+                            Some(CVal::Str(s, Ty::Slice(Box::new(Ty::U8))))
                         } else {
                             None
                         }
@@ -3892,6 +3955,9 @@ fn is_str(ty: &Ty) -> bool {
 /// обратно — нет). На уровне LLVM указатели непрозрачны, конверсия не нужна.
 fn compat(to: &Ty, from: &Ty) -> bool {
     if to == from {
+        return true;
+    }
+    if to.is_ptr() && from.is_ptr() {
         return true;
     }
     matches!((to, from), (Ty::Ptr(a, false), Ty::Ptr(b, _)) if a == b)

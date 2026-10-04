@@ -1,0 +1,492 @@
+const OverdefinedState: i32 = (-2147483647 - 1);
+
+const X86WinEHStatePassName: str = "Windows 32-bit x86 EH state insertion";
+
+struct WinEHStateFnPassImpl {
+    TheModule: *mut Module,
+    EHLinkRegistrationTy: *mut StructType,
+    CXXEHRegistrationTy: *mut StructType,
+    SEHRegistrationTy: *mut StructType,
+    SetJmp3: FunctionCallee,
+    CxxLongjmpUnwind: FunctionCallee,
+    Personality: EHPersonality,
+    PersonalityFn: *mut Function,
+    UseStackGuard: bool,
+    ParentBaseState: i32,
+    SehLongjmpUnwind: FunctionCallee,
+    Cookie: *mut Constant,
+    RegNode: *mut AllocaInst,
+    RegNodeTy: *mut Type,
+    EHGuardNode: *mut AllocaInst,
+    StateFieldIndex: i32,
+    Link: *mut Value,
+}
+
+struct WinEHStateLegacy {
+    Resolver: *mut AnalysisResolver,
+    PassID: *void,
+    Kind: PassKind,
+    Impl: WinEHStateFnPassImpl,
+}
+
+fn WinEHStateLegacy::runOnFunction(self, Fn: *mut Function) -> bool {
+    return self.Impl.runOnFunction(Fn);
+}
+
+fn WinEHStateLegacy::doInitialization(self, M: *mut Module) -> bool {
+    return self.Impl.initialize(M);
+}
+
+fn WinEHStateLegacy::doFinalization(self, M: *mut Module) -> bool {
+    return self.Impl.finalize(M);
+}
+
+fn WinEHStateLegacy::getPassName(self: *WinEHStateLegacy) -> str {
+    return X86WinEHStatePassName;
+}
+
+fn WinEHStateLegacy::getPassKind(self: *WinEHStateLegacy) -> PassKind {
+    return self.Kind;
+}
+
+fn WinEHStateLegacy::getPassID(self: *WinEHStateLegacy) -> AnalysisID {
+    return self.PassID;
+}
+
+fn WinEHStateLegacy::assignPassManager(self, arg: *mut PMStack, arg: PassManagerType) {}
+
+fn WinEHStateLegacy::getResolver(self: *WinEHStateLegacy) -> *mut AnalysisResolver {
+    return self.Resolver;
+}
+
+fn X86WinEHStatePass::run(self, M: *mut Module, MAM: *mut ModuleAnalysisManager) -> PreservedAnalyses {
+    let mut Impl: WinEHStateFnPassImpl = WinEHStateFnPassImpl {};
+    Impl.initialize(M);
+    let mut Changed: bool = false;
+    for F in M {
+        let mut ModifiedForFn: bool = Impl.runOnFunction(F);
+        Changed = Changed || ModifiedForFn;
+    }
+    Impl.finalize(M);
+    return if Changed { none() } else { all() };
+}
+
+fn createX86WinEHStateLegacyPass() -> *mut FunctionPass {
+    return WinEHStateLegacy {};
+}
+
+static mut ID: i8 = 0;
+
+fn WinEHStateFnPassImpl::initialize(self, M: *mut Module) -> bool {
+    self.TheModule = &mut M;
+    return false;
+}
+
+fn WinEHStateFnPassImpl::finalize(self, M: *mut Module) -> bool {
+    assert!(self.TheModule == &mut M);
+    self.TheModule = null;
+    self.EHLinkRegistrationTy = null;
+    self.CXXEHRegistrationTy = null;
+    self.SEHRegistrationTy = null;
+    self.SetJmp3 = FunctionCallee { null };
+    self.CxxLongjmpUnwind = FunctionCallee { null };
+    self.SehLongjmpUnwind = FunctionCallee { null };
+    self.Cookie = null;
+    return false;
+}
+
+fn WinEHStateLegacy::getAnalysisUsage(self: *WinEHStateLegacy, AU: *mut AnalysisUsage) {
+    AU.setPreservesCFG();
+}
+
+fn WinEHStateFnPassImpl::runOnFunction(self, F: *mut Function) -> bool {
+    if F.hasAvailableExternallyLinkage() {
+        return false;
+    }
+    if !F.hasPersonalityFn() {
+        return false;
+    }
+    self.PersonalityFn = dyn_cast(F.getPersonalityFn().stripPointerCasts());
+    if !self.PersonalityFn {
+        return false;
+    }
+    self.Personality = classifyEHPersonality(self.PersonalityFn);
+    if !isFuncletEHPersonality(self.Personality) {
+        return false;
+    }
+    let mut HasPads: bool = false;
+    for BB in F {
+        if BB.isEHPad() {
+            HasPads = true;
+            break;
+        }
+    }
+    if !HasPads {
+        return false;
+    }
+    let mut Int8PtrType: *mut Type = getUnqual(self.TheModule.getContext());
+    self.SetJmp3 = self.TheModule.getOrInsertFunction("_setjmp3", get(getInt32Ty(self.TheModule.getContext()), ArrayRef<Type *> { [Int8PtrType, getInt32Ty(self.TheModule.getContext())] }, true));
+    self.emitExceptionRegistrationRecord(&mut F);
+    let mut FuncInfo: WinEHFuncInfo = WinEHFuncInfo {};
+    self.addStateStores(F, FuncInfo);
+    self.updateEspForInAllocas(F);
+    self.PersonalityFn = null;
+    self.Personality = Unknown;
+    self.UseStackGuard = false;
+    self.RegNodeTy = null;
+    self.RegNode = null;
+    self.EHGuardNode = null;
+    return true;
+}
+
+fn WinEHStateFnPassImpl::getEHLinkRegistrationType(self) -> *mut Type {
+    if self.EHLinkRegistrationTy {
+        return self.EHLinkRegistrationTy;
+    }
+    let mut Context: *mut LLVMContext = self.TheModule.getContext();
+    let mut FieldTys: [2]*mut Type = [getUnqual(Context), getUnqual(Context)];
+    self.EHLinkRegistrationTy = create(FieldTys, "EHRegistrationNode");
+    return self.EHLinkRegistrationTy;
+}
+
+fn WinEHStateFnPassImpl::getCXXEHRegistrationType(self) -> *mut Type {
+    if self.CXXEHRegistrationTy {
+        return self.CXXEHRegistrationTy;
+    }
+    let mut Context: *mut LLVMContext = self.TheModule.getContext();
+    let mut FieldTys: [3]*mut Type = [getUnqual(Context), self.getEHLinkRegistrationType(), getInt32Ty(Context)];
+    self.CXXEHRegistrationTy = create(FieldTys, "CXXExceptionRegistration");
+    return self.CXXEHRegistrationTy;
+}
+
+fn WinEHStateFnPassImpl::getSEHRegistrationType(self) -> *mut Type {
+    if self.SEHRegistrationTy {
+        return self.SEHRegistrationTy;
+    }
+    let mut Context: *mut LLVMContext = self.TheModule.getContext();
+    let mut FieldTys: [5]*mut Type = [getUnqual(Context), getUnqual(Context), self.getEHLinkRegistrationType(), getInt32Ty(Context), getInt32Ty(Context)];
+    self.SEHRegistrationTy = create(FieldTys, "SEHExceptionRegistration");
+    return self.SEHRegistrationTy;
+}
+
+fn WinEHStateFnPassImpl::emitExceptionRegistrationRecord(self, F: *mut Function) {
+    assert!(self.Personality == MSVC_CXX || self.Personality == MSVC_X86SEH);
+    let mut Builder: i32 = &mut F.getEntryBlock();
+    let mut Int8PtrType: *mut Type = ();
+    let mut Int32Ty: *mut Type = ();
+    let mut VoidTy: *mut Type = ();
+    if self.Personality == MSVC_CXX {
+        self.RegNodeTy = self.getCXXEHRegistrationType();
+        self.RegNode = (self.RegNodeTy);
+        let mut SP: *mut Value = ();
+        Builder()(SP, (self.RegNodeTy, self.RegNode, 0));
+        self.StateFieldIndex = 2;
+        self.ParentBaseState = -1;
+        self.insertStateNumberStore(operator&(operator*()), self.ParentBaseState);
+        let mut Trampoline: *mut Function = self.generateLSDAInEAXThunk(F);
+        self.Link = (self.RegNodeTy, self.RegNode, 1);
+        self.CxxLongjmpUnwind = self.TheModule.getOrInsertFunction("__CxxLongjmpUnwind", get(VoidTy, ArrayRef<Type *> { Int8PtrType }, false));
+        cast(self.CxxLongjmpUnwind.getCallee().stripPointerCasts())(X86_StdCall);
+    } else if self.Personality == MSVC_X86SEH {
+        let mut PersonalityName: str = self.PersonalityFn.getName();
+        self.UseStackGuard = (PersonalityName == "_except_handler4");
+        self.RegNodeTy = self.getSEHRegistrationType();
+        self.RegNode = (self.RegNodeTy);
+        if self.UseStackGuard {
+            self.EHGuardNode = (Int32Ty);
+        }
+        let mut SP: *mut Value = ();
+        Builder()(SP, (self.RegNodeTy, self.RegNode, 0));
+        self.StateFieldIndex = 4;
+        self.ParentBaseState = if self.UseStackGuard { -2 } else { -1 };
+        self.insertStateNumberStore(operator&(operator*()), self.ParentBaseState);
+        let mut LSDA: *mut Value = null;
+        LSDA = (LSDA, Int32Ty);
+        if self.UseStackGuard {
+            self.Cookie = self.TheModule.getOrInsertGlobal("__security_cookie", Int32Ty);
+            let mut Val: *mut Value = (Int32Ty, self.Cookie, "cookie");
+            LSDA = (LSDA, Val);
+        }
+        Builder()(LSDA, (self.RegNodeTy, self.RegNode, 3));
+        if self.UseStackGuard {
+            let mut Val: *mut Value = (Int32Ty, self.Cookie);
+            let mut FrameAddr: *mut Value = (frameaddress, (self.TheModule.getDataLayout().getAllocaAddrSpace()), (0), null, "frameaddr");
+            let mut FrameAddrI32: *mut Value = (FrameAddr, Int32Ty);
+            FrameAddrI32 = (FrameAddrI32, Val);
+            Builder()(FrameAddrI32, self.EHGuardNode);
+        }
+        self.Link = (self.RegNodeTy, self.RegNode, 2);
+        self.SehLongjmpUnwind = self.TheModule.getOrInsertFunction(if self.UseStackGuard { "_seh_longjmp_unwind4" } else { "_seh_longjmp_unwind" }, get(getVoidTy(self.TheModule.getContext()), ArrayRef<Type *> { Int8PtrType }, false));
+        cast(self.SehLongjmpUnwind.getCallee().stripPointerCasts())(X86_StdCall);
+    } else {
+        llvm_unreachable_internal("unexpected personality function", "llvm\\lib\\Target\\X86\\X86WinEHState.cpp", 395);
+    }
+    for BB in *F {
+        let mut T: *mut Instruction = BB.getTerminator();
+        if !isa(T) {
+            continue;
+        }
+        if BB.getTerminatingMustTailCall() {
+            CI;
+        } else {
+            T = CI;
+        }
+        Builder()(T);
+    }
+}
+
+fn WinEHStateFnPassImpl::emitEHLSDA(self, Builder: *mut i32, F: *mut Function) -> *mut Value {
+    return ;
+}
+
+fn WinEHStateFnPassImpl::generateLSDAInEAXThunk(self, ParentFunc: *mut Function) -> *mut Function {
+    let mut Context: *mut LLVMContext = ParentFunc.getContext();
+    let mut Int32Ty: *mut Type = getInt32Ty(Context);
+    let mut Int8PtrType: *mut Type = getUnqual(Context);
+    let mut ArgTys: [5]*mut Type = [Int8PtrType, Int8PtrType, Int8PtrType, Int8PtrType, Int8PtrType];
+    let mut TrampolineTy: *mut FunctionType = get(Int32Ty, &mut ArgTys[0], false);
+    let mut TargetFuncTy: *mut FunctionType = get(Int32Ty, &mut ArgTys[0], false);
+    let mut Trampoline: *mut Function = Create(TrampolineTy, InternalLinkage, "__ehhandler$" + dropLLVMManglingEscape(ParentFunc.getName()), self.TheModule);
+    if ParentFunc.getComdat() {
+        C;
+    } else {
+        Trampoline.setComdat(C);
+    }
+    let mut EntryBB: *mut BasicBlock = Create(Context, "entry", Trampoline, null);
+    let mut Builder: i32 = EntryBB;
+    let mut LSDA: *mut Value = null;
+    let mut AI: auto = Trampoline.arg_begin();
+    let mut Args: [5]*mut Value = void { LSDA, operator&(operator*( += 1)), operator&(operator*( += 1)), operator&(operator*( += 1)), operator&(operator*( += 1)) };
+    let mut Call: *mut CallInst = (TargetFuncTy, self.PersonalityFn, Args);
+    Call.setTailCall(true);
+    Call.addParamAttr(0, InReg);
+    Builder()(Call);
+    return Trampoline;
+}
+
+fn WinEHStateFnPassImpl::linkExceptionRegistration(self, Builder: *mut i32, Handler: *mut Function) {
+    Handler.addFnAttr("safeseh", "");
+    let mut C: *mut LLVMContext = ();
+    let mut LinkTy: *mut Type = self.getEHLinkRegistrationType();
+    Builder()(Handler, (LinkTy, self.Link, 1));
+    let mut FSZero: *mut Constant = getNullValue(get(C, FS));
+    let mut Next: *mut Value = (getUnqual(C), FSZero);
+    Builder()(Next, (LinkTy, self.Link, 0));
+    Builder()(self.Link, FSZero);
+}
+
+fn WinEHStateFnPassImpl::unlinkExceptionRegistration(self, Builder: *mut i32) {
+    if  {
+        GEP() = cast();
+        Builder()();
+        self.Link = ;
+    }
+    let mut C: *mut LLVMContext = ();
+    let mut LinkTy: *mut Type = self.getEHLinkRegistrationType();
+    let mut Next: *mut Value = (getUnqual(C), (LinkTy, self.Link, 0));
+    let mut FSZero: *mut Constant = getNullValue(get(C, FS));
+    Builder()(Next, FSZero);
+}
+
+fn WinEHStateFnPassImpl::rewriteSetJmpCall(self, Builder: *mut i32, F: *mut Function, Call: *mut CallBase, State: *mut Value) {
+    if Call.arg_size() != 2 {
+        return;
+    }
+    let mut OpBundles: SmallVector<OperandBundleDef, 1> = zeroed();
+    Call.getOperandBundlesAsDefs();
+    let mut OptionalArgs: SmallVector<Value *, 3> = zeroed();
+    if self.Personality == MSVC_CXX {
+        OptionalArgs()(self.CxxLongjmpUnwind.getCallee());
+        OptionalArgs()(State);
+        OptionalArgs();
+    } else if self.Personality == MSVC_X86SEH {
+        OptionalArgs()(self.SehLongjmpUnwind.getCallee());
+        OptionalArgs()(State);
+        if self.UseStackGuard {
+            OptionalArgs()(self.Cookie);
+        }
+    } else {
+        llvm_unreachable_internal("unhandled personality!", "llvm\\lib\\Target\\X86\\X86WinEHState.cpp", 515);
+    }
+    let mut Args: SmallVector<Value *, 5> = zeroed();
+    Args()((Call.getArgOperand(0)));
+    Args()();
+    Args()();
+    let mut NewCall: *mut CallBase = null;
+    if  {
+        let mut NewCI: *mut CallInst = (self.SetJmp3);
+        NewCI.setTailCallKind();
+        NewCall = NewCI;
+    } else {
+        let mut II: *mut auto = cast(&mut Call);
+        NewCall = (self.SetJmp3);
+    }
+    NewCall.setCallingConv(Call.getCallingConv());
+    NewCall.setAttributes(Call.getAttributes());
+    NewCall.setDebugLoc(Call.getDebugLoc());
+    NewCall.takeName(&mut Call);
+    Call.replaceAllUsesWith(NewCall);
+    Call.eraseFromParent();
+}
+
+fn WinEHStateFnPassImpl::getBaseStateForBB(self, BlockColors: *mut i32, FuncInfo: *mut WinEHFuncInfo, BB: *mut BasicBlock) -> i32 {
+    let mut BaseState: i32 = self.ParentBaseState;
+    let mut BBColors: *mut auto = [BB];
+    (((operator!(operator!((BBColors()() == 1 && "multi-color BB not removed by preparation")))) || (_wassert(L"BBColors.size() == 1 && \"multi-color BB not removed by preparation\"", L"llvm\\lib\\Target\\X86\\X86WinEHState.cpp", (550) as u32) , 0)) as void);
+    let mut FuncletEntryBB: *mut BasicBlock = ();
+    if  {
+        let mut BaseStateI: auto = FuncInfo.FuncletBaseStateMap();
+        if BaseStateI() != FuncInfo.FuncletBaseStateMap.end {
+            BaseState = ;
+        }
+    }
+    return BaseState;
+}
+
+fn isIntrinsic(Call: *CallBase, ID: ID) -> bool {
+    let mut CF: *Function = Call.getCalledFunction();
+    return CF && CF.isIntrinsic() && CF.getIntrinsicID() == ID;
+}
+
+fn isSehScopeEnd(Call: *CallBase) -> bool {
+    return isIntrinsic(Call, seh_scope_end);
+}
+
+fn isSehScopeBegin(Call: *CallBase) -> bool {
+    return isIntrinsic(Call, seh_scope_begin);
+}
+
+fn WinEHStateFnPassImpl::getStateForCall(self, BlockColors: *mut i32, FuncInfo: *mut WinEHFuncInfo, Call: *mut CallBase) -> i32 {
+    if  {
+        if isSehScopeEnd(operator*()) {}
+        (((operator!(operator!((FuncInfo.InvokeStateMap.count() && "invoke has no state!")))) || (_wassert(L"FuncInfo.InvokeStateMap.count(II) && \"invoke has no state!\"", L"llvm\\lib\\Target\\X86\\X86WinEHState.cpp", (585) as u32) , 0)) as void);
+        return FuncInfo.InvokeStateMap[];
+    }
+}
+
+fn getPredState(FinalStates: *mut i32, F: *mut Function, ParentBaseState: i32, BB: *mut BasicBlock) -> i32 {
+    if &mut F.getEntryBlock() == BB {
+        return ParentBaseState;
+    }
+    if BB.isEHPad() {
+        return OverdefinedState;
+    }
+    let mut CommonState: i32 = OverdefinedState;
+    for PredBB in predecessors(BB) {
+        let mut PredEndState: auto = (PredBB);
+        if PredEndState() == () {
+            return OverdefinedState;
+        }
+        if isa(PredBB.getTerminator()) {
+            return OverdefinedState;
+        }
+        let mut PredState: i32 = ;
+        assert!(PredState != OverdefinedState, "overdefined BBs shouldn't be in FinalStates");
+        if CommonState == OverdefinedState {
+            CommonState = PredState;
+        }
+        if CommonState != PredState {
+            return OverdefinedState;
+        }
+    }
+    return CommonState;
+}
+
+fn getSuccState(InitialStates: *mut i32, F: *mut Function, ParentBaseState: i32, BB: *mut BasicBlock) -> i32 {
+    if isa(BB.getTerminator()) {
+        return OverdefinedState;
+    }
+    let mut CommonState: i32 = OverdefinedState;
+    for SuccBB in successors(BB) {
+        let mut SuccStartState: auto = (SuccBB);
+        if SuccStartState() == () {
+            return OverdefinedState;
+        }
+        if SuccBB.isEHPad() {
+            return OverdefinedState;
+        }
+        let mut SuccState: i32 = ;
+        assert!(SuccState != OverdefinedState, "overdefined BBs shouldn't be in FinalStates");
+        if CommonState == OverdefinedState {
+            CommonState = SuccState;
+        }
+        if CommonState != SuccState {
+            return OverdefinedState;
+        }
+    }
+    return CommonState;
+}
+
+fn WinEHStateFnPassImpl::isStateStoreNeeded(self, Personality: EHPersonality, Call: *mut CallBase) -> bool {
+    if isSehScopeBegin(Call) || isSehScopeEnd(Call) {
+        return true;
+    }
+    if isAsynchronousEHPersonality(Personality) {
+        return !Call.doesNotAccessMemory();
+    }
+    return !Call.doesNotThrow();
+}
+
+fn WinEHStateFnPassImpl::addStateStores(self, F: *mut Function, FuncInfo: *mut WinEHFuncInfo) {
+    let mut Builder: i32 = self.RegNode.getNextNode();
+    let mut RegNodeI8: *mut Value = (self.RegNode);
+    Builder();
+    if self.EHGuardNode {
+        let mut Builder: i32 = self.EHGuardNode.getNextNode();
+        let mut EHGuardNodeI8: *mut Value = (self.EHGuardNode);
+        Builder();
+    }
+    if isAsynchronousEHPersonality(self.Personality) {
+        calculateSEHStateNumbers(&mut F, FuncInfo);
+    } else {
+        calculateWinCXXEHStateNumbers(&mut F, FuncInfo);
+    }
+    let mut BlockColors: i32 = colorEHFunclets(F);
+    let mut RPOT: i32 = &mut F;
+    let mut InitialStates: i32 = 0;
+    let mut FinalStates: i32 = 0;
+    let mut Worklist: i32 = 0;
+    while operator!() {
+        let mut BB: *mut BasicBlock = ();
+        Worklist()();
+        if InitialStates()(BB) != 0 {
+            continue;
+        }
+        let mut PredState: i32 = 0;
+        if PredState == OverdefinedState {
+            continue;
+        }
+        InitialStates()(void { BB, PredState });
+        FinalStates()(void { BB, PredState });
+    }
+    let mut SetJmp3Calls: SmallVector<CallBase *, 1> = zeroed();
+}
+
+fn WinEHStateFnPassImpl::insertStateNumberStore(self, IP: *mut Instruction, State: i32) {
+    let mut Builder: i32 = IP;
+    let mut StateField: *mut Value = (self.RegNodeTy, self.RegNode, self.StateFieldIndex);
+    Builder()((State), StateField);
+}
+
+fn WinEHStateFnPassImpl::updateEspForInAllocas(self, F: *mut Function) {
+    for BB in F {
+        for I in BB {
+            if  {
+                if Alloca()() {
+                    continue;
+                }
+                let mut Builder: i32 = Alloca()();
+                let mut SP: *mut Value = ();
+                Builder()(SP, (self.RegNodeTy, self.RegNode, 0));
+            }
+            if  {
+                if II()() != stackrestore {
+                    continue;
+                }
+                let mut Builder: i32 = II()();
+                let mut SP: *mut Value = ();
+                Builder()(SP, (self.RegNodeTy, self.RegNode, 0));
+            }
+        }
+    }
+}

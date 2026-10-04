@@ -1,0 +1,975 @@
+enum OpenACCDirectiveKindEx {
+    Invalid = 0,
+    Enter = 1,
+    Exit = 2,
+}
+
+fn getOpenACCDirectiveKind(Tok: Token) -> OpenACCDirectiveKindEx {
+    if !Tok.is(identifier) {
+        return Invalid;
+    }
+    let mut DirKind: OpenACCDirectiveKind = zeroed();
+    if DirKind != Invalid {
+        return DirKind as OpenACCDirectiveKindEx;
+    }
+}
+
+fn getOpenACCClauseKind(Tok: Token) -> OpenACCClauseKind {
+    if Tok.is(kw_auto) {
+        return Auto;
+    }
+    if Tok.is(kw_default) {
+        return Default;
+    }
+    if Tok.is(kw_if) {
+        return If;
+    }
+    if Tok.is(kw_private) {
+        return Private;
+    }
+    if Tok.is(kw_delete) {
+        return Delete;
+    }
+    if !Tok.is(identifier) {
+        return Invalid;
+    }
+}
+
+fn getOpenACCAtomicKind(Tok: Token) -> OpenACCAtomicKind {
+    if !Tok.is(identifier) {
+        return None;
+    }
+}
+
+fn getOpenACCDefaultClauseKind(Tok: Token) -> OpenACCDefaultClauseKind {
+    if !Tok.is(identifier) {
+        return Invalid;
+    }
+}
+
+enum OpenACCSpecialTokenKind {
+    ReadOnly = 0,
+    DevNum = 1,
+    Queues = 2,
+    Zero = 3,
+    Force = 4,
+    Num = 5,
+    Length = 6,
+    Dim = 7,
+    Static = 8,
+}
+
+fn isOpenACCSpecialToken(Kind: OpenACCSpecialTokenKind, Tok: Token) -> bool {
+    if Tok.is(kw_static) && Kind == Static {
+        return true;
+    }
+    if !Tok.is(identifier) {
+        return false;
+    }
+    match Kind {
+        ReadOnly => {
+            return Tok.getIdentifierInfo().isStr("readonly");
+        },
+        DevNum => {
+            return Tok.getIdentifierInfo().isStr("devnum");
+        },
+        Queues => {
+            return Tok.getIdentifierInfo().isStr("queues");
+        },
+        Zero => {
+            return Tok.getIdentifierInfo().isStr("zero");
+        },
+        Force => {
+            return Tok.getIdentifierInfo().isStr("force");
+        },
+        Num => {
+            return Tok.getIdentifierInfo().isStr("num");
+        },
+        Length => {
+            return Tok.getIdentifierInfo().isStr("length");
+        },
+        Dim => {
+            return Tok.getIdentifierInfo().isStr("dim");
+        },
+        Static => {
+            return Tok.getIdentifierInfo().isStr("static");
+        },
+    }
+    llvm_unreachable_internal("Unknown 'Kind' Passed", "clang\\lib\\Parse\\ParseOpenACC.cpp", 220);
+}
+
+fn isTokenIdentifierOrKeyword(P: *mut Parser, Tok: Token) -> bool {
+    if Tok.is(identifier) {
+        return true;
+    }
+    if !Tok.isAnnotation() && Tok.getIdentifierInfo() && Tok.getIdentifierInfo().isKeyword(P.getLangOpts()) {
+        return true;
+    }
+    return false;
+}
+
+// ========================================================
+// [C++ Template - Неинстанциированный шаблон функции: tryParseAndConsumeSpecialTokenKind]
+// template <typename DirOrClauseTy>
+// fn tryParseAndConsumeSpecialTokenKind(P: *mut Parser, Kind: OpenACCSpecialTokenKind, DirOrClause: DirOrClauseTy) -> bool {
+//     let mut IdentTok: Token = P.getCurToken();
+//     if isTokenIdentifierOrKeyword(P, IdentTok) && P.NextToken().is(colon) {
+//         P.ConsumeToken();
+//         P.ConsumeToken();
+//         if !isOpenACCSpecialToken(Kind, IdentTok) {
+//             P << IdentTok.getIdentifierInfo() << DirOrClause << is_same_v;
+//             return false;
+//         }
+//         return true;
+//     }
+//     return false;
+// }
+// ========================================================
+
+fn isOpenACCDirectiveKind(Kind: OpenACCDirectiveKind, Tok: Token) -> bool {
+    if !Tok.is(identifier) {
+        return false;
+    }
+    match Kind {
+        Parallel => {
+            return Tok.getIdentifierInfo().isStr("parallel");
+        },
+        Serial => {
+            return Tok.getIdentifierInfo().isStr("serial");
+        },
+        Kernels => {
+            return Tok.getIdentifierInfo().isStr("kernels");
+        },
+        Data => {
+            return Tok.getIdentifierInfo().isStr("data");
+        },
+        HostData => {
+            return Tok.getIdentifierInfo().isStr("host_data");
+        },
+        Loop => {
+            return Tok.getIdentifierInfo().isStr("loop");
+        },
+        Cache => {
+            return Tok.getIdentifierInfo().isStr("cache");
+        },
+        ParallelLoop => {
+            SerialLoop;
+        },
+        Atomic => {
+            return Tok.getIdentifierInfo().isStr("atomic");
+        },
+        Routine => {
+            return Tok.getIdentifierInfo().isStr("routine");
+        },
+        Declare => {
+            return Tok.getIdentifierInfo().isStr("declare");
+        },
+        Init => {
+            return Tok.getIdentifierInfo().isStr("init");
+        },
+        Shutdown => {
+            return Tok.getIdentifierInfo().isStr("shutdown");
+        },
+        Set => {
+            return Tok.getIdentifierInfo().isStr("set");
+        },
+        Update => {
+            return Tok.getIdentifierInfo().isStr("update");
+        },
+        Wait => {
+            return Tok.getIdentifierInfo().isStr("wait");
+        },
+        Invalid => {
+            return false;
+        },
+    }
+    llvm_unreachable_internal("Unknown 'Kind' Passed", "clang\\lib\\Parse\\ParseOpenACC.cpp", 311);
+}
+
+fn ParseReductionOperator(P: *mut Parser) -> OpenACCReductionOperator {
+    if P.NextToken().isNot(colon) {
+        P;
+        return Invalid;
+    }
+    let mut ReductionKindTok: Token = P.getCurToken();
+    P.ConsumeToken();
+    P.ConsumeToken();
+    match ReductionKindTok.getKind() {
+        plus => {
+            return Addition;
+        },
+        star => {
+            return Multiplication;
+        },
+        amp => {
+            return BitwiseAnd;
+        },
+        pipe => {
+            return BitwiseOr;
+        },
+        caret => {
+            return BitwiseXOr;
+        },
+        ampamp => {
+            return And;
+        },
+        pipepipe => {
+            return Or;
+        },
+        identifier => {
+            if ReductionKindTok.getIdentifierInfo().isStr("max") {
+                return Max;
+            }
+        },
+        _ => {
+            P;
+        },
+    }
+    llvm_unreachable_internal("Reduction op token kind not caught by 'default'?", "clang\\lib\\Parse\\ParseOpenACC.cpp", 352);
+}
+
+fn expectIdentifierOrKeyword(P: *mut Parser) -> bool {
+    let mut Tok: Token = P.getCurToken();
+    if isTokenIdentifierOrKeyword(P, Tok) {
+        return false;
+    }
+    P << identifier;
+    return true;
+}
+
+fn ParseOpenACCEnterExitDataDirective(P: *mut Parser, FirstTok: Token, ExtDirKind: OpenACCDirectiveKindEx) -> OpenACCDirectiveKind {
+    let mut SecondTok: Token = P.getCurToken();
+    if SecondTok.isAnnotation() {
+        P << 0 << FirstTok.getIdentifierInfo();
+        return Invalid;
+    }
+    P.ConsumeAnyToken(false);
+    if !isOpenACCDirectiveKind(Data, SecondTok) {
+        if !SecondTok.is(identifier) {
+            P << identifier;
+        } else {
+            P << 1 << FirstTok.getIdentifierInfo().getName() << SecondTok.getIdentifierInfo().getName();
+        }
+        return Invalid;
+    }
+    return if ExtDirKind == Enter { EnterData } else { ExitData };
+}
+
+fn ParseOpenACCAtomicKind(P: *mut Parser) -> OpenACCAtomicKind {
+    let mut AtomicClauseToken: Token = P.getCurToken();
+    if AtomicClauseToken.isAnnotation() {
+        return None;
+    }
+    let mut AtomicKind: OpenACCAtomicKind = getOpenACCAtomicKind(AtomicClauseToken);
+    if AtomicKind != None {
+        P.ConsumeToken();
+    }
+    return AtomicKind;
+}
+
+fn ParseOpenACCDirectiveKind(P: *mut Parser) -> OpenACCDirectiveKind {
+    let mut FirstTok: Token = P.getCurToken();
+    if FirstTok.isNot(identifier) {
+        P;
+        if P.getCurToken().isNot(annot_pragma_openacc_end) {
+            P.ConsumeAnyToken(false);
+        }
+        return Invalid;
+    }
+    P.ConsumeToken();
+    let mut ExDirKind: OpenACCDirectiveKindEx = getOpenACCDirectiveKind(FirstTok);
+    if ExDirKind >= Invalid {
+        match ExDirKind {
+            Invalid => {
+                P << 0 << FirstTok.getIdentifierInfo();
+                return Invalid;
+            },
+            Enter => {
+                Exit;
+            },
+        }
+    }
+    let mut DirKind: OpenACCDirectiveKind = ExDirKind as OpenACCDirectiveKind;
+    let mut SecondTok: Token = P.getCurToken();
+    if !SecondTok.isAnnotation() && isOpenACCDirectiveKind(Loop, SecondTok) {
+        match DirKind {
+            _ => {
+                break;
+            },
+            Parallel => {
+                P.ConsumeToken();
+            },
+            Serial => {
+                P.ConsumeToken();
+            },
+            Kernels => {
+                P.ConsumeToken();
+            },
+        }
+    }
+    return DirKind;
+}
+
+enum ClauseParensKind {
+    None = 0,
+    Optional = 1,
+    Required = 2,
+}
+
+fn getClauseParensKind(DirKind: OpenACCDirectiveKind, Kind: OpenACCClauseKind) -> ClauseParensKind {
+    match Kind {
+        Self => {
+            return if DirKind == Update { Required } else { Optional };
+        },
+        Async => {
+            Worker;
+        },
+        Default => {
+            If;
+        },
+        Shortloop => {
+            llvm_unreachable_internal("Shortloop shouldn't be generated in clang", "clang\\lib\\Parse\\ParseOpenACC.cpp", 541);
+        },
+        Auto => {
+            Finalize;
+        },
+    }
+    llvm_unreachable_internal("Unhandled clause kind", "clang\\lib\\Parse\\ParseOpenACC.cpp", 551);
+}
+
+fn ClauseHasOptionalParens(DirKind: OpenACCDirectiveKind, Kind: OpenACCClauseKind) -> bool {
+    return getClauseParensKind(DirKind, Kind) == Optional;
+}
+
+fn ClauseHasRequiredParens(DirKind: OpenACCDirectiveKind, Kind: OpenACCClauseKind) -> bool {
+    return getClauseParensKind(DirKind, Kind) == Required;
+}
+
+fn SkipUntilEndOfDirective(P: *mut Parser) {
+    while P.getCurToken().isNot(annot_pragma_openacc_end) {
+        P.ConsumeAnyToken(false);
+    }
+}
+
+fn doesDirectiveHaveAssociatedStmt(DirKind: OpenACCDirectiveKind) -> bool {
+    match DirKind {
+        Routine => {
+            Cache;
+        },
+        Parallel => {
+            Serial;
+        },
+    }
+    llvm_unreachable_internal("Unhandled directive->assoc stmt", "clang\\lib\\Parse\\ParseOpenACC.cpp", 601);
+}
+
+fn getOpenACCScopeFlags(DirKind: OpenACCDirectiveKind) -> u32 {
+    match DirKind {
+        Parallel => {
+            Serial;
+        },
+        ParallelLoop => {
+            SerialLoop;
+        },
+        Loop => {
+            return DeclScope | OpenACCLoopConstructScope;
+        },
+        Data => {
+            EnterData;
+        },
+        Invalid => {
+            llvm_unreachable_internal("Shouldn't be creating a scope for an invalid construct", "clang\\lib\\Parse\\ParseOpenACC.cpp", 638);
+        },
+    }
+    llvm_unreachable_internal("Shouldn't be creating a scope for an invalid construct", "clang\\lib\\Parse\\ParseOpenACC.cpp", 640);
+}
+
+fn Parser::OpenACCCanContinue(self) -> i32 {
+    return void { null, Can };
+}
+
+fn Parser::OpenACCCannotContinue(self) -> i32 {
+    return void { null, Cannot };
+}
+
+fn Parser::OpenACCSuccess(self, Clause: *mut OpenACCClause) -> i32 {
+    return void { Clause, Can };
+}
+
+fn Parser::ParseOpenACCConditionExpr(self) -> i32 {
+    let mut ER: i32 = 0;
+    if operator!() {
+        return ;
+    }
+    let mut R: ConditionResult = self.getActions().ActOnCondition(self.getCurScope(), ()(), Boolean);
+}
+
+fn Parser::tryParseModifierList(self, CK: OpenACCClauseKind) -> OpenACCModifierKind {
+    {
+        let mut TPA: RevertingTentativeParsingAction = RevertingTentativeParsingAction { *self, false };
+        while isTokenIdentifierOrKeyword(*self, self.getCurToken()) && self.NextToken().is(comma) {
+            self.ConsumeToken();
+            self.ConsumeToken();
+        }
+        if !isTokenIdentifierOrKeyword(*self, self.getCurToken()) || !self.NextToken().is(colon) {
+            return Invalid;
+        }
+    }
+    let mut GetModKind: Closure_1 = Closure_1 {};
+    let mut CurModList: OpenACCModifierKind = Invalid;
+    let mut ConsumeModKind: Closure_2 = Closure_2 { cap_0: self, GetModKind: &mut GetModKind, CK: &mut CK, CurModList: &mut CurModList };
+    while self.NextToken().is(comma) {
+        ConsumeModKind.call();
+    }
+    ConsumeModKind.call();
+    return CurModList;
+}
+
+fn Parser::ParseOpenACCClauseList(self, DirKind: OpenACCDirectiveKind) -> i32 {
+    let mut Clauses: i32 = 0;
+    let mut FirstClause: bool = true;
+    while self.getCurToken().isNot(annot_pragma_openacc_end) {
+        if !FirstClause && self.getCurToken().is(comma) {
+            self.ConsumeToken();
+        }
+        FirstClause = false;
+        let mut Result: i32 = 0;
+        if () {
+            Clause;
+        } else {
+            Clauses()(Clause);
+        }
+    }
+    return ;
+}
+
+fn Parser::ParseOpenACCIntExpr(self, DK: OpenACCDirectiveKind, CK: OpenACCClauseKind, Loc: SourceLocation) -> i32 {
+    let mut ER: i32 = 0;
+    if operator!() {
+        return void { , Cannot };
+    }
+    return void { self.getActions().OpenACC()(DK, CK, Loc), Can };
+}
+
+fn Parser::ParseOpenACCIntExprList(self, DK: OpenACCDirectiveKind, CK: OpenACCClauseKind, Loc: SourceLocation, IntExprs: *mut SmallVectorImpl<Expr *>) -> bool {
+    let mut CurResult: i32 = 0;
+    if operator!() &&  == Cannot {
+        self.SkipUntil(r_paren, annot_pragma_openacc_end, StopBeforeMatch);
+        return true;
+    }
+    IntExprs()();
+    while !self.getCurToken() {
+        self.ExpectAndConsume(comma, "");
+        if operator!() &&  == Cannot {
+            self.SkipUntil(r_paren, annot_pragma_openacc_end, StopBeforeMatch);
+            return true;
+        }
+        IntExprs()();
+    }
+    return false;
+}
+
+fn Parser::ParseOpenACCDeviceTypeList(self, Archs: *mut i32) -> bool {
+    if expectIdentifierOrKeyword(*self) {
+        self.SkipUntil(r_paren, annot_pragma_openacc_end, StopBeforeMatch);
+        return true;
+    }
+    let mut Ident: *mut IdentifierInfo = self.getCurToken().getIdentifierInfo();
+    Archs()(self.ConsumeToken(), Ident);
+    while !self.getCurToken() {
+        self.ExpectAndConsume(comma, "");
+        if expectIdentifierOrKeyword(*self) {
+            self.SkipUntil(r_paren, annot_pragma_openacc_end, StopBeforeMatch);
+            return true;
+        }
+        Ident = self.getCurToken().getIdentifierInfo();
+        Archs()(self.ConsumeToken(), Ident);
+    }
+    return false;
+}
+
+fn Parser::ParseOpenACCSizeExpr(self, CK: OpenACCClauseKind) -> i32 {
+    if self.getCurToken().is(star) && self.NextToken() {
+        let mut AsteriskLoc: SourceLocation = self.ConsumeToken();
+        return self.getActions().OpenACC()(AsteriskLoc);
+    }
+    let mut SizeExpr: i32 = 0;
+    if operator!() {
+        return ;
+    }
+    SizeExpr() = self.getActions().OpenACC()(Invalid, CK, ()());
+    return ;
+}
+
+fn Parser::ParseOpenACCSizeExprList(self, CK: OpenACCClauseKind, SizeExprs: *mut SmallVectorImpl<Expr *>) -> bool {
+    let mut SizeExpr: i32 = 0;
+    if operator!() {
+        self.SkipUntil(r_paren, annot_pragma_openacc_end, StopBeforeMatch);
+        return true;
+    }
+    SizeExprs()();
+    while !self.getCurToken() {
+        self.ExpectAndConsume(comma, "");
+        if operator!() {
+            self.SkipUntil(r_paren, annot_pragma_openacc_end, StopBeforeMatch);
+            return true;
+        }
+        SizeExprs()();
+    }
+    return false;
+}
+
+fn Parser::ParseOpenACCGangArg(self, GangLoc: SourceLocation) -> i32 {
+    if isOpenACCSpecialToken(Static, self.getCurToken()) && self.NextToken().is(colon) {
+        self.ConsumeToken();
+        self.ConsumeToken();
+        let mut Res: i32 = 0;
+        return void { Static,  };
+    }
+    if isOpenACCSpecialToken(Dim, self.getCurToken()) && self.NextToken().is(colon) {
+        self.ConsumeToken();
+        self.ConsumeToken();
+        let mut Res: i32 = 0;
+        return void { Dim,  };
+    }
+    if isOpenACCSpecialToken(Num, self.getCurToken()) && self.NextToken().is(colon) {
+        self.ConsumeToken();
+        self.ConsumeToken();
+    }
+    let mut Res: i32 = 0;
+    return void { Num,  };
+}
+
+fn Parser::ParseOpenACCGangArgList(self, GangLoc: SourceLocation, GKs: *mut SmallVectorImpl<OpenACCGangKind>, IntExprs: *mut SmallVectorImpl<Expr *>) -> bool {
+    let mut Res: i32 = 0;
+    if operator!() {
+        self.SkipUntil(r_paren, annot_pragma_openacc_end, StopBeforeMatch);
+        return true;
+    }
+    GKs()();
+    IntExprs()();
+    while !self.getCurToken() {
+        self.ExpectAndConsume(comma, "");
+        if operator!() {
+            self.SkipUntil(r_paren, annot_pragma_openacc_end, StopBeforeMatch);
+            return true;
+        }
+        GKs()();
+        IntExprs()();
+    }
+    return false;
+}
+
+fn isUnsupportedExtensionClause(Tok: Token) -> bool {
+    if !Tok.is(identifier) {
+        return false;
+    }
+    return Tok.getIdentifierInfo().getName()("__");
+}
+
+fn Parser::ParseOpenACCClause(self, ExistingClauses: ArrayRef<const OpenACCClause *>, DirKind: OpenACCDirectiveKind) -> i32 {
+    let mut Kind: OpenACCClauseKind = getOpenACCClauseKind(self.getCurToken());
+    if isUnsupportedExtensionClause(self.getCurToken()) {
+         << self.getCurToken().getIdentifierInfo();
+        self.ConsumeToken();
+        let mut Parens: BalancedDelimiterTracker = BalancedDelimiterTracker { *self, l_paren, annot_pragma_openacc_end };
+        if !Parens.consumeOpen() {
+            Parens.skipToEnd();
+        }
+    } else if Kind == Invalid {
+         << self.getCurToken().getIdentifierInfo();
+    }
+    let mut ClauseLoc: SourceLocation = self.ConsumeToken();
+}
+
+fn Parser::ParseOpenACCClauseParams(self, ExistingClauses: ArrayRef<const OpenACCClause *>, DirKind: OpenACCDirectiveKind, ClauseKind: OpenACCClauseKind, ClauseLoc: SourceLocation) -> i32 {
+    let mut Parens: BalancedDelimiterTracker = BalancedDelimiterTracker { *self, l_paren, annot_pragma_openacc_end };
+    let mut ParsedClause: OpenACCParsedClause = OpenACCParsedClause { DirKind, ClauseKind, ClauseLoc };
+    if ClauseHasRequiredParens(DirKind, ClauseKind) {
+        if Parens.expectAndConsume("", unknown) {
+            self.SkipUntil(comma, r_paren, annot_pragma_openacc_end, StopBeforeMatch);
+        }
+        ParsedClause.setLParenLoc(Parens.getOpenLocation());
+        match ClauseKind {
+            Default => {
+                let mut DefKindTok: Token = self.getCurToken();
+                if expectIdentifierOrKeyword(*self) {
+                    Parens.skipToEnd();
+                }
+                self.ConsumeToken();
+                let mut DefKind: OpenACCDefaultClauseKind = getOpenACCDefaultClauseKind(DefKindTok);
+                if DefKind == Invalid {
+                    Parens.skipToEnd();
+                }
+                ParsedClause.setDefaultDetails(DefKind);
+                break;
+            },
+            If => {
+                let mut CondExpr: i32 = 0;
+                ParsedClause.setConditionDetails(if () { () } else { null });
+                if CondExpr()() {
+                    Parens.skipToEnd();
+                }
+                break;
+            },
+            Copy => {
+                PCopy;
+            },
+            Reduction => {
+                let mut Op: OpenACCReductionOperator = ParseReductionOperator(*self);
+                ParsedClause();
+                break;
+            },
+            Self => {
+                assert!(DirKind == Update);
+            },
+            Device => {
+                Host;
+            },
+            Collapse => {
+                let mut HasForce: bool = tryParseAndConsumeSpecialTokenKind(*self, Force, ClauseKind);
+                let mut LoopCount: i32 = 0;
+                if LoopCount()() {
+                    Parens.skipToEnd();
+                }
+                LoopCount() = self.getActions().OpenACC()(Invalid, ClauseKind, ()());
+                if LoopCount()() {
+                    Parens.skipToEnd();
+                }
+                ParsedClause.setCollapseDetails(HasForce);
+                break;
+            },
+            Bind => {
+                ParsedClause();
+                if  {
+                    Parens.skipToEnd();
+                }
+                break;
+            },
+            NumGangs => {
+                let mut IntExprs: i32 = 0;
+                if self.ParseOpenACCIntExprList(Invalid, NumGangs, ClauseLoc) {
+                    Parens.skipToEnd();
+                }
+                ParsedClause.setIntExprDetails(move());
+                break;
+            },
+            NumWorkers => {
+                DeviceNum;
+            },
+            DType => {
+                DeviceType;
+            },
+            Tile => {
+                let mut SizeExprs: i32 = 0;
+                if self.ParseOpenACCSizeExprList(Tile) {
+                    Parens.skipToEnd();
+                }
+                ParsedClause.setIntExprDetails(move());
+                break;
+            },
+            _ => {
+                llvm_unreachable_internal("Not a required parens type?", "clang\\lib\\Parse\\ParseOpenACC.cpp", 1173);
+            },
+        }
+        ParsedClause.setEndLoc(self.getCurToken().getLocation());
+    } else if ClauseHasOptionalParens(DirKind, ClauseKind) {
+        if !Parens.consumeOpen() {
+            ParsedClause.setLParenLoc(Parens.getOpenLocation());
+            match ClauseKind {
+                Self => {
+                    assert!(DirKind != Update);
+                    let mut CondExpr: i32 = 0;
+                    ParsedClause.setConditionDetails(if () { () } else { null });
+                    if CondExpr()() {
+                        Parens.skipToEnd();
+                    }
+                    break;
+                },
+                Vector => {
+                    Worker;
+                },
+                Async => {
+                    let mut AsyncArg: i32 = 0;
+                    ParsedClause.setIntExprDetails(if () { () } else { null });
+                    if AsyncArg()() {
+                        Parens.skipToEnd();
+                    }
+                    break;
+                },
+                Gang => {
+                    let mut GKs: i32 = 0;
+                    let mut IntExprs: i32 = 0;
+                    if self.ParseOpenACCGangArgList(ClauseLoc) {
+                        Parens.skipToEnd();
+                    }
+                    ParsedClause.setGangDetails(move(), move());
+                    break;
+                },
+                Wait => {
+                    let mut Info: OpenACCWaitParseInfo = self.ParseOpenACCWaitArgument(ClauseLoc, false);
+                    if Info.Failed {
+                        Parens.skipToEnd();
+                    }
+                    ParsedClause()(Info.DevNumExpr, Info.QueuesLoc, move(Info()));
+                    break;
+                },
+                _ => {
+                    llvm_unreachable_internal("Not an optional parens type?", "clang\\lib\\Parse\\ParseOpenACC.cpp", 1252);
+                },
+            }
+            ParsedClause.setEndLoc(self.getCurToken().getLocation());
+        } else {
+            ParsedClause.setEndLoc(ClauseLoc);
+        }
+    } else {
+        ParsedClause.setEndLoc(ClauseLoc);
+    }
+}
+
+fn Parser::ParseOpenACCAsyncArgument(self, DK: OpenACCDirectiveKind, CK: OpenACCClauseKind, Loc: SourceLocation) -> i32 {}
+
+fn Parser::ParseOpenACCWaitArgument(self, Loc: SourceLocation, IsDirective: bool) -> OpenACCWaitParseInfo {
+    let mut Result: OpenACCWaitParseInfo = OpenACCWaitParseInfo {};
+    if isOpenACCSpecialToken(DevNum, self.Tok) && self.NextToken().is(colon) {
+        self.ConsumeToken();
+        self.ConsumeToken();
+        let mut Res: i32 = 0;
+        if Res()() &&  == Cannot {
+            Result.Failed = true;
+            return Result;
+        }
+        if self.ExpectAndConsume(colon, "") {
+            Result.Failed = true;
+            return Result;
+        }
+        Result.DevNumExpr = ();
+    }
+    if isOpenACCSpecialToken(Queues, self.Tok) && self.NextToken().is(colon) {
+        Result.QueuesLoc = self.ConsumeToken();
+        self.ConsumeToken();
+    }
+    let mut Res: i32 = 0;
+    if Res()() &&  == Cannot {
+        Result.Failed = true;
+        return Result;
+    }
+    if Res()() {
+        Result()();
+    }
+    while !self.getCurToken() {
+        if self.ExpectAndConsume(comma, "") {
+            Result.Failed = true;
+            return Result;
+        }
+        let mut Res: i32 = 0;
+        if Res()() &&  == Cannot {
+            Result.Failed = true;
+            return Result;
+        }
+        if Res()() {
+            Result()();
+        }
+    }
+    return Result;
+}
+
+fn Parser::ParseOpenACCIDExpression(self) -> i32 {
+    let mut Res: i32 = 0;
+    if self.getLangOpts() {} else {
+        if self.Tok.isNot(identifier) {
+             << identifier;
+        }
+        let mut FuncName: Token = self.getCurToken();
+        let mut Name: UnqualifiedId = UnqualifiedId {};
+        let mut ScopeSpec: CXXScopeSpec = CXXScopeSpec {};
+        let mut TemplateKWLoc: SourceLocation = SourceLocation {};
+        Name.setIdentifier(FuncName.getIdentifierInfo(), self.ConsumeToken());
+        Res() = self.Actions(self.getCurScope(), ScopeSpec, TemplateKWLoc, Name, false, false);
+    }
+    return ;
+}
+
+fn Parser::ParseOpenACCBindClauseArgument(self) -> i32 {
+    if self.getCurToken().is(r_paren) {}
+    if self.getCurToken().is(identifier) {
+        let mut II: *mut IdentifierInfo = self.getCurToken().getIdentifierInfo();
+        self.ConsumeToken();
+        return II;
+    }
+    if !isStringLiteral(self.getCurToken().getKind()) {}
+    let mut Res: i32 = 0;
+    return cast();
+}
+
+fn Parser::ParseOpenACCVar(self, DK: OpenACCDirectiveKind, CK: OpenACCClauseKind) -> i32 {
+    let mut ArraySections: OpenACCArraySectionRAII = *self;
+    self.getActions().OpenACC().ActOnStartParseVar(DK, CK);
+    let mut Res: i32 = 0;
+    if operator!() {
+        self.getActions().OpenACC().ActOnInvalidParseVar();
+        return void { , Cannot };
+    }
+    Res() = self.getActions().OpenACC()(DK, CK);
+    return void { , Can };
+}
+
+fn Parser::ParseOpenACCVarList(self, DK: OpenACCDirectiveKind, CK: OpenACCClauseKind) -> i32 {
+    let mut Vars: i32 = 0;
+    if  {
+        Vars()();
+    } else if  {
+        self.SkipUntil(r_paren, annot_pragma_openacc_end, StopBeforeMatch);
+        return ;
+    }
+    while !self.getCurToken() {
+        self.ExpectAndConsume(comma, "");
+        if  {
+            Vars()();
+        } else if  {
+            self.SkipUntil(r_paren, annot_pragma_openacc_end, StopBeforeMatch);
+            return ;
+        }
+    }
+    return ;
+}
+
+fn Parser::ParseOpenACCCacheVarList(self) -> OpenACCCacheParseInfo {
+    if self.getCurToken().isAnnotation() {
+        return OpenACCCacheParseInfo {};
+    }
+    let mut CacheInfo: OpenACCCacheParseInfo = OpenACCCacheParseInfo {};
+    let mut ReadOnlyLoc: SourceLocation = self.getCurToken().getLocation();
+    if tryParseAndConsumeSpecialTokenKind(*self, ReadOnly, Cache) {
+        CacheInfo.ReadOnlyLoc = ReadOnlyLoc;
+    }
+    return CacheInfo;
+}
+
+fn Parser::ParseOpenACCDirective(self) -> OpenACCDirectiveParseInfo {
+    let mut StartLoc: SourceLocation = self.ConsumeAnnotationToken();
+    let mut DirLoc: SourceLocation = self.getCurToken().getLocation();
+    let mut DirKind: OpenACCDirectiveKind = ParseOpenACCDirectiveKind(*self);
+    let mut WaitInfo: OpenACCWaitParseInfo = OpenACCWaitParseInfo {};
+    let mut CacheInfo: OpenACCCacheParseInfo = OpenACCCacheParseInfo {};
+    let mut AtomicKind: OpenACCAtomicKind = None;
+    let mut RoutineName: i32 = 0;
+    self.getActions().OpenACC().ActOnConstruct(DirKind, DirLoc);
+    if DirKind == Atomic {
+        AtomicKind = ParseOpenACCAtomicKind(*self);
+    }
+    let mut T: BalancedDelimiterTracker = BalancedDelimiterTracker { *self, l_paren, annot_pragma_openacc_end };
+    if !T.consumeOpen() {
+        match DirKind {
+            _ => {
+                
+            },
+            Routine => {
+                if operator!() {
+                    T.skipToEnd();
+                } else {
+                    T.consumeClose();
+                    RoutineName() = self.getActions().OpenACC()();
+                }
+                break;
+            },
+            Cache => {
+                CacheInfo = self.ParseOpenACCCacheVarList();
+            },
+            Wait => {
+                WaitInfo = self.ParseOpenACCWaitArgument(DirLoc, true);
+            },
+        }
+    } else if DirKind == Cache {
+         << l_paren;
+    }
+    let mut ParseInfo: OpenACCDirectiveParseInfo = OpenACCDirectiveParseInfo { DirKind, StartLoc, DirLoc, T.getOpenLocation(), T.getCloseLocation(), SourceLocation {}, (if DirKind == Wait { WaitInfo.QueuesLoc } else { CacheInfo.ReadOnlyLoc }), AtomicKind, void {}, void {} };
+    if DirKind == Wait {
+        ParseInfo() = WaitInfo()();
+    } else if DirKind == Cache {
+        ParseInfo() = move(CacheInfo());
+    } else {
+        
+    }
+    assert!(self.Tok.is(annot_pragma_openacc_end), "Didn't parse all OpenACC Clauses");
+    ParseInfo.EndLoc = self.ConsumeAnnotationToken();
+    assert!(ParseInfo.EndLoc.isValid(), "Terminating annotation token not present");
+    return ParseInfo;
+}
+
+fn Parser::ParseOpenACCAfterRoutineDecl(self, AS: *mut AccessSpecifier, Attrs: *mut ParsedAttributes, TagType: TST, TagDecl: *mut Decl, DirInfo: *mut OpenACCDirectiveParseInfo) -> DeclGroupPtrTy {
+    assert!(DirInfo.DirKind == Routine);
+    let mut Ptr: DeclGroupPtrTy = zeroed();
+    if DirInfo.LParenLoc.isInvalid() {
+        if self.Tok.isNot(r_brace) && !self.isEofOrEom() {
+            if AS == AS_none {
+                if TagType == TST_unspecified {
+                    let mut EmptyDeclSpecAttrs: ParsedAttributes = zeroed();
+                    self.MaybeParseCXX11Attributes(Attrs, false);
+                    let mut PDS: ParsingDeclSpec = *self;
+                    Ptr() = self.ParseExternalDeclaration;
+                }
+            } else {
+                Ptr() = self.ParseCXXClassMemberDeclarationWithPragmas;
+            }
+        }
+    }
+}
+
+fn Parser::ParseOpenACCAfterRoutineStmt(self, DirInfo: *mut OpenACCDirectiveParseInfo) -> i32 {
+    assert!(DirInfo.DirKind == Routine);
+    let mut NextStmt: i32 = 0;
+    if DirInfo.LParenLoc.isInvalid() {
+        let mut DirScope: ParsingOpenACCDirectiveRAII = ParsingOpenACCDirectiveRAII { P: *self, OldVal: false };
+    }
+    return self.getActions().OpenACC()(DirInfo.StartLoc, DirInfo.DirLoc, DirInfo.LParenLoc, if DirInfo()() { null } else { DirInfo()() }, DirInfo.RParenLoc, DirInfo(), DirInfo.EndLoc);
+}
+
+fn Parser::ParseOpenACCDirectiveDecl(self, AS: *mut AccessSpecifier, Attrs: *mut ParsedAttributes, TagType: TST, TagDecl: *mut Decl) -> DeclGroupPtrTy {
+    assert!(self.Tok.is(annot_pragma_openacc), "expected OpenACC Start Token");
+    let mut DirScope: ParsingOpenACCDirectiveRAII = ParsingOpenACCDirectiveRAII { P: *self, OldVal: true };
+    let mut DirInfo: OpenACCDirectiveParseInfo = self.ParseOpenACCDirective();
+    if self.getActions().OpenACC().ActOnStartDeclDirective(DirInfo.DirKind, DirInfo.StartLoc, DirInfo()) {
+        return null;
+    }
+}
+
+fn Parser::ParseOpenACCDirectiveStmt(self) -> i32 {
+    assert!(self.Tok.is(annot_pragma_openacc), "expected OpenACC Start Token");
+    let mut DirScope: ParsingOpenACCDirectiveRAII = ParsingOpenACCDirectiveRAII { P: *self, OldVal: true };
+    let mut DirInfo: OpenACCDirectiveParseInfo = self.ParseOpenACCDirective();
+    let mut AssocStmt: i32 = 0;
+    if doesDirectiveHaveAssociatedStmt(DirInfo.DirKind) {
+        let mut AssocStmtRAII: AssociatedStmtRAII = self.getActions().OpenACC();
+        let mut DirScope: ParsingOpenACCDirectiveRAII = ParsingOpenACCDirectiveRAII { P: *self, OldVal: false };
+        let mut scopeFlags: u32 = getOpenACCScopeFlags(DirInfo.DirKind);
+        let mut ACCScope: ParseScope = ParseScope { self, scopeFlags, scopeFlags != 0, false };
+        AssocStmt() = self.getActions().OpenACC();
+    }
+    return self.getActions().OpenACC()(DirInfo.DirKind, DirInfo.StartLoc, DirInfo.DirLoc, DirInfo.LParenLoc, DirInfo.MiscLoc, DirInfo(), DirInfo.AtomicKind, DirInfo.RParenLoc, DirInfo.EndLoc, DirInfo());
+}
+
+struct Closure_1 {}
+
+fn Closure_1::call(self: *Closure_1, T: Token) {}
+
+struct Closure_2 {
+    cap_0: *mut Parser,
+    GetModKind: *mut (lambda at P:\Goraw\llvm-project\clang\lib\Parse\ParseOpenACC.cpp:693:21),
+    CK: *mut OpenACCClauseKind,
+    CurModList: *mut OpenACCModifierKind,
+}
+
+unsafe fn Closure_2::call(self: *mut Closure_2) {
+        let mut IdentToken: Token = self.getCurToken();
+        let mut NewKind: OpenACCModifierKind = (*self.GetModKind).call(IdentToken);
+        if NewKind == Invalid {
+            
+        } else if (NewKind((*self.CurModList))) != Invalid {
+            
+        } else {
+            (*self.CurModList)(NewKind);
+        }
+        self.ConsumeToken();
+        self.ConsumeToken();
+    }

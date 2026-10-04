@@ -1,0 +1,226 @@
+static mut X86EarlyIfConv: i32 = "x86-early-ifcvt";
+
+fn X86Subtarget::classifyBlockAddressReference(self: *X86Subtarget) -> u8 {
+    return self.classifyLocalReference(null);
+}
+
+fn X86Subtarget::classifyGlobalReference(self: *X86Subtarget, GV: *GlobalValue) -> u8 {
+    return self.classifyGlobalReference(GV, *GV.getParent());
+}
+
+fn X86Subtarget::classifyLocalReference(self: *X86Subtarget, GV: *GlobalValue) -> u8 {
+    let mut CM: Model = self.TM.getCodeModel();
+    if  {
+        return MO_GOTPCREL_NORELAX;
+    }
+    if !self.isPositionIndependent() {
+        return MO_NO_FLAG;
+    }
+    if is64Bit() {
+        if self.isTargetELF() {
+            assert!(CM != Tiny, "Tiny codesize model not supported on X86");
+            if CM == Large {
+                return MO_GOTOFF;
+            }
+            if GV {
+                return if self.TM.isLargeGlobalValue(GV) { MO_GOTOFF } else { MO_NO_FLAG };
+            }
+            return MO_NO_FLAG;
+        }
+        return MO_NO_FLAG;
+    }
+    if self.isTargetCOFF() {
+        return MO_NO_FLAG;
+    }
+    if self.isTargetDarwin() {
+        if GV && (GV.isDeclarationForLinker() || GV.hasCommonLinkage()) {
+            return MO_DARWIN_NONLAZY_PIC_BASE;
+        }
+        return MO_PIC_BASE_OFFSET;
+    }
+    return MO_GOTOFF;
+}
+
+fn X86Subtarget::classifyGlobalReference(self: *X86Subtarget, GV: *GlobalValue, M: *Module) -> u8 {
+    if self.TM.getCodeModel() == Large && !self.isPositionIndependent() {
+        return MO_NO_FLAG;
+    }
+    if GV {
+        if GV.getAbsoluteSymbolRange() {
+            CR;
+        } else {
+            if operator(CR).getUnsignedMax().ult(128) {
+                return MO_ABS8;
+            } else {
+                return MO_NO_FLAG;
+            }
+        }
+    }
+    if self.TM.shouldAssumeDSOLocal(GV) {
+        return self.classifyLocalReference(GV);
+    }
+    if self.isTargetCOFF() {
+        if !GV {
+            return MO_NO_FLAG;
+        }
+        if GV.hasDLLImportStorageClass() {
+            return MO_DLLIMPORT;
+        }
+        return MO_COFFSTUB;
+    }
+    if self.isOSWindows() {
+        return MO_NO_FLAG;
+    }
+    if is64Bit() {
+        if self.TM.getCodeModel() == Large {
+            return if self.isTargetELF() { MO_GOT } else { MO_NO_FLAG };
+        }
+        if  {
+            return MO_GOTPCREL_NORELAX;
+        }
+        return MO_GOTPCREL;
+    }
+    if self.isTargetDarwin() {
+        if !self.isPositionIndependent() {
+            return MO_DARWIN_NONLAZY;
+        }
+        return MO_DARWIN_NONLAZY_PIC_BASE;
+    }
+    if self.TM.getRelocationModel() == Static {
+        return MO_NO_FLAG;
+    }
+    return MO_GOT;
+}
+
+fn X86Subtarget::classifyGlobalFunctionReference(self: *X86Subtarget, GV: *GlobalValue) -> u8 {
+    return self.classifyGlobalFunctionReference(GV, *GV.getParent());
+}
+
+fn X86Subtarget::classifyGlobalFunctionReference(self: *X86Subtarget, GV: *GlobalValue, M: *Module) -> u8 {
+    if self.TM.shouldAssumeDSOLocal(GV) {
+        return MO_NO_FLAG;
+    }
+    if self.isTargetCOFF() {
+        if !GV {
+            return MO_NO_FLAG;
+        }
+        if GV.hasDLLImportStorageClass() {
+            return MO_DLLIMPORT;
+        }
+        return MO_COFFSTUB;
+    }
+    let mut F: *Function = dyn_cast_or_null(GV);
+    if self.isTargetELF() {
+        if is64Bit() && F && (X86_RegCall == F.getCallingConv()) {
+            return MO_GOTPCREL;
+        }
+        if ((F && F.hasFnAttribute(NonLazyBind)) || (!F && M.getRtLibUseGOT())) && is64Bit() {
+            return MO_GOTPCREL;
+        }
+        if operator!(is64Bit()) && !GV && self.TM.getRelocationModel() == Static {
+            return MO_NO_FLAG;
+        }
+        return MO_PLT;
+    }
+    if is64Bit() {
+        if F && F.hasFnAttribute(NonLazyBind) {
+            return MO_GOTPCREL;
+        }
+        return MO_NO_FLAG;
+    }
+    return MO_NO_FLAG;
+}
+
+fn X86Subtarget::isLegalToCallImmediateAddr(self: *X86Subtarget) -> bool {
+    if  {
+        return false;
+    }
+    return self.isTargetELF() || self.TM.getRelocationModel() == Static;
+}
+
+fn X86Subtarget::initSubtargetFeatures(self, CPU: str, TuneCPU: str, FS: str) {
+    if CPU.len == 0 {
+        CPU = "generic";
+    }
+    if TuneCPU.len == 0 {
+        TuneCPU = "i586";
+    }
+    let mut FullFS: str = ParseX86Triple(self.TargetTriple);
+    assert!(!FullFS.is_empty(), "Failed to parse X86 triple");
+    if !FS.is_empty() {
+        FullFS = (FullFS + "," + FS);
+    }
+    let mut FeaturesIn64BitOnly: [10]str = ["egpr", "push2pop2", "ppx", "ndd", "ccmp", "nf", "cf", "zu", "jmpabs", "uintr"];
+    if FullFS.find != npos {
+        for F in FeaturesIn64BitOnly[..] {
+            FullFS(",-" + F);
+        }
+    }
+    self.ParseSubtargetFeatures(CPU, TuneCPU, FullFS);
+    while true {
+        {
+        if DebugFlag && isCurrentDebugType("subtarget", 1) {}
+    }
+        if !(false) { break; }
+    }
+    if  {
+        reportFatalUsageError("64-bit code requested on a subtarget that doesn't support it!");
+    }
+    if  {
+        reportFatalUsageError("EGPR on Windows x64 requires SSE");
+    }
+    if self.StackAlignOverride {
+        self.stackAlignment = operator(self.StackAlignOverride);
+    } else if  {
+        self.stackAlignment = Align { ShiftValue: 16 };
+    }
+    if self.PreferVectorWidthOverride {
+        self.PreferVectorWidth = self.PreferVectorWidthOverride;
+    } else if  {
+        self.PreferVectorWidth = 128;
+    } else if  {
+        self.PreferVectorWidth = 256;
+    }
+}
+
+fn X86Subtarget::initializeSubtargetDependencies(self, CPU: str, TuneCPU: str, FS: str) -> *mut X86Subtarget {
+    self.initSubtargetFeatures(CPU, TuneCPU, FS);
+    return *self;
+}
+
+fn X86Subtarget::X86Subtarget(self, TT: *Triple, CPU: str, TuneCPU: str, FS: str, TM: *X86TargetMachine, StackAlignOverride: MaybeAlign, PreferVectorWidthOverride: u32, RequiredVectorWidth: u32) {
+    if !self.isPositionIndependent() || TM.getCodeModel == Large {
+        self.setPICStyle(None);
+    } else if is64Bit() {
+        self.setPICStyle(RIPRel);
+    } else if self.isTargetCOFF() {
+        self.setPICStyle(None);
+    } else if self.isTargetDarwin() {
+        self.setPICStyle(StubPIC);
+    } else if self.isTargetELF() {
+        self.setPICStyle(GOT);
+    }
+    let mut RBI: *mut auto = null;
+}
+
+fn X86Subtarget::~X86Subtarget(self) {}
+
+fn X86Subtarget::getCallLowering(self: *X86Subtarget) -> *CallLowering {}
+
+fn X86Subtarget::getInstructionSelector(self: *X86Subtarget) -> *mut InstructionSelector {}
+
+fn X86Subtarget::getLegalizerInfo(self: *X86Subtarget) -> *LegalizerInfo {}
+
+fn X86Subtarget::getRegBankInfo(self: *X86Subtarget) -> *RegisterBankInfo {}
+
+fn X86Subtarget::enableEarlyIfConversion(self: *X86Subtarget) -> bool {
+    return self.canUseCMOV() && ;
+}
+
+fn X86Subtarget::getPostRAMutations(self: *X86Subtarget, Mutations: *mut i32) {
+    Mutations();
+}
+
+fn X86Subtarget::isPositionIndependent(self: *X86Subtarget) -> bool {
+    return self.TM.isPositionIndependent();
+}

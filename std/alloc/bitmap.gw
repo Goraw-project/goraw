@@ -1,0 +1,1397 @@
+fn mi_bfield_ctz(x: mi_bfield_t) -> u64 {
+    return mi_ctz(x);
+}
+
+fn mi_bfield_clz(x: mi_bfield_t) -> u64 {
+    return mi_clz(x);
+}
+
+fn mi_bfield_popcount(x: mi_bfield_t) -> u64 {
+    return mi_popcount(x);
+}
+
+fn mi_bfield_clear_least_bit(x: mi_bfield_t) -> mi_bfield_t {
+    return (x & (x - 1));
+}
+
+fn mi_bfield_find_least_bit(x: mi_bfield_t, idx: *mut u64) -> bool {
+    return mi_bsf(x, idx);
+}
+
+fn mi_bfield_find_highest_bit(x: mi_bfield_t, idx: *mut u64) -> bool {
+    return mi_bsr(x, idx);
+}
+
+fn mi_bfield_foreach_bit(x: *mut mi_bfield_t, idx: *mut u64) -> bool {
+    let mut found: bool = mi_bfield_find_least_bit(*x, idx);
+    *x = mi_bfield_clear_least_bit(*x);
+    return found;
+}
+
+fn mi_bfield_zero() -> mi_bfield_t {
+    return 0;
+}
+
+fn mi_bfield_one() -> mi_bfield_t {
+    return 1;
+}
+
+fn mi_bfield_all_set() -> mi_bfield_t {
+    return ~(0 as mi_bfield_t);
+}
+
+fn mi_bfield_mask(bit_count: u64, shiftl: u64) -> mi_bfield_t {
+    (if (bit_count > 0) { 0 as void } else { _mi_assert_fail("bit_count > 0", "mimalloc\\src\\bitmap.c", 79, "mi_bfield_mask") });
+    (if (bit_count + shiftl <= (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("bit_count + shiftl <= MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 80, "mi_bfield_mask") });
+    (if (shiftl < (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("shiftl < MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 81, "mi_bfield_mask") });
+    let mut mask0: mi_bfield_t = (if bit_count < (1 << ((3) + 3)) { (mi_bfield_one() << bit_count) - 1 } else { mi_bfield_all_set() });
+    return (mask0 << shiftl);
+}
+
+fn mi_bfield_atomic_set(b: *mut atomic<mi_bfield_t>, idx: u64) -> bool {
+    (if (idx < (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("idx < MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 93, "mi_bfield_atomic_set") });
+    let mut mask: mi_bfield_t = mi_bfield_mask(1, idx);
+    let mut old: mi_bfield_t = atomic_fetch_or_explicit(b, mask, memory_order_acq_rel);
+    return ((old & mask) == 0);
+}
+
+fn mi_bfield_atomic_clear(b: *mut atomic<mi_bfield_t>, idx: u64, all_clear: *mut bool) -> bool {
+    (if (idx < (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("idx < MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 102, "mi_bfield_atomic_clear") });
+    let mut mask: mi_bfield_t = mi_bfield_mask(1, idx);
+    let mut old: mi_bfield_t = atomic_fetch_and_explicit(b, ~mask, memory_order_acq_rel);
+    if all_clear != 0 {
+        *all_clear = ((old & ~mask) == 0);
+    }
+    return ((old & mask) == mask);
+}
+
+fn mi_bfield_atomic_clear_once_set(subproc: *mut mi_subproc_t, b: *mut atomic<mi_bfield_t>, idx: u64) {
+    (if (idx < (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("idx < MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 113, "mi_bfield_atomic_clear_once_set") });
+    let mut mask: mi_bfield_t = mi_bfield_mask(1, idx);
+    let mut old: mi_bfield_t = atomic_load_explicit(b, memory_order_relaxed);
+    while true {
+        {
+        if __builtin_expect(!!((old & mask) == 0), false) {
+            old = atomic_load_explicit(b, memory_order_acquire);
+            if (old & mask) == 0 {
+                __mi_stat_counter_increase_mt(&mut (subproc).stats.pages_unabandon_busy_wait, 1);
+            }
+            while (old & mask) == 0 {
+                _mi_prim_thread_yield();
+                old = atomic_load_explicit(b, memory_order_acquire);
+            }
+        }
+    }
+        if !(!atomic_compare_exchange_weak_explicit(b, &mut old, (old & ~mask), memory_order_acq_rel, memory_order_acquire)) { break; }
+    }
+    (if ((old & mask) == mask) { 0 as void } else { _mi_assert_fail("(old&mask)==mask", "mimalloc\\src\\bitmap.c", 128, "mi_bfield_atomic_clear_once_set") });
+}
+
+fn mi_bfield_atomic_set_mask(b: *mut atomic<mi_bfield_t>, mask: mi_bfield_t, already_set: *mut u64) -> bool {
+    (if (mask != 0) { 0 as void } else { _mi_assert_fail("mask != 0", "mimalloc\\src\\bitmap.c", 135, "mi_bfield_atomic_set_mask") });
+    let mut old: mi_bfield_t = atomic_fetch_or_explicit(b, mask, memory_order_acq_rel);
+    if already_set != 0 {
+        *already_set = mi_bfield_popcount(old & mask);
+    }
+    return ((old & mask) == 0);
+}
+
+fn mi_bfield_atomic_clear_mask(b: *mut atomic<mi_bfield_t>, mask: mi_bfield_t, all_clear: *mut bool) -> bool {
+    (if (mask != 0) { 0 as void } else { _mi_assert_fail("mask != 0", "mimalloc\\src\\bitmap.c", 144, "mi_bfield_atomic_clear_mask") });
+    let mut old: mi_bfield_t = atomic_fetch_and_explicit(b, ~mask, memory_order_acq_rel);
+    if all_clear != 0 {
+        *all_clear = ((old & ~mask) == 0);
+    }
+    return ((old & mask) == mask);
+}
+
+fn mi_bfield_atomic_setX(b: *mut atomic<mi_bfield_t>, already_set: *mut u64) -> bool {
+    let mut old: mi_bfield_t = atomic_exchange_explicit(b, mi_bfield_all_set(), memory_order_release);
+    if already_set != 0 {
+        *already_set = mi_bfield_popcount(old);
+    }
+    return (old == 0);
+}
+
+fn mi_bfield_atomic_try_clear_mask_optimistic(b: *mut atomic<mi_bfield_t>, mask: mi_bfield_t, previous: *mut mi_bfield_t, did_temp_clear_bits: *mut bool) -> bool {
+    (if (mask != 0) { 0 as void } else { _mi_assert_fail("mask != 0", "mimalloc\\src\\bitmap.c", 164, "mi_bfield_atomic_try_clear_mask_optimistic") });
+    let mut old: mi_bfield_t = atomic_fetch_and_explicit(b, ~mask, memory_order_acq_rel);
+    if previous != 0 {
+        *previous = old;
+    }
+    if __builtin_expect(!!((old & mask) == mask), true) {
+        return true;
+    } else {
+        if (old & mask) != 0 {
+            atomic_fetch_or_explicit(b, old & mask, memory_order_acq_rel);
+            if did_temp_clear_bits != 0 {
+                *did_temp_clear_bits = true;
+            }
+        }
+        return false;
+    }
+}
+
+fn mi_bfield_atomic_try_clear_optimistic(b: *mut atomic<mi_bfield_t>, idx: u64, previous: *mut mi_bfield_t) -> bool {
+    (if (idx < (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("idx < MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 189, "mi_bfield_atomic_try_clear_optimistic") });
+    let mut mask: mi_bfield_t = (1 as mi_bfield_t << idx);
+    return mi_bfield_atomic_try_clear_mask_optimistic(b, mask, previous, 0);
+}
+
+fn mi_bfield_atomic_try_clear8_optimistic(b: *mut atomic<mi_bfield_t>, idx: u64, previous: *mut mi_bfield_t, did_temp_clear_bits: *mut bool) -> bool {
+    (if (idx < (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("idx < MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 198, "mi_bfield_atomic_try_clear8_optimistic") });
+    (if ((idx % 8) == 0) { 0 as void } else { _mi_assert_fail("(idx%8)==0", "mimalloc\\src\\bitmap.c", 199, "mi_bfield_atomic_try_clear8_optimistic") });
+    let mut mask: mi_bfield_t = (255 as mi_bfield_t) << idx;
+    return mi_bfield_atomic_try_clear_mask_optimistic(b, mask, previous, did_temp_clear_bits);
+}
+
+fn mi_bfield_atomic_try_clear_mask(b: *mut atomic<mi_bfield_t>, mask: mi_bfield_t, all_clear: *mut bool, did_temp_clear_bits: *mut bool) -> bool {
+    (if (mask != 0) { 0 as void } else { _mi_assert_fail("mask != 0", "mimalloc\\src\\bitmap.c", 208, "mi_bfield_atomic_try_clear_mask") });
+    let mut old: mi_bfield_t = atomic_load_explicit(b, memory_order_relaxed);
+    let mut cleared: bool = false;
+    if (old & mask) == mask {
+        cleared = mi_bfield_atomic_try_clear_mask_optimistic(b, mask, &mut old, did_temp_clear_bits);
+    }
+    if all_clear != 0 {
+        *all_clear = ((if cleared { old & ~mask } else { old }) == 0);
+    }
+    return cleared;
+}
+
+fn mi_bfield_atomic_try_clearX(b: *mut atomic<mi_bfield_t>, all_clear: *mut bool) -> bool {
+    let mut old: mi_bfield_t = atomic_load_explicit(b, memory_order_relaxed);
+    let mut cleared: bool = false;
+    if old == mi_bfield_all_set() {
+        cleared = atomic_compare_exchange_strong_explicit(b, &mut old, mi_bfield_zero(), memory_order_acq_rel, memory_order_acquire);
+    }
+    if all_clear != 0 {
+        *all_clear = (if cleared { true } else { (old == 0) });
+    }
+    return cleared;
+}
+
+fn mi_bfield_atomic_is_set(b: *atomic<mi_bfield_t>, idx: u64) -> bool {
+    let mut x: mi_bfield_t = atomic_load_explicit(b, memory_order_acquire);
+    return ((x & mi_bfield_mask(1, idx)) != 0);
+}
+
+fn mi_bfield_atomic_is_clear(b: *atomic<mi_bfield_t>, idx: u64) -> bool {
+    let mut x: mi_bfield_t = atomic_load_explicit(b, memory_order_acquire);
+    return ((x & mi_bfield_mask(1, idx)) == 0);
+}
+
+fn mi_bfield_atomic_is_xset(set: mi_xset_t, b: *atomic<mi_bfield_t>, idx: u64) -> bool {
+    if set {
+        return mi_bfield_atomic_is_set(b, idx);
+    } else {
+        return mi_bfield_atomic_is_clear(b, idx);
+    }
+}
+
+fn mi_bfield_atomic_is_set_mask(b: *atomic<mi_bfield_t>, mask: mi_bfield_t) -> bool {
+    (if (mask != 0) { 0 as void } else { _mi_assert_fail("mask != 0", "mimalloc\\src\\bitmap.c", 254, "mi_bfield_atomic_is_set_mask") });
+    let mut x: mi_bfield_t = atomic_load_explicit(b, memory_order_acquire);
+    return ((x & mask) == mask);
+}
+
+fn mi_bfield_atomic_is_clear_mask(b: *atomic<mi_bfield_t>, mask: mi_bfield_t) -> bool {
+    (if (mask != 0) { 0 as void } else { _mi_assert_fail("mask != 0", "mimalloc\\src\\bitmap.c", 261, "mi_bfield_atomic_is_clear_mask") });
+    let mut x: mi_bfield_t = atomic_load_explicit(b, memory_order_acquire);
+    return ((x & mask) == 0);
+}
+
+fn mi_bfield_atomic_is_xset_mask(set: mi_xset_t, b: *atomic<mi_bfield_t>, mask: mi_bfield_t) -> bool {
+    (if (mask != 0) { 0 as void } else { _mi_assert_fail("mask != 0", "mimalloc\\src\\bitmap.c", 268, "mi_bfield_atomic_is_xset_mask") });
+    if set {
+        return mi_bfield_atomic_is_set_mask(b, mask);
+    } else {
+        return mi_bfield_atomic_is_clear_mask(b, mask);
+    }
+}
+
+fn mi_bfield_atomic_popcount_mask(b: *mut atomic<mi_bfield_t>, mask: mi_bfield_t) -> u64 {
+    let mut x: mi_bfield_t = atomic_load_explicit(b, memory_order_acquire);
+    return mi_bfield_popcount(x & mask);
+}
+
+fn mi_bchunk_set(chunk: *mut mi_bchunk_t, cidx: u64, already_set: *mut u64) -> bool {
+    (if (cidx < (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("cidx < MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 288, "mi_bchunk_set") });
+    let mut i: u64 = cidx / (1 << ((3) + 3));
+    let mut idx: u64 = cidx % (1 << ((3) + 3));
+    let mut was_clear: bool = mi_bfield_atomic_set(&mut chunk.bfields[i], idx);
+    if already_set != 0 {
+        *already_set = (if was_clear { 0 } else { 1 });
+    }
+    return was_clear;
+}
+
+fn mi_bchunk_setNX(chunk: *mut mi_bchunk_t, cidx: u64, n: u64, already_set: *mut u64) -> bool {
+    (if (cidx < (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("cidx < MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 301, "mi_bchunk_setNX") });
+    (if (n > 0 && n <= (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("n > 0 && n <= MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 302, "mi_bchunk_setNX") });
+    let mut i: u64 = cidx / (1 << ((3) + 3));
+    let mut idx: u64 = cidx % (1 << ((3) + 3));
+    if __builtin_expect(!!(idx + n <= (1 << ((3) + 3))), true) {
+        return mi_bfield_atomic_set_mask(&mut chunk.bfields[i], mi_bfield_mask(n, idx), already_set);
+    } else {
+        let mut m: u64 = (1 << ((3) + 3)) - idx;
+        (if (m < n) { 0 as void } else { _mi_assert_fail("m < n", "mimalloc\\src\\bitmap.c", 312, "mi_bchunk_setNX") });
+        (if (i < ((1 << (6 + (3))) / (1 << ((3) + 3))) - 1) { 0 as void } else { _mi_assert_fail("i < MI_BCHUNK_FIELDS - 1", "mimalloc\\src\\bitmap.c", 313, "mi_bchunk_setNX") });
+        (if (idx + m <= (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("idx + m <= MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 314, "mi_bchunk_setNX") });
+        let mut already_set1: u64 = 0;
+        let mut all_set1: bool = mi_bfield_atomic_set_mask(&mut chunk.bfields[i], mi_bfield_mask(m, idx), &mut already_set1);
+        (if (n - m > 0) { 0 as void } else { _mi_assert_fail("n - m > 0", "mimalloc\\src\\bitmap.c", 317, "mi_bchunk_setNX") });
+        (if (n - m < (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("n - m < MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 318, "mi_bchunk_setNX") });
+        let mut already_set2: u64 = 0;
+        let mut all_set2: bool = mi_bfield_atomic_set_mask(&mut chunk.bfields[i + 1], mi_bfield_mask(n - m, 0), &mut already_set2);
+        if already_set != 0 {
+            *already_set = already_set1 + already_set2;
+        }
+        return (all_set1 && all_set2);
+    }
+}
+
+fn mi_bchunk_xsetNC(set: mi_xset_t, chunk: *mut mi_bchunk_t, cidx: u64, n: u64, palready_set: *mut u64, pmaybe_all_clear: *mut bool) -> bool {
+    (if (cidx + n <= (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("cidx + n <= MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 329, "mi_bchunk_xsetNC") });
+    (if (n > 0) { 0 as void } else { _mi_assert_fail("n>0", "mimalloc\\src\\bitmap.c", 330, "mi_bchunk_xsetNC") });
+    let mut all_transition: bool = true;
+    let mut maybe_all_clear: bool = true;
+    let mut total_already_set: u64 = 0;
+    let mut idx: u64 = cidx % (1 << ((3) + 3));
+    let mut field: u64 = cidx / (1 << ((3) + 3));
+    while n > 0 {
+        let mut m: u64 = (1 << ((3) + 3)) - idx;
+        if m > n {
+            m = n;
+        }
+        (if (idx + m <= (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("idx + m <= MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 339, "mi_bchunk_xsetNC") });
+        (if (field < ((1 << (6 + (3))) / (1 << ((3) + 3)))) { 0 as void } else { _mi_assert_fail("field < MI_BCHUNK_FIELDS", "mimalloc\\src\\bitmap.c", 340, "mi_bchunk_xsetNC") });
+        let mut mask: mi_bfield_t = mi_bfield_mask(m, idx);
+        let mut already_set: u64 = 0;
+        let mut all_clear: bool = false;
+        let mut transition: bool = (if set { mi_bfield_atomic_set_mask(&mut chunk.bfields[field], mask, &mut already_set) } else { mi_bfield_atomic_clear_mask(&mut chunk.bfields[field], mask, &mut all_clear) });
+        (if (!set || ((transition && already_set == 0) || (!transition && already_set > 0))) { 0 as void } else { _mi_assert_fail("!set || ((transition && already_set == 0) || (!transition && already_set > 0))", "mimalloc\\src\\bitmap.c", 346, "mi_bchunk_xsetNC") });
+        all_transition = all_transition && transition;
+        total_already_set += already_set;
+        maybe_all_clear = maybe_all_clear && all_clear;
+        field += 1;
+        idx = 0;
+        (if (m <= n) { 0 as void } else { _mi_assert_fail("m <= n", "mimalloc\\src\\bitmap.c", 353, "mi_bchunk_xsetNC") });
+        n -= m;
+    }
+    if palready_set != 0 {
+        *palready_set = total_already_set;
+    }
+    if pmaybe_all_clear != 0 {
+        *pmaybe_all_clear = maybe_all_clear;
+    }
+    return all_transition;
+}
+
+fn mi_bchunk_setN(chunk: *mut mi_bchunk_t, cidx: u64, n: u64, already_set: *mut u64) -> bool {
+    (if (n > 0 && n <= (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("n>0 && n <= MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 362, "mi_bchunk_setN") });
+    if n == 1 {
+        return mi_bchunk_set(chunk, cidx, already_set);
+    }
+    if n <= (1 << ((3) + 3)) {
+        return mi_bchunk_setNX(chunk, cidx, n, already_set);
+    }
+    return mi_bchunk_xsetNC((true), chunk, cidx, n, already_set, 0);
+}
+
+fn mi_bchunk_clear(chunk: *mut mi_bchunk_t, cidx: u64, all_clear: *mut bool) -> bool {
+    (if (cidx < (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("cidx < MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 373, "mi_bchunk_clear") });
+    let mut i: u64 = cidx / (1 << ((3) + 3));
+    let mut idx: u64 = cidx % (1 << ((3) + 3));
+    return mi_bfield_atomic_clear(&mut chunk.bfields[i], idx, all_clear);
+}
+
+fn mi_bchunk_clearN(chunk: *mut mi_bchunk_t, cidx: u64, n: u64, maybe_all_clear: *mut bool) -> bool {
+    (if (n > 0 && n <= (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("n>0 && n <= MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 380, "mi_bchunk_clearN") });
+    if n == 1 {
+        return mi_bchunk_clear(chunk, cidx, maybe_all_clear);
+    }
+    return mi_bchunk_xsetNC((false), chunk, cidx, n, 0, maybe_all_clear);
+}
+
+fn mi_bchunk_popcountNC(chunk: *mut mi_bchunk_t, field_idx: u64, idx: u64, n: u64) -> u64 {
+    (if ((field_idx * (1 << ((3) + 3))) + idx + n <= (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("(field_idx*MI_BFIELD_BITS) + idx + n <= MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 391, "mi_bchunk_popcountNC") });
+    let mut count: u64 = 0;
+    while n > 0 {
+        let mut m: u64 = (1 << ((3) + 3)) - idx;
+        if m > n {
+            m = n;
+        }
+        (if (idx + m <= (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("idx + m <= MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 396, "mi_bchunk_popcountNC") });
+        (if (field_idx < ((1 << (6 + (3))) / (1 << ((3) + 3)))) { 0 as void } else { _mi_assert_fail("field_idx < MI_BCHUNK_FIELDS", "mimalloc\\src\\bitmap.c", 397, "mi_bchunk_popcountNC") });
+        let mut mask: u64 = mi_bfield_mask(m, idx);
+        count += mi_bfield_atomic_popcount_mask(&mut chunk.bfields[field_idx], mask);
+        field_idx += 1;
+        idx = 0;
+        n -= m;
+    }
+    return count;
+}
+
+fn mi_bchunk_popcountN(chunk: *mut mi_bchunk_t, cidx: u64, n: u64) -> u64 {
+    (if (cidx + n <= (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("cidx + n <= MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 410, "mi_bchunk_popcountN") });
+    (if (n > 0) { 0 as void } else { _mi_assert_fail("n>0", "mimalloc\\src\\bitmap.c", 411, "mi_bchunk_popcountN") });
+    if n == 0 {
+        return 0;
+    }
+    let mut i: u64 = cidx / (1 << ((3) + 3));
+    let mut idx: u64 = cidx % (1 << ((3) + 3));
+    if n == 1 {
+        return (if mi_bfield_atomic_is_set(&mut chunk.bfields[i], idx) { 1 } else { 0 });
+    }
+    if idx + n <= (1 << ((3) + 3)) {
+        return mi_bfield_atomic_popcount_mask(&mut chunk.bfields[i], mi_bfield_mask(n, idx));
+    }
+    return mi_bchunk_popcountNC(chunk, i, idx, n);
+}
+
+fn mi_bchunk_is_xsetNC(set: mi_xset_t, chunk: *mi_bchunk_t, field_idx: u64, idx: u64, n: u64) -> bool {
+    (if ((field_idx * (1 << ((3) + 3))) + idx + n <= (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("(field_idx*MI_BFIELD_BITS) + idx + n <= MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 426, "mi_bchunk_is_xsetNC") });
+    while n > 0 {
+        let mut m: u64 = (1 << ((3) + 3)) - idx;
+        if m > n {
+            m = n;
+        }
+        (if (idx + m <= (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("idx + m <= MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 430, "mi_bchunk_is_xsetNC") });
+        (if (field_idx < ((1 << (6 + (3))) / (1 << ((3) + 3)))) { 0 as void } else { _mi_assert_fail("field_idx < MI_BCHUNK_FIELDS", "mimalloc\\src\\bitmap.c", 431, "mi_bchunk_is_xsetNC") });
+        let mut mask: u64 = mi_bfield_mask(m, idx);
+        if !mi_bfield_atomic_is_xset_mask(set, &mut chunk.bfields[field_idx], mask) {
+            return false;
+        }
+        field_idx += 1;
+        idx = 0;
+        n -= m;
+    }
+    return true;
+}
+
+fn mi_bchunk_is_xsetN(set: mi_xset_t, chunk: *mi_bchunk_t, cidx: u64, n: u64) -> bool {
+    (if (cidx + n <= (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("cidx + n <= MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 446, "mi_bchunk_is_xsetN") });
+    (if (n > 0) { 0 as void } else { _mi_assert_fail("n>0", "mimalloc\\src\\bitmap.c", 447, "mi_bchunk_is_xsetN") });
+    if n == 0 {
+        return true;
+    }
+    let mut i: u64 = cidx / (1 << ((3) + 3));
+    let mut idx: u64 = cidx % (1 << ((3) + 3));
+    if n == 1 {
+        return mi_bfield_atomic_is_xset(set, &mut chunk.bfields[i], idx);
+    }
+    if idx + n <= (1 << ((3) + 3)) {
+        return mi_bfield_atomic_is_xset_mask(set, &mut chunk.bfields[i], mi_bfield_mask(n, idx));
+    }
+    return mi_bchunk_is_xsetNC(set, chunk, i, idx, n);
+}
+
+fn mi_bchunk_try_clearNX(chunk: *mut mi_bchunk_t, cidx: u64, n: u64, pmaybe_all_clear: *mut bool, did_temp_clear_bits: *mut bool) -> bool {
+    (if (cidx < (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("cidx < MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 461, "mi_bchunk_try_clearNX") });
+    (if (n <= (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("n <= MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 462, "mi_bchunk_try_clearNX") });
+    let mut i: u64 = cidx / (1 << ((3) + 3));
+    let mut idx: u64 = cidx % (1 << ((3) + 3));
+    if __builtin_expect(!!(idx + n <= (1 << ((3) + 3))), true) {
+        return mi_bfield_atomic_try_clear_mask(&mut chunk.bfields[i], mi_bfield_mask(n, idx), pmaybe_all_clear, did_temp_clear_bits);
+    } else {
+        let mut m: u64 = (1 << ((3) + 3)) - idx;
+        (if (m < n) { 0 as void } else { _mi_assert_fail("m < n", "mimalloc\\src\\bitmap.c", 472, "mi_bchunk_try_clearNX") });
+        (if (i < ((1 << (6 + (3))) / (1 << ((3) + 3))) - 1) { 0 as void } else { _mi_assert_fail("i < MI_BCHUNK_FIELDS - 1", "mimalloc\\src\\bitmap.c", 473, "mi_bchunk_try_clearNX") });
+        let mut field1_is_clear: bool = false;
+        if !mi_bfield_atomic_try_clear_mask(&mut chunk.bfields[i], mi_bfield_mask(m, idx), &mut field1_is_clear, did_temp_clear_bits) {
+            return false;
+        }
+        (if (n - m > 0) { 0 as void } else { _mi_assert_fail("n - m > 0", "mimalloc\\src\\bitmap.c", 477, "mi_bchunk_try_clearNX") });
+        (if (n - m < (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("n - m < MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 478, "mi_bchunk_try_clearNX") });
+        let mut field2_is_clear: bool = false;
+        if !mi_bfield_atomic_try_clear_mask(&mut chunk.bfields[i + 1], mi_bfield_mask(n - m, 0), &mut field2_is_clear, did_temp_clear_bits) {
+            mi_bfield_atomic_set_mask(&mut chunk.bfields[i], mi_bfield_mask(m, idx), 0);
+            if did_temp_clear_bits != 0 {
+                *did_temp_clear_bits = true;
+            }
+            return false;
+        }
+        if pmaybe_all_clear != 0 {
+            *pmaybe_all_clear = field1_is_clear && field2_is_clear;
+        }
+        return true;
+    }
+}
+
+fn mi_bchunk_try_clearNC(chunk: *mut mi_bchunk_t, cidx: u64, n: u64, pmaybe_all_clear: *mut bool, did_temp_clear_bits: *mut bool) -> bool {
+    (if (cidx + n <= (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("cidx + n <= MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 505, "mi_bchunk_try_clearNC") });
+    (if (n > 0) { 0 as void } else { _mi_assert_fail("n>0", "mimalloc\\src\\bitmap.c", 506, "mi_bchunk_try_clearNC") });
+    if pmaybe_all_clear != 0 {
+        *pmaybe_all_clear = true;
+    }
+    if n == 0 {
+        return true;
+    }
+    let mut start_idx: u64 = cidx % (1 << ((3) + 3));
+    let mut start_field: u64 = cidx / (1 << ((3) + 3));
+    let mut field: u64 = start_field;
+    let mut m: u64 = (1 << ((3) + 3)) - start_idx;
+    if m > n {
+        m = n;
+    }
+    (if (start_idx + m <= (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("start_idx + m <= MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 516, "mi_bchunk_try_clearNC") });
+    (if (start_field < ((1 << (6 + (3))) / (1 << ((3) + 3)))) { 0 as void } else { _mi_assert_fail("start_field < MI_BCHUNK_FIELDS", "mimalloc\\src\\bitmap.c", 517, "mi_bchunk_try_clearNC") });
+    let mut mask_start: mi_bfield_t = mi_bfield_mask(m, start_idx);
+    let mut maybe_all_clear: bool = false;
+    if !mi_bfield_atomic_try_clear_mask(&mut chunk.bfields[field], mask_start, &mut maybe_all_clear, did_temp_clear_bits) {
+        return false;
+    }
+    (if (m <= n) { 0 as void } else { _mi_assert_fail("m <= n", "mimalloc\\src\\bitmap.c", 523, "mi_bchunk_try_clearNC") });
+    n -= m;
+    while n >= (1 << ((3) + 3)) {
+        field += 1;
+        (if (field < ((1 << (6 + (3))) / (1 << ((3) + 3)))) { 0 as void } else { _mi_assert_fail("field < MI_BCHUNK_FIELDS", "mimalloc\\src\\bitmap.c", 530, "mi_bchunk_try_clearNC") });
+        let mut field_is_clear: bool = false;
+        if !mi_bfield_atomic_try_clearX(&mut chunk.bfields[field], &mut field_is_clear) {
+            
+        }
+        maybe_all_clear = maybe_all_clear && field_is_clear;
+        n -= (1 << ((3) + 3));
+    }
+    if n > 0 {
+        (if (n < (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("n < MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 539, "mi_bchunk_try_clearNC") });
+        field += 1;
+        (if (field < ((1 << (6 + (3))) / (1 << ((3) + 3)))) { 0 as void } else { _mi_assert_fail("field < MI_BCHUNK_FIELDS", "mimalloc\\src\\bitmap.c", 541, "mi_bchunk_try_clearNC") });
+        let mut mask_end: mi_bfield_t = mi_bfield_mask(n, 0);
+        let mut field_is_clear: bool = false;
+        if !mi_bfield_atomic_try_clear_mask(&mut chunk.bfields[field], mask_end, &mut field_is_clear, did_temp_clear_bits) {
+            
+        }
+        maybe_all_clear = maybe_all_clear && field_is_clear;
+    }
+    if pmaybe_all_clear != 0 {
+        *pmaybe_all_clear = maybe_all_clear;
+    }
+    return true;
+    (if (field > start_field) { 0 as void } else { _mi_assert_fail("field > start_field", "mimalloc\\src\\bitmap.c", 553, "mi_bchunk_try_clearNC") });
+    if did_temp_clear_bits != 0 {
+        *did_temp_clear_bits = true;
+    }
+    while field > start_field {
+        field -= 1;
+        if field == start_field {
+            mi_bfield_atomic_set_mask(&mut chunk.bfields[field], mask_start, 0);
+        } else {
+            mi_bfield_atomic_setX(&mut chunk.bfields[field], 0);
+        }
+    }
+    return false;
+}
+
+fn mi_bchunk_try_clearN(chunk: *mut mi_bchunk_t, cidx: u64, n: u64, maybe_all_clear: *mut bool, did_temp_clear_bits: *mut bool) -> bool {
+    (if (n > 0) { 0 as void } else { _mi_assert_fail("n>0", "mimalloc\\src\\bitmap.c", 569, "mi_bchunk_try_clearN") });
+    if n <= (1 << ((3) + 3)) {
+        return mi_bchunk_try_clearNX(chunk, cidx, n, maybe_all_clear, did_temp_clear_bits);
+    }
+    return mi_bchunk_try_clearNC(chunk, cidx, n, maybe_all_clear, did_temp_clear_bits);
+}
+
+fn mi_bchunk_try_find_and_clear_at(chunk: *mut mi_bchunk_t, chunk_idx: u64, pidx: *mut u64) -> bool {
+    (if (chunk_idx < ((1 << (6 + (3))) / (1 << ((3) + 3)))) { 0 as void } else { _mi_assert_fail("chunk_idx < MI_BCHUNK_FIELDS", "mimalloc\\src\\bitmap.c", 595, "mi_bchunk_try_find_and_clear_at") });
+    let mut bfield: atomic<mi_bfield_t> *const = &mut chunk.bfields[chunk_idx];
+    let mut b: mi_bfield_t = atomic_load_explicit(bfield, memory_order_relaxed);
+    if b == 0 {
+        return false;
+    }
+    let mut tries: i32 = 0;
+    while true {
+        {
+        let mut mask: mi_bfield_t = (b & (~b + 1));
+        b = atomic_fetch_and_explicit(bfield, ~mask, memory_order_acq_rel);
+        if __builtin_expect(!!((b & mask) == mask), true) {
+            let mut bitidx: u64 = 0;
+            mi_bfield_find_least_bit(mask, &mut bitidx);
+            *pidx = (chunk_idx * (1 << ((3) + 3))) + bitidx;
+            (if (*pidx < (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("*pidx < MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 607, "mi_bchunk_try_find_and_clear_at") });
+            return true;
+        }
+    }
+        if !(b != 0 && tries += 1 <= 4) { break; }
+    }
+    return false;
+}
+
+fn mi_bchunk_try_find_and_clear(chunk: *mut mi_bchunk_t, pidx: *mut u64) -> bool {
+    for let mut i: i32 = 0; i < ((1 << (6 + (3))) / (1 << ((3) + 3))); i += 1 {
+        if mi_bchunk_try_find_and_clear_at(chunk, i, pidx) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn mi_bchunk_try_find_and_clear_1(chunk: *mut mi_bchunk_t, n: u64, pidx: *mut u64, did_temp_clear_bits: *mut bool) -> bool {
+    (if (n == 1) { 0 as void } else { _mi_assert_fail("n==1", "mimalloc\\src\\bitmap.c", 709, "mi_bchunk_try_find_and_clear_1") });
+    (n) as void;
+    (did_temp_clear_bits) as void;
+    return mi_bchunk_try_find_and_clear(chunk, pidx);
+}
+
+fn mi_bchunk_try_find_and_clear8_at(chunk: *mut mi_bchunk_t, chunk_idx: u64, pidx: *mut u64, did_temp_clear_bits: *mut bool) -> bool {
+    let mut bfield: atomic<mi_bfield_t> *const = &mut chunk.bfields[chunk_idx];
+    let mut b: mi_bfield_t = atomic_load_explicit(bfield, memory_order_relaxed);
+    if b == 0 {
+        return false;
+    }
+    let mut tries: i32 = 0;
+    while true {
+        {
+        let mut has_set8: mi_bfield_t = ((~b - (((~0 as mi_bfield_t)) / 255)) & (b & ((((~0 as mi_bfield_t)) / 255) << 7))) >> 7;
+        let mut bitidx: u64 = 0;
+        if mi_bfield_find_least_bit(has_set8, &mut bitidx) {
+            (if (bitidx <= ((1 << ((3) + 3)) - 8)) { 0 as void } else { _mi_assert_fail("bitidx <= (MI_BFIELD_BITS - 8)", "mimalloc\\src\\bitmap.c", 726, "mi_bchunk_try_find_and_clear8_at") });
+            (if ((bitidx % 8) == 0) { 0 as void } else { _mi_assert_fail("(bitidx%8)==0", "mimalloc\\src\\bitmap.c", 727, "mi_bchunk_try_find_and_clear8_at") });
+            if __builtin_expect(!!(mi_bfield_atomic_try_clear8_optimistic(bfield, bitidx, &mut b, did_temp_clear_bits)), true) {
+                *pidx = (chunk_idx * (1 << ((3) + 3))) + bitidx;
+                (if (*pidx + 8 <= (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("*pidx + 8 <= MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 730, "mi_bchunk_try_find_and_clear8_at") });
+                return true;
+            }
+        } else {
+            return false;
+        }
+    }
+        if !(b != 0 && tries += 1 <= 4) { break; }
+    }
+    return false;
+}
+
+fn mi_bchunk_try_find_and_clear8(chunk: *mut mi_bchunk_t, pidx: *mut u64, did_temp_clear_bits: *mut bool) -> bool {
+    for let mut i: i32 = 0; i < ((1 << (6 + (3))) / (1 << ((3) + 3))); i += 1 {
+        if mi_bchunk_try_find_and_clear8_at(chunk, i, pidx, did_temp_clear_bits) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn mi_bchunk_try_find_and_clear_8(chunk: *mut mi_bchunk_t, n: u64, pidx: *mut u64, did_temp_clear_bits: *mut bool) -> bool {
+    (if (n == 8) { 0 as void } else { _mi_assert_fail("n==8", "mimalloc\\src\\bitmap.c", 784, "mi_bchunk_try_find_and_clear_8") });
+    (n) as void;
+    (did_temp_clear_bits) as void;
+    return mi_bchunk_try_find_and_clear8(chunk, pidx, did_temp_clear_bits);
+}
+
+fn mi_bchunk_try_find_and_clearNX(chunk: *mut mi_bchunk_t, n: u64, pidx: *mut u64, did_temp_clear_bits: *mut bool) -> bool {
+    if n == 0 || n > (1 << ((3) + 3)) {
+        return false;
+    }
+    let mut mask: mi_bfield_t = mi_bfield_mask(n, 0);
+    for let mut i: i32 = 0; i < ((1 << (6 + (3))) / (1 << ((3) + 3))); i += 1 {
+        let mut b0: mi_bfield_t = atomic_load_explicit(&mut chunk.bfields[i], memory_order_relaxed);
+        let mut b: mi_bfield_t = b0;
+        let mut idx: u64 = 0;
+        while mi_bfield_find_least_bit(b, &mut idx) {
+            if idx + n > (1 << ((3) + 3)) {
+                break;
+            }
+            let mut bmask: u64 = mask << idx;
+            (if (bmask >> idx == mask) { 0 as void } else { _mi_assert_fail("bmask>>idx == mask", "mimalloc\\src\\bitmap.c", 807, "mi_bchunk_try_find_and_clearNX") });
+            if (b & bmask) == bmask {
+                if __builtin_expect(!!(mi_bfield_atomic_try_clear_mask_optimistic(&mut chunk.bfields[i], bmask, &mut b0, did_temp_clear_bits)), true) {
+                    *pidx = (i * (1 << ((3) + 3))) + idx;
+                    (if (*pidx < (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("*pidx < MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 811, "mi_bchunk_try_find_and_clearNX") });
+                    (if (*pidx + n <= (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("*pidx + n <= MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 812, "mi_bchunk_try_find_and_clearNX") });
+                    return true;
+                } else {
+                    b = b0;
+                }
+            } else {
+                b = b & (b + (mi_bfield_one() << idx));
+            }
+        }
+        if b != 0 && i < ((1 << (6 + (3))) / (1 << ((3) + 3))) - 1 {
+            let mut post: u64 = mi_bfield_clz(~b);
+            if post > 0 {
+                let mut pre: u64 = mi_bfield_ctz(~atomic_load_explicit(&mut chunk.bfields[i + 1], memory_order_relaxed));
+                if post + pre >= n {
+                    let mut cidx: u64 = (i * (1 << ((3) + 3))) + ((1 << ((3) + 3)) - post);
+                    if mi_bchunk_try_clearNX(chunk, cidx, n, 0, did_temp_clear_bits) {
+                        *pidx = cidx;
+                        (if (*pidx < (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("*pidx < MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 840, "mi_bchunk_try_find_and_clearNX") });
+                        (if (*pidx + n <= (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("*pidx + n <= MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 841, "mi_bchunk_try_find_and_clearNX") });
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+fn mi_bchunk_try_find_and_clearNC(chunk: *mut mi_bchunk_t, n: u64, pidx: *mut u64, did_temp_clear_bits: *mut bool) -> bool {
+    if n == 0 || n > (1 << (6 + (3))) {
+        return false;
+    }
+    (if (n > 0) { 0 as void } else { _mi_assert_fail("n>0", "mimalloc\\src\\bitmap.c", 859, "mi_bchunk_try_find_and_clearNC") });
+    let mut skip_count: u64 = (n - 1) / (1 << ((3) + 3));
+    let mut cidx: u64 = 0;
+    for let mut i: u64 = 0; i < ((1 << (6 + (3))) / (1 << ((3) + 3))) - skip_count; i += 1 {
+        let mut m: u64 = n;
+        let mut b: mi_bfield_t = atomic_load_explicit(&mut chunk.bfields[i], memory_order_relaxed);
+        let mut ones: u64 = mi_bfield_clz(~b);
+        cidx = (i * (1 << ((3) + 3))) + ((1 << ((3) + 3)) - ones);
+        if ones >= m {
+            m = 0;
+        } else if ones > 0 {
+            m -= ones;
+            let mut j: u64 = 1;
+            while i + j < ((1 << (6 + (3))) / (1 << ((3) + 3))) {
+                (if (m > 0) { 0 as void } else { _mi_assert_fail("m > 0", "mimalloc\\src\\bitmap.c", 880, "mi_bchunk_try_find_and_clearNC") });
+                b = atomic_load_explicit(&mut chunk.bfields[i + j], memory_order_relaxed);
+                ones = mi_bfield_ctz(~b);
+                if ones >= m {
+                    m = 0;
+                    break;
+                } else if ones == (1 << ((3) + 3)) {
+                    j += 1;
+                    m -= (1 << ((3) + 3));
+                } else {
+                    i = i + j - 1;
+                    (if (m > 0) { 0 as void } else { _mi_assert_fail("m>0", "mimalloc\\src\\bitmap.c", 896, "mi_bchunk_try_find_and_clearNC") });
+                    break;
+                }
+            }
+        }
+        if m == 0 {
+            if mi_bchunk_try_clearN(chunk, cidx, n, 0, did_temp_clear_bits) {
+                *pidx = cidx;
+                (if (*pidx < (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("*pidx < MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 907, "mi_bchunk_try_find_and_clearNC") });
+                (if (*pidx + n <= (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("*pidx + n <= MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 908, "mi_bchunk_try_find_and_clearNC") });
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn mi_bchunk_clear_once_set(subproc: *mut mi_subproc_t, chunk: *mut mi_bchunk_t, cidx: u64) {
+    (if (cidx < (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("cidx < MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 923, "mi_bchunk_clear_once_set") });
+    let mut i: u64 = cidx / (1 << ((3) + 3));
+    let mut idx: u64 = cidx % (1 << ((3) + 3));
+    mi_bfield_atomic_clear_once_set(subproc, &mut chunk.bfields[i], idx);
+}
+
+fn mi_bchunk_all_are_clear_relaxed(chunk: *mut mi_bchunk_t) -> bool {
+    for let mut i: i32 = 0; i < ((1 << (6 + (3))) / (1 << ((3) + 3))); i += 1 {
+        if atomic_load_explicit(&mut chunk.bfields[i], memory_order_relaxed) != 0 {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn mi_bchunk_all_are_set_relaxed(chunk: *mut mi_bchunk_t) -> bool {
+    for let mut i: i32 = 0; i < ((1 << (6 + (3))) / (1 << ((3) + 3))); i += 1 {
+        if ~atomic_load_explicit(&mut chunk.bfields[i], memory_order_relaxed) != 0 {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn mi_bchunk_bsr(chunk: *mut mi_bchunk_t, pidx: *mut u64) -> bool {
+    for let mut i: u64 = ((1 << (6 + (3))) / (1 << ((3) + 3))); i > 0;  {
+        i -= 1;
+        let mut b: mi_bfield_t = atomic_load_explicit(&mut chunk.bfields[i], memory_order_relaxed);
+        let mut idx: u64 = 0;
+        if mi_bsr(b, &mut idx) {
+            *pidx = (i * (1 << ((3) + 3))) + idx;
+            return true;
+        }
+    }
+    return false;
+}
+
+fn mi_bchunk_bsr_inv(chunk: *mut mi_bchunk_t, pidx: *mut u64) -> bool {
+    for let mut i: u64 = ((1 << (6 + (3))) / (1 << ((3) + 3))); i > 0;  {
+        i -= 1;
+        let mut b: mi_bfield_t = atomic_load_explicit(&mut chunk.bfields[i], memory_order_relaxed);
+        let mut idx: u64 = 0;
+        if mi_bsr(~b, &mut idx) {
+            *pidx = (i * (1 << ((3) + 3))) + idx;
+            return true;
+        }
+    }
+    return false;
+}
+
+fn mi_bchunk_popcount(chunk: *mut mi_bchunk_t) -> u64 {
+    let mut popcount: u64 = 0;
+    for let mut i: u64 = 0; i < ((1 << (6 + (3))) / (1 << ((3) + 3))); i += 1 {
+        let mut b: mi_bfield_t = atomic_load_explicit(&mut chunk.bfields[i], memory_order_relaxed);
+        popcount += mi_bfield_popcount(b);
+    }
+    return popcount;
+}
+
+fn mi_bitmap_chunkmap_set(bitmap: *mut mi_bitmap_t, chunk_idx: u64) {
+    (if (chunk_idx < mi_bitmap_chunk_count(bitmap)) { 0 as void } else { _mi_assert_fail("chunk_idx < mi_bitmap_chunk_count(bitmap)", "mimalloc\\src\\bitmap.c", 1025, "mi_bitmap_chunkmap_set") });
+    mi_bchunk_set(&mut bitmap.chunkmap, chunk_idx, 0);
+}
+
+fn mi_bitmap_chunkmap_try_clear(bitmap: *mut mi_bitmap_t, chunk_idx: u64) -> bool {
+    (if (chunk_idx < mi_bitmap_chunk_count(bitmap)) { 0 as void } else { _mi_assert_fail("chunk_idx < mi_bitmap_chunk_count(bitmap)", "mimalloc\\src\\bitmap.c", 1030, "mi_bitmap_chunkmap_try_clear") });
+    if !mi_bchunk_all_are_clear_relaxed(&mut bitmap.chunks[chunk_idx]) {
+        return false;
+    }
+    mi_bchunk_clear(&mut bitmap.chunkmap, chunk_idx, 0);
+    if !mi_bchunk_all_are_clear_relaxed(&mut bitmap.chunks[chunk_idx]) {
+        mi_bchunk_set(&mut bitmap.chunkmap, chunk_idx, 0);
+        return false;
+    }
+    return true;
+}
+
+fn mi_bitmap_size(bit_count: u64, pchunk_count: *mut u64) -> u64 {
+    (if ((bit_count % (1 << (6 + (3)))) == 0) { 0 as void } else { _mi_assert_fail("(bit_count % MI_BCHUNK_BITS) == 0", "mimalloc\\src\\bitmap.c", 1050, "mi_bitmap_size") });
+    bit_count = _mi_align_up(bit_count, (1 << (6 + (3))));
+    (if (bit_count <= (((1 << (6 + (3)))) * (1 << (6 + (3))))) { 0 as void } else { _mi_assert_fail("bit_count <= MI_BITMAP_MAX_BIT_COUNT", "mimalloc\\src\\bitmap.c", 1052, "mi_bitmap_size") });
+    (if (bit_count > 0) { 0 as void } else { _mi_assert_fail("bit_count > 0", "mimalloc\\src\\bitmap.c", 1053, "mi_bitmap_size") });
+    let mut chunk_count: u64 = bit_count / (1 << (6 + (3)));
+    (if (chunk_count >= 1) { 0 as void } else { _mi_assert_fail("chunk_count >= 1", "mimalloc\\src\\bitmap.c", 1055, "mi_bitmap_size") });
+    let mut size: u64 =  + (chunk_count * ((1 << (6 + (3))) / 8));
+    (if ((size % ((1 << (6 + (3))) / 8)) == 0) { 0 as void } else { _mi_assert_fail("(size%MI_BCHUNK_SIZE) == 0", "mimalloc\\src\\bitmap.c", 1057, "mi_bitmap_size") });
+    if pchunk_count != 0 {
+        *pchunk_count = chunk_count;
+    }
+    return size;
+}
+
+fn mi_bitmap_init(bitmap: *mut mi_bitmap_t, bit_count: u64, already_zero: bool) -> u64 {
+    let mut chunk_count: u64 = 0;
+    let mut size: u64 = mi_bitmap_size(bit_count, &mut chunk_count);
+    if !already_zero {
+        _mi_memzero_aligned(bitmap, size);
+    }
+    atomic_store_explicit(&mut bitmap.chunk_count, chunk_count, memory_order_release);
+    (if (atomic_load_explicit(&mut bitmap.chunk_count, memory_order_relaxed) <= ((1 << (6 + (3))))) { 0 as void } else { _mi_assert_fail("mi_atomic_load_relaxed(&bitmap->chunk_count) <= MI_BITMAP_MAX_CHUNK_COUNT", "mimalloc\\src\\bitmap.c", 1072, "mi_bitmap_init") });
+    return size;
+}
+
+fn mi_bchunks_unsafe_setN(chunks: *mut mi_bchunk_t, cmap: *mut mi_bchunkmap_t, idx: u64, n: u64) {
+    (if (n > 0) { 0 as void } else { _mi_assert_fail("n>0", "mimalloc\\src\\bitmap.c", 1079, "mi_bchunks_unsafe_setN") });
+    let mut chunk_idx: u64 = idx / (1 << (6 + (3)));
+    let mut cidx: u64 = idx % (1 << (6 + (3)));
+    let mut ccount: u64 = ((cidx + n - 1) / (1 << (6 + (3)))) + 1;
+    mi_bchunk_setN(cmap, chunk_idx, ccount, 0);
+    let mut m: u64 = (1 << (6 + (3))) - cidx;
+    if m > n {
+        m = n;
+    }
+    mi_bchunk_setN(&mut chunks[chunk_idx], cidx, m, 0);
+    chunk_idx += 1;
+    n -= m;
+    let mut mid_chunks: u64 = n / (1 << (6 + (3)));
+    if mid_chunks > 0 {
+        _mi_memset(&mut chunks[chunk_idx], ~0, mid_chunks * ((1 << (6 + (3))) / 8));
+        chunk_idx += mid_chunks;
+        n -= (mid_chunks * (1 << (6 + (3))));
+    }
+    if n > 0 {
+        (if (n < (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("n < MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 1106, "mi_bchunks_unsafe_setN") });
+        mi_bchunk_setN(&mut chunks[chunk_idx], 0, n, 0);
+    }
+}
+
+fn mi_bitmap_unsafe_setN(bitmap: *mut mi_bitmap_t, idx: u64, n: u64) {
+    (if (n > 0) { 0 as void } else { _mi_assert_fail("n>0", "mimalloc\\src\\bitmap.c", 1113, "mi_bitmap_unsafe_setN") });
+    (if (idx + n <= mi_bitmap_max_bits(bitmap)) { 0 as void } else { _mi_assert_fail("idx + n <= mi_bitmap_max_bits(bitmap)", "mimalloc\\src\\bitmap.c", 1114, "mi_bitmap_unsafe_setN") });
+    mi_bchunks_unsafe_setN(&mut bitmap.chunks[0], &mut bitmap.chunkmap, idx, n);
+}
+
+fn mi_bitmap_setN(bitmap: *mut mi_bitmap_t, idx: u64, n: u64, palready_set: *mut u64) -> bool {
+    (if (n > 0) { 0 as void } else { _mi_assert_fail("n>0", "mimalloc\\src\\bitmap.c", 1125, "mi_bitmap_setN") });
+    let mut maxbits: u64 = mi_bitmap_max_bits(bitmap);
+    (if (idx + n <= maxbits) { 0 as void } else { _mi_assert_fail("idx + n <= maxbits", "mimalloc\\src\\bitmap.c", 1127, "mi_bitmap_setN") });
+    if idx + n > maxbits {
+        if idx >= maxbits {
+            return false;
+        }
+        n = maxbits - idx;
+    }
+    let mut chunk_idx: u64 = idx / (1 << (6 + (3)));
+    let mut cidx: u64 = idx % (1 << (6 + (3)));
+    let mut were_allclear: bool = true;
+    let mut already_set: u64 = 0;
+    while n > 0 {
+        let mut m: u64 = (if cidx + n > (1 << (6 + (3))) { (1 << (6 + (3))) - cidx } else { n });
+        let mut _already_set: u64 = 0;
+        were_allclear = mi_bchunk_setN(&mut bitmap.chunks[chunk_idx], cidx, m, &mut _already_set) && were_allclear;
+        already_set += _already_set;
+        mi_bitmap_chunkmap_set(bitmap, chunk_idx);
+        (if (m <= n) { 0 as void } else { _mi_assert_fail("m <= n", "mimalloc\\src\\bitmap.c", 1144, "mi_bitmap_setN") });
+        n -= m;
+        cidx = 0;
+        chunk_idx += 1;
+    }
+    if palready_set != 0 {
+        *palready_set = already_set;
+    }
+    return were_allclear;
+}
+
+fn mi_bitmap_clearN(bitmap: *mut mi_bitmap_t, idx: u64, n: u64) -> bool {
+    (if (n > 0) { 0 as void } else { _mi_assert_fail("n>0", "mimalloc\\src\\bitmap.c", 1155, "mi_bitmap_clearN") });
+    let mut maxbits: u64 = mi_bitmap_max_bits(bitmap);
+    (if (idx + n <= maxbits) { 0 as void } else { _mi_assert_fail("idx + n <= maxbits", "mimalloc\\src\\bitmap.c", 1157, "mi_bitmap_clearN") });
+    if idx + n > maxbits {
+        if idx >= maxbits {
+            return false;
+        }
+        n = maxbits - idx;
+    }
+    let mut chunk_idx: u64 = idx / (1 << (6 + (3)));
+    let mut cidx: u64 = idx % (1 << (6 + (3)));
+    let mut were_allset: bool = true;
+    while n > 0 {
+        let mut m: u64 = (if cidx + n > (1 << (6 + (3))) { (1 << (6 + (3))) - cidx } else { n });
+        let mut maybe_all_clear: bool = false;
+        were_allset = mi_bchunk_clearN(&mut bitmap.chunks[chunk_idx], cidx, m, &mut maybe_all_clear) && were_allset;
+        if maybe_all_clear {
+            mi_bitmap_chunkmap_try_clear(bitmap, chunk_idx);
+        }
+        (if (m <= n) { 0 as void } else { _mi_assert_fail("m <= n", "mimalloc\\src\\bitmap.c", 1172, "mi_bitmap_clearN") });
+        n -= m;
+        cidx = 0;
+        chunk_idx += 1;
+    }
+    return were_allset;
+}
+
+fn mi_bitmap_popcountN(bitmap: *mut mi_bitmap_t, idx: u64, n: u64) -> u64 {
+    (if (n > 0) { 0 as void } else { _mi_assert_fail("n>0", "mimalloc\\src\\bitmap.c", 1182, "mi_bitmap_popcountN") });
+    let mut maxbits: u64 = mi_bitmap_max_bits(bitmap);
+    (if (idx + n <= maxbits) { 0 as void } else { _mi_assert_fail("idx + n <= maxbits", "mimalloc\\src\\bitmap.c", 1184, "mi_bitmap_popcountN") });
+    if idx + n > maxbits {
+        if idx >= maxbits {
+            return 0;
+        }
+        n = maxbits - idx;
+    }
+    let mut chunk_idx: u64 = idx / (1 << (6 + (3)));
+    let mut cidx: u64 = idx % (1 << (6 + (3)));
+    let mut popcount: u64 = 0;
+    while n > 0 {
+        let mut m: u64 = (if cidx + n > (1 << (6 + (3))) { (1 << (6 + (3))) - cidx } else { n });
+        popcount += mi_bchunk_popcountN(&mut bitmap.chunks[chunk_idx], cidx, m);
+        (if (m <= n) { 0 as void } else { _mi_assert_fail("m <= n", "mimalloc\\src\\bitmap.c", 1197, "mi_bitmap_popcountN") });
+        n -= m;
+        cidx = 0;
+        chunk_idx += 1;
+    }
+    return popcount;
+}
+
+fn mi_bitmap_set(bitmap: *mut mi_bitmap_t, idx: u64) -> bool {
+    return mi_bitmap_setN(bitmap, idx, 1, 0);
+}
+
+fn mi_bitmap_clear(bitmap: *mut mi_bitmap_t, idx: u64) -> bool {
+    return mi_bitmap_clearN(bitmap, idx, 1);
+}
+
+fn mi_bitmap_is_xsetN(set: mi_xset_t, bitmap: *mut mi_bitmap_t, idx: u64, n: u64) -> bool {
+    (if (n > 0) { 0 as void } else { _mi_assert_fail("n>0", "mimalloc\\src\\bitmap.c", 1221, "mi_bitmap_is_xsetN") });
+    let mut maxbits: u64 = mi_bitmap_max_bits(bitmap);
+    (if (idx + n <= maxbits) { 0 as void } else { _mi_assert_fail("idx + n <= maxbits", "mimalloc\\src\\bitmap.c", 1223, "mi_bitmap_is_xsetN") });
+    if idx + n > maxbits {
+        if idx >= maxbits {
+            return false;
+        }
+        n = maxbits - idx;
+    }
+    let mut chunk_idx: u64 = idx / (1 << (6 + (3)));
+    let mut cidx: u64 = idx % (1 << (6 + (3)));
+    let mut xset: bool = true;
+    while n > 0 && xset {
+        let mut m: u64 = (if cidx + n > (1 << (6 + (3))) { (1 << (6 + (3))) - cidx } else { n });
+        xset = mi_bchunk_is_xsetN(set, &mut bitmap.chunks[chunk_idx], cidx, m) && xset;
+        (if (m <= n) { 0 as void } else { _mi_assert_fail("m <= n", "mimalloc\\src\\bitmap.c", 1236, "mi_bitmap_is_xsetN") });
+        n -= m;
+        cidx = 0;
+        chunk_idx += 1;
+    }
+    return xset;
+}
+
+fn mi_bitmap_is_all_clear(bitmap: *mut mi_bitmap_t) -> bool {
+    return mi_bitmap_is_xsetN((false), bitmap, 0, mi_bitmap_max_bits(bitmap));
+}
+
+fn mi_bitmap_find(bitmap: *mut mi_bitmap_t, tseq: u64, n: u64, pidx: *mut u64, on_find: *mut mi_bitmap_visit_fun_t, arg1: *mut void, arg2: *mut void) -> bool {
+    let mut chunkmap_max: u64 = _mi_divide_up(mi_bitmap_chunk_count(bitmap), (1 << ((3) + 3)));
+    for let mut i: u64 = 0; i < chunkmap_max; i += 1 {
+        let mut cmap_entry: mi_bfield_t = atomic_load_explicit(&mut bitmap.chunkmap.bfields[i], memory_order_relaxed);
+        let mut hi: u64 = 0;
+        if mi_bfield_find_highest_bit(cmap_entry, &mut hi) {
+            let mut eidx: u64 = 0;
+            {
+                let mut _startY: u64 = (tseq % 8) as u32 % (hi + 1) as u32;
+                {
+                    (if (_startY <= hi + 1) { 0 as void } else { _mi_assert_fail("_startY <= hi+1", "mimalloc\\src\\bitmap.c", 1315, "mi_bitmap_find") });
+                    (if (_startY < (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("_startY < MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 1315, "mi_bitmap_find") });
+                    (if (hi + 1 <= (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("hi+1 <= MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 1315, "mi_bitmap_find") });
+                    let mut _cycle_maskY: mi_bfield_t = mi_bfield_mask(hi + 1 - _startY, _startY);
+                    let mut _bcountY: u64 = mi_bfield_popcount(cmap_entry);
+                    let mut _bY: mi_bfield_t = cmap_entry & _cycle_maskY;
+                    while _bcountY > 0 {
+                        _bcountY -= 1;
+                        if _bY == 0 {
+                            _bY = cmap_entry & ~_cycle_maskY;
+                        }
+                        let mut _foundY: bool = mi_bfield_find_least_bit(_bY, &mut eidx);
+                        _bY = mi_bfield_clear_least_bit(_bY);
+                        (if (_foundY) { 0 as void } else { _mi_assert_fail("_foundY", "mimalloc\\src\\bitmap.c", 1315, "mi_bitmap_find") });
+                        (_foundY) as void;
+                        {
+                            {
+                                (if (eidx <= (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("eidx <= MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 1317, "mi_bitmap_find") });
+                                let mut chunk_idx: u64 = i * (1 << ((3) + 3)) + eidx;
+                                (if (chunk_idx < mi_bitmap_chunk_count(bitmap)) { 0 as void } else { _mi_assert_fail("chunk_idx < mi_bitmap_chunk_count(bitmap)", "mimalloc\\src\\bitmap.c", 1319, "mi_bitmap_find") });
+                                if *on_find(bitmap, chunk_idx, n, pidx, arg1, arg2) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+struct mi_claim_fun_data_s {
+    arena: *mut mi_arena_t,
+}
+
+fn mi_bitmap_try_find_and_claim_visit(bitmap: *mut mi_bitmap_t, chunk_idx: u64, n: u64, pidx: *mut u64, arg1: *mut void, arg2: *mut void) -> bool {
+    (if (n == 1) { 0 as void } else { _mi_assert_fail("n==1", "mimalloc\\src\\bitmap.c", 1342, "mi_bitmap_try_find_and_claim_visit") });
+    (n) as void;
+    let mut claim_fun: *mut mi_claim_fun_t = arg1 as *mut mi_claim_fun_t;
+    let mut claim_data: *mut mi_claim_fun_data_t = arg2 as *mut mi_claim_fun_data_t;
+    let mut cidx: u64 = 0;
+    if __builtin_expect(!!(mi_bchunk_try_find_and_clear(&mut bitmap.chunks[chunk_idx], &mut cidx)), true) {
+        let mut slice_index: u64 = (chunk_idx * (1 << (6 + (3)))) + cidx;
+        (if (slice_index < mi_bitmap_max_bits(bitmap)) { 0 as void } else { _mi_assert_fail("slice_index < mi_bitmap_max_bits(bitmap)", "mimalloc\\src\\bitmap.c", 1348, "mi_bitmap_try_find_and_claim_visit") });
+        let mut keep_set: bool = true;
+        if *claim_fun(slice_index, claim_data.arena, &mut keep_set) {
+            (if (!keep_set) { 0 as void } else { _mi_assert_fail("!keep_set", "mimalloc\\src\\bitmap.c", 1352, "mi_bitmap_try_find_and_claim_visit") });
+            *pidx = slice_index;
+            return true;
+        } else {
+            if keep_set {
+                let mut wasclear: bool = mi_bchunk_set(&mut bitmap.chunks[chunk_idx], cidx, 0);
+                mi_bitmap_chunkmap_set(bitmap, chunk_idx);
+                (if (wasclear) { 0 as void } else { _mi_assert_fail("wasclear", "mimalloc\\src\\bitmap.c", 1361, "mi_bitmap_try_find_and_claim_visit") });
+                (wasclear) as void;
+            }
+        }
+    } else {
+        mi_bitmap_chunkmap_try_clear(bitmap, chunk_idx);
+    }
+    return false;
+}
+
+fn mi_bitmap_try_find_and_claim(bitmap: *mut mi_bitmap_t, tseq: u64, pidx: *mut u64, claim: *mut mi_claim_fun_t, arena: *mut mi_arena_t) -> bool {
+    let mut claim_data: mi_claim_fun_data_t = mi_claim_fun_data_t { arena };
+    return mi_bitmap_find(bitmap, tseq, 1, pidx, &mut mi_bitmap_try_find_and_claim_visit, claim as *mut void, &mut claim_data);
+}
+
+fn mi_bitmap_bsr(bitmap: *mut mi_bitmap_t, idx: *mut u64) -> bool {
+    let mut chunkmap_max: u64 = _mi_divide_up(mi_bitmap_chunk_count(bitmap), (1 << ((3) + 3)));
+    for let mut i: u64 = chunkmap_max; i > 0;  {
+        i -= 1;
+        let mut cmap: mi_bfield_t = atomic_load_explicit(&mut bitmap.chunkmap.bfields[i], memory_order_relaxed);
+        let mut cmap_idx: u64 = 0;
+        if mi_bsr(cmap, &mut cmap_idx) {
+            for let mut j: u64 = cmap_idx + 1; j > 0;  {
+                j -= 1;
+                let mut chunk_idx: u64 = (i * (1 << ((3) + 3))) + j;
+                let mut cidx: u64 = 0;
+                if mi_bchunk_bsr(&mut bitmap.chunks[chunk_idx], &mut cidx) {
+                    *idx = (chunk_idx * (1 << (6 + (3)))) + cidx;
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+fn mi_bitmap_popcount(bitmap: *mut mi_bitmap_t) -> u64 {
+    let mut popcount: u64 = 0;
+    let mut chunkmap_max: u64 = _mi_divide_up(mi_bitmap_chunk_count(bitmap), (1 << ((3) + 3)));
+    for let mut i: u64 = 0; i < chunkmap_max; i += 1 {
+        let mut cmap_entry: mi_bfield_t = atomic_load_explicit(&mut bitmap.chunkmap.bfields[i], memory_order_relaxed);
+        let mut cmap_idx: u64 = 0;
+        while mi_bfield_foreach_bit(&mut cmap_entry, &mut cmap_idx) {
+            let mut chunk_idx: u64 = i * (1 << ((3) + 3)) + cmap_idx;
+            popcount += mi_bchunk_popcount(&mut bitmap.chunks[chunk_idx]);
+        }
+    }
+    return popcount;
+}
+
+fn mi_bitmap_clear_once_set(subproc: *mut mi_subproc_t, bitmap: *mut mi_bitmap_t, idx: u64) {
+    (if (idx < mi_bitmap_max_bits(bitmap)) { 0 as void } else { _mi_assert_fail("idx < mi_bitmap_max_bits(bitmap)", "mimalloc\\src\\bitmap.c", 1427, "mi_bitmap_clear_once_set") });
+    let mut chunk_idx: u64 = idx / (1 << (6 + (3)));
+    let mut cidx: u64 = idx % (1 << (6 + (3)));
+    (if (chunk_idx < mi_bitmap_chunk_count(bitmap)) { 0 as void } else { _mi_assert_fail("chunk_idx < mi_bitmap_chunk_count(bitmap)", "mimalloc\\src\\bitmap.c", 1430, "mi_bitmap_clear_once_set") });
+    mi_bchunk_clear_once_set(subproc, &mut bitmap.chunks[chunk_idx], cidx);
+}
+
+fn mi_bbitmap_size(bit_count: u64, pchunk_count: *mut u64) -> u64 {
+    bit_count = _mi_align_up(bit_count, (1 << (6 + (3))));
+    (if (bit_count <= (((1 << (6 + (3)))) * (1 << (6 + (3))))) { 0 as void } else { _mi_assert_fail("bit_count <= MI_BITMAP_MAX_BIT_COUNT", "mimalloc\\src\\bitmap.c", 1586, "mi_bbitmap_size") });
+    (if (bit_count > 0) { 0 as void } else { _mi_assert_fail("bit_count > 0", "mimalloc\\src\\bitmap.c", 1587, "mi_bbitmap_size") });
+    let mut chunk_count: u64 = bit_count / (1 << (6 + (3)));
+    (if (chunk_count >= 1) { 0 as void } else { _mi_assert_fail("chunk_count >= 1", "mimalloc\\src\\bitmap.c", 1589, "mi_bbitmap_size") });
+    let mut size: u64 =  + (chunk_count * ((1 << (6 + (3))) / 8));
+    (if ((size % ((1 << (6 + (3))) / 8)) == 0) { 0 as void } else { _mi_assert_fail("(size%MI_BCHUNK_SIZE) == 0", "mimalloc\\src\\bitmap.c", 1591, "mi_bbitmap_size") });
+    if pchunk_count != 0 {
+        *pchunk_count = chunk_count;
+    }
+    return size;
+}
+
+fn mi_bbitmap_init(subproc: *mut mi_subproc_t, bbitmap: *mut mi_bbitmap_t, bit_count: u64, already_zero: bool) -> u64 {
+    let mut chunk_count: u64 = 0;
+    let mut size: u64 = mi_bbitmap_size(bit_count, &mut chunk_count);
+    if !already_zero {
+        _mi_memzero_aligned(bbitmap, size);
+    }
+    atomic_store_explicit(&mut bbitmap.chunk_count, chunk_count, memory_order_release);
+    (if (atomic_load_explicit(&mut bbitmap.chunk_count, memory_order_relaxed) <= ((1 << (6 + (3))))) { 0 as void } else { _mi_assert_fail("mi_atomic_load_relaxed(&bbitmap->chunk_count) <= MI_BITMAP_MAX_CHUNK_COUNT", "mimalloc\\src\\bitmap.c", 1605, "mi_bbitmap_init") });
+    bbitmap.subproc = subproc;
+    return size;
+}
+
+fn mi_bbitmap_unsafe_setN(bbitmap: *mut mi_bbitmap_t, idx: u64, n: u64) {
+    (if (n > 0) { 0 as void } else { _mi_assert_fail("n>0", "mimalloc\\src\\bitmap.c", 1611, "mi_bbitmap_unsafe_setN") });
+    (if (idx + n <= mi_bbitmap_max_bits(bbitmap)) { 0 as void } else { _mi_assert_fail("idx + n <= mi_bbitmap_max_bits(bbitmap)", "mimalloc\\src\\bitmap.c", 1612, "mi_bbitmap_unsafe_setN") });
+    mi_bchunks_unsafe_setN(&mut bbitmap.chunks[0], &mut bbitmap.chunkmap, idx, n);
+}
+
+fn mi_bbitmap_bsr_inv(bbitmap: *mut mi_bbitmap_t, idx: *mut u64) -> bool {
+    let mut chunk_count: u64 = mi_bbitmap_chunk_count(bbitmap);
+    for let mut i: u64 = chunk_count; i > 0;  {
+        i -= 1;
+        let mut cidx: u64 = 0;
+        if mi_bchunk_bsr_inv(&mut bbitmap.chunks[i], &mut cidx) {
+            *idx = (i * (1 << (6 + (3)))) + cidx;
+            return true;
+        }
+    }
+    return false;
+}
+
+fn mi_bbitmap_set_chunk_bin(bbitmap: *mut mi_bbitmap_t, chunk_idx: u64, bin: mi_chunkbin_t) {
+    (if (chunk_idx < mi_bbitmap_chunk_count(bbitmap)) { 0 as void } else { _mi_assert_fail("chunk_idx < mi_bbitmap_chunk_count(bbitmap)", "mimalloc\\src\\bitmap.c", 1639, "mi_bbitmap_set_chunk_bin") });
+    for let mut ibin: mi_chunkbin_t = MI_CBIN_SMALL; ibin < MI_CBIN_NONE; ibin = mi_chunkbin_inc(ibin) {
+        if ibin == bin {
+            let mut was_clear: bool = mi_bchunk_set(&mut bbitmap.chunkmap_bins[ibin], chunk_idx, 0);
+            if was_clear {
+                __mi_stat_increase_mt(&mut (bbitmap.subproc).stats.chunk_bins[ibin], 1);
+            }
+        } else {
+            let mut was_set: bool = mi_bchunk_clear(&mut bbitmap.chunkmap_bins[ibin], chunk_idx, 0);
+            if was_set {
+                __mi_stat_decrease_mt(&mut (bbitmap.subproc).stats.chunk_bins[ibin], 1);
+            }
+        }
+    }
+}
+
+fn mi_bbitmap_debug_get_bin(chunkmap_bins: *mi_bchunkmap_t, chunk_idx: u64) -> mi_chunkbin_t {
+    for let mut ibin: mi_chunkbin_t = MI_CBIN_SMALL; ibin < MI_CBIN_NONE; ibin = mi_chunkbin_inc(ibin) {
+        if mi_bchunk_is_xsetN((true), &mut chunkmap_bins[ibin], chunk_idx, 1) {
+            return ibin;
+        }
+    }
+    return MI_CBIN_NONE;
+}
+
+fn mi_bbitmap_chunkmap_set_max(bbitmap: *mut mi_bbitmap_t, chunk_idx: u64) {
+    let mut oldmax: u64 = atomic_load_explicit(&mut bbitmap.chunk_max_accessed, memory_order_relaxed);
+    if __builtin_expect(!!(chunk_idx > oldmax), false) {
+        atomic_compare_exchange_strong_explicit(&mut bbitmap.chunk_max_accessed, &mut oldmax, chunk_idx, memory_order_relaxed, memory_order_relaxed);
+    }
+}
+
+fn mi_bbitmap_chunkmap_set(bbitmap: *mut mi_bbitmap_t, chunk_idx: u64, check_all_set: bool) {
+    (if (chunk_idx < mi_bbitmap_chunk_count(bbitmap)) { 0 as void } else { _mi_assert_fail("chunk_idx < mi_bbitmap_chunk_count(bbitmap)", "mimalloc\\src\\bitmap.c", 1671, "mi_bbitmap_chunkmap_set") });
+    if check_all_set {
+        if mi_bchunk_all_are_set_relaxed(&mut bbitmap.chunks[chunk_idx]) {
+            mi_bbitmap_set_chunk_bin(bbitmap, chunk_idx, MI_CBIN_NONE);
+        }
+    }
+    mi_bchunk_set(&mut bbitmap.chunkmap, chunk_idx, 0);
+    mi_bbitmap_chunkmap_set_max(bbitmap, chunk_idx);
+}
+
+fn mi_bbitmap_chunkmap_try_clear(bbitmap: *mut mi_bbitmap_t, chunk_idx: u64) -> bool {
+    (if (chunk_idx < mi_bbitmap_chunk_count(bbitmap)) { 0 as void } else { _mi_assert_fail("chunk_idx < mi_bbitmap_chunk_count(bbitmap)", "mimalloc\\src\\bitmap.c", 1683, "mi_bbitmap_chunkmap_try_clear") });
+    if !mi_bchunk_all_are_clear_relaxed(&mut bbitmap.chunks[chunk_idx]) {
+        return false;
+    }
+    mi_bchunk_clear(&mut bbitmap.chunkmap, chunk_idx, 0);
+    if !mi_bchunk_all_are_clear_relaxed(&mut bbitmap.chunks[chunk_idx]) {
+        mi_bchunk_set(&mut bbitmap.chunkmap, chunk_idx, 0);
+        return false;
+    }
+    mi_bbitmap_chunkmap_set_max(bbitmap, chunk_idx);
+    return true;
+}
+
+fn mi_bbitmap_setN(bbitmap: *mut mi_bbitmap_t, idx: u64, n: u64) -> bool {
+    (if (n > 0) { 0 as void } else { _mi_assert_fail("n>0", "mimalloc\\src\\bitmap.c", 1706, "mi_bbitmap_setN") });
+    let mut maxbits: u64 = mi_bbitmap_max_bits(bbitmap);
+    (if (idx + n <= maxbits) { 0 as void } else { _mi_assert_fail("idx + n <= maxbits", "mimalloc\\src\\bitmap.c", 1708, "mi_bbitmap_setN") });
+    if idx + n > maxbits {
+        if idx >= maxbits {
+            return false;
+        }
+        n = maxbits - idx;
+    }
+    let mut chunk_idx: u64 = idx / (1 << (6 + (3)));
+    let mut cidx: u64 = idx % (1 << (6 + (3)));
+    let mut were_allclear: bool = true;
+    while n > 0 {
+        let mut m: u64 = (if cidx + n > (1 << (6 + (3))) { (1 << (6 + (3))) - cidx } else { n });
+        were_allclear = mi_bchunk_setN(&mut bbitmap.chunks[chunk_idx], cidx, m, 0) && were_allclear;
+        mi_bbitmap_chunkmap_set(bbitmap, chunk_idx, true);
+        (if (m <= n) { 0 as void } else { _mi_assert_fail("m <= n", "mimalloc\\src\\bitmap.c", 1722, "mi_bbitmap_setN") });
+        n -= m;
+        cidx = 0;
+        chunk_idx += 1;
+    }
+    return were_allclear;
+}
+
+fn mi_bbitmap_try_clearNC(bbitmap: *mut mi_bbitmap_t, idx: u64, n: u64) -> bool {
+    (if (n > 0) { 0 as void } else { _mi_assert_fail("n>0", "mimalloc\\src\\bitmap.c", 1734, "mi_bbitmap_try_clearNC") });
+    (if (n <= (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("n<=MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 1735, "mi_bbitmap_try_clearNC") });
+    (if (idx + n <= mi_bbitmap_max_bits(bbitmap)) { 0 as void } else { _mi_assert_fail("idx + n <= mi_bbitmap_max_bits(bbitmap)", "mimalloc\\src\\bitmap.c", 1736, "mi_bbitmap_try_clearNC") });
+    let mut chunk_idx: u64 = idx / (1 << (6 + (3)));
+    let mut cidx: u64 = idx % (1 << (6 + (3)));
+    (if (cidx + n <= (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("cidx + n <= MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 1740, "mi_bbitmap_try_clearNC") });
+    (if (chunk_idx < mi_bbitmap_chunk_count(bbitmap)) { 0 as void } else { _mi_assert_fail("chunk_idx < mi_bbitmap_chunk_count(bbitmap)", "mimalloc\\src\\bitmap.c", 1741, "mi_bbitmap_try_clearNC") });
+    if cidx + n > (1 << (6 + (3))) {
+        return false;
+    }
+    let mut maybe_all_clear: bool = false;
+    let mut did_temp_clear_bits: bool = false;
+    let mut cleared: bool = mi_bchunk_try_clearN(&mut bbitmap.chunks[chunk_idx], cidx, n, &mut maybe_all_clear, &mut did_temp_clear_bits);
+    if cleared && maybe_all_clear {
+        (if (!did_temp_clear_bits) { 0 as void } else { _mi_assert_fail("!did_temp_clear_bits", "mimalloc\\src\\bitmap.c", 1747, "mi_bbitmap_try_clearNC") });
+        mi_bbitmap_chunkmap_try_clear(bbitmap, chunk_idx);
+    } else if did_temp_clear_bits {
+        mi_bbitmap_chunkmap_set(bbitmap, chunk_idx, false);
+    }
+    return cleared;
+}
+
+fn mi_bbitmap_is_xsetN(set: mi_xset_t, bbitmap: *mut mi_bbitmap_t, idx: u64, n: u64) -> bool {
+    (if (n > 0) { 0 as void } else { _mi_assert_fail("n>0", "mimalloc\\src\\bitmap.c", 1763, "mi_bbitmap_is_xsetN") });
+    let mut maxbits: u64 = mi_bbitmap_max_bits(bbitmap);
+    (if (idx + n <= maxbits) { 0 as void } else { _mi_assert_fail("idx + n <= maxbits", "mimalloc\\src\\bitmap.c", 1765, "mi_bbitmap_is_xsetN") });
+    if idx + n > maxbits {
+        if idx >= maxbits {
+            return false;
+        }
+        n = maxbits - idx;
+    }
+    let mut chunk_idx: u64 = idx / (1 << (6 + (3)));
+    let mut cidx: u64 = idx % (1 << (6 + (3)));
+    let mut xset: bool = true;
+    while n > 0 && xset {
+        let mut m: u64 = (if cidx + n > (1 << (6 + (3))) { (1 << (6 + (3))) - cidx } else { n });
+        xset = mi_bchunk_is_xsetN(set, &mut bbitmap.chunks[chunk_idx], cidx, m) && xset;
+        (if (m <= n) { 0 as void } else { _mi_assert_fail("m <= n", "mimalloc\\src\\bitmap.c", 1778, "mi_bbitmap_is_xsetN") });
+        n -= m;
+        cidx = 0;
+        chunk_idx += 1;
+    }
+    return xset;
+}
+
+fn mi_bbitmap_try_find_and_clear_generic(bbitmap: *mut mi_bbitmap_t, tseq: u64, n: u64, pidx: *mut u64, on_find: *mut mi_bchunk_try_find_and_clear_fun_t) -> bool {
+    let mut cmap_max_count: u64 = _mi_divide_up(mi_bbitmap_chunk_count(bbitmap), (1 << ((3) + 3)));
+    let mut chunk_acc: u64 = atomic_load_explicit(&mut bbitmap.chunk_max_accessed, memory_order_relaxed);
+    let mut cmap_acc: u64 = chunk_acc / (1 << ((3) + 3));
+    let mut cmap_acc_bits: u64 = 1 + (chunk_acc % (1 << ((3) + 3)));
+    (if ((1 << ((3) + 3)) >= ((1 << (6 + (3))) / (1 << ((3) + 3)))) { 0 as void } else { _mi_assert_fail("MI_BFIELD_BITS >= MI_BCHUNK_FIELDS", "mimalloc\\src\\bitmap.c", 1810, "mi_bbitmap_try_find_and_clear_generic") });
+    let mut cmap_mask: mi_bfield_t = mi_bfield_mask(cmap_max_count, 0);
+    let mut cmap_cycle: u64 = cmap_acc + 1;
+    let mut bbin: mi_chunkbin_t = mi_chunkbin_of(n);
+    let mut cmap_idx: u64 = 0;
+    {
+        let mut _startX: u64 = (tseq) as u32 % (cmap_cycle) as u32;
+        {
+            (if (_startX <= cmap_cycle) { 0 as void } else { _mi_assert_fail("_startX <= cmap_cycle", "mimalloc\\src\\bitmap.c", 1816, "mi_bbitmap_try_find_and_clear_generic") });
+            (if (_startX < (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("_startX < MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 1816, "mi_bbitmap_try_find_and_clear_generic") });
+            (if (cmap_cycle <= (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("cmap_cycle <= MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 1816, "mi_bbitmap_try_find_and_clear_generic") });
+            let mut _cycle_maskX: mi_bfield_t = mi_bfield_mask(cmap_cycle - _startX, _startX);
+            let mut _bcountX: u64 = mi_bfield_popcount(cmap_mask);
+            let mut _bX: mi_bfield_t = cmap_mask & _cycle_maskX;
+            while _bcountX > 0 {
+                _bcountX -= 1;
+                if _bX == 0 {
+                    _bX = cmap_mask & ~_cycle_maskX;
+                }
+                let mut _foundX: bool = mi_bfield_find_least_bit(_bX, &mut cmap_idx);
+                _bX = mi_bfield_clear_least_bit(_bX);
+                (if (_foundX) { 0 as void } else { _mi_assert_fail("_foundX", "mimalloc\\src\\bitmap.c", 1816, "mi_bbitmap_try_find_and_clear_generic") });
+                (_foundX) as void;
+                {
+                    {
+                        let mut cmap_entry: mi_bfield_t = atomic_load_explicit(&mut bbitmap.chunkmap.bfields[cmap_idx], memory_order_relaxed);
+                        let mut cmap_entry_cycle: u64 = (if cmap_idx != cmap_acc { (1 << ((3) + 3)) } else { cmap_acc_bits });
+                        if cmap_entry == 0 {
+                            continue;
+                        }
+                        let mut cmap_bins: [6]mi_bfield_t = [6]mi_bfield_t {};
+                        cmap_bins[MI_CBIN_NONE] = cmap_entry;
+                        for let mut ibin: mi_chunkbin_t = MI_CBIN_SMALL; ibin < MI_CBIN_NONE; ibin = mi_chunkbin_inc(ibin) {
+                            let mut cmap_bin: mi_bfield_t = atomic_load_explicit(&mut bbitmap.chunkmap_bins[ibin].bfields[cmap_idx], memory_order_relaxed);
+                            cmap_bins[ibin] = cmap_bin & cmap_entry;
+                            cmap_bins[MI_CBIN_NONE] &= ~cmap_bin;
+                        }
+                        (if (bbin < MI_CBIN_NONE) { 0 as void } else { _mi_assert_fail("bbin < MI_CBIN_NONE", "mimalloc\\src\\bitmap.c", 1837, "mi_bbitmap_try_find_and_clear_generic") });
+                        for let mut ibin: mi_chunkbin_t = MI_CBIN_SMALL; ibin <= MI_CBIN_NONE; ibin = (if ibin == bbin { MI_CBIN_NONE } else { mi_chunkbin_inc(ibin) }) {
+                            (if (ibin < MI_CBIN_COUNT) { 0 as void } else { _mi_assert_fail("ibin < MI_CBIN_COUNT", "mimalloc\\src\\bitmap.c", 1842, "mi_bbitmap_try_find_and_clear_generic") });
+                            let mut cmap_bin: mi_bfield_t = cmap_bins[ibin];
+                            let mut eidx: u64 = 0;
+                            {
+                                let mut _startY: u64 = (tseq) as u32 % (cmap_entry_cycle) as u32;
+                                {
+                                    (if (_startY <= cmap_entry_cycle) { 0 as void } else { _mi_assert_fail("_startY <= cmap_entry_cycle", "mimalloc\\src\\bitmap.c", 1845, "mi_bbitmap_try_find_and_clear_generic") });
+                                    (if (_startY < (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("_startY < MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 1845, "mi_bbitmap_try_find_and_clear_generic") });
+                                    (if (cmap_entry_cycle <= (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("cmap_entry_cycle <= MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 1845, "mi_bbitmap_try_find_and_clear_generic") });
+                                    let mut _cycle_maskY: mi_bfield_t = mi_bfield_mask(cmap_entry_cycle - _startY, _startY);
+                                    let mut _bcountY: u64 = mi_bfield_popcount(cmap_bin);
+                                    let mut _bY: mi_bfield_t = cmap_bin & _cycle_maskY;
+                                    while _bcountY > 0 {
+                                        _bcountY -= 1;
+                                        if _bY == 0 {
+                                            _bY = cmap_bin & ~_cycle_maskY;
+                                        }
+                                        let mut _foundY: bool = mi_bfield_find_least_bit(_bY, &mut eidx);
+                                        _bY = mi_bfield_clear_least_bit(_bY);
+                                        (if (_foundY) { 0 as void } else { _mi_assert_fail("_foundY", "mimalloc\\src\\bitmap.c", 1845, "mi_bbitmap_try_find_and_clear_generic") });
+                                        (_foundY) as void;
+                                        {
+                                            {
+                                                let mut chunk_idx: u64 = cmap_idx * (1 << ((3) + 3)) + eidx;
+                                                let mut chunk: *mut mi_bchunk_t = &mut bbitmap.chunks[chunk_idx];
+                                                let mut cidx: u64 = 0;
+                                                let mut did_temp_clear_bits: bool = false;
+                                                if *on_find(chunk, n, &mut cidx, &mut did_temp_clear_bits) {
+                                                    if cidx == 0 && ibin == MI_CBIN_NONE {
+                                                        mi_bbitmap_set_chunk_bin(bbitmap, chunk_idx, bbin);
+                                                    }
+                                                    *pidx = (chunk_idx * (1 << (6 + (3)))) + cidx;
+                                                    (if (*pidx + n <= mi_bbitmap_max_bits(bbitmap)) { 0 as void } else { _mi_assert_fail("*pidx + n <= mi_bbitmap_max_bits(bbitmap)", "mimalloc\\src\\bitmap.c", 1862, "mi_bbitmap_try_find_and_clear_generic") });
+                                                    return true;
+                                                } else {
+                                                    if did_temp_clear_bits {
+                                                        mi_bbitmap_chunkmap_set(bbitmap, chunk_idx, false);
+                                                    } else {
+                                                        mi_bbitmap_chunkmap_try_clear(bbitmap, chunk_idx);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+fn mi_bbitmap_try_find_and_clear(bbitmap: *mut mi_bbitmap_t, tseq: u64, pidx: *mut u64) -> bool {
+    return mi_bbitmap_try_find_and_clear_generic(bbitmap, tseq, 1, pidx, &mut mi_bchunk_try_find_and_clear_1);
+}
+
+fn mi_bbitmap_try_find_and_clear8(bbitmap: *mut mi_bbitmap_t, tseq: u64, pidx: *mut u64) -> bool {
+    return mi_bbitmap_try_find_and_clear_generic(bbitmap, tseq, 8, pidx, &mut mi_bchunk_try_find_and_clear_8);
+}
+
+fn mi_bbitmap_try_find_and_clearNX(bbitmap: *mut mi_bbitmap_t, tseq: u64, n: u64, pidx: *mut u64) -> bool {
+    (if (n <= (1 << ((3) + 3))) { 0 as void } else { _mi_assert_fail("n<=MI_BFIELD_BITS", "mimalloc\\src\\bitmap.c", 1904, "mi_bbitmap_try_find_and_clearNX") });
+    return mi_bbitmap_try_find_and_clear_generic(bbitmap, tseq, n, pidx, &mut mi_bchunk_try_find_and_clearNX);
+}
+
+fn mi_bbitmap_try_find_and_clearNC(bbitmap: *mut mi_bbitmap_t, tseq: u64, n: u64, pidx: *mut u64) -> bool {
+    (if (n <= (1 << (6 + (3)))) { 0 as void } else { _mi_assert_fail("n<=MI_BCHUNK_BITS", "mimalloc\\src\\bitmap.c", 1909, "mi_bbitmap_try_find_and_clearNC") });
+    return mi_bbitmap_try_find_and_clear_generic(bbitmap, tseq, n, pidx, &mut mi_bchunk_try_find_and_clearNC);
+}
+
+fn mi_bchunk_try_clearN_(bbitmap: *mut mi_bbitmap_t, chunk_idx: u64, n: u64) -> bool {
+    (if ((chunk_idx * (1 << (6 + (3)))) + n <= mi_bbitmap_max_bits(bbitmap)) { 0 as void } else { _mi_assert_fail("(chunk_idx * MI_BCHUNK_BITS) + n <= mi_bbitmap_max_bits(bbitmap)", "mimalloc\\src\\bitmap.c", 1920, "mi_bchunk_try_clearN_") });
+    let mut m: u64 = n;
+    let mut count: u64 = 0;
+    while m > 0 {
+        let mut chunk: *mut mi_bchunk_t = &mut bbitmap.chunks[chunk_idx + count];
+        if !mi_bchunk_try_clearN(chunk, 0, (if m > (1 << (6 + (3))) { (1 << (6 + (3))) } else { m }), 0, 0) {}
+        m = (if m <= (1 << (6 + (3))) { 0 } else { m - (1 << (6 + (3))) });
+        count += 1;
+    }
+    return true;
+    count > 0;
+    return false;
+}
+
+fn mi_bbitmap_try_find_and_clearN_(bbitmap: *mut mi_bbitmap_t, tseq: u64, n: u64, pidx: *mut u64) -> bool {
+    (tseq) as void;
+    (if (n > 0) { 0 as void } else { _mi_assert_fail("n > 0", "mimalloc\\src\\bitmap.c", 1952, "mi_bbitmap_try_find_and_clearN_") });
+    if n == 0 {
+        return false;
+    }
+    let mut chunk_max: u64 = mi_bbitmap_chunk_count(bbitmap);
+    let mut chunk_req: u64 = _mi_divide_up(n, (1 << (6 + (3))));
+    if chunk_max < chunk_req {
+        return false;
+    }
+    let mut chunk_idx: u64 = 0;
+    while chunk_idx <= chunk_max - chunk_req {
+        let mut count: u64 = 0;
+        while true {
+            {
+            (if (chunk_idx + count < chunk_max) { 0 as void } else { _mi_assert_fail("chunk_idx + count < chunk_max", "mimalloc\\src\\bitmap.c", 1964, "mi_bbitmap_try_find_and_clearN_") });
+            let mut chunk: mi_bchunk_t *const = &mut bbitmap.chunks[chunk_idx + count];
+            if !mi_bchunk_all_are_set_relaxed(chunk) {
+                break;
+            } else {
+                count += 1;
+            }
+        }
+            if !(count < chunk_req) { break; }
+        }
+        if count == chunk_req {
+            if mi_bchunk_try_clearN_(bbitmap, chunk_idx, n) {
+                *pidx = (chunk_idx * (1 << (6 + (3))));
+                for let mut i: u64 = 0; i < count; i += 1 {
+                    mi_bbitmap_set_chunk_bin(bbitmap, chunk_idx + i, MI_CBIN_HUGE);
+                }
+                (if (*pidx + n <= mi_bbitmap_max_bits(bbitmap)) { 0 as void } else { _mi_assert_fail("*pidx + n <= mi_bbitmap_max_bits(bbitmap)", "mimalloc\\src\\bitmap.c", 1983, "mi_bbitmap_try_find_and_clearN_") });
+                return true;
+            } else {
+                count = 0;
+            }
+        }
+        chunk_idx += count + 1;
+    }
+    return false;
+}
