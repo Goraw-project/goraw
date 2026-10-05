@@ -1,0 +1,313 @@
+fn RelatedTargetVersionMapping@DarwinSDKInfo@clang::map(self: *RelatedTargetVersionMapping@DarwinSDKInfo@clang, Key: *VersionTuple, MinimumValue: *VersionTuple, MaximumValue: optional<VersionTuple>) -> optional<VersionTuple> {
+    if Key < self.MinimumKeyVersion {
+        return MinimumValue;
+    }
+    if Key > self.MaximumKeyVersion {
+        return MaximumValue;
+    }
+    let mut KV: const_iterator = self.Mapping.find(Key.normalize());
+    if KV != self.Mapping.end() {
+        return operator(KV).getSecond();
+    }
+    if Key.getMinor() {
+        return self.map(Key.getMajor(), MinimumValue, MaximumValue);
+    }
+    return nullopt;
+}
+
+fn RelatedTargetVersionMapping@DarwinSDKInfo@clang::parseJSON(self, Obj: *Object, MaximumDeploymentTarget: VersionTuple) -> RelatedTargetVersionMapping> {
+    let mut Min: VersionTuple = max();
+    let mut Max: VersionTuple = 0;
+    let mut MinValue: VersionTuple = Min;
+    let mut Mapping: DenseMap<VersionTuple, VersionTuple> = DenseMap<VersionTuple, VersionTuple> {};
+    for KV in Obj {
+        if KV.getSecond().getAsString() {
+            Val;
+        } else {
+            let mut KeyVersion: VersionTuple = VersionTuple {};
+            let mut ValueVersion: VersionTuple = VersionTuple {};
+            if KeyVersion.tryParse(KV.getFirst().operator StringRef()) || ValueVersion.tryParse(operator(Val)) {
+                return nullopt;
+            }
+            Mapping[KeyVersion.normalize()] = ValueVersion;
+            if KeyVersion < Min {
+                Min = KeyVersion;
+            }
+            if KeyVersion > Max {
+                Max = KeyVersion;
+            }
+            if ValueVersion < MinValue {
+                MinValue = ValueVersion;
+            }
+        }
+    }
+    if Mapping.is_empty() {
+        return nullopt;
+    }
+    return RelatedTargetVersionMapping { Min, Max, MinValue, MaximumDeploymentTarget, move(Mapping) };
+}
+
+fn parseXcodePlatform(Obj: *Object) -> optional<StringRef> {
+    let mut CanonicalName: StringRef> = Obj.getString("CanonicalName");
+    if !CanonicalName {
+        return nullopt;
+    }
+    let mut VersionStart: u64 = operator(CanonicalName).find_first_of("0123456789", 0);
+    return operator(CanonicalName).slice(0, VersionStart);
+}
+
+fn parseOSAndEnvironment(XcodePlatform: optional<StringRef>) -> EnvironmentType> {
+    if !XcodePlatform {
+        return EnvironmentType> { UnknownOS, UnknownEnvironment };
+    }
+    let mut OS: OSType = operator(XcodePlatform).Case("macosx", MacOSX).Cases(["iphoneos", "iphonesimulator"], IOS).Cases(["appletvos", "appletvsimulator"], TvOS).Cases(["watchos", "watchsimulator"], WatchOS).Case("bridgeos", BridgeOS).Cases(["xros", "xrsimulator"], XROS).Case("driverkit", DriverKit).Default(UnknownOS);
+    let mut Environment: EnvironmentType = operator(XcodePlatform).Cases(["iphonesimulator", "appletvsimulator", "watchsimulator", "xrsimulator"], Simulator).Default(UnknownEnvironment);
+    return EnvironmentType> { OS, Environment };
+}
+
+fn legacyPlatformInfos(SDKOS: OSType, SDKEnvironment: EnvironmentType) -> PlatformInfoStorageType {
+    let mut PlatformInfos: PlatformInfoStorageType = PlatformInfoStorageType {};
+    match SDKOS {
+        MacOSX => {
+            PlatformInfos.push(SDKPlatformInfo { ["x86_64-apple-macosx"], "" });
+        },
+        DriverKit => {
+            PlatformInfos.push(SDKPlatformInfo { ["x86_64-apple-driverkit"], "/System/DriverKit" });
+        },
+        IOS => {
+            match SDKEnvironment {
+                UnknownEnvironment => {
+                    PlatformInfos.push(SDKPlatformInfo { ["armv7-apple-ios", "armv7s-apple-ios", "arm64-apple-ios"], "" });
+                },
+                Simulator => {
+                    PlatformInfos.push(SDKPlatformInfo { ["x86_64-apple-ios-simulator"], "" });
+                },
+                _ => {
+                    break;
+                },
+            }
+        },
+        TvOS => {
+            match SDKEnvironment {
+                UnknownEnvironment => {
+                    PlatformInfos.push(SDKPlatformInfo { ["arm64-apple-tvos"], "" });
+                },
+                Simulator => {
+                    PlatformInfos.push(SDKPlatformInfo { ["x86_64-apple-tvos-simulator"], "" });
+                },
+                _ => {
+                    break;
+                },
+            }
+        },
+        WatchOS => {
+            match SDKEnvironment {
+                UnknownEnvironment => {
+                    PlatformInfos.push(SDKPlatformInfo { ["armv7k-apple-watchos", "arm64_32-apple-watchos"], "" });
+                },
+                Simulator => {
+                    PlatformInfos.push(SDKPlatformInfo { ["x86_64-apple-watchos-simulator"], "" });
+                },
+                _ => {
+                    break;
+                },
+            }
+        },
+        BridgeOS => {
+            PlatformInfos.push(SDKPlatformInfo { ["armv7-apple-bridgeos", "armv7s-apple-bridgeos", "arm64-apple-bridgeos"], "" });
+        },
+        _ => {
+            break;
+        },
+    }
+    return PlatformInfos;
+}
+
+fn parsePlatformInfos(Obj: *Object, XcodePlatform: optional<StringRef>, SDKOS: OSType, SDKEnvironment: EnvironmentType, Version: VersionTuple) -> PlatformInfoStorageType {
+    let mut PlatformInfos: PlatformInfoStorageType = PlatformInfoStorageType {};
+    let mut SupportedTargets: *Object = Obj.getObject("SupportedTargets");
+    if !SupportedTargets {
+        return legacyPlatformInfos(SDKOS, SDKEnvironment);
+    }
+    for SupportedTargetPair in *SupportedTargets {
+        let mut SupportedTarget: *Object = SupportedTargetPair.getSecond().getAsObject();
+        if !SupportedTarget {
+            continue;
+        }
+        let mut Archs: *Array = SupportedTarget.getArray("Archs");
+        let mut Vendor: StringRef> = SupportedTarget.getString("LLVMTargetTripleVendor");
+        let mut OS: StringRef> = SupportedTarget.getString("LLVMTargetTripleSys");
+        if !Archs || !Vendor || !OS {
+            continue;
+        }
+        let mut Triples: TripleStorageType = TripleStorageType {};
+        let mut Environment: StringRef> = SupportedTarget.getString("LLVMTargetTripleEnvironment");
+        for ArchValue in *Archs {
+            if ArchValue.getAsString() {
+                Arch;
+            } else {
+                if Environment && !operator(Environment).is_empty() {
+                    Triples.emplace_back(operator(Arch), operator(Vendor), operator(OS), operator(Environment));
+                } else {
+                    Triples.emplace_back(operator(Arch), operator(Vendor), operator(OS));
+                }
+            }
+        }
+        if Triples.is_empty() {
+            continue;
+        }
+        let mut PlatformOrVariant: str = SupportedTargetPair.getFirst().operator StringRef();
+        let mut EffectivePlatformPrefix: str = "";
+        if (PlatformOrVariant != "iosmac") || (Version >= 99) {
+            let mut PlatformPrefix: StringRef> = SupportedTarget.getString("SystemPrefix");
+            if PlatformPrefix {
+                EffectivePlatformPrefix = operator(PlatformPrefix);
+            } else {
+                if (Triples[0].getOS() == DriverKit) && (Version < VersionTuple { 22, 1 }) {
+                    EffectivePlatformPrefix = "/System/DriverKit";
+                }
+            }
+        }
+        if PlatformOrVariant == XcodePlatform {
+            PlatformInfos.insert(PlatformInfos.begin(), SDKPlatformInfo { move(Triples), EffectivePlatformPrefix });
+        } else {
+            PlatformInfos.emplace_back(move(Triples), EffectivePlatformPrefix);
+        }
+    }
+    return PlatformInfos;
+}
+
+fn getVersionKey(Obj: *Object, Key: str) -> optional<VersionTuple> {
+    let mut Value: StringRef> = Obj.getString(Key);
+    if !Value {
+        return nullopt;
+    }
+    let mut Version: VersionTuple = VersionTuple {};
+    if Version.tryParse(operator(Value)) {
+        return nullopt;
+    }
+    return Version;
+}
+
+fn DarwinSDKInfo::parseDarwinSDKSettingsJSON(self, FilePath: str, Obj: *Object) -> optional<DarwinSDKInfo> {
+    let mut Version: optional<VersionTuple> = getVersionKey(*Obj, "Version");
+    if !Version {
+        return nullopt;
+    }
+    let mut DefaultDeploymentTarget: optional<VersionTuple> = getVersionKey(*Obj, "DefaultDeploymentTarget");
+    if !DefaultDeploymentTarget {
+        return nullopt;
+    }
+    let mut MaximumDeploymentVersion: optional<VersionTuple> = getVersionKey(*Obj, "MaximumDeploymentTarget");
+    if !MaximumDeploymentVersion {
+        return nullopt;
+    }
+    let mut XcodePlatform: optional<StringRef> = parseXcodePlatform(*Obj);
+    let mut OSAndEnvironment: EnvironmentType> = parseOSAndEnvironment(XcodePlatform);
+    let mut DisplayName: str = Obj.getString("DisplayName").value_or(Obj.getString("CanonicalName").value_or("<unknown>"));
+    let mut PlatformInfos: PlatformInfoStorageType = parsePlatformInfos(*Obj, XcodePlatform, OSAndEnvironment.first, OSAndEnvironment.second, operator(Version));
+    if PlatformInfos.is_empty() {
+        return nullopt;
+    }
+    let mut VersionMappings: optional<RelatedTargetVersionMapping>> = optional<RelatedTargetVersionMapping>> {};
+    if Obj.getObject("VersionMap") {
+        VM;
+    } else {
+        for KV in *VM {
+            let mut Pair: pair<StringRef, StringRef> = KV.getFirst().operator StringRef().split("_");
+            if Pair.first.compare_insensitive("ios") == 0 {
+                let mut TT: Triple = "--" + Pair.second.lower();
+                if TT.getOS() != UnknownOS {
+                    let mut Mapping: RelatedTargetVersionMapping> = parseJSON(*KV.getSecond().getAsObject(), operator(MaximumDeploymentVersion));
+                    if Mapping {
+                        VersionMappings[OSEnvPair { IOS, UnknownEnvironment, TT.getOS(), UnknownEnvironment }.Value] = move(Mapping);
+                    }
+                }
+            }
+        }
+        if VM.getObject("macOS_iOSMac") {
+            Mapping;
+        } else {
+            let mut VersionMap: RelatedTargetVersionMapping> = parseJSON(*Mapping, operator(MaximumDeploymentVersion));
+            if !VersionMap {
+                return nullopt;
+            }
+            VersionMappings[macOStoMacCatalystPair().Value] = move(VersionMap);
+        }
+        if VM.getObject("iOSMac_macOS") {
+            Mapping;
+        } else {
+            let mut VersionMap: RelatedTargetVersionMapping> = parseJSON(*Mapping, operator(MaximumDeploymentVersion));
+            if !VersionMap {
+                return nullopt;
+            }
+            VersionMappings[macCatalystToMacOSPair().Value] = move(VersionMap);
+        }
+    }
+    return DarwinSDKInfo { FilePath: move(FilePath), OS: OSAndEnvironment.first, Environment: OSAndEnvironment.second, Version: move(operator(Version)), DisplayName: DisplayName, DefaultDeploymentTarget: move(operator(DefaultDeploymentTarget)), MaximumDeploymentTarget: move(operator(MaximumDeploymentVersion)), PlatformInfos: move(PlatformInfos), VersionMappings: move(VersionMappings) };
+}
+
+fn parseDarwinSDKInfo(VFS: *mut FileSystem, SDKRootPath: str) -> optional<DarwinSDKInfo>> {
+    let mut Filepath: str = SDKRootPath;
+    append(Filepath, "SDKSettings.json", "", "", "");
+    let mut File: MemoryBuffer>> = VFS.getBufferForFile(Filepath, -1, true, false, true);
+    if !File {
+        return optional<DarwinSDKInfo>> { nullopt, null };
+    }
+    let mut Result: Value> = parse(operator(File.get()).getBuffer());
+    if !Result {
+        return Result.takeError();
+    }
+    if operator(Result).getAsObject() {
+        Obj;
+    } else {
+        if parseDarwinSDKSettingsJSON(Filepath, Obj) {
+            SDKInfo;
+        } else {
+            return optional<DarwinSDKInfo>> { move(SDKInfo), null };
+        }
+    }
+    return make_error("invalid SDKSettings.json", inconvertibleErrorCode());
+}
+
+fn findPlatformInfo(PlatformInfos: *PlatformInfoStorageType, Triple: *Triple) -> const_iterator {
+    let mut PlatformInfoIt: *SDKPlatformInfo = find_if(PlatformInfos, Closure_1 { Triple: &mut Triple });
+    if PlatformInfoIt == PlatformInfos.end() && Triple.getArch() == thumb {
+        let mut ARMArch: str = getArchName(arm, NoSubArch);
+        let mut ArchKind: ArchKind = parseArch(Triple.getArchName());
+        let mut SubArch: str = getSubArch(ArchKind);
+        let mut ARMTriple: Triple = Triple;
+        ARMTriple.setArchName((ARMArch + SubArch));
+        if ARMTriple.getArch() != thumb {
+            PlatformInfoIt = findPlatformInfo(PlatformInfos, ARMTriple);
+        }
+    }
+    return PlatformInfoIt;
+}
+
+fn DarwinSDKInfo::supportsTriple(self: *DarwinSDKInfo, Triple: *Triple) -> bool {
+    return findPlatformInfo(self.PlatformInfos, Triple) != self.PlatformInfos.end();
+}
+
+fn DarwinSDKInfo::getPlatformPrefix(self: *DarwinSDKInfo, Triple: *Triple) -> str {
+    let mut PlatformInfoIt: const_iterator = findPlatformInfo(self.PlatformInfos, Triple);
+    if PlatformInfoIt != self.PlatformInfos.end() {
+        return PlatformInfoIt.getPlatformPrefix();
+    }
+    let mut PlatformPrefix: str = self.PlatformInfos[0].getPlatformPrefix();
+    for PlatformInfoIt = next(self.PlatformInfos.begin(), 1); PlatformInfoIt != self.PlatformInfos.end(); PlatformInfoIt += 1 {
+        if PlatformInfoIt.getPlatformPrefix() != PlatformPrefix {
+            return "";
+        }
+    }
+    return PlatformPrefix;
+}
+
+struct Closure_1 {
+    Triple: *mut Triple,
+}
+
+unsafe fn Closure_1::call(self: *mut Closure_1, PlatformInfo: *SDKPlatformInfo) -> bool {
+        let mut Triples: *TripleStorageType = PlatformInfo.getTriples();
+        return find(Triples, (*self.Triple)) != Triples.end();
+    }

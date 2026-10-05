@@ -46,6 +46,7 @@ struct Options {
     target: String,  // целевой triple платформы (напр. x86_64-w64-windows-gnu)
     from_cpp: Option<PathBuf>, // транслировать C++23 код (.cpp) обратно в Goraw (.gw)
     from_llvm: Option<PathBuf>, // транслировать LLVM IR (.ll) в Goraw (.gw)
+    native_linker: bool, // автономный встроенный PE/COFF компоновщик
 }
 
 pub fn main() {
@@ -953,6 +954,7 @@ fn print_help() {
     --target <triple> целевая платформа clang/LLVM (по умолчанию `x86_64-w64-windows-gnu`)\n\
     -O<n>            уровень оптимизации clang (напр. -O2, переопределяет профиль)\n\
     --keep-ll        не удалять промежуточный .ll при сборке .exe\n\
+    --native-linker, --native-pe нативный встроенный PE/COFF компоновщик Goraw (без внешнего clang)\n\
     --clang <путь>   путь к clang (по умолчанию `clang` из PATH)\n\
     -h, --help       показать эту справку\n"
     );
@@ -983,6 +985,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut c_std = "c23".to_string();
     let mut profile = Profile::Debug;
     let mut target = "x86_64-w64-windows-gnu".to_string();
+    let mut native_linker = false;
     let mut silent = std::env::var("GORAW_SILENT").map(|v| v == "1").unwrap_or(false)
         || std::env::var("GORAW_BOX_SILENT").map(|v| v == "1").unwrap_or(false)
         || std::env::var("SILENT").map(|v| v == "1").unwrap_or(false);
@@ -1033,6 +1036,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--shadow=strict" => shadow_strict = true,
             "--obfuscate-strings" | "--obf-strings" => obfuscate_strings = true,
             "--keep-ll" => keep_ll = true,
+            "--native-linker" | "--native-pe" | "--native" => native_linker = true,
             "--clang" => {
                 i += 1;
                 clang = Some(args.get(i).ok_or("--clang требует аргумент")?.clone());
@@ -1075,6 +1079,10 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             }
         }
         i += 1;
+    }
+
+    if input.is_none() && !extra_asms.is_empty() {
+        input = Some(extra_asms.remove(0));
     }
 
     if input.is_none() && bind_c.is_none() && from_cpp.is_none() && from_llvm.is_none() {
@@ -1120,6 +1128,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         target,
         from_cpp,
         from_llvm,
+        native_linker,
     })
 }
 
@@ -1187,6 +1196,66 @@ fn run(opts: Options) -> i32 {
     }
 
     let input_path = opts.input.as_ref().expect("входной файл");
+
+    // Прямая компиляция и компоновка ассемблерных файлов (.asm)
+    if input_path.extension().map_or(false, |e| e == "asm") {
+        let asm_src = match std::fs::read_to_string(input_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("не удалось прочитать `{}`: {e}", input_path.display());
+                return 2;
+            }
+        };
+        let (obj, diags) = gorawc::asm::assemble(&input_path.display().to_string(), &asm_src);
+        if diags.has_errors() {
+            emit_diags(&diags, opts.json);
+            return 1;
+        }
+        if !diags.items.is_empty() {
+            emit_diags(&diags, opts.json);
+        }
+        let obj_bytes = match obj {
+            Some(b) => b,
+            None => return 1,
+        };
+        let (_ll_path, exe_path) = output_paths(&opts);
+        let mut all_objs = vec![obj_bytes];
+        for extra in &opts.extra_objects {
+            match std::fs::read(extra) {
+                Ok(b) => all_objs.push(b),
+                Err(e) => {
+                    eprintln!("не удалось прочитать `{}`: {e}", extra.display());
+                    return 2;
+                }
+            }
+        }
+        let slices: Vec<&[u8]> = all_objs.iter().map(|v| v.as_slice()).collect();
+        match gorawc::linker::link_coff_to_pe(&slices, Some("main")) {
+            Ok(pe_bytes) => {
+                if let Err(e) = std::fs::write(&exe_path, &pe_bytes) {
+                    eprintln!("не удалось записать `{}`: {e}", exe_path.display());
+                    return 2;
+                }
+                eprintln!("собрано (нативный PE): `{}`", exe_path.display());
+                if opts.run || opts.test {
+                    let status = Command::new(&exe_path).status();
+                    match status {
+                        Ok(s) => return s.code().unwrap_or(0),
+                        Err(e) => {
+                            eprintln!("не удалось запустить `{}`: {e}", exe_path.display());
+                            return 2;
+                        }
+                    }
+                }
+                return 0;
+            }
+            Err(e) => {
+                eprintln!("ошибка нативного компоновщика PE: {e}");
+                return 1;
+            }
+        }
+    }
+
     let (src, line_map) = if input_path.extension().map_or(false, |e| e == "ll") {
         let llvm_opts = gorawc::llvm_to_goraw::LlvmToGorawOptions::default();
         match gorawc::llvm_to_goraw::transpile_llvm_file(input_path, &llvm_opts) {
@@ -1549,6 +1618,84 @@ fn run(opts: Options) -> i32 {
         temp_c_objs.push(cpp_bc);
     }
 
+    // Если явно включен --native-linker или clang недоступен на Windows:
+    if opts.native_linker && opts.target.contains("windows") {
+        // Компилируем LLVM IR в объектный файл через clang -c, если clang есть
+        let ll_obj = ll_path.with_extension("obj");
+        let mut compile_cmd = Command::new(&opts.clang);
+        compile_cmd.arg(format!("--target={}", opts.target));
+        compile_cmd.arg(format!("-O{effective_opt}"));
+        compile_cmd.arg("-c").arg(&ll_path).arg("-o").arg(&ll_obj);
+        compile_cmd.arg("-Wno-override-module");
+
+        let compile_ok = match compile_cmd.status() {
+            Ok(s) if s.success() => true,
+            _ => false,
+        };
+
+        if compile_ok {
+            let mut obj_bytes_list: Vec<Vec<u8>> = Vec::new();
+            if let Ok(b) = std::fs::read(&ll_obj) {
+                obj_bytes_list.push(b);
+            }
+            for obj in &opts.extra_objects {
+                if let Ok(b) = std::fs::read(obj) {
+                    obj_bytes_list.push(b);
+                }
+            }
+            for obj in &temp_objs {
+                if let Ok(b) = std::fs::read(obj) {
+                    obj_bytes_list.push(b);
+                }
+            }
+            for obj in &temp_c_objs {
+                if let Ok(b) = std::fs::read(obj) {
+                    obj_bytes_list.push(b);
+                }
+            }
+
+            let slices: Vec<&[u8]> = obj_bytes_list.iter().map(|b| b.as_slice()).collect();
+            match gorawc::linker::link_coff_to_pe(&slices, Some("main")) {
+                Ok(pe_bytes) => {
+                    if let Err(e) = std::fs::write(&exe_path, &pe_bytes) {
+                        eprintln!("не удалось записать `{}`: {e}", exe_path.display());
+                        return 2;
+                    }
+                    if !opts.keep_ll && !opts.emit_llvm {
+                        let _ = std::fs::remove_file(&ll_path);
+                        let _ = std::fs::remove_file(&ll_obj);
+                        if let Some(rt) = &jit_rt_path {
+                            let _ = std::fs::remove_file(rt);
+                        }
+                        for obj in &temp_c_objs {
+                            let _ = std::fs::remove_file(obj);
+                        }
+                    }
+                    let profile_desc = match opts.profile {
+                        Profile::Release => "release [optimized + native PE linker]",
+                        Profile::Debug => "debug [native PE linker]",
+                    };
+                    eprintln!("собрано ({profile_desc}): `{}`", exe_path.display());
+
+                    if opts.run || opts.test {
+                        let status = Command::new(&exe_path).status();
+                        match status {
+                            Ok(s) => return s.code().unwrap_or(0),
+                            Err(e) => {
+                                eprintln!("не удалось запустить `{}`: {e}", exe_path.display());
+                                return 2;
+                            }
+                        }
+                    }
+                    return 0;
+                }
+                Err(e) => {
+                    eprintln!("ошибка встроенного PE компоновщика: {e}, возврат к внешнему clang...");
+                }
+            }
+        }
+    }
+
     // Линковка через clang.
     let mut cmd = Command::new(&opts.clang);
     cmd.arg(format!("--target={}", opts.target));
@@ -1590,10 +1737,30 @@ fn run(opts: Options) -> i32 {
     let status = match cmd.status() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!(
-                "не удалось запустить clang (`{}`): {e}\nУстановите LLVM или укажите путь через --clang",
-                opts.clang
-            );
+            if e.kind() == std::io::ErrorKind::NotFound {
+                // Если есть готовые .obj на Windows, пробуем автономно связать
+                if opts.target.contains("windows") && (!temp_objs.is_empty() || !opts.extra_objects.is_empty()) {
+                    let mut obj_bytes_list = Vec::new();
+                    for obj in temp_objs.iter().chain(opts.extra_objects.iter()) {
+                        if let Ok(b) = std::fs::read(obj) {
+                            obj_bytes_list.push(b);
+                        }
+                    }
+                    let slices: Vec<&[u8]> = obj_bytes_list.iter().map(|b| b.as_slice()).collect();
+                    if let Ok(pe_bytes) = gorawc::linker::link_coff_to_pe(&slices, Some("main")) {
+                        let _ = std::fs::write(&exe_path, &pe_bytes);
+                        eprintln!("clang не найден, успешно собрано через встроенный PE компоновщик: `{}`", exe_path.display());
+                        return 0;
+                    }
+                }
+                eprintln!(
+                    "не удалось запустить clang (`{}`): {e}\n\
+                     Подсказка: установите LLVM или используйте встроенный компоновщик (--native-linker / .asm)",
+                    opts.clang
+                );
+            } else {
+                eprintln!("не удалось запустить clang (`{}`): {e}\nУстановите LLVM или укажите путь через --clang", opts.clang);
+            }
             return 2;
         }
     };

@@ -154,6 +154,7 @@ pub fn get_stack_summary() -> Vec<(&'static str, &'static str, bool)> {
         ("LLVM AArch64 Target", "backend/aarch64", check("backend/aarch64")),
         ("LLVM InstCombine", "backend/opt/instcombine", check("backend/opt/instcombine")),
         ("LLD Linker", "backend/linker", check("backend/linker")),
+        ("Clang Basic & Diagnostics", "backend/clang_basic", check("backend/clang_basic")),
         ("Clang Lexer", "backend/clang_lex", check("backend/clang_lex")),
         ("Clang Parser", "backend/clang_parse", check("backend/clang_parse")),
         ("mimalloc (std/alloc)", "std/alloc", check("std/alloc")),

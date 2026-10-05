@@ -491,13 +491,19 @@ main:
         let test_exe = std::env::current_dir().unwrap().join("test_out.exe");
         std::fs::write(&test_exe, &exe_bytes).expect("запись тестового exe");
 
-        let status = std::process::Command::new(&test_exe).status();
-        if status.is_ok() {
+        #[cfg(target_os = "windows")]
+        {
+            let status = std::process::Command::new(&test_exe).status();
+            if status.is_ok() {
+                let _ = std::fs::remove_file(&test_exe);
+            }
+            let s = status.expect("запуск сгенерированного exe");
+            assert_eq!(s.code(), Some(42), "код возврата должен быть 42!");
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
             let _ = std::fs::remove_file(&test_exe);
         }
-
-        let s = status.expect("запуск сгенерированного exe");
-        assert_eq!(s.code(), Some(42), "код возврата должен быть 42!");
     }
 
     #[test]
@@ -527,13 +533,20 @@ main:
         let test_exe = std::env::current_dir().unwrap().join("test_puts_out.exe");
         std::fs::write(&test_exe, &exe_bytes).expect("запись");
 
-        let out = std::process::Command::new(&test_exe).output();
-        if out.is_ok() {
+        #[cfg(target_os = "windows")]
+        {
+            let out = std::process::Command::new(&test_exe).output();
+            if out.is_ok() {
+                let _ = std::fs::remove_file(&test_exe);
+            }
+            let out = out.expect("запуск test_puts");
+            assert_eq!(out.status.code(), Some(0));
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(stdout.contains("Goraw Pure Native PE Execution!"));
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
             let _ = std::fs::remove_file(&test_exe);
         }
-        let out = out.expect("запуск test_puts");
-        assert_eq!(out.status.code(), Some(0));
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(stdout.contains("Goraw Pure Native PE Execution!"));
     }
 }

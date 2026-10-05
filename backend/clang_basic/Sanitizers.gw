@@ -1,0 +1,859 @@
+const SanitizerMaskCutoffsEps: f64 = 9.99999971E-10;
+
+fn SanitizerMaskCutoffs::set(self, K: SanitizerMask, V: f64) {
+    if V < SanitizerMaskCutoffsEps && self.Cutoffs.is_empty() {
+        return;
+    }
+    for let mut i: u32 = 0; i < SO_Count; i += 1 {
+        if K & bitPosToMask(i) {
+            self.Cutoffs.resize(SO_Count);
+            self.Cutoffs[i] = V;
+        }
+    }
+}
+
+fn SanitizerMaskCutoffs::operator[](self: *SanitizerMaskCutoffs, Kind: u32) -> optional<double> {
+    if self.Cutoffs.is_empty() || self.Cutoffs[Kind] < SanitizerMaskCutoffsEps {
+        return nullopt;
+    }
+    return self.Cutoffs[Kind];
+}
+
+fn SanitizerMaskCutoffs::clear(self, K: SanitizerMask) {
+    self.set(K, 0);
+}
+
+fn SanitizerMaskCutoffs::getAllScaled(self: *SanitizerMaskCutoffs, ScalingFactor: u32) -> vector<unsigned int>> {
+    let mut ScaledCutoffs: []u32 = []u32 {};
+    let mut AnyCutoff: bool = false;
+    for let mut i: u32 = 0; i < SO_Count; i += 1 {
+        let mut C: optional<double> = (*self)[i];
+        if C.has_value() {
+            ScaledCutoffs.push(lround(clamp(operator(C), 0.0, 1.0) * ScalingFactor));
+            AnyCutoff = true;
+        } else {
+            ScaledCutoffs.push(0);
+        }
+    }
+    if AnyCutoff {
+        return ScaledCutoffs;
+    }
+    return nullopt;
+}
+
+fn parseSanitizerValue(Value: str, AllowGroups: bool) -> SanitizerMask {
+    let mut ParsedKind: SanitizerMask = Value.Case("address", Address).Case("pointer-compare", PointerCompare).Case("pointer-subtract", PointerSubtract).Case("kernel-address", KernelAddress).Case("hwaddress", HWAddress).Case("kernel-hwaddress", KernelHWAddress).Case("memtag-stack", MemtagStack).Case("memtag-heap", MemtagHeap).Case("memtag-globals", MemtagGlobals).Case("memtag", if AllowGroups { MemTagGroup } else { SanitizerMask {} }).Case("memory", Memory).Case("kernel-memory", KernelMemory).Case("fuzzer", Fuzzer).Case("fuzzer-no-link", FuzzerNoLink).Case("type", Type).Case("thread", Thread).Case("numerical", NumericalStability).Case("realtime", Realtime).Case("leak", Leak).Case("alignment", Alignment).Case("array-bounds", ArrayBounds).Case("bool", Bool).Case("builtin", Builtin).Case("enum", Enum).Case("float-cast-overflow", FloatCastOverflow).Case("float-divide-by-zero", FloatDivideByZero).Case("function", Function).Case("integer-divide-by-zero", IntegerDivideByZero).Case("nonnull-attribute", NonnullAttribute).Case("null", Null).Case("nullability-arg", NullabilityArg).Case("nullability-assign", NullabilityAssign).Case("nullability-return", NullabilityReturn).Case("nullability", if AllowGroups { NullabilityGroup } else { SanitizerMask {} }).Case("object-size", ObjectSize).Case("pointer-overflow", PointerOverflow).Case("return", Return).Case("returns-nonnull-attribute", ReturnsNonnullAttribute).Case("shift-base", ShiftBase).Case("shift-exponent", ShiftExponent).Case("shift", if AllowGroups { ShiftGroup } else { SanitizerMask {} }).Case("signed-integer-overflow", SignedIntegerOverflow).Case("unreachable", Unreachable).Case("vla-bound", VLABound).Case("vptr", Vptr).Case("unsigned-integer-overflow", UnsignedIntegerOverflow).Case("unsigned-shift-base", UnsignedShiftBase).Case("dataflow", DataFlow).Case("cfi-cast-strict", CFICastStrict).Case("cfi-derived-cast", CFIDerivedCast).Case("cfi-icall", CFIICall).Case("cfi-mfcall", CFIMFCall).Case("cfi-unrelated-cast", CFIUnrelatedCast).Case("cfi-nvcall", CFINVCall).Case("cfi-vcall", CFIVCall).Case("cfi", if AllowGroups { CFIGroup } else { SanitizerMask {} }).Case("kcfi", KCFI).Case("safe-stack", SafeStack).Case("shadow-call-stack", ShadowCallStack).Case("undefined", if AllowGroups { UndefinedGroup } else { SanitizerMask {} }).Case("undefined-trap", if AllowGroups { UndefinedTrapGroup } else { SanitizerMask {} }).Case("implicit-unsigned-integer-truncation", ImplicitUnsignedIntegerTruncation).Case("implicit-signed-integer-truncation", ImplicitSignedIntegerTruncation).Case("implicit-integer-truncation", if AllowGroups { ImplicitIntegerTruncationGroup } else { SanitizerMask {} }).Case("implicit-integer-sign-change", ImplicitIntegerSignChange).Case("implicit-integer-arithmetic-value-change", if AllowGroups { ImplicitIntegerArithmeticValueChangeGroup } else { SanitizerMask {} }).Case("implicit-integer-conversion", if AllowGroups { ImplicitIntegerConversionGroup } else { SanitizerMask {} }).Case("implicit-bitfield-conversion", ImplicitBitfieldConversion).Case("implicit-conversion", if AllowGroups { ImplicitConversionGroup } else { SanitizerMask {} }).Case("integer", if AllowGroups { IntegerGroup } else { SanitizerMask {} }).Case("objc-cast", ObjCCast).Case("local-bounds", LocalBounds).Case("bounds", if AllowGroups { BoundsGroup } else { SanitizerMask {} }).Case("scudo", Scudo).Case("alloc-token", AllocToken).Case("all", if AllowGroups { AllGroup } else { SanitizerMask {} }).Default(SanitizerMask {});
+    return ParsedKind;
+}
+
+fn parseSanitizerWeightedValue(Value: str, AllowGroups: bool, Cutoffs: *mut SanitizerMaskCutoffs) -> bool {
+    let mut ParsedKind: SanitizerMask = Value.StartsWith("address=", Address).StartsWith("pointer-compare=", PointerCompare).StartsWith("pointer-subtract=", PointerSubtract).StartsWith("kernel-address=", KernelAddress).StartsWith("hwaddress=", HWAddress).StartsWith("kernel-hwaddress=", KernelHWAddress).StartsWith("memtag-stack=", MemtagStack).StartsWith("memtag-heap=", MemtagHeap).StartsWith("memtag-globals=", MemtagGlobals).StartsWith("memtag=", if AllowGroups { MemTagGroup } else { SanitizerMask {} }).StartsWith("memory=", Memory).StartsWith("kernel-memory=", KernelMemory).StartsWith("fuzzer=", Fuzzer).StartsWith("fuzzer-no-link=", FuzzerNoLink).StartsWith("type=", Type).StartsWith("thread=", Thread).StartsWith("numerical=", NumericalStability).StartsWith("realtime=", Realtime).StartsWith("leak=", Leak).StartsWith("alignment=", Alignment).StartsWith("array-bounds=", ArrayBounds).StartsWith("bool=", Bool).StartsWith("builtin=", Builtin).StartsWith("enum=", Enum).StartsWith("float-cast-overflow=", FloatCastOverflow).StartsWith("float-divide-by-zero=", FloatDivideByZero).StartsWith("function=", Function).StartsWith("integer-divide-by-zero=", IntegerDivideByZero).StartsWith("nonnull-attribute=", NonnullAttribute).StartsWith("null=", Null).StartsWith("nullability-arg=", NullabilityArg).StartsWith("nullability-assign=", NullabilityAssign).StartsWith("nullability-return=", NullabilityReturn).StartsWith("nullability=", if AllowGroups { NullabilityGroup } else { SanitizerMask {} }).StartsWith("object-size=", ObjectSize).StartsWith("pointer-overflow=", PointerOverflow).StartsWith("return=", Return).StartsWith("returns-nonnull-attribute=", ReturnsNonnullAttribute).StartsWith("shift-base=", ShiftBase).StartsWith("shift-exponent=", ShiftExponent).StartsWith("shift=", if AllowGroups { ShiftGroup } else { SanitizerMask {} }).StartsWith("signed-integer-overflow=", SignedIntegerOverflow).StartsWith("unreachable=", Unreachable).StartsWith("vla-bound=", VLABound).StartsWith("vptr=", Vptr).StartsWith("unsigned-integer-overflow=", UnsignedIntegerOverflow).StartsWith("unsigned-shift-base=", UnsignedShiftBase).StartsWith("dataflow=", DataFlow).StartsWith("cfi-cast-strict=", CFICastStrict).StartsWith("cfi-derived-cast=", CFIDerivedCast).StartsWith("cfi-icall=", CFIICall).StartsWith("cfi-mfcall=", CFIMFCall).StartsWith("cfi-unrelated-cast=", CFIUnrelatedCast).StartsWith("cfi-nvcall=", CFINVCall).StartsWith("cfi-vcall=", CFIVCall).StartsWith("cfi=", if AllowGroups { CFIGroup } else { SanitizerMask {} }).StartsWith("kcfi=", KCFI).StartsWith("safe-stack=", SafeStack).StartsWith("shadow-call-stack=", ShadowCallStack).StartsWith("undefined=", if AllowGroups { UndefinedGroup } else { SanitizerMask {} }).StartsWith("undefined-trap=", if AllowGroups { UndefinedTrapGroup } else { SanitizerMask {} }).StartsWith("implicit-unsigned-integer-truncation=", ImplicitUnsignedIntegerTruncation).StartsWith("implicit-signed-integer-truncation=", ImplicitSignedIntegerTruncation).StartsWith("implicit-integer-truncation=", if AllowGroups { ImplicitIntegerTruncationGroup } else { SanitizerMask {} }).StartsWith("implicit-integer-sign-change=", ImplicitIntegerSignChange).StartsWith("implicit-integer-arithmetic-value-change=", if AllowGroups { ImplicitIntegerArithmeticValueChangeGroup } else { SanitizerMask {} }).StartsWith("implicit-integer-conversion=", if AllowGroups { ImplicitIntegerConversionGroup } else { SanitizerMask {} }).StartsWith("implicit-bitfield-conversion=", ImplicitBitfieldConversion).StartsWith("implicit-conversion=", if AllowGroups { ImplicitConversionGroup } else { SanitizerMask {} }).StartsWith("integer=", if AllowGroups { IntegerGroup } else { SanitizerMask {} }).StartsWith("objc-cast=", ObjCCast).StartsWith("local-bounds=", LocalBounds).StartsWith("bounds=", if AllowGroups { BoundsGroup } else { SanitizerMask {} }).StartsWith("scudo=", Scudo).StartsWith("alloc-token=", AllocToken).StartsWith("all=", if AllowGroups { AllGroup } else { SanitizerMask {} }).Default(SanitizerMask {});
+    if operator(ParsedKind) {
+        return false;
+    }
+    let mut A: f64 = 0.0;
+    if W.getAsDouble(A, true) || A < 0.0 || A > 1.0 {
+        return false;
+    }
+    Cutoffs.set(expandSanitizerGroups(ParsedKind), A);
+    return true;
+}
+
+fn serializeSanitizerSet(Set: SanitizerSet, Values: *mut SmallVectorImpl<StringRef>) {
+    if Set.has(Address) {
+        Values.push("address");
+    }
+    if Set.has(PointerCompare) {
+        Values.push("pointer-compare");
+    }
+    if Set.has(PointerSubtract) {
+        Values.push("pointer-subtract");
+    }
+    if Set.has(KernelAddress) {
+        Values.push("kernel-address");
+    }
+    if Set.has(HWAddress) {
+        Values.push("hwaddress");
+    }
+    if Set.has(KernelHWAddress) {
+        Values.push("kernel-hwaddress");
+    }
+    if Set.has(MemtagStack) {
+        Values.push("memtag-stack");
+    }
+    if Set.has(MemtagHeap) {
+        Values.push("memtag-heap");
+    }
+    if Set.has(MemtagGlobals) {
+        Values.push("memtag-globals");
+    }
+    if Set.has(Memory) {
+        Values.push("memory");
+    }
+    if Set.has(KernelMemory) {
+        Values.push("kernel-memory");
+    }
+    if Set.has(Fuzzer) {
+        Values.push("fuzzer");
+    }
+    if Set.has(FuzzerNoLink) {
+        Values.push("fuzzer-no-link");
+    }
+    if Set.has(Type) {
+        Values.push("type");
+    }
+    if Set.has(Thread) {
+        Values.push("thread");
+    }
+    if Set.has(NumericalStability) {
+        Values.push("numerical");
+    }
+    if Set.has(Realtime) {
+        Values.push("realtime");
+    }
+    if Set.has(Leak) {
+        Values.push("leak");
+    }
+    if Set.has(Alignment) {
+        Values.push("alignment");
+    }
+    if Set.has(ArrayBounds) {
+        Values.push("array-bounds");
+    }
+    if Set.has(Bool) {
+        Values.push("bool");
+    }
+    if Set.has(Builtin) {
+        Values.push("builtin");
+    }
+    if Set.has(Enum) {
+        Values.push("enum");
+    }
+    if Set.has(FloatCastOverflow) {
+        Values.push("float-cast-overflow");
+    }
+    if Set.has(FloatDivideByZero) {
+        Values.push("float-divide-by-zero");
+    }
+    if Set.has(Function) {
+        Values.push("function");
+    }
+    if Set.has(IntegerDivideByZero) {
+        Values.push("integer-divide-by-zero");
+    }
+    if Set.has(NonnullAttribute) {
+        Values.push("nonnull-attribute");
+    }
+    if Set.has(Null) {
+        Values.push("null");
+    }
+    if Set.has(NullabilityArg) {
+        Values.push("nullability-arg");
+    }
+    if Set.has(NullabilityAssign) {
+        Values.push("nullability-assign");
+    }
+    if Set.has(NullabilityReturn) {
+        Values.push("nullability-return");
+    }
+    if Set.has(ObjectSize) {
+        Values.push("object-size");
+    }
+    if Set.has(PointerOverflow) {
+        Values.push("pointer-overflow");
+    }
+    if Set.has(Return) {
+        Values.push("return");
+    }
+    if Set.has(ReturnsNonnullAttribute) {
+        Values.push("returns-nonnull-attribute");
+    }
+    if Set.has(ShiftBase) {
+        Values.push("shift-base");
+    }
+    if Set.has(ShiftExponent) {
+        Values.push("shift-exponent");
+    }
+    if Set.has(SignedIntegerOverflow) {
+        Values.push("signed-integer-overflow");
+    }
+    if Set.has(Unreachable) {
+        Values.push("unreachable");
+    }
+    if Set.has(VLABound) {
+        Values.push("vla-bound");
+    }
+    if Set.has(Vptr) {
+        Values.push("vptr");
+    }
+    if Set.has(UnsignedIntegerOverflow) {
+        Values.push("unsigned-integer-overflow");
+    }
+    if Set.has(UnsignedShiftBase) {
+        Values.push("unsigned-shift-base");
+    }
+    if Set.has(DataFlow) {
+        Values.push("dataflow");
+    }
+    if Set.has(CFICastStrict) {
+        Values.push("cfi-cast-strict");
+    }
+    if Set.has(CFIDerivedCast) {
+        Values.push("cfi-derived-cast");
+    }
+    if Set.has(CFIICall) {
+        Values.push("cfi-icall");
+    }
+    if Set.has(CFIMFCall) {
+        Values.push("cfi-mfcall");
+    }
+    if Set.has(CFIUnrelatedCast) {
+        Values.push("cfi-unrelated-cast");
+    }
+    if Set.has(CFINVCall) {
+        Values.push("cfi-nvcall");
+    }
+    if Set.has(CFIVCall) {
+        Values.push("cfi-vcall");
+    }
+    if Set.has(KCFI) {
+        Values.push("kcfi");
+    }
+    if Set.has(SafeStack) {
+        Values.push("safe-stack");
+    }
+    if Set.has(ShadowCallStack) {
+        Values.push("shadow-call-stack");
+    }
+    if Set.has(ImplicitUnsignedIntegerTruncation) {
+        Values.push("implicit-unsigned-integer-truncation");
+    }
+    if Set.has(ImplicitSignedIntegerTruncation) {
+        Values.push("implicit-signed-integer-truncation");
+    }
+    if Set.has(ImplicitIntegerSignChange) {
+        Values.push("implicit-integer-sign-change");
+    }
+    if Set.has(ImplicitBitfieldConversion) {
+        Values.push("implicit-bitfield-conversion");
+    }
+    if Set.has(ObjCCast) {
+        Values.push("objc-cast");
+    }
+    if Set.has(LocalBounds) {
+        Values.push("local-bounds");
+    }
+    if Set.has(Scudo) {
+        Values.push("scudo");
+    }
+    if Set.has(AllocToken) {
+        Values.push("alloc-token");
+    }
+}
+
+fn serializeSanitizerMaskCutoffs(Cutoffs: *SanitizerMaskCutoffs, Values: *mut string>) {
+    if Cutoffs[SO_Address] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "address=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_PointerCompare] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "pointer-compare=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_PointerSubtract] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "pointer-subtract=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_KernelAddress] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "kernel-address=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_HWAddress] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "hwaddress=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_KernelHWAddress] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "kernel-hwaddress=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_MemtagStack] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "memtag-stack=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_MemtagHeap] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "memtag-heap=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_MemtagGlobals] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "memtag-globals=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_Memory] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "memory=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_KernelMemory] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "kernel-memory=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_Fuzzer] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "fuzzer=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_FuzzerNoLink] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "fuzzer-no-link=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_Type] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "type=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_Thread] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "thread=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_NumericalStability] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "numerical=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_Realtime] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "realtime=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_Leak] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "leak=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_Alignment] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "alignment=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_ArrayBounds] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "array-bounds=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_Bool] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "bool=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_Builtin] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "builtin=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_Enum] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "enum=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_FloatCastOverflow] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "float-cast-overflow=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_FloatDivideByZero] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "float-divide-by-zero=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_Function] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "function=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_IntegerDivideByZero] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "integer-divide-by-zero=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_NonnullAttribute] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "nonnull-attribute=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_Null] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "null=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_NullabilityArg] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "nullability-arg=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_NullabilityAssign] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "nullability-assign=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_NullabilityReturn] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "nullability-return=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_ObjectSize] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "object-size=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_PointerOverflow] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "pointer-overflow=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_Return] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "return=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_ReturnsNonnullAttribute] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "returns-nonnull-attribute=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_ShiftBase] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "shift-base=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_ShiftExponent] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "shift-exponent=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_SignedIntegerOverflow] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "signed-integer-overflow=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_Unreachable] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "unreachable=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_VLABound] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "vla-bound=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_Vptr] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "vptr=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_UnsignedIntegerOverflow] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "unsigned-integer-overflow=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_UnsignedShiftBase] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "unsigned-shift-base=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_DataFlow] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "dataflow=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_CFICastStrict] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "cfi-cast-strict=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_CFIDerivedCast] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "cfi-derived-cast=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_CFIICall] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "cfi-icall=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_CFIMFCall] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "cfi-mfcall=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_CFIUnrelatedCast] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "cfi-unrelated-cast=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_CFINVCall] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "cfi-nvcall=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_CFIVCall] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "cfi-vcall=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_KCFI] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "kcfi=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_SafeStack] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "safe-stack=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_ShadowCallStack] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "shadow-call-stack=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_ImplicitUnsignedIntegerTruncation] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "implicit-unsigned-integer-truncation=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_ImplicitSignedIntegerTruncation] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "implicit-signed-integer-truncation=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_ImplicitIntegerSignChange] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "implicit-integer-sign-change=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_ImplicitBitfieldConversion] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "implicit-bitfield-conversion=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_ObjCCast] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "objc-cast=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_LocalBounds] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "local-bounds=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_Scudo] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "scudo=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+    if Cutoffs[SO_AllocToken] {
+        C;
+    } else {
+        let mut Str: str = "";
+        let mut OS: raw_string_ostream = Str;
+        OS << "alloc-token=" << format("%.8f", operator(C));
+        Values.emplace_back(Str.rtrim('0'));
+    }
+}
+
+fn expandSanitizerGroups(Kinds: SanitizerMask) -> SanitizerMask {
+    if Kinds & MemTagGroup {
+        operator(Kinds, MemTag);
+    }
+    if Kinds & NullabilityGroup {
+        operator(Kinds, Nullability);
+    }
+    if Kinds & ShiftGroup {
+        operator(Kinds, Shift);
+    }
+    if Kinds & CFIGroup {
+        operator(Kinds, CFI);
+    }
+    if Kinds & UndefinedGroup {
+        operator(Kinds, Undefined);
+    }
+    if Kinds & UndefinedTrapGroup {
+        operator(Kinds, UndefinedTrap);
+    }
+    if Kinds & ImplicitIntegerTruncationGroup {
+        operator(Kinds, ImplicitIntegerTruncation);
+    }
+    if Kinds & ImplicitIntegerArithmeticValueChangeGroup {
+        operator(Kinds, ImplicitIntegerArithmeticValueChange);
+    }
+    if Kinds & ImplicitIntegerConversionGroup {
+        operator(Kinds, ImplicitIntegerConversion);
+    }
+    if Kinds & ImplicitConversionGroup {
+        operator(Kinds, ImplicitConversion);
+    }
+    if Kinds & IntegerGroup {
+        operator(Kinds, Integer);
+    }
+    if Kinds & BoundsGroup {
+        operator(Kinds, Bounds);
+    }
+    if Kinds & AllGroup {
+        operator(Kinds, All);
+    }
+    return Kinds;
+}
+
+fn SanitizerMask::hash_value(self: *SanitizerMask) -> hash_code {
+    return hash_combine_range(&mut self.maskLoToHigh[0], &mut self.maskLoToHigh[kNumElem]);
+}
+
+fn SanitizerMask::countPopulation(self: *SanitizerMask) -> u32 {
+    let mut total: u32 = 0;
+    for Val in self.maskLoToHigh[..] {
+        total += popcount(Val);
+    }
+    return total;
+}
+
+fn hash_value(Arg: *SanitizerMask) -> hash_code {
+    return Arg.hash_value();
+}
+
+fn AsanDtorKindToString(kind: AsanDtorKind) -> str {
+    match kind {
+        None => {
+            return "none";
+        },
+        Global => {
+            return "global";
+        },
+        Invalid => {
+            return "invalid";
+        },
+    }
+    return "invalid";
+}
+
+fn AsanDtorKindFromString(kindStr: str) -> AsanDtorKind {
+    return kindStr.Case("none", None).Case("global", Global).Default(Invalid);
+}
+
+fn AsanDetectStackUseAfterReturnModeToString(mode: AsanDetectStackUseAfterReturnMode) -> str {
+    match mode {
+        Always => {
+            return "always";
+        },
+        Runtime => {
+            return "runtime";
+        },
+        Never => {
+            return "never";
+        },
+        Invalid => {
+            return "invalid";
+        },
+    }
+    return "invalid";
+}
+
+fn AsanDetectStackUseAfterReturnModeFromString(modeStr: str) -> AsanDetectStackUseAfterReturnMode {
+    return modeStr.Case("always", Always).Case("runtime", Runtime).Case("never", Never).Default(Invalid);
+}

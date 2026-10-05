@@ -1,0 +1,449 @@
+fn normalizeCacheKey(Path: *mut str, Storage: *mut string>) {
+    if Path.len > 1 && root_path(Path, native) != Path && is_separator(Path.back(), native) {
+        Path = Path.drop_back(1);
+    }
+    if is_style_windows(native) {
+        if Path.len > 1 && Path.back() == ':' && Path.equals_insensitive(root_name(Path, native)) {
+            Storage = Path + ".";
+            Path = operator(Storage);
+        }
+    }
+}
+
+fn FileManager::FileManager(self, FSO: *FileSystemOptions, FS: FileSystem>) {
+    if !self.FS {
+        self.FS = getRealFileSystem();
+    }
+}
+
+fn FileManager::setVirtualFileSystem(self, FS: FileSystem>) {
+    self.FS = move(FS);
+}
+
+fn FileManager::getVirtualFileSystemPtr(self: *FileManager) -> FileSystem> {
+    return self.FS;
+}
+
+fn FileManager::~FileManager(self) {}
+
+fn FileManager::getDirectoryFromFile(self, Filename: str, CacheFailure: bool) -> ErrorOr<DirectoryEntryRef> {
+    if Filename.is_empty() {
+        return make_error_code(no_such_file_or_directory);
+    }
+    if is_separator(Filename[Filename.len - 1], native) {
+        return make_error_code(is_a_directory);
+    }
+    let mut DirName: str = parent_path(Filename, native);
+    if DirName.is_empty() {
+        DirName = ".";
+    }
+    return self.getDirectoryRefImpl(DirName, CacheFailure);
+}
+
+fn FileManager::getRealDirEntry(self, Status: *Status) -> *mut *mut DirectoryEntry {
+    assert!(Status.isDirectory(), "The directory should exist!");
+    let mut UDE: *mut *mut DirectoryEntry = self.UniqueRealDirs[Status.getUniqueID()];
+    if !UDE {
+        UDE = DirectoryEntry {};
+    }
+    return UDE;
+}
+
+fn FileManager::addAncestorsAsVirtualDirs(self, Path: str) {
+    let mut DirName: str = parent_path(Path, native);
+    if DirName.is_empty() {
+        DirName = ".";
+    }
+    let mut Storage: string> = string> {};
+    let mut OriginalDirName: str = DirName;
+    normalizeCacheKey(DirName, Storage);
+    let mut NamedDirEnt: *mut DirectoryEntry &>> = operator(self.SeenDirEntries.insert(DirectoryEntry &>> { DirName, no_such_file_or_directory }).first);
+    if NamedDirEnt.second {
+        return;
+    }
+    let mut Status: Status = Status {};
+    let mut statError: error_code = self.getStatValue(DirName, Status, false, null, true);
+    if statError {
+        let mut UDE: *mut DirectoryEntry = DirectoryEntry {};
+        NamedDirEnt.second = DirectoryEntry &> { *UDE, null };
+        self.VirtualDirectoryEntries.push(UDE);
+    } else {
+        let mut UDE: *mut *mut DirectoryEntry = self.getRealDirEntry(Status);
+        NamedDirEnt.second = DirectoryEntry &> { *UDE, null };
+    }
+    self.addAncestorsAsVirtualDirs(OriginalDirName);
+}
+
+fn FileManager::getDirectoryRefImpl(self, DirName: str, CacheFailure: bool) -> ErrorOr<DirectoryEntryRef> {
+    let mut DirNameStr: string> = string> {};
+    normalizeCacheKey(DirName, DirNameStr);
+    self.NumDirLookups += 1;
+    let mut SeenDirInsertResult: pair<iterator, bool> = self.SeenDirEntries.insert(DirectoryEntry &>> { DirName, no_such_file_or_directory });
+    if !SeenDirInsertResult.second {
+        if operator(SeenDirInsertResult.first).second {
+            return ErrorOr<DirectoryEntryRef> { operator(SeenDirInsertResult.first), null };
+        }
+        return operator(SeenDirInsertResult.first).second.getError();
+    }
+    self.NumDirCacheMisses += 1;
+    let mut NamedDirEnt: *mut DirectoryEntry &>> = operator(SeenDirInsertResult.first);
+    assert!(!NamedDirEnt.second, "should be newly-created");
+    let mut InterndDirName: str = NamedDirEnt.first();
+    let mut Status: Status = Status {};
+    let mut statError: error_code = self.getStatValue(InterndDirName, Status, false, null, true);
+    if statError {
+        if CacheFailure {
+            NamedDirEnt.second = statError;
+        } else {
+            self.SeenDirEntries.erase(DirName);
+        }
+        return statError;
+    }
+    let mut UDE: *mut *mut DirectoryEntry = self.getRealDirEntry(Status);
+    NamedDirEnt.second = DirectoryEntry &> { *UDE, null };
+    return ErrorOr<DirectoryEntryRef> { NamedDirEnt, null };
+}
+
+fn FileManager::getFileRefImpl(self, Filename: str, openFile: bool, CacheFailure: bool, IsText: bool) -> ErrorOr<FileEntryRef> {
+    self.NumFileLookups += 1;
+    let mut SeenFileInsertResult: pair<iterator, bool> = self.SeenFileEntries.insert(MapValue>> { Filename, no_such_file_or_directory });
+    if !SeenFileInsertResult.second {
+        if !operator(SeenFileInsertResult.first).second {
+            return operator(SeenFileInsertResult.first).second.getError();
+        }
+        return ErrorOr<FileEntryRef> { operator(SeenFileInsertResult.first), null };
+    }
+    self.NumFileCacheMisses += 1;
+    let mut NamedFileEnt: *mut MapValue>> = &mut operator(SeenFileInsertResult.first);
+    assert!(!NamedFileEnt.second, "should be newly-created");
+    let mut InterndFileName: str = NamedFileEnt.first();
+    let mut DirInfoOrErr: ErrorOr<DirectoryEntryRef> = self.getDirectoryFromFile(Filename, CacheFailure);
+    if !DirInfoOrErr {
+        let mut Err: error_code = DirInfoOrErr.getError();
+        if CacheFailure {
+            NamedFileEnt.second = Err;
+        } else {
+            self.SeenFileEntries.erase(Filename);
+        }
+        return Err;
+    }
+    let mut DirInfo: DirectoryEntryRef = operator(DirInfoOrErr);
+    let mut F: File> = File> {};
+    let mut Status: Status = Status {};
+    let mut statError: error_code = self.getStatValue(InterndFileName, Status, true, if openFile { &mut F } else { null }, IsText);
+    if statError {
+        if CacheFailure {
+            NamedFileEnt.second = statError;
+        } else {
+            self.SeenFileEntries.erase(Filename);
+        }
+        return statError;
+    }
+    assert!((openFile || !F), "undesired open file");
+    let mut UFE: *mut *mut FileEntry = self.UniqueRealFiles[Status.getUniqueID()];
+    let mut ReusingEntry: bool = UFE != null;
+    if !UFE {
+        UFE = FileEntry {};
+    }
+    if !Status.ExposesExternalVFSPath || Status.getName() == Filename {
+        NamedFileEnt.second = MapValue> { MapValue { *UFE, DirInfo }, null };
+    } else {
+        let mut Redirection: *mut MapValue>> = operator(self.SeenFileEntries.insert(MapValue>> { Status.getName(), MapValue { *UFE, DirInfo } }).first);
+        assert!(isa(operator(Redirection.second).V), "filename redirected to a non-canonical filename?");
+        assert!(cast(operator(Redirection.second).V) == UFE, "filename from getStatValue() refers to wrong file");
+        NamedFileEnt.second = MapValue> { MapValue { Redirection, DirInfo }, null };
+    }
+    let mut ReturnedRef: FileEntryRef = *NamedFileEnt;
+    if ReusingEntry {
+        return ErrorOr<FileEntryRef> { ReturnedRef, null };
+    }
+    UFE.Size = Status.getSize();
+    UFE.ModTime = toTimeT(Status.getLastModificationTime());
+    UFE.Dir = &mut DirInfo.getDirEntry();
+    UFE.UID = self.NextFileUID += 1;
+    UFE.UniqueID = Status.getUniqueID();
+    UFE.IsNamedPipe = Status.getType() == fifo_file;
+    UFE.IsDeviceFile = Status.getType() == character_file;
+    UFE.File = move(F);
+    if UFE.File {
+        if operator(UFE.File).getName() {
+            PathName;
+        } else {
+            self.fillRealPathName(UFE, operator(PathName));
+        }
+    } else if !openFile {
+        self.fillRealPathName(UFE, InterndFileName);
+    }
+    return ErrorOr<FileEntryRef> { ReturnedRef, null };
+}
+
+fn FileManager::getSTDIN(self) -> Expected<FileEntryRef> {
+    if self.STDIN {
+        return Expected<FileEntryRef> { operator(self.STDIN), null };
+    }
+    let mut ContentOrError: unique_ptr<MemoryBuffer>> = Closure_1 {}.call();
+    if !ContentOrError {
+        return createFileError("-", ContentOrError.getError());
+    }
+    let mut Content: MemoryBuffer>> &> = move(operator(ContentOrError));
+    self.STDIN = self.getVirtualFileRef(operator(Content).getBufferIdentifier(), operator(Content).getBufferSize(), 0);
+    let mut FE: *mut FileEntry = operator(self.STDIN).getFileEntry();
+    FE.Content = move(Content);
+    FE.IsNamedPipe = true;
+    return Expected<FileEntryRef> { operator(self.STDIN), null };
+}
+
+fn FileManager::trackVFSUsage(self, Active: bool) {
+    operator(self.FS).visit(VisitCallbackTy { Closure_2 { Active: Active }, null, null });
+}
+
+fn FileManager::getVirtualFileRef(self, Filename: str, Size: off_t, ModificationTime: time_t) -> FileEntryRef {
+    self.NumFileLookups += 1;
+    let mut NamedFileEnt: *mut MapValue>> = operator(self.SeenFileEntries.insert(MapValue>> { Filename, no_such_file_or_directory }).first);
+    if NamedFileEnt.second {
+        let mut Value: MapValue = operator(NamedFileEnt.second);
+        if __builtin_expect((isa(Value.V)) as bool, true) {
+            return NamedFileEnt;
+        }
+        return *cast(Value.V);
+    }
+    self.NumFileCacheMisses += 1;
+    self.addAncestorsAsVirtualDirs(Filename);
+    let mut UFE: *mut FileEntry = null;
+    let mut DirInfo: ErrorOr<DirectoryEntryRef> = self.getDirectoryFromFile(if Filename.is_empty() { "." } else { Filename }, true);
+    assert!(DirInfo, "The directory of a virtual file should already be in the cache.");
+    let mut Status: Status = Status {};
+    let mut InterndFileName: *u8 = NamedFileEnt.first().ptr;
+    if !self.getStatValue(InterndFileName, Status, true, null, true) {
+        Status = Status { Status.getName(), Status.getUniqueID(), toTimePoint(ModificationTime), Status.getUser(), Status.getGroup(), Size, Status.getType(), Status.getPermissions() };
+        let mut RealFE: *mut *mut FileEntry = self.UniqueRealFiles[Status.getUniqueID()];
+        if RealFE {
+            if RealFE.File {
+                RealFE.closeFile();
+            }
+            NamedFileEnt.second = MapValue> { MapValue { *RealFE, operator(DirInfo) }, null };
+            return NamedFileEnt;
+        }
+        RealFE = FileEntry {};
+        RealFE.UniqueID = Status.getUniqueID();
+        RealFE.IsNamedPipe = Status.getType() == fifo_file;
+        self.fillRealPathName(RealFE, Status.getName());
+        UFE = RealFE;
+    } else {
+        UFE = FileEntry {};
+        self.VirtualFileEntries.push(UFE);
+    }
+    NamedFileEnt.second = MapValue> { MapValue { *UFE, operator(DirInfo) }, null };
+    UFE.Size = Size;
+    UFE.ModTime = ModificationTime;
+    UFE.Dir = &mut operator(DirInfo).getDirEntry();
+    UFE.UID = self.NextFileUID += 1;
+    UFE.File.reset(null);
+    return NamedFileEnt;
+}
+
+fn FileManager::getBypassFile(self, VF: FileEntryRef) -> OptionalFileEntryRef {
+    let mut Status: Status = Status {};
+    if self.getStatValue(VF.getName(), Status, true, null, true) {
+        return nullopt;
+    }
+    if !self.SeenBypassFileEntries {
+        self.SeenBypassFileEntries = make_unique();
+    }
+    let mut Insertion: pair<iterator, bool> = operator(self.SeenBypassFileEntries).insert(MapValue>> { VF.getName(), no_such_file_or_directory });
+    if !Insertion.second {
+        return operator(Insertion.first);
+    }
+    let mut BFE: *mut FileEntry = FileEntry {};
+    self.BypassFileEntries.push(BFE);
+    operator(Insertion.first).second = MapValue> { MapValue { *BFE, VF.getDir() }, null };
+    BFE.Size = Status.getSize();
+    BFE.Dir = VF.getFileEntry().Dir;
+    BFE.ModTime = toTimeT(Status.getLastModificationTime());
+    BFE.UID = self.NextFileUID += 1;
+    return operator(Insertion.first);
+}
+
+fn FileManager::fixupRelativePath(self, FileSystemOpts: *FileSystemOptions, Path: *mut SmallVectorImpl<char>) -> bool {
+    let mut pathRef: str = Path.ptr[0..Path.len];
+    if FileSystemOpts.WorkingDir.is_empty() || is_absolute(pathRef, native) {
+        return false;
+    }
+    let mut NewPath: str = FileSystemOpts.WorkingDir;
+    append(NewPath, pathRef, "", "", "");
+    Path = move(NewPath);
+    return true;
+}
+
+fn FileManager::makeAbsolutePath(self: *FileManager, Path: *mut SmallVectorImpl<char>, Canonicalize: bool) -> bool {
+    let mut Changed: bool = self.FixupRelativePath(Path);
+    if !is_absolute(Path.ptr[0..Path.len], native) {
+        operator(self.FS).makeAbsolute(Path);
+        Changed = true;
+    }
+    if Canonicalize {
+        Changed |= remove_dots(Path, false, native);
+    }
+    return Changed;
+}
+
+fn FileManager::fillRealPathName(self, UFE: *mut FileEntry, FileName: str) {
+    let mut AbsPath: str = FileName;
+    self.makeAbsolutePath(AbsPath, false);
+    remove_dots(AbsPath, true, native);
+    UFE.RealPathName = AbsPath.operator basic_string();
+}
+
+fn FileManager::getBufferForFile(self, FE: FileEntryRef, isVolatile: bool, RequiresNullTerminator: bool, MaybeLimit: optional<int64_t>, IsText: bool) -> MemoryBuffer>> {
+    let mut Entry: *FileEntry = &mut FE.getFileEntry();
+    if Entry.Content {
+        return MemoryBuffer>> { getMemBuffer(operator(Entry.Content).getMemBufferRef(), true), null };
+    }
+    let mut FileSize: u64 = Entry.getSize();
+    if MaybeLimit {
+        FileSize = operator(MaybeLimit);
+    }
+    if isVolatile || Entry.isNamedPipe() {
+        FileSize = -1;
+    }
+    let mut Filename: str = FE.getName();
+    if Entry.File {
+        let mut Result: MemoryBuffer>> = operator(Entry.File).getBuffer(Filename, FileSize, RequiresNullTerminator, isVolatile);
+        Entry.closeFile();
+        return Result;
+    }
+    return self.getBufferForFileImpl(Filename, FileSize, isVolatile, RequiresNullTerminator, IsText);
+}
+
+fn FileManager::getBufferForFileImpl(self: *FileManager, Filename: str, FileSize: i64, isVolatile: bool, RequiresNullTerminator: bool, IsText: bool) -> MemoryBuffer>> {
+    if self.FileSystemOpts.WorkingDir.is_empty() {
+        return operator(self.FS).getBufferForFile(Filename, FileSize, RequiresNullTerminator, isVolatile, IsText);
+    }
+    let mut FilePath: str = Filename;
+    self.FixupRelativePath(FilePath);
+    return operator(self.FS).getBufferForFile(FilePath, FileSize, RequiresNullTerminator, isVolatile, IsText);
+}
+
+fn FileManager::getStatValue(self, Path: str, Status: *mut Status, isFile: bool, F: *mut File>, IsText: bool) -> error_code {
+    let mut FilePath: str = "";
+    if !self.FileSystemOpts.WorkingDir.is_empty() {
+        FilePath = Path;
+        self.FixupRelativePath(FilePath);
+        Path = FilePath.operator StringRef();
+    }
+    let mut isForDir: bool = !isFile;
+    let mut RetCode: error_code = error_code {};
+    if isForDir || !F {
+        let mut StatusOrErr: Status> = operator(self.FS).status(Path);
+        if !StatusOrErr {
+            RetCode = StatusOrErr.getError();
+        } else {
+            Status = operator(StatusOrErr);
+        }
+    } else {
+        let mut OwnedFile: unique_ptr<File>> = if IsText { operator(self.FS).openFileForRead(Path) } else { operator(self.FS).openFileForReadBinary(Path) };
+        if !OwnedFile {
+            RetCode = OwnedFile.getError();
+        } else {
+            let mut StatusOrErr: Status> = operator((operator(OwnedFile))).status();
+            if StatusOrErr {
+                Status = operator(StatusOrErr);
+                *F = move(operator(OwnedFile));
+            } else {
+                *F = null;
+                RetCode = StatusOrErr.getError();
+            }
+        }
+    }
+    if RetCode {
+        return RetCode;
+    }
+    if Status.isDirectory() != isForDir {
+        if F {
+            *F = null;
+        }
+        return make_error_code(if Status.isDirectory() { is_a_directory } else { not_a_directory });
+    }
+    return error_code {};
+}
+
+fn FileManager::getCanonicalName(self, Dir: DirectoryEntryRef) -> str {
+    return self.getCanonicalName(Dir.operator const clang::DirectoryEntry *(), Dir.getName());
+}
+
+fn FileManager::getCanonicalName(self, File: FileEntryRef) -> str {
+    return self.getCanonicalName(File.operator const clang::FileEntry *(), File.getName());
+}
+
+fn FileManager::getCanonicalName(self, Entry: *void, Name: str) -> str {
+    let mut Known: iterator = self.CanonicalNames.find(Entry);
+    if Known != self.CanonicalNames.end() {
+        return operator(Known).second;
+    }
+    let mut CanonicalName: str = Name;
+    let mut AbsPathBuf: str = "";
+    let mut RealPathBuf: str = "";
+    if !operator(self.FS).getRealPath(Name, RealPathBuf) {
+        if is_style_windows(native) {
+            AbsPathBuf = Name;
+            if !operator(self.FS).makeAbsolute(AbsPathBuf) {
+                if root_name(RealPathBuf.operator StringRef(), native) == root_name(AbsPathBuf.operator StringRef(), native) {
+                    CanonicalName = RealPathBuf.copy(self.CanonicalNameStorage);
+                } else {
+                    remove_dots(AbsPathBuf, true, native);
+                    CanonicalName = AbsPathBuf.copy(self.CanonicalNameStorage);
+                }
+            }
+        } else {
+            CanonicalName = RealPathBuf.copy(self.CanonicalNameStorage);
+        }
+    }
+    self.CanonicalNames.insert(StringRef> { Entry, CanonicalName });
+    return CanonicalName;
+}
+
+fn FileManager::AddStats(self, Other: *FileManager) {
+    assert!(&mut Other != self, "Collecting stats into the same FileManager");
+    self.NumDirLookups += Other.NumDirLookups;
+    self.NumFileLookups += Other.NumFileLookups;
+    self.NumDirCacheMisses += Other.NumDirCacheMisses;
+    self.NumFileCacheMisses += Other.NumFileCacheMisses;
+}
+
+fn FileManager::PrintStats(self: *FileManager) {
+    errs() << "\n*** File Manager Stats:\n";
+    errs() << self.UniqueRealFiles.len << " real files found, " << self.UniqueRealDirs.len << " real dirs found.\n";
+    errs() << self.VirtualFileEntries.len << " virtual files found, " << self.VirtualDirectoryEntries.len << " virtual dirs found.\n";
+    errs() << self.NumDirLookups << " dir lookups, " << self.NumDirCacheMisses << " dir cache misses.\n";
+    errs() << self.NumFileLookups << " file lookups, " << self.NumFileCacheMisses << " file cache misses.\n";
+    self.getVirtualFileSystem().visit(VisitCallbackTy { Closure_3 {}, null, null });
+}
+
+struct Closure_1 {}
+
+fn Closure_1::call(self: *mut Closure_1) -> auto {
+        let mut BypassSandbox: ScopedSetting = scopedDisable();
+        return getSTDIN();
+    }
+
+struct Closure_2 {
+    Active: bool,
+}
+
+fn Closure_2::call(self: *Closure_2, FileSys: *mut FileSystem) {
+        if dyn_cast(&mut FileSys) {
+            RFS;
+        } else {
+            RFS.setUsageTrackingActive(self.Active);
+        }
+    }
+
+struct Closure_3 {}
+
+fn Closure_3::call(self: *Closure_3, VFS: *mut FileSystem) {
+        if dyn_cast_or_null(&mut VFS) {
+            T;
+        } else {
+            errs() << "\n*** Virtual File System Stats:\n" << T.NumStatusCalls << " status() calls\n" << T.NumOpenFileForReadCalls << " openFileForRead() calls\n" << T.NumDirBeginCalls << " dir_begin() calls\n" << T.NumGetRealPathCalls << " getRealPath() calls\n" << T.NumExistsCalls << " exists() calls\n" << T.NumIsLocalCalls << " isLocal() calls\n";
+        }
+    }
