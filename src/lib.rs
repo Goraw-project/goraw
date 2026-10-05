@@ -19,3 +19,4 @@ pub mod llvm_to_goraw;
 pub mod opcodes;
 pub mod backend;
 pub mod linker;
+pub mod x86_codegen;

@@ -49,6 +49,9 @@ struct Options {
     from_cpp: Option<PathBuf>, // транслировать C++23 код (.cpp) обратно в Goraw (.gw)
     from_llvm: Option<PathBuf>, // транслировать LLVM IR (.ll) в Goraw (.gw)
     native_linker: bool, // автономный встроенный PE/COFF компоновщик
+    native_backend: bool, // автономный встроенный x86-64 кодогенератор
+    emit_asm: bool,      // сгенерировать x86-64 ассемблер (.asm, -S)
+    emit_obj: bool,      // скомпилировать только в объектный файл (.obj, -c)
 }
 
 pub fn main() {
@@ -956,6 +959,9 @@ fn print_help() {
     --target <triple> целевая платформа clang/LLVM (по умолчанию `x86_64-w64-windows-gnu`)\n\
     -O<n>            уровень оптимизации clang (напр. -O2, переопределяет профиль)\n\
     --keep-ll        не удалять промежуточный .ll при сборке .exe\n\
+    -S, --emit-asm   сгенерировать чистый x86-64 ассемблер (.asm)\n\
+    -c, --emit-obj   скомпилировать в COFF объектный файл (.obj)\n\
+    --native-backend, --self-hosted автономная сборка AST -> x86-64 machine code -> PE (без clang/LLVM)\n\
     --native-linker, --native-pe нативный встроенный PE/COFF компоновщик Goraw (без внешнего clang)\n\
     --clang <путь>   путь к clang (по умолчанию `clang` из PATH)\n\
     -h, --help       показать эту справку\n"
@@ -975,6 +981,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut emit_llvm = false;
     let mut emit_cpp = false;
     let mut emit_gw = false;
+    let mut emit_asm = false;
+    let mut emit_obj = false;
+    let mut native_backend = false;
     let mut emit_opcodes = false;
     let mut opcode_format = gorawc::opcodes::OpcodeFormat::Goraw;
     let mut json = false;
@@ -1041,6 +1050,12 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--shadow=strict" => shadow_strict = true,
             "--obfuscate-strings" | "--obf-strings" => obfuscate_strings = true,
             "--keep-ll" => keep_ll = true,
+            "-S" | "--emit-asm" => emit_asm = true,
+            "-c" | "--emit-obj" => emit_obj = true,
+            "--native-backend" | "--native-codegen" | "--self-hosted" => {
+                native_backend = true;
+                native_linker = true;
+            }
             "--native-linker" | "--native-pe" | "--native" => native_linker = true,
             "--no-native-linker" | "--clang-linker" => native_linker = false,
             "--clang" => {
@@ -1136,6 +1151,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         from_cpp,
         from_llvm,
         native_linker,
+        native_backend,
+        emit_asm,
+        emit_obj,
     })
 }
 
@@ -1245,7 +1263,7 @@ fn run(opts: Options) -> i32 {
                 }
                 eprintln!("собрано (нативный PE): `{}`", exe_path.display());
                 if opts.run || opts.test {
-                    let status = Command::new(&exe_path).status();
+                    let status = Command::new(ensure_runnable_path(&exe_path)).status();
                     match status {
                         Ok(s) => return s.code().unwrap_or(0),
                         Err(e) => {
@@ -1467,7 +1485,7 @@ fn run(opts: Options) -> i32 {
                 return status.code().unwrap_or(1);
             }
 
-            let mut run_cmd = Command::new(&exe_path);
+            let mut run_cmd = Command::new(ensure_runnable_path(&exe_path));
             let run_status = match run_cmd.status() {
                 Ok(s) => s,
                 Err(e) => {
@@ -1525,6 +1543,53 @@ fn run(opts: Options) -> i32 {
     if let Err(e) = std::fs::write(&ll_path, &ir) {
         eprintln!("не удалось записать `{}`: {e}", ll_path.display());
         return 2;
+    }
+
+    if opts.emit_asm {
+        match gorawc::x86_codegen::compile_program_to_asm(&prog) {
+            Ok(asm_text) => {
+                let asm_path = opts.output.clone().unwrap_or_else(|| ll_path.with_extension("asm"));
+                if asm_path.to_str() == Some("-") {
+                    print!("{asm_text}");
+                } else {
+                    if let Err(e) = std::fs::write(&asm_path, &asm_text) {
+                        eprintln!("не удалось записать `{}`: {e}", asm_path.display());
+                        return 2;
+                    }
+                    eprintln!("x86-64 ассемблер записан в `{}`", asm_path.display());
+                }
+                if !opts.keep_ll && !opts.emit_llvm {
+                    let _ = std::fs::remove_file(&ll_path);
+                }
+                return 0;
+            }
+            Err(e) => {
+                eprintln!("ошибка генерации x86-64 ассемблера: {e}");
+                return 1;
+            }
+        }
+    }
+
+    if opts.emit_obj {
+        let input_name = opts.input.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "main.gw".to_string());
+        match gorawc::x86_codegen::compile_program_to_obj(&prog, &input_name) {
+            Ok(obj_bytes) => {
+                let obj_path = opts.output.clone().unwrap_or_else(|| ll_path.with_extension("obj"));
+                if let Err(e) = std::fs::write(&obj_path, &obj_bytes) {
+                    eprintln!("не удалось записать `{}`: {e}", obj_path.display());
+                    return 2;
+                }
+                eprintln!("объектный файл COFF x86-64 записан в `{}`", obj_path.display());
+                if !opts.keep_ll && !opts.emit_llvm {
+                    let _ = std::fs::remove_file(&ll_path);
+                }
+                return 0;
+            }
+            Err(e) => {
+                eprintln!("ошибка компиляции объектного файла: {e}");
+                return 1;
+            }
+        }
     }
 
     if opts.emit_opcodes {
@@ -1639,23 +1704,56 @@ fn run(opts: Options) -> i32 {
         temp_c_objs.push(cpp_bc);
     }
 
-    // Если явно включен --native-linker или clang недоступен на Windows:
-    if opts.native_linker && opts.target.contains("windows") {
-        // Компилируем LLVM IR в объектный файл через clang -c, если clang есть
-        let ll_obj = ll_path.with_extension("obj");
-        let mut compile_cmd = Command::new(&opts.clang);
-        compile_cmd.arg(format!("--target={}", opts.target));
-        compile_cmd.arg(format!("-O{effective_opt}"));
-        compile_cmd.arg("-c").arg(&ll_path).arg("-o").arg(&ll_obj);
-        compile_cmd.arg("-Wno-override-module");
+    // Если явно включен --native-backend, --native-linker или clang недоступен на Windows:
+    if (opts.native_backend || opts.native_linker) && opts.target.contains("windows") {
+        let input_name = opts.input.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "main.gw".to_string());
+        let mut obj_bytes_list: Vec<Vec<u8>> = Vec::new();
+        let mut compiled_obj_ok = false;
 
-        let compile_ok = matches!(compile_cmd.status(), Ok(s) if s.success());
-
-        if compile_ok {
-            let mut obj_bytes_list: Vec<Vec<u8>> = Vec::new();
-            if let Ok(b) = std::fs::read(&ll_obj) {
-                obj_bytes_list.push(b);
+        if opts.native_backend {
+            // Прямая генерация COFF .obj через встроенный x86-64 backend без clang
+            match gorawc::x86_codegen::compile_program_to_obj(&prog, &input_name) {
+                Ok(bytes) => {
+                    obj_bytes_list.push(bytes);
+                    compiled_obj_ok = true;
+                }
+                Err(e) => {
+                    eprintln!("ошибка автономного x86-64 кодогенератора Goraw: {e}");
+                    return 1;
+                }
             }
+        } else {
+            // Компилируем LLVM IR в объектный файл через clang -c, если clang есть
+            let ll_obj = ll_path.with_extension("obj");
+            let mut compile_cmd = Command::new(&opts.clang);
+            compile_cmd.arg(format!("--target={}", opts.target));
+            compile_cmd.arg(format!("-O{effective_opt}"));
+            compile_cmd.arg("-c").arg(&ll_path).arg("-o").arg(&ll_obj);
+            compile_cmd.arg("-Wno-override-module");
+
+            if matches!(compile_cmd.status(), Ok(s) if s.success()) {
+                if let Ok(b) = std::fs::read(&ll_obj) {
+                    obj_bytes_list.push(b);
+                    compiled_obj_ok = true;
+                }
+                let _ = std::fs::remove_file(&ll_obj);
+            } else {
+                // Если clang не установлен на машине, автоматически переключаемся
+                // на встроенный автономный x86-64 backend Goraw!
+                match gorawc::x86_codegen::compile_program_to_obj(&prog, &input_name) {
+                    Ok(bytes) => {
+                        obj_bytes_list.push(bytes);
+                        compiled_obj_ok = true;
+                    }
+                    Err(e) => {
+                        eprintln!("ошибка сборки: Clang недоступен, а автономный x86-64 генератор сообщил: {e}");
+                        return 1;
+                    }
+                }
+            }
+        }
+
+        if compiled_obj_ok {
             for obj in &opts.extra_objects {
                 if let Ok(b) = std::fs::read(obj) {
                     obj_bytes_list.push(b);
@@ -1681,7 +1779,6 @@ fn run(opts: Options) -> i32 {
                     }
                     if !opts.keep_ll && !opts.emit_llvm {
                         let _ = std::fs::remove_file(&ll_path);
-                        let _ = std::fs::remove_file(&ll_obj);
                         if let Some(rt) = &jit_rt_path {
                             let _ = std::fs::remove_file(rt);
                         }
@@ -1689,14 +1786,19 @@ fn run(opts: Options) -> i32 {
                             let _ = std::fs::remove_file(obj);
                         }
                     }
+                    let backend_desc = if opts.native_backend {
+                        "native x86-64 backend + native PE linker"
+                    } else {
+                        "native PE linker"
+                    };
                     let profile_desc = match opts.profile {
-                        Profile::Release => "release [optimized + native PE linker]",
-                        Profile::Debug => "debug [native PE linker]",
+                        Profile::Release => format!("release [optimized + {backend_desc}]"),
+                        Profile::Debug => format!("debug [{backend_desc}]"),
                     };
                     eprintln!("собрано ({profile_desc}): `{}`", exe_path.display());
 
                     if opts.run || opts.test {
-                        let status = Command::new(&exe_path).status();
+                        let status = Command::new(ensure_runnable_path(&exe_path)).status();
                         match status {
                             Ok(s) => return s.code().unwrap_or(0),
                             Err(e) => {
@@ -1810,7 +1912,7 @@ fn run(opts: Options) -> i32 {
     eprintln!("собрано ({profile_desc}): `{}`", exe_path.display());
 
     if opts.run || opts.test {
-        let status = Command::new(&exe_path).status();
+        let status = Command::new(ensure_runnable_path(&exe_path)).status();
         match status {
             Ok(s) => return s.code().unwrap_or(0),
             Err(e) => {
@@ -2084,6 +2186,14 @@ fn scan_imports(src: &str) -> Vec<String> {
         }
     }
     out
+}
+
+fn ensure_runnable_path(p: &Path) -> PathBuf {
+    if p.is_relative() && p.parent().map_or(true, |parent| parent.as_os_str().is_empty()) {
+        Path::new(".").join(p)
+    } else {
+        p.to_path_buf()
+    }
 }
 
 fn output_paths(opts: &Options) -> (PathBuf, PathBuf) {
