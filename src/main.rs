@@ -731,7 +731,7 @@ fn handle_opcodes_subcommand(args: &[String]) -> i32 {
     let mut format = gorawc::opcodes::OpcodeFormat::Goraw;
     let mut func_filter: Option<String> = None;
     let mut opt_level = "2".to_string();
-    let mut target = "x86_64-w64-windows-gnu".to_string();
+    let mut target = if cfg!(windows) { "x86_64-pc-windows-msvc".to_string() } else { "x86_64-unknown-linux-gnu".to_string() };
     let mut clang: Option<String> = None;
 
     let mut i = 0;
@@ -984,8 +984,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut cpp_std = "c++23".to_string();
     let mut c_std = "c23".to_string();
     let mut profile = Profile::Debug;
-    let mut target = "x86_64-w64-windows-gnu".to_string();
-    let mut native_linker = false;
+    let mut target = if cfg!(windows) { "x86_64-pc-windows-msvc".to_string() } else { "x86_64-unknown-linux-gnu".to_string() };
+    let mut native_linker = cfg!(windows);
     let mut silent = std::env::var("GORAW_SILENT").map(|v| v == "1").unwrap_or(false)
         || std::env::var("GORAW_BOX_SILENT").map(|v| v == "1").unwrap_or(false)
         || std::env::var("SILENT").map(|v| v == "1").unwrap_or(false);
@@ -1037,6 +1037,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--obfuscate-strings" | "--obf-strings" => obfuscate_strings = true,
             "--keep-ll" => keep_ll = true,
             "--native-linker" | "--native-pe" | "--native" => native_linker = true,
+            "--no-native-linker" | "--clang-linker" => native_linker = false,
             "--clang" => {
                 i += 1;
                 clang = Some(args.get(i).ok_or("--clang требует аргумент")?.clone());
@@ -1690,7 +1691,8 @@ fn run(opts: Options) -> i32 {
                     return 0;
                 }
                 Err(e) => {
-                    eprintln!("ошибка встроенного PE компоновщика: {e}, возврат к внешнему clang...");
+                    eprintln!("ошибка встроенного PE компоновщика: {e}");
+                    return 1;
                 }
             }
         }

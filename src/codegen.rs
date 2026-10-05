@@ -136,7 +136,7 @@ impl<'a> Codegen<'a> {
             obfuscate_strings: false,
             obf_count: 0,
             has_obf_decrypt_runtime: false,
-            target_triple: "x86_64-w64-windows-gnu".to_string(),
+            target_triple: if cfg!(windows) { "x86_64-pc-windows-msvc".to_string() } else { "x86_64-unknown-linux-gnu".to_string() },
             test_mode: false,
             has_test_runner: false,
             cur_fn_is_main: false,

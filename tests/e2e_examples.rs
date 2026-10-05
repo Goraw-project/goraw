@@ -177,3 +177,151 @@ fn test_e2e_proto_compilation() {
     assert!(!diags.has_errors());
     assert!(!prog.structs.is_empty());
 }
+
+#[test]
+fn test_e2e_native_loop_and_gw_execution() {
+    let goraw_bin = env!("CARGO_BIN_EXE_goraw");
+    let examples_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let gw_path = examples_dir.join("native_loop_main.gw");
+    let asm_path = examples_dir.join("native_loop.asm");
+    assert!(gw_path.exists());
+    assert!(asm_path.exists());
+
+    let out_exe = std::env::temp_dir().join("goraw_e2e_loop_native.exe");
+
+    let output = Command::new(goraw_bin)
+        .arg(&gw_path)
+        .arg(&asm_path)
+        .arg("-o")
+        .arg(&out_exe)
+        .arg("--run")
+        .output()
+        .expect("вызов goraw");
+
+    if out_exe.exists() {
+        let _ = std::fs::remove_file(&out_exe);
+    }
+
+    assert!(output.status.success(), "компиляция/запуск native_loop завершились с ошибкой");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("goraw_sum_to_n(10) = 55"), "неверный вывод: {stdout}");
+    assert!(stdout.contains("goraw_sum_to_n(100) = 5050"), "неверный вывод: {stdout}");
+}
+
+#[test]
+fn test_e2e_native_mem_and_gw_execution() {
+    let goraw_bin = env!("CARGO_BIN_EXE_goraw");
+    let examples_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let gw_path = examples_dir.join("native_mem_main.gw");
+    let asm_path = examples_dir.join("native_mem.asm");
+    assert!(gw_path.exists());
+    assert!(asm_path.exists());
+
+    let out_exe = std::env::temp_dir().join("goraw_e2e_mem_native.exe");
+
+    let output = Command::new(goraw_bin)
+        .arg(&gw_path)
+        .arg(&asm_path)
+        .arg("-o")
+        .arg(&out_exe)
+        .arg("--run")
+        .output()
+        .expect("вызов goraw");
+
+    if out_exe.exists() {
+        let _ = std::fs::remove_file(&out_exe);
+    }
+
+    assert!(output.status.success(), "компиляция/запуск native_mem завершились с ошибкой");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("SUCCESS: native memory operands work end-to-end!"), "неверный вывод: {stdout}");
+}
+
+#[test]
+fn test_e2e_direct_ll_compilation_and_run() {
+    let goraw_bin = env!("CARGO_BIN_EXE_goraw");
+    let examples_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let math_gw = examples_dir.join("math.gw");
+    let temp_ll = std::env::temp_dir().join("goraw_e2e_direct.ll");
+    let out_exe = std::env::temp_dir().join("goraw_e2e_direct_ll.exe");
+
+    let status_gen = Command::new(goraw_bin)
+        .arg(&math_gw)
+        .arg("--emit-llvm")
+        .arg("-o")
+        .arg(&temp_ll)
+        .status()
+        .expect("генерация ll");
+    assert!(status_gen.success());
+
+    let output = Command::new(goraw_bin)
+        .arg(&temp_ll)
+        .arg("-o")
+        .arg(&out_exe)
+        .arg("--run")
+        .output()
+        .expect("компиляция ll через goraw");
+
+    let _ = std::fs::remove_file(&temp_ll);
+    if out_exe.exists() {
+        let _ = std::fs::remove_file(&out_exe);
+    }
+
+    assert!(output.status.success(), "прямая компиляция .ll завершилась ошибкой");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("hypot(3,4)      = 5.000000"), "неверный вывод: {stdout}");
+    assert!(stdout.contains("pow(2, 10)      = 1024.000000"), "неверный вывод: {stdout}");
+}
+
+#[test]
+fn test_e2e_direct_cpp_compilation_and_run() {
+    let goraw_bin = env!("CARGO_BIN_EXE_goraw");
+    let examples_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let math_cpp = examples_dir.join("math.cpp");
+    assert!(math_cpp.exists());
+
+    let out_exe = std::env::temp_dir().join("goraw_e2e_direct_cpp.exe");
+
+    let output = Command::new(goraw_bin)
+        .arg(&math_cpp)
+        .arg("-o")
+        .arg(&out_exe)
+        .arg("--run")
+        .output()
+        .expect("компиляция cpp через goraw");
+
+    if out_exe.exists() {
+        let _ = std::fs::remove_file(&out_exe);
+    }
+
+    assert!(output.status.success(), "прямая компиляция .cpp завершилась ошибкой");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("hypot(3,4)      = 5.000000"), "неверный вывод: {stdout}");
+    assert!(stdout.contains("pow(2, 10)      = 1024.000000"), "неверный вывод: {stdout}");
+}
+
+#[test]
+fn test_e2e_inline_c_and_cpp_blocks() {
+    let goraw_bin = env!("CARGO_BIN_EXE_goraw");
+    let examples_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let inline_gw = examples_dir.join("test_inline_c_cpp.gw");
+    assert!(inline_gw.exists());
+
+    let temp_ll = std::env::temp_dir().join("goraw_e2e_inline.ll");
+
+    let status = Command::new(goraw_bin)
+        .arg(&inline_gw)
+        .arg("--emit-llvm")
+        .arg("-o")
+        .arg(&temp_ll)
+        .status()
+        .expect("компиляция inline c/cpp");
+
+    assert!(status.success());
+    assert!(temp_ll.exists());
+    let ir = std::fs::read_to_string(&temp_ll).expect("чтение ll");
+    let _ = std::fs::remove_file(&temp_ll);
+
+    assert!(ir.contains("define "), "IR не содержит функций");
+    assert!(ir.contains("main"), "IR не содержит main");
+}

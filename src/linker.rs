@@ -87,6 +87,8 @@ pub fn link_coff_to_pe(obj_bytes_list: &[&[u8]], custom_entry: Option<&str>) -> 
     let mut needed_imports: Vec<ImportSymbol> = Vec::new();
     let mut unresolved_symbols: Vec<String> = Vec::new();
 
+    let mut obj_sec_offsets: Vec<HashMap<usize, (u8, u32)>> = Vec::new();
+
     // Проход 1: слияние секций и сбор символов из всех входных объектников
     for &obj_data in obj_bytes_list {
         let file = object::File::parse(obj_data)
@@ -134,6 +136,8 @@ pub fn link_coff_to_pe(obj_bytes_list: &[&[u8]], custom_entry: Option<&str>) -> 
                 }
             }
         }
+
+        obj_sec_offsets.push(sec_offsets);
     }
 
     // Проверяем точку входа
@@ -151,7 +155,16 @@ pub fn link_coff_to_pe(obj_bytes_list: &[&[u8]], custom_entry: Option<&str>) -> 
         return Err(format!("точка входа `{entry_name}` должна находиться в исполняемой секции .text"));
     }
 
-    // Собираем таблицу импортов для неразрешенных символов
+    // Стандартная переменная MSVC CRT для модулей с плавающей точкой
+    if unresolved_symbols.iter().any(|s| s == "_fltused" || s == "__fltused") {
+        if !global_symbols.contains_key("_fltused") {
+            let off = merged_data.len() as u32;
+            merged_data.extend_from_slice(&0x9876_i32.to_le_bytes());
+            global_symbols.insert("_fltused".into(), (2, off));
+            global_symbols.insert("__fltused".into(), (2, off));
+        }
+    }
+
     // Всегда гарантируем наличие ExitProcess из kernel32.dll для корректного выхода
     if !unresolved_symbols.iter().any(|s| s.contains("ExitProcess")) {
         unresolved_symbols.push("ExitProcess".into());
@@ -264,48 +277,117 @@ pub fn link_coff_to_pe(obj_bytes_list: &[&[u8]], custom_entry: Option<&str>) -> 
     let mut final_data = merged_data;
 
     // Проход 2: Применение релокаций во всех секциях
-    for &obj_data in obj_bytes_list {
+    for (obj_idx, &obj_data) in obj_bytes_list.iter().enumerate() {
         let file = object::File::parse(obj_data).unwrap();
+        let sec_offsets = &obj_sec_offsets[obj_idx];
         for sec in file.sections() {
-            let sec_name = sec.name().unwrap_or("");
+            let sec_idx = sec.index().0;
+            let (sec_id, base_off) = match sec_offsets.get(&sec_idx) {
+                Some(&info) => info,
+                None => continue,
+            };
+
             for (reloc_offset, reloc) in sec.relocations() {
-                let target_sym = match reloc.target() {
+                let target_rva = match reloc.target() {
                     RelocationTarget::Symbol(idx) => {
-                        match file.symbol_by_index(idx) {
-                            Ok(s) => s.name().unwrap_or("").to_string(),
+                        let sym = match file.symbol_by_index(idx) {
+                            Ok(s) => s,
                             Err(_) => continue,
+                        };
+                        let name = sym.name().unwrap_or("");
+                        if !name.is_empty()
+                            && name != ".text"
+                            && name != ".rdata"
+                            && name != ".rodata"
+                            && name != ".data"
+                            && !name.starts_with(".text$")
+                            && !name.starts_with(".rdata$")
+                            && !name.starts_with(".data$")
+                        {
+                            if let Some(&(s_id, s_off)) = global_symbols.get(name) {
+                                match s_id {
+                                    0 => text_rva + s_off,
+                                    1 => rdata_rva + idata_len + s_off,
+                                    2 => data_rva + s_off,
+                                    _ => 0,
+                                }
+                            } else if let Some(&iat_rva) = iat_offsets.get(name) {
+                                iat_rva
+                            } else if let Some(s_sec) = sym.section_index() {
+                                if let Some(&(t_id, t_base)) = sec_offsets.get(&s_sec.0) {
+                                    let sym_addr = t_base + sym.address() as u32;
+                                    match t_id {
+                                        0 => text_rva + code_shift + sym_addr,
+                                        1 => rdata_rva + idata_len + sym_addr,
+                                        2 => data_rva + sym_addr,
+                                        _ => 0,
+                                    }
+                                } else {
+                                    continue;
+                                }
+                            } else {
+                                continue;
+                            }
+                        } else if let Some(s_sec) = sym.section_index() {
+                            if let Some(&(t_id, t_base)) = sec_offsets.get(&s_sec.0) {
+                                let sym_addr = t_base + sym.address() as u32;
+                                match t_id {
+                                    0 => text_rva + code_shift + sym_addr,
+                                    1 => rdata_rva + idata_len + sym_addr,
+                                    2 => data_rva + sym_addr,
+                                    _ => 0,
+                                }
+                            } else {
+                                continue;
+                            }
+                        } else {
+                            continue;
+                        }
+                    }
+                    RelocationTarget::Section(s_sec) => {
+                        if let Some(&(t_id, t_base)) = sec_offsets.get(&s_sec.0) {
+                            match t_id {
+                                0 => text_rva + code_shift + t_base,
+                                1 => rdata_rva + idata_len + t_base,
+                                2 => data_rva + t_base,
+                                _ => 0,
+                            }
+                        } else {
+                            continue;
                         }
                     }
                     _ => continue,
                 };
 
-                let target_rva = if let Some(&(s_id, s_off)) = global_symbols.get(&target_sym) {
-                    match s_id {
-                        0 => text_rva + s_off,
-                        1 => rdata_rva + idata_len + s_off,
-                        2 => data_rva + s_off,
-                        _ => 0,
-                    }
-                } else if let Some(&iat_rva) = iat_offsets.get(&target_sym) {
-                    iat_rva
-                } else {
-                    continue;
-                };
-
                 // Применяем релокацию в зависимости от секции
-                if sec_name == ".text" || sec_name.starts_with(".text$") {
-                    let patch_pos = code_shift as usize + reloc_offset as usize;
+                if sec_id == 0 {
+                    // .text
+                    let patch_pos = code_shift as usize + base_off as usize + reloc_offset as usize;
                     if patch_pos + 4 <= final_text.len() {
                         let cur_disp = i32::from_le_bytes(final_text[patch_pos..patch_pos + 4].try_into().unwrap());
                         let cur_rva = text_rva + patch_pos as u32;
                         let new_disp = (target_rva as i32 + cur_disp) - (cur_rva as i32 + 4);
                         final_text[patch_pos..patch_pos + 4].copy_from_slice(&new_disp.to_le_bytes());
                     }
-                } else if sec_name == ".data" || sec_name.starts_with(".data$") {
-                    let patch_pos = reloc_offset as usize;
+                } else if sec_id == 1 {
+                    // .rdata
+                    let patch_pos = idata_len as usize + base_off as usize + reloc_offset as usize;
+                    if patch_pos + 8 <= final_rdata.len() {
+                        let cur_val = u64::from_le_bytes(final_rdata[patch_pos..patch_pos + 8].try_into().unwrap());
+                        let target_va = IMAGE_BASE + target_rva as u64 + cur_val;
+                        final_rdata[patch_pos..patch_pos + 8].copy_from_slice(&target_va.to_le_bytes());
+                    } else if patch_pos + 4 <= final_rdata.len() {
+                        final_rdata[patch_pos..patch_pos + 4].copy_from_slice(&target_rva.to_le_bytes());
+                    }
+                } else if sec_id == 2 {
+                    // .data
+                    let patch_pos = base_off as usize + reloc_offset as usize;
                     if patch_pos + 8 <= final_data.len() {
-                        let target_va = IMAGE_BASE + target_rva as u64;
+                        let cur_val = u64::from_le_bytes(final_data[patch_pos..patch_pos + 8].try_into().unwrap());
+                        let target_va = IMAGE_BASE + target_rva as u64 + cur_val;
                         final_data[patch_pos..patch_pos + 8].copy_from_slice(&target_va.to_le_bytes());
+                    } else if patch_pos + 4 <= final_data.len() {
+                        final_data[patch_pos..patch_pos + 4].copy_from_slice(&target_rva.to_le_bytes());
                     }
                 }
             }
@@ -503,6 +585,51 @@ main:
         #[cfg(not(target_os = "windows"))]
         {
             let _ = std::fs::remove_file(&test_exe);
+        }
+    }
+
+    #[test]
+    fn test_link_coff_to_pe_multi_object() {
+        let asm1 = "
+section .data
+global greeting
+greeting:
+    db \"Multi-Object Linking Success!\", 0
+";
+        let asm2 = "
+section .text
+extern puts
+extern greeting
+global main
+main:
+    sub rsp, 40
+    lea rcx, [rel greeting]
+    call puts
+    xor eax, eax
+    add rsp, 40
+    ret
+";
+        let (obj1_opt, d1) = crate::asm::assemble("obj1.asm", asm1);
+        assert!(!d1.has_errors(), "d1: {}", d1.render_human());
+        let (obj2_opt, d2) = crate::asm::assemble("obj2.asm", asm2);
+        assert!(!d2.has_errors(), "d2: {}", d2.render_human());
+
+        let obj1 = obj1_opt.unwrap();
+        let obj2 = obj2_opt.unwrap();
+
+        let exe_bytes = link_coff_to_pe(&[&obj2, &obj1], Some("main")).expect("линковка 2-х объектников");
+        assert!(exe_bytes.len() > 512);
+
+        #[cfg(target_os = "windows")]
+        {
+            let test_exe = std::env::current_dir().unwrap().join("test_multi_obj.exe");
+            std::fs::write(&test_exe, &exe_bytes).expect("запись");
+            let out = std::process::Command::new(&test_exe).output();
+            let _ = std::fs::remove_file(&test_exe);
+            let out = out.expect("запуск test_multi_obj");
+            assert_eq!(out.status.code(), Some(0));
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(stdout.contains("Multi-Object Linking Success!"));
         }
     }
 
