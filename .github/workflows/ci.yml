@@ -1,21 +1,29 @@
-name: Rust CI
+name: CI & Auto-Release
 
 on:
   push:
     branches: [ "main" ]
+    tags: [ "v*" ]
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  build-and-test:
     name: Build & Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        include:
+          - os: windows-latest
+            artifact_name: goraw-windows-x64
+            archive_name: goraw-windows-x64.zip
+          - os: ubuntu-latest
+            artifact_name: goraw-linux-x64
+            archive_name: goraw-linux-x64.tar.gz
 
     steps:
       - name: Checkout repository
@@ -35,8 +43,116 @@ jobs:
       - name: Cargo check
         run: cargo check --verbose
 
-      - name: Run tests
+      - name: Run unit and E2E tests
         run: cargo test --verbose
 
       - name: Build release binaries
         run: cargo build --release --verbose
+
+      - name: CLI E2E Verification (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = "target/release"
+          # 1. Сборка и запуск нативного asm без внешнего компилятора
+          & "$bin/gorawas.exe" examples/native_hello.asm -o target/ci_hello.exe
+          $output = & "./target/ci_hello.exe"
+          Write-Host "Native execution output: $output"
+          
+          # 2. Компиляция примеров в LLVM IR
+          & "$bin/goraw.exe" examples/math.gw --emit-llvm -o target/ci_math.ll
+          & "$bin/goraw.exe" examples/arrays.gw --emit-llvm -o target/ci_arrays.ll
+          
+          # 3. Трансляция Goraw в C++23
+          & "$bin/goraw.exe" examples/math.gw --emit-cpp -o target/ci_math.cpp
+          
+          # 4. Roundtrip: декомпиляция LLVM IR в Goraw и повторная компиляция в LLVM IR
+          & "$bin/goraw.exe" from-llvm target/ci_math.ll -o target/ci_math_from_ll.gw
+          & "$bin/goraw.exe" target/ci_math_from_ll.gw --emit-llvm -o target/ci_math_roundtrip.ll
+          
+          # 5. Компиляция Protobuf схемы в Goraw
+          & "$bin/goraw.exe" proto examples/proto/service_demo.proto -o target/ci_proto.gw
+
+      - name: CLI E2E Verification (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          bin="target/release"
+          # 1. Компиляция примеров в LLVM IR своими силами
+          $bin/goraw examples/math.gw --emit-llvm -o target/ci_math.ll
+          $bin/goraw examples/arrays.gw --emit-llvm -o target/ci_arrays.ll
+          
+          # 2. Трансляция Goraw в C++23
+          $bin/goraw examples/math.gw --emit-cpp -o target/ci_math.cpp
+          
+          # 3. Roundtrip: декомпиляция LLVM IR в Goraw и повторная компиляция в LLVM IR
+          $bin/goraw from-llvm target/ci_math.ll -o target/ci_math_from_ll.gw
+          $bin/goraw target/ci_math_from_ll.gw --emit-llvm -o target/ci_math_roundtrip.ll
+          
+          # 4. Компиляция Protobuf схемы в Goraw
+          $bin/goraw proto examples/proto/service_demo.proto -o target/ci_proto.gw
+
+      - name: Package Windows Artifacts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist/package -Force | Out-Null
+          Copy-Item target/release/goraw.exe dist/package/
+          Copy-Item target/release/gorawas.exe dist/package/
+          Copy-Item target/release/gorawpb.exe dist/package/
+          Copy-Item LICENSE dist/package/
+          Copy-Item README.md dist/package/
+          Compress-Archive -Path dist/package/* -DestinationPath dist/${{ matrix.archive_name }} -Force
+          $hash = (Get-FileHash dist/${{ matrix.archive_name }} -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.archive_name }}" | Out-File -Encoding ascii dist/${{ matrix.archive_name }}.sha256
+          Remove-Item dist/package -Recurse -Force
+
+      - name: Package Linux Artifacts
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p dist/package
+          cp target/release/goraw dist/package/
+          cp target/release/gorawas dist/package/
+          cp target/release/gorawpb dist/package/
+          cp LICENSE dist/package/
+          cp README.md dist/package/
+          tar -czvf dist/${{ matrix.archive_name }} -C dist/package .
+          cd dist
+          sha256sum ${{ matrix.archive_name }} > ${{ matrix.archive_name }}.sha256
+          rm -rf package
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: build-and-test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-all
+          merge-multiple: true
+
+      - name: Display downloaded files
+        run: ls -la dist-all/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-all/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true

@@ -1816,6 +1816,13 @@ impl<'a> GorawLifter<'a> {
             reg_to_var.insert(reg.clone(), candidate);
         }
 
+        // Синхронизируем имена alloca-переменных с гарантированно уникальными именами
+        for (reg, (vname, _)) in alloca_vars.iter_mut() {
+            if let Some(unique) = reg_to_var.get(reg) {
+                *vname = unique.clone();
+            }
+        }
+
         let fn_kw = if does_raw_deref { "unsafe fn" } else { "fn" };
         out.push_str(&format!("{fn_kw} {fname}({}){ret_part} {{\n", params_str.join(", ")));
 
