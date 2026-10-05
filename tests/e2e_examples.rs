@@ -483,3 +483,94 @@ fn test_e2e_full_cycle_transpilation_matrix() {
     assert!(stdout.contains("hypot(3,4)      = 5.000000"), "неверный вывод hypot: {stdout}");
     assert!(stdout.contains("pow(2, 10)      = 1024.000000"), "неверный вывод pow: {stdout}");
 }
+
+#[test]
+fn test_e2e_self_hosted_native_backend_full_pipeline() {
+    let goraw_bin = env!("CARGO_BIN_EXE_goraw");
+    let temp_dir = std::env::temp_dir().join("goraw_self_host_test");
+    let _ = std::fs::create_dir_all(&temp_dir);
+
+    let src_path = temp_dir.join("self_host_math.gw");
+    let asm_path = temp_dir.join("self_host_math.asm");
+    let obj_path = temp_dir.join("self_host_math.obj");
+    let exe_path = temp_dir.join("self_host_math.exe");
+
+    let gw_code = r#"
+extern fn printf(fmt: *u8, ...) -> i32;
+
+fn factorial(n: i64) -> i64 {
+    if n <= 1 {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}
+
+fn sum_squares(limit: i64) -> i64 {
+    let mut sum: i64 = 0;
+    for let mut i: i64 = 1; i <= limit; i += 1 {
+        sum += i * i;
+    }
+    return sum;
+}
+
+fn main() -> i32 {
+    let f = factorial(6);
+    let s = sum_squares(5);
+    printf("SelfHosted Goraw: fact(6)=%lld, sum_sq(5)=%lld\n", f, s);
+    return 0;
+}
+"#;
+    std::fs::write(&src_path, gw_code).expect("запись тестового исходника");
+
+    // 1. Тестируем -S (--emit-asm): прямая генерация чистого x86-64 ассемблера
+    let s_status = Command::new(goraw_bin)
+        .arg(&src_path)
+        .arg("-S")
+        .arg("-o")
+        .arg(&asm_path)
+        .status()
+        .expect("вызов goraw -S");
+    assert!(s_status.success(), "генерация ассемблера -S завершилась с ошибкой");
+    assert!(asm_path.exists(), "файл .asm не был создан");
+    let asm_content = std::fs::read_to_string(&asm_path).expect("чтение .asm");
+    assert!(asm_content.contains("factorial:"), "ассемблер не содержит функцию factorial");
+    assert!(asm_content.contains("sum_squares:"), "ассемблер не содержит функцию sum_squares");
+    assert!(asm_content.contains("main:"), "ассемблер не содержит функцию main");
+
+    // 2. Тестируем -c (--emit-obj): прямая компиляция в COFF .obj через встроенный ассемблер (без clang)
+    let c_status = Command::new(goraw_bin)
+        .arg(&src_path)
+        .arg("-c")
+        .arg("-o")
+        .arg(&obj_path)
+        .status()
+        .expect("вызов goraw -c");
+    assert!(c_status.success(), "компиляция объектника -c завершилась с ошибкой");
+    assert!(obj_path.exists(), "файл .obj не был создан");
+    let obj_bytes = std::fs::read(&obj_path).expect("чтение .obj");
+    assert!(obj_bytes.len() >= 20, "объектник слишком мал");
+    // COFF header: Machine = IMAGE_FILE_MACHINE_AMD64 (0x8664)
+    assert_eq!(&obj_bytes[0..2], &[0x64, 0x86], "неверная сигнатура COFF x86-64");
+
+    // 3. Тестируем полный автономный self-hosted цикл (--native-backend / --self-hosted + --run)
+    let run_res = Command::new(goraw_bin)
+        .arg(&src_path)
+        .arg("--native-backend")
+        .arg("-o")
+        .arg(&exe_path)
+        .arg("--run")
+        .output()
+        .expect("вызов goraw --native-backend --run");
+
+    // Очистка временных файлов
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&asm_path);
+    let _ = std::fs::remove_file(&obj_path);
+    if exe_path.exists() {
+        let _ = std::fs::remove_file(&exe_path);
+    }
+
+    assert!(run_res.status.success(), "автономный запуск завершился с ошибкой: {}", String::from_utf8_lossy(&run_res.stderr));
+    let stdout = String::from_utf8_lossy(&run_res.stdout);
+    assert!(stdout.contains("SelfHosted Goraw: fact(6)=720, sum_sq(5)=55"), "неверный вывод: {stdout}");
+}
