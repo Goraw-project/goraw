@@ -325,3 +325,161 @@ fn test_e2e_inline_c_and_cpp_blocks() {
     assert!(ir.contains("define "), "IR не содержит функций");
     assert!(ir.contains("main"), "IR не содержит main");
 }
+
+#[test]
+fn test_e2e_mixed_sources_compilation_and_execution() {
+    let goraw_bin = env!("CARGO_BIN_EXE_goraw");
+    let temp_dir = std::env::temp_dir();
+
+    let gw_file = temp_dir.join("mixed_main.gw");
+    let cpp_file = temp_dir.join("mixed_helper.cpp");
+    let cxx_file = temp_dir.join("mixed_extra.cxx");
+    let ll_file = temp_dir.join("mixed_helper.ll");
+    let hpp_file = temp_dir.join("mixed_header.hpp");
+    let asm_file = temp_dir.join("mixed_asm.asm");
+    let exe_file = temp_dir.join("mixed_mega_test.exe");
+
+    std::fs::write(&cpp_file, r#"
+extern "C" long long add_nums(long long a, long long b) {
+    return a + b;
+}
+"#).unwrap();
+
+    std::fs::write(&cxx_file, r#"
+extern "C" long long scale_nums(long long x) {
+    return x * 2;
+}
+"#).unwrap();
+
+    std::fs::write(&hpp_file, r#"
+#pragma once
+inline long long sub_nums(long long a, long long b) {
+    return a - b;
+}
+"#).unwrap();
+
+    std::fs::write(&ll_file, r#"
+define i64 @mul_nums(i64 %a, i64 %b) {
+    %res = mul i64 %a, %b
+    ret i64 %res
+}
+"#).unwrap();
+
+    std::fs::write(&asm_file, r#"
+section .text
+global bitwise_inv
+
+bitwise_inv:
+    mov rax, rcx
+    not rax
+    ret
+"#).unwrap();
+
+    std::fs::write(&gw_file, r#"
+extern fn printf(fmt: *u8, ...) -> i32;
+extern fn bitwise_inv(x: i64) -> i64;
+
+fn main() -> i32 {
+    let s: i64 = add_nums(15, 27);
+    let m: i64 = mul_nums(6, 7);
+    let sub: i64 = sub_nums(100, 58);
+    let sc: i64 = scale_nums(21);
+    let bw: i64 = bitwise_inv(-43);
+    printf("s=%lld, m=%lld, sub=%lld, sc=%lld, bw=%lld\n", s, m, sub, sc, bw);
+    return 0;
+}
+"#).unwrap();
+
+    let output = Command::new(goraw_bin)
+        .arg(&gw_file)
+        .arg(&cpp_file)
+        .arg(&cxx_file)
+        .arg(&ll_file)
+        .arg(&hpp_file)
+        .arg(&asm_file)
+        .arg("-o")
+        .arg(&exe_file)
+        .arg("--run")
+        .output()
+        .expect("сборка и запуск смешанного проекта");
+
+    let _ = std::fs::remove_file(&gw_file);
+    let _ = std::fs::remove_file(&cpp_file);
+    let _ = std::fs::remove_file(&cxx_file);
+    let _ = std::fs::remove_file(&ll_file);
+    let _ = std::fs::remove_file(&hpp_file);
+    let _ = std::fs::remove_file(&asm_file);
+    if exe_file.exists() {
+        let _ = std::fs::remove_file(&exe_file);
+    }
+
+    assert!(output.status.success(), "ошибка сборки/запуска: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("s=42, m=42, sub=42, sc=42, bw=42"), "неверный вывод смешанного проекта: {stdout}");
+}
+
+#[test]
+fn test_e2e_full_cycle_transpilation_matrix() {
+    let goraw_bin = env!("CARGO_BIN_EXE_goraw");
+    let examples_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let math_gw = examples_dir.join("math.gw");
+    let temp_dir = std::env::temp_dir();
+
+    let stage1_ll = temp_dir.join("matrix_s1.ll");
+    let stage2_cpp = temp_dir.join("matrix_s2.cpp");
+    let stage3_gw = temp_dir.join("matrix_s3.gw");
+    let stage4_cpp = temp_dir.join("matrix_s4.cpp");
+    let stage5_ll = temp_dir.join("matrix_s5.ll");
+    let stage6_gw = temp_dir.join("matrix_s6.gw");
+    let final_exe = temp_dir.join("matrix_final.exe");
+
+    // 1. gw -> ll
+    let s1 = Command::new(goraw_bin)
+        .arg(&math_gw).arg("--emit-llvm").arg("-o").arg(&stage1_ll).status().expect("s1");
+    assert!(s1.success());
+
+    // 2. ll -> cpp
+    let s2 = Command::new(goraw_bin)
+        .arg(&stage1_ll).arg("--emit-cpp").arg("-o").arg(&stage2_cpp).status().expect("s2");
+    assert!(s2.success());
+
+    // 3. cpp -> gw
+    let s3 = Command::new(goraw_bin)
+        .arg(&stage2_cpp).arg("--emit-gw").arg("-o").arg(&stage3_gw).status().expect("s3");
+    assert!(s3.success());
+
+    // 4. gw -> cpp
+    let s4 = Command::new(goraw_bin)
+        .arg(&stage3_gw).arg("--emit-cpp").arg("-o").arg(&stage4_cpp).status().expect("s4");
+    assert!(s4.success());
+
+    // 5. cpp -> ll
+    let s5 = Command::new(goraw_bin)
+        .arg(&stage4_cpp).arg("--emit-llvm").arg("-o").arg(&stage5_ll).status().expect("s5");
+    assert!(s5.success());
+
+    // 6. ll -> gw
+    let s6 = Command::new(goraw_bin)
+        .arg(&stage5_ll).arg("--emit-gw").arg("-o").arg(&stage6_gw).status().expect("s6");
+    assert!(s6.success());
+
+    // 7. Сборка и запуск финального результата после 6-шагового полного цикла транспиляции
+    let run_out = Command::new(goraw_bin)
+        .arg(&stage6_gw).arg("-o").arg(&final_exe).arg("--run").output().expect("final run");
+
+    // Очистка временных файлов
+    let _ = std::fs::remove_file(&stage1_ll);
+    let _ = std::fs::remove_file(&stage2_cpp);
+    let _ = std::fs::remove_file(&stage3_gw);
+    let _ = std::fs::remove_file(&stage4_cpp);
+    let _ = std::fs::remove_file(&stage5_ll);
+    let _ = std::fs::remove_file(&stage6_gw);
+    if final_exe.exists() {
+        let _ = std::fs::remove_file(&final_exe);
+    }
+
+    assert!(run_out.status.success(), "финальный запуск завершился с ошибкой: {}", String::from_utf8_lossy(&run_out.stderr));
+    let stdout = String::from_utf8_lossy(&run_out.stdout);
+    assert!(stdout.contains("hypot(3,4)      = 5.000000"), "неверный вывод hypot: {stdout}");
+    assert!(stdout.contains("pow(2, 10)      = 1024.000000"), "неверный вывод pow: {stdout}");
+}

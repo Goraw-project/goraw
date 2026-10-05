@@ -23,12 +23,14 @@ pub enum Profile {
 struct Options {
     input: Option<PathBuf>,
     bind_c: Option<PathBuf>,
+    extra_sources: Vec<PathBuf>,
     extra_objects: Vec<PathBuf>,
     extra_asms: Vec<PathBuf>,
     extra_protos: Vec<PathBuf>,
     output: Option<PathBuf>,
     emit_llvm: bool,   // остановиться на .ll
     emit_cpp: bool,    // транслировать в C++23 (.cpp)
+    emit_gw: bool,     // транслировать в Goraw (.gw)
     emit_opcodes: bool, // извлечь массив опкодов x86-64
     opcode_format: gorawc::opcodes::OpcodeFormat, // формат опкодов
     json: bool,        // диагностика в JSON
@@ -968,9 +970,11 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut extra_objects: Vec<PathBuf> = Vec::new();
     let mut extra_asms: Vec<PathBuf> = Vec::new();
     let mut extra_protos: Vec<PathBuf> = Vec::new();
+    let mut extra_sources: Vec<PathBuf> = Vec::new();
     let mut output = None;
     let mut emit_llvm = false;
     let mut emit_cpp = false;
+    let mut emit_gw = false;
     let mut emit_opcodes = false;
     let mut opcode_format = gorawc::opcodes::OpcodeFormat::Goraw;
     let mut json = false;
@@ -1022,6 +1026,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             }
             "--emit-llvm" => emit_llvm = true,
             "--emit-cpp" => emit_cpp = true,
+            "--emit-gw" | "--emit-goraw" => emit_gw = true,
             "--json" => json = true,
             "--run" => run = true,
             "--test" | "-t" | "test" => test = true,
@@ -1066,16 +1071,12 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                     extra_asms.push(p);
                 } else if ext == "proto" {
                     extra_protos.push(p);
-                } else if (ext == "cpp" || ext == "cc" || ext == "cxx") && input.is_none() && from_cpp.is_none() {
-                    input = Some(p);
-                } else if ext == "ll" && input.is_none() && from_llvm.is_none() {
-                    input = Some(p);
-                } else if ext == "obj" || ext == "o" || ext == "lib" || ext == "a" || ext == "ll" || ext == "bc" {
+                } else if ext == "obj" || ext == "o" || ext == "lib" || ext == "a" || ext == "bc" {
                     extra_objects.push(p);
                 } else if input.is_none() {
                     input = Some(p);
                 } else {
-                    return Err(format!("лишний аргумент `{s}`"));
+                    extra_sources.push(p);
                 }
             }
         }
@@ -1084,6 +1085,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
 
     if input.is_none() && !extra_asms.is_empty() {
         input = Some(extra_asms.remove(0));
+    }
+    if input.is_none() && !extra_sources.is_empty() {
+        input = Some(extra_sources.remove(0));
     }
 
     if input.is_none() && bind_c.is_none() && from_cpp.is_none() && from_llvm.is_none() {
@@ -1106,12 +1110,14 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     Ok(Options {
         input,
         bind_c,
+        extra_sources,
         extra_objects,
         extra_asms,
         extra_protos,
         output,
         emit_llvm,
         emit_cpp,
+        emit_gw,
         emit_opcodes,
         opcode_format,
         json,
@@ -1257,7 +1263,7 @@ fn run(opts: Options) -> i32 {
         }
     }
 
-    let (src, line_map) = if input_path.extension().map_or(false, |e| e == "ll") {
+    let (src, line_map) = if input_path.extension().map_or(false, |e| e == "ll") && opts.extra_sources.is_empty() && opts.extra_protos.is_empty() {
         let llvm_opts = gorawc::llvm_to_goraw::LlvmToGorawOptions::default();
         match gorawc::llvm_to_goraw::transpile_llvm_file(input_path, &llvm_opts) {
             Ok(code) => (code, Vec::new()),
@@ -1266,7 +1272,7 @@ fn run(opts: Options) -> i32 {
                 return 1;
             }
         }
-    } else if input_path.extension().map_or(false, |e| e == "cpp" || e == "cc" || e == "cxx") {
+    } else if input_path.extension().map_or(false, |e| e == "cpp" || e == "cc" || e == "cxx" || e == "hpp" || e == "h") && opts.extra_sources.is_empty() && opts.extra_protos.is_empty() {
         let cpp_opts = gorawc::cpp_to_goraw::CppToGorawOptions {
             clang_path: Some(opts.clang.clone()),
             cpp_std: Some(opts.cpp_std.clone()),
@@ -1281,7 +1287,7 @@ fn run(opts: Options) -> i32 {
             }
         }
     } else {
-        match gather_sources(input_path, &opts.extra_protos) {
+        match gather_sources(input_path, &opts.extra_sources, &opts.extra_protos, &opts.clang, &opts.target, &opts.cpp_std) {
             Ok(x) => x,
             Err(e) => {
                 eprintln!("{e}");
@@ -1290,6 +1296,20 @@ fn run(opts: Options) -> i32 {
         }
     };
     let file = input_path.display().to_string();
+    if opts.emit_gw {
+        if let Some(out) = &opts.output {
+            if let Err(e) = std::fs::write(out, &src) {
+                eprintln!("не удалось записать `{}`: {e}", out.display());
+                return 2;
+            }
+            eprintln!("Goraw код записан в `{}`", out.display());
+        } else if !opts.run && !opts.test {
+            print!("{src}");
+        }
+        if !opts.run && !opts.test && !opts.emit_cpp && !opts.emit_llvm {
+            return 0;
+        }
+    }
     let mut diags = diag::Diags::new(file.clone(), src.clone());
     diags.set_line_map(line_map.clone());
 
@@ -1629,10 +1649,7 @@ fn run(opts: Options) -> i32 {
         compile_cmd.arg("-c").arg(&ll_path).arg("-o").arg(&ll_obj);
         compile_cmd.arg("-Wno-override-module");
 
-        let compile_ok = match compile_cmd.status() {
-            Ok(s) if s.success() => true,
-            _ => false,
-        };
+        let compile_ok = matches!(compile_cmd.status(), Ok(s) if s.success());
 
         if compile_ok {
             let mut obj_bytes_list: Vec<Vec<u8>> = Vec::new();
@@ -1902,7 +1919,14 @@ fn integrate_tests_into_program(prog: &mut ast::Program) {
 /// Рекурсивно собирает главный файл, переданные .proto схемы и все импортируемые
 /// (`import "path";`, в т.ч. .gw, .proto, .h) в один объединённый источник + карту строк.
 /// Порядок: зависимости раньше импортёра; дубли включаются один раз.
-fn gather_sources(main: &Path, extra_protos: &[PathBuf]) -> Result<(String, Vec<(u32, String)>), String> {
+fn gather_sources(
+    main: &Path,
+    extra_sources: &[PathBuf],
+    extra_protos: &[PathBuf],
+    clang_path: &str,
+    target_triple: &str,
+    cpp_std: &str,
+) -> Result<(String, Vec<(u32, String)>), String> {
     use std::collections::HashSet;
     let mut order: Vec<(String, String)> = Vec::new(); // (отображаемый путь, src)
     let mut seen: HashSet<PathBuf> = HashSet::new();
@@ -1937,6 +1961,7 @@ fn gather_sources(main: &Path, extra_protos: &[PathBuf]) -> Result<(String, Vec<
         seen: &mut HashSet<PathBuf>,
         order: &mut Vec<(String, String)>,
         proto_prelude_emitted: &mut bool,
+        clang_path: &str,
     ) -> Result<(), String> {
         let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         if !seen.insert(canon.clone()) {
@@ -1952,7 +1977,7 @@ fn gather_sources(main: &Path, extra_protos: &[PathBuf]) -> Result<(String, Vec<
             };
             let resolved_str = resolved.to_string_lossy().to_string();
             if resolved_str.ends_with(".h") || resolved_str.ends_with(".hpp") {
-                let bindings = gorawc::c_interop::generate_bindings_from_header(&resolved, "clang")
+                let bindings = gorawc::c_interop::generate_bindings_from_header(&resolved, clang_path)
                     .map_err(|e| format!("ошибка генерации биндингов из `{}`: {e}", resolved.display()))?;
                 order.push((resolved.display().to_string(), bindings));
             } else if resolved_str.ends_with(".proto") {
@@ -1976,14 +2001,51 @@ fn gather_sources(main: &Path, extra_protos: &[PathBuf]) -> Result<(String, Vec<
                     order.push((resolved.display().to_string(), code.unwrap_or_default()));
                 }
             } else {
-                visit(&resolved, seen, order, proto_prelude_emitted)?;
+                visit(&resolved, seen, order, proto_prelude_emitted, clang_path)?;
             }
         }
         order.push((path.display().to_string(), src));
         Ok(())
     }
 
-    visit(main, &mut seen, &mut order, &mut proto_prelude_emitted)?;
+    let ingest_file = |path: &Path, seen: &mut HashSet<PathBuf>, order: &mut Vec<(String, String)>, proto_prelude_emitted: &mut bool| -> Result<(), String> {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext == "ll" {
+            let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            if !seen.insert(canon) {
+                return Ok(());
+            }
+            let llvm_opts = gorawc::llvm_to_goraw::LlvmToGorawOptions::default();
+            let code = gorawc::llvm_to_goraw::transpile_llvm_file(path, &llvm_opts)
+                .map_err(|e| format!("ошибка обработки LLVM IR `{}`: {e}", path.display()))?;
+            order.push((path.display().to_string(), code));
+        } else if ext == "cpp" || ext == "cc" || ext == "cxx" || ext == "hpp" || ext == "h" {
+            let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            if !seen.insert(canon) {
+                return Ok(());
+            }
+            let cpp_opts = gorawc::cpp_to_goraw::CppToGorawOptions {
+                clang_path: Some(clang_path.to_string()),
+                cpp_std: Some(cpp_std.to_string()),
+                target_triple: Some(target_triple.to_string()),
+                extra_includes: Vec::new(),
+            };
+            let code = gorawc::cpp_to_goraw::transpile_cpp_file(path, &cpp_opts)
+                .map_err(|e| format!("ошибка обработки C/C++ `{}`: {e}", path.display()))?;
+            order.push((path.display().to_string(), code));
+        } else {
+            visit(path, seen, order, proto_prelude_emitted, clang_path)?;
+        }
+        Ok(())
+    };
+
+    // 2. Обрабатываем extra_sources (дополнительные модули любого типа)
+    for extra in extra_sources {
+        ingest_file(extra, &mut seen, &mut order, &mut proto_prelude_emitted)?;
+    }
+
+    // 3. Обрабатываем основной входной файл
+    ingest_file(main, &mut seen, &mut order, &mut proto_prelude_emitted)?;
 
     let mut combined = String::new();
     let mut map = Vec::new();

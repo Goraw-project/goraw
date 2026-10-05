@@ -344,7 +344,7 @@ fn collect_struct_signatures_recursive(
 ) {
     for node in nodes {
         let kind = node.get("kind").and_then(|k| k.as_str()).unwrap_or("");
-        if kind == "NamespaceDecl" {
+        if kind == "NamespaceDecl" || kind == "LinkageSpecDecl" || kind == "ExportDecl" {
             if let Some(inner) = node.get("inner").and_then(|i| i.as_array()) {
                 collect_struct_signatures_recursive(inner, input_filename, ctx, raw_fields, raw_field_types);
             }
@@ -477,7 +477,7 @@ fn lift_top_level_decl(node: &Value, ctx: &mut TranspilerContext) -> Option<Stri
         "CXXMethodDecl" | "CXXConstructorDecl" | "CXXDestructorDecl" => lift_out_of_line_method_decl(node, ctx),
         "FunctionTemplateDecl" => lift_function_template_decl(node, ctx),
         "VarDecl" => lift_global_var_decl(node, ctx),
-        "NamespaceDecl" => {
+        "NamespaceDecl" | "LinkageSpecDecl" | "ExportDecl" => {
             let mut parts = Vec::new();
             if let Some(inner) = node.get("inner").and_then(|i| i.as_array()) {
                 for child in inner {

@@ -706,7 +706,15 @@ pub fn generate_bindings_from_header(header_path: &Path, clang_path: &str) -> Re
     let header_src = std::fs::read_to_string(header_path)
         .map_err(|e| format!("не удалось прочитать `{}`: {e}", header_path.display()))?;
 
-    let fns = extract_functions_from_code(&header_src, false, None, clang_path)?;
+    let fns = match extract_functions_from_code(&header_src, false, None, clang_path) {
+        Ok(f) => f,
+        Err(_) => {
+            if let Ok(gw_code) = crate::cpp_to_goraw::transpile_cpp_source_standalone(&header_src) {
+                return Ok(gw_code);
+            }
+            Vec::new()
+        }
+    };
     let mut out = String::new();
     out.push_str(&format!("// Автоматические биндинги Goraw для `{}`\n\n", header_path.display()));
 
