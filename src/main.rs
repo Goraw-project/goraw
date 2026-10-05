@@ -1749,6 +1749,11 @@ fn run(opts: Options) -> i32 {
         cmd.arg("-lws2_32");
     }
 
+    let sdk = gorawc::c_interop::get_sdk_paths();
+    for lib_dir in &sdk.libs {
+        cmd.arg(format!("-L{}", lib_dir.display()));
+    }
+
     cmd.arg("-o").arg(&exe_path);
     // Подавляем предупреждение о переопределении triple (у нас он корректный).
     cmd.arg("-Wno-override-module");

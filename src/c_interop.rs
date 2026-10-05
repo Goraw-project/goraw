@@ -27,6 +27,32 @@ pub fn get_sdk_paths() -> &'static SdkPaths {
     SDK_CACHE.get_or_init(|| {
         let mut paths = SdkPaths::default();
 
+        // 0. Локальный автономный SDK компилятора Goraw (sdk/include, sdk/lib)
+        let candidate_roots = [
+            crate::backend::find_root_dir(),
+            std::env::current_dir().ok(),
+            std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf())),
+        ];
+        for root in candidate_roots.into_iter().flatten() {
+            let local_sdk = root.join("sdk");
+            let local_inc = local_sdk.join("include");
+            let local_lib = local_sdk.join("lib");
+            if local_inc.exists() && !paths.includes.contains(&local_inc) {
+                paths.includes.push(local_inc);
+            }
+            if local_lib.exists() && !paths.libs.contains(&local_lib) {
+                paths.libs.push(local_lib);
+            }
+            let mingw_inc = local_sdk.join("mingw").join("include");
+            let mingw_lib = local_sdk.join("mingw").join("lib");
+            if mingw_inc.exists() && !paths.includes.contains(&mingw_inc) {
+                paths.includes.push(mingw_inc);
+            }
+            if mingw_lib.exists() && !paths.libs.contains(&mingw_lib) {
+                paths.libs.push(mingw_lib);
+            }
+        }
+
         let pf = std::env::var("ProgramFiles").unwrap_or_else(|_| "C:\\Program Files".into());
         let pf86 = std::env::var("ProgramFiles(x86)").unwrap_or_else(|_| "C:\\Program Files (x86)".into());
 
