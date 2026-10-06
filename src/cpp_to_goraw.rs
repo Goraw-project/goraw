@@ -548,6 +548,20 @@ fn lift_out_of_line_method_decl(node: &Value, ctx: &mut TranspilerContext) -> Op
 }
 
 /// Маппинг типов C++ в типы Goraw.
+/// Первый аргумент шаблона на верхнем уровне (учёт вложенных `<>` и `()`).
+fn top_level_first_arg(inner: &str) -> &str {
+    let mut depth = 0i32;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth -= 1,
+            ',' if depth == 0 => return inner[..i].trim(),
+            _ => {}
+        }
+    }
+    inner.trim()
+}
+
 pub fn map_cpp_type(qual_type: &str, desugared: Option<&str>) -> String {
     let mut s = qual_type.trim();
 
@@ -632,10 +646,41 @@ pub fn map_cpp_type(qual_type: &str, desugared: Option<&str>) -> String {
         return "str".to_string();
     }
 
+    // Обобщённые контейнеры STL/LLVM -> ближайший тип Goraw (ради парсабельности;
+    // точная семантика — Фаза 2 с настоящими generics/stdlib).
+    if let Some(lt) = s.find('<') {
+        if s.ends_with('>') {
+            let base = s[..lt].rsplit("::").next().unwrap_or(&s[..lt]).trim();
+            let inner = &s[lt + 1..s.len() - 1];
+            let first = top_level_first_arg(inner);
+            match base {
+                "SmallVector" | "SmallVectorImpl" | "TinyPtrVector" | "ArrayRef"
+                | "MutableArrayRef" | "iterator_range" | "VectorType" | "PointerUnion" => {
+                    return format!("[]{}", map_cpp_type(first, None));
+                }
+                "unique_ptr" | "shared_ptr" | "OwningPtr" | "IntrusiveRefCntPtr"
+                | "AssertingVH" | "PoisoningVH" | "WeakTrackingVH" => {
+                    return format!("*mut {}", map_cpp_type(first, None));
+                }
+                "Optional" | "optional" | "Expected" | "ErrorOr" => {
+                    return map_cpp_type(first, None);
+                }
+                // Неизвестный шаблон (DenseMap, function, StringMap, set, ...) -> непрозрачный указатель.
+                _ => return "*mut u8".to_string(),
+            }
+        }
+    }
+
     // Примитивные типы
     match s {
         "int" | "signed int" | "int32_t" => "i32".to_string(),
-        "unsigned int" | "uint32_t" => "u32".to_string(),
+        "unsigned" | "unsigned int" | "uint32_t" => "u32".to_string(),
+        "signed" => "i32".to_string(),
+        "long double" => "f64".to_string(),
+        "wchar_t" | "char16_t" => "u16".to_string(),
+        "char32_t" | "char8_t" => "u32".to_string(),
+        "__int64" => "i64".to_string(),
+        "unsigned __int64" => "u64".to_string(),
         "long long" | "signed long long" | "int64_t" | "long int" | "ssize_t" | "intptr_t" | "long" => "i64".to_string(),
         "unsigned long long" | "uint64_t" | "size_t" | "__size_t" | "uintptr_t" | "unsigned long" => "u64".to_string(),
         "short" | "signed short" | "int16_t" => "i16".to_string(),

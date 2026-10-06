@@ -397,7 +397,20 @@ impl<'a> Lexer<'a> {
                     Some('n') => s.push('\n'),
                     Some('t') => s.push('\t'),
                     Some('r') => s.push('\r'),
-                    Some('0') => s.push('\0'),
+                    // Восьмеричный escape C: `\0`, `\3`, `\033`, `\123` (1–3 цифры 0-7).
+                    Some(d0 @ '0'..='7') => {
+                        let mut val = d0.to_digit(8).unwrap();
+                        for _ in 0..2 {
+                            match self.peek() {
+                                Some(c) if ('0'..='7').contains(&c) => {
+                                    val = val * 8 + c.to_digit(8).unwrap();
+                                    self.bump();
+                                }
+                                _ => break,
+                            }
+                        }
+                        s.push((val as u8) as char);
+                    }
                     Some('v') => s.push('\x0b'),
                     Some('a') => s.push('\x07'),
                     Some('b') => s.push('\x08'),
@@ -447,7 +460,19 @@ impl<'a> Lexer<'a> {
                 Some('n') => '\n' as u32 as i64,
                 Some('t') => '\t' as u32 as i64,
                 Some('r') => '\r' as u32 as i64,
-                Some('0') => '\0' as u32 as i64,
+                Some(d0 @ '0'..='7') => {
+                    let mut val = d0.to_digit(8).unwrap();
+                    for _ in 0..2 {
+                        match self.peek() {
+                            Some(c) if ('0'..='7').contains(&c) => {
+                                val = val * 8 + c.to_digit(8).unwrap();
+                                self.bump();
+                            }
+                            _ => break,
+                        }
+                    }
+                    val as i64
+                }
                 Some('v') => '\x0b' as u32 as i64,
                 Some('a') => '\x07' as u32 as i64,
                 Some('b') => '\x08' as u32 as i64,
