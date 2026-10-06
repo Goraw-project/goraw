@@ -36,6 +36,18 @@ pub struct TranspilerContext<'a> {
     pub current_lambda_captures: HashMap<String, bool>,
     pub id_to_struct_name: HashMap<String, String>,
     pub current_ref_params: HashSet<String>,
+    /// Режим генерации общего модуля типов: эмитим struct/enum-определения из
+    /// заголовков (не только из главного .cpp). Включается GORAW_EMIT_ALL_TYPES.
+    pub emit_all_types: bool,
+}
+
+/// Является ли декларация определением типа или namespace (для рекурсии в all-types).
+fn is_type_or_ns_decl(kind: &str) -> bool {
+    matches!(
+        kind,
+        "CXXRecordDecl" | "RecordDecl" | "EnumDecl" | "ClassTemplateDecl"
+            | "NamespaceDecl" | "LinkageSpecDecl" | "ExportDecl"
+    )
 }
 
 impl<'a> TranspilerContext<'a> {
@@ -48,6 +60,7 @@ impl<'a> TranspilerContext<'a> {
             struct_bases: HashMap::new(),
             struct_methods: HashMap::new(),
             id_to_struct_name: HashMap::new(),
+            emit_all_types: std::env::var("GORAW_EMIT_ALL_TYPES").is_ok(),
             defined_functions: HashSet::new(),
             current_struct: None,
             current_method_is_const: false,
@@ -201,7 +214,10 @@ pub fn transpile_cpp_ast(root: &Value, input_filename: &str) -> Result<String, S
     let mut top_level_code = Vec::new();
 
     for decl in inner {
-        if !is_from_input_file(decl, input_filename) {
+        let dkind = decl.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+        if !is_from_input_file(decl, input_filename)
+            && !(ctx.emit_all_types && is_type_or_ns_decl(dkind))
+        {
             continue;
         }
 
@@ -508,7 +524,10 @@ fn lift_top_level_decl(node: &Value, ctx: &mut TranspilerContext) -> Option<Stri
             let mut parts = Vec::new();
             if let Some(inner) = node.get("inner").and_then(|i| i.as_array()) {
                 for child in inner {
-                    if is_from_input_file(child, ctx.input_filename) {
+                    let ckind = child.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+                    if is_from_input_file(child, ctx.input_filename)
+                        || (ctx.emit_all_types && is_type_or_ns_decl(ckind))
+                    {
                         if let Some(c) = lift_top_level_decl(child, ctx) {
                             parts.push(c);
                         }
@@ -873,7 +892,9 @@ fn lift_record_decl(node: &Value, ctx: &mut TranspilerContext) -> Option<String>
     }
     out.push('}');
 
-    if !methods.is_empty() {
+    // В режиме модуля типов эмитим только раскладку полей — методы (с телами)
+    // определены в .cpp-переводах; их тела здесь лишь плодят ошибки.
+    if !methods.is_empty() && !ctx.emit_all_types {
         out.push_str("\n\n");
         out.push_str(&methods.join("\n\n"));
     }
