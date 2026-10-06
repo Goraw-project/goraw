@@ -548,6 +548,51 @@ fn lift_out_of_line_method_decl(node: &Value, ctx: &mut TranspilerContext) -> Op
 }
 
 /// Маппинг типов C++ в типы Goraw.
+/// Приводит произвольную строку к валидному идентификатору Goraw (alnum/_).
+fn sanitize_ident_chars(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            out.push(c);
+        } else if !out.is_empty() && !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    let t = out.trim_matches('_').to_string();
+    if t.is_empty() { "conv".to_string() } else { t }
+}
+
+/// Имя C++-метода -> валидный идентификатор Goraw: деструкторы -> `drop`,
+/// `operator X` -> `op_*`/`to_bool`/conversion. Обычные имена не трогаем.
+fn sanitize_member_name(name: &str) -> String {
+    if name.starts_with('~') {
+        return "drop".to_string();
+    }
+    if let Some(op) = name.strip_prefix("operator") {
+        let op = op.trim();
+        let mapped = match op {
+            "==" => "op_eq", "!=" => "op_ne", "<" => "op_lt", "<=" => "op_le",
+            ">" => "op_gt", ">=" => "op_ge", "<=>" => "op_cmp",
+            "+" => "op_add", "-" => "op_sub", "*" => "op_mul", "/" => "op_div", "%" => "op_rem",
+            "+=" => "op_add_assign", "-=" => "op_sub_assign", "*=" => "op_mul_assign",
+            "/=" => "op_div_assign", "%=" => "op_rem_assign",
+            "&" => "op_bitand", "|" => "op_bitor", "^" => "op_bitxor",
+            "&=" => "op_bitand_assign", "|=" => "op_bitor_assign", "^=" => "op_bitxor_assign",
+            "<<" => "op_shl", ">>" => "op_shr", "<<=" => "op_shl_assign", ">>=" => "op_shr_assign",
+            "&&" => "op_and", "||" => "op_or", "!" => "op_not", "~" => "op_bitnot",
+            "()" => "op_call", "[]" => "op_index", "->" => "op_arrow", "->*" => "op_arrow_star",
+            "=" => "op_assign", "++" => "op_inc", "--" => "op_dec", "," => "op_comma",
+            "bool" => "to_bool",
+            "new" => "op_new", "new[]" => "op_new_array",
+            "delete" => "op_delete", "delete[]" => "op_delete_array",
+            // operator T (пользовательское приведение) и нестандартные
+            _ => return format!("op_{}", sanitize_ident_chars(op)),
+        };
+        return mapped.to_string();
+    }
+    name.to_string()
+}
+
 /// Первый аргумент шаблона на верхнем уровне (учёт вложенных `<>` и `()`).
 fn top_level_first_arg(inner: &str) -> &str {
     let mut depth = 0i32;
@@ -925,8 +970,9 @@ fn lift_method_decl(node: &Value, struct_name: &str, ctx: &mut TranspilerContext
         return None; // метод без тела в хедере
     };
 
+    let safe_method = sanitize_member_name(method_name);
     Some(format!(
-        "fn {struct_name}::{method_name}({}){ret_suffix} {body_str}",
+        "fn {struct_name}::{safe_method}({}){ret_suffix} {body_str}",
         params.join(", ")
     ))
 }
@@ -2258,8 +2304,10 @@ fn lift_cxx_member_call_expr(node: &Value, ctx: &mut TranspilerContext) -> Strin
         .filter(|s| !s.trim().is_empty())
         .collect();
 
-    // Специальные методы векторов / контейнеров / строк (общий рендерер)
-    render_member_call(&receiver_str, method_name, &args)
+    // Специальные методы векторов / контейнеров / строк (общий рендерер).
+    // Имя приводим к валидному: `.operator==()`->`.op_eq()`, `.~Foo()`->`.drop()`.
+    let safe = sanitize_member_name(method_name);
+    render_member_call(&receiver_str, &safe, &args)
 }
 
 /// Перегруженные операторы CXXOperatorCallExpr (включая поток std::cout << x).
