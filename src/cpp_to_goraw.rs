@@ -39,6 +39,9 @@ pub struct TranspilerContext<'a> {
     /// Режим генерации общего модуля типов: эмитим struct/enum-определения из
     /// заголовков (не только из главного .cpp). Включается GORAW_EMIT_ALL_TYPES.
     pub emit_all_types: bool,
+    /// Уже эмитированные имена типов (struct/enum) — для дедупа одноимённых
+    /// типов из разных namespace (после стрипа квалификаторов они совпадают).
+    pub emitted_types: HashSet<String>,
 }
 
 /// Является ли декларация определением типа или namespace (для рекурсии в all-types).
@@ -61,6 +64,7 @@ impl<'a> TranspilerContext<'a> {
             struct_methods: HashMap::new(),
             id_to_struct_name: HashMap::new(),
             emit_all_types: std::env::var("GORAW_EMIT_ALL_TYPES").is_ok(),
+            emitted_types: HashSet::new(),
             defined_functions: HashSet::new(),
             current_struct: None,
             current_method_is_const: false,
@@ -770,6 +774,10 @@ pub fn map_cpp_type(qual_type: &str, desugared: Option<&str>) -> String {
         "double" => "f64".to_string(),
         "bool" | "_Bool" => "bool".to_string(),
         "void" => "void".to_string(),
+        // CRT/POSIX typedef'ы
+        "time_t" | "clock_t" | "_off_t" | "_off64_t" | "off_t" | "ptrdiff_t" | "intmax_t" => "i64".to_string(),
+        "_ino_t" | "ino_t" | "uintmax_t" | "uint_least64_t" => "u64".to_string(),
+        "_dev_t" | "dev_t" | "mode_t" | "errno_t" | "wint_t" | "char_type" => "u32".to_string(),
         other => {
             // Если desugared доступен и отличается, пробуем его
             if let Some(desug) = desugared {
@@ -780,9 +788,15 @@ pub fn map_cpp_type(qual_type: &str, desugared: Option<&str>) -> String {
                     }
                 }
             }
-            // Удаляем возможные пространства имён
+            // Системные/внутренние типы реализации (MSVC/CRT) -> непрозрачный байт.
+            if other.starts_with("__") || other.starts_with("_Compare") || other.starts_with("_Addr") {
+                return "u8".to_string();
+            }
+            // Срезаем namespace И перепроверяем остаток (std::size_t -> size_t -> u64).
             if let Some(last_col) = other.rfind("::") {
-                other[last_col + 2..].to_string()
+                let tail = &other[last_col + 2..];
+                let m = map_cpp_type(tail, None);
+                if m != tail { m } else { tail.to_string() }
             } else {
                 other.to_string()
             }
@@ -809,6 +823,10 @@ fn lift_record_decl(node: &Value, ctx: &mut TranspilerContext) -> Option<String>
 
     let name = node.get("name")?.as_str()?.to_string();
     if name.starts_with('_') || name == "GorawStr" {
+        return None;
+    }
+    // Дедуп: один и тот же тип могут определять разные namespace/файлы.
+    if !ctx.emitted_types.insert(name.clone()) {
         return None;
     }
 
@@ -1014,8 +1032,12 @@ fn lift_method_decl(node: &Value, struct_name: &str, ctx: &mut TranspilerContext
 }
 
 /// Трансляция EnumDecl.
-fn lift_enum_decl(node: &Value, _ctx: &mut TranspilerContext) -> Option<String> {
+fn lift_enum_decl(node: &Value, ctx: &mut TranspilerContext) -> Option<String> {
     let name = node.get("name")?.as_str()?;
+    // Дедуп одноимённых enum из разных namespace (как и для struct).
+    if !ctx.emitted_types.insert(name.to_string()) {
+        return None;
+    }
     let inner = node.get("inner").and_then(|i| i.as_array())?;
 
     let mut variants = Vec::new();
