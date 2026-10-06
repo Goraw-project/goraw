@@ -2691,9 +2691,19 @@ fn lift_init_list_or_construct(node: &Value, ctx: &mut TranspilerContext) -> Str
 
     let kind = node.get("kind").and_then(|k| k.as_str()).unwrap_or("");
     if kind == "CXXConstructExpr" {
-        // Копирование, перемещение или конвертация из 1 аргумента: std::string(a), ArrayRef(s)
+        // Копирование/конверсия из 1 аргумента: std::string(a), ArrayRef(s).
         if inner.len() == 1 {
-            return lift_expr(&inner[0], ctx);
+            let arg_ty = map_cpp_type(
+                inner[0].get("type").and_then(|t| t.get("qualType")).and_then(|q| q.as_str()).unwrap_or(""),
+                None,
+            );
+            // Шорткат уместен, если цель — не-структура/str, или тип аргумента совпал
+            // (copy-ctor). Иначе это настоящий конструктор структуры из другого типа
+            // (`TimeTraceScope("...")`) — в Goraw пока нет конструкторов -> zeroed().
+            if non_struct_default(&sname).is_some() || arg_ty == sname {
+                return lift_expr(&inner[0], ctx);
+            }
+            return "zeroed()".to_string();
         }
         if inner.is_empty() {
             if sname == "str" {
