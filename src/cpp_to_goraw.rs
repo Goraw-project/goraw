@@ -2538,6 +2538,21 @@ fn collect_ostream_args(node: &Value, args: &mut Vec<Value>) -> Option<String> {
 }
 
 /// Трансляция списков инициализации InitListExpr и конструкторов CXXConstructExpr.
+/// Валидное значение Goraw для НЕ-структурного типа (срез/указатель/примитив/str),
+/// иначе None — тогда уместен struct-литерал `Name { ... }`.
+fn non_struct_default(sname: &str) -> Option<String> {
+    if sname == "str" {
+        return Some("\"\"".to_string());
+    }
+    if sname.starts_with('*')
+        || sname.starts_with('[')
+        || matches!(sname, "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f32" | "f64" | "bool" | "void")
+    {
+        return Some(default_value_for_type(sname));
+    }
+    None
+}
+
 fn lift_init_list_or_construct(node: &Value, ctx: &mut TranspilerContext) -> String {
     let qual_type = node.get("type").and_then(|t| t.get("qualType")).and_then(|q| q.as_str()).unwrap_or("");
     let sname = map_cpp_type(qual_type, None);
@@ -2548,7 +2563,7 @@ fn lift_init_list_or_construct(node: &Value, ctx: &mut TranspilerContext) -> Str
             if sname == "str" {
                 return "\"\"".to_string();
             }
-            return format!("{sname} {{}}");
+            return non_struct_default(&sname).unwrap_or_else(|| format!("{sname} {{}}"));
         }
     };
 
@@ -2562,7 +2577,7 @@ fn lift_init_list_or_construct(node: &Value, ctx: &mut TranspilerContext) -> Str
             if sname == "str" {
                 return "\"\"".to_string();
             }
-            return format!("{sname} {{}}");
+            return non_struct_default(&sname).unwrap_or_else(|| format!("{sname} {{}}"));
         }
     }
 
@@ -2601,14 +2616,16 @@ fn lift_init_list_or_construct(node: &Value, ctx: &mut TranspilerContext) -> Str
         if sname == "str" {
             "\"\"".to_string()
         } else {
-            format!("{sname} {{}}")
+            non_struct_default(&sname).unwrap_or_else(|| format!("{sname} {{}}"))
         }
+    } else if sname == "str" {
+        values.join(" + ")
+    } else if ctx.struct_fields.contains_key(&sname) {
+        // struct без точного совпадения числа полей — всё же попытка литерала
+        format!("{sname} {{ {} }}", values.join(", "))
     } else {
-        if sname == "str" {
-            values.join(" + ")
-        } else {
-            format!("{sname} {{ {} }}", values.join(", "))
-        }
+        // не-структура с позиционными аргументами (opaque/контейнер) -> безопасно
+        "zeroed()".to_string()
     }
 }
 
