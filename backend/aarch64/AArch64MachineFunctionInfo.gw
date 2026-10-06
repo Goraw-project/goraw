@@ -14,7 +14,7 @@ fn AArch64FunctionInfo::initializeBaseYamlFields(self, YamlMFI: *AArch64Function
         self.HasRedZone = YamlMFI.HasRedZone;
     }
     if YamlMFI.StackSizeZPR || YamlMFI.StackSizePPR {
-        self.setStackSizeSVE(YamlMFI.StackSizeZPR, YamlMFI.StackSizePPR);
+        self.setStackSizeSVE(YamlMFI.StackSizeZPR.value_or(0), YamlMFI.StackSizePPR.value_or(0));
     }
     if YamlMFI.HasStackFrame {
         self.setHasStackFrame(operator(YamlMFI.HasStackFrame));
@@ -32,6 +32,7 @@ fn GetSignReturnAddress(F: *Function) -> SignReturnAddress {
         return None;
     }
     let mut Scope: str = F.getFnAttribute("sign-return-address").getValueAsString();
+    return Scope.Case("none", None).Case("non-leaf", NonLeaf).Case("all", All).operator llvm::SignReturnAddress();
 }
 
 fn ShouldSignWithBKey(F: *Function, STI: *AArch64Subtarget) -> bool {
@@ -58,8 +59,8 @@ fn hasELFSignedGOTHelper(F: *Function, STI: *AArch64Subtarget) -> bool {
         return false;
     }
     let mut M: *Module = F.getParent();
-    let mut Flag: *auto = extract_or_null(M.getModuleFlag("ptrauth-elf-got"));
-    if Flag() && () == 1 {
+    let mut Flag: *ConstantInt = extract_or_null(M.getModuleFlag("ptrauth-elf-got"));
+    if Flag && Flag.getZExtValue() == 1 {
         return true;
     }
     return false;
@@ -67,7 +68,7 @@ fn hasELFSignedGOTHelper(F: *Function, STI: *AArch64Subtarget) -> bool {
 
 fn AArch64FunctionInfo::AArch64FunctionInfo(self, F: *Function, STI: *AArch64Subtarget) {
     if F.hasFnAttribute(NoRedZone) {
-        self.HasRedZone;
+        self.HasRedZone = false;
     }
     self.SignCondition = GetSignReturnAddress(F);
     self.SignWithBKey = ShouldSignWithBKey(F, *STI);
@@ -79,8 +80,10 @@ fn AArch64FunctionInfo::AArch64FunctionInfo(self, F: *Function, STI: *AArch64Sub
     let mut ProbeSize: u64 = 4096;
     if F.hasFnAttribute("stack-probe-size") {
         ProbeSize = F.getFnAttributeAsParsedInteger("stack-probe-size", 0);
-    } else if  {
-        ProbeSize = ();
+    } else if extract_or_null(F.getParent().getModuleFlag("stack-probe-size")) {
+        PS;
+    } else {
+        ProbeSize = PS.getZExtValue();
     }
     assert!(ProbeSize > 0, "Invalid stack probe size");
     if STI.isTargetWindows() {
@@ -89,12 +92,14 @@ fn AArch64FunctionInfo::AArch64FunctionInfo(self, F: *Function, STI: *AArch64Sub
         }
     } else {
         let mut StackAlign: u64 = STI.getFrameLowering().getTransientStackAlign().value();
-        ProbeSize = max(StackAlign, ProbeSize & ~(StackAlign - 1));
+        ProbeSize = if StackAlign > ProbeSize & ~(StackAlign - 1) { StackAlign } else { ProbeSize & ~(StackAlign - 1) };
         let mut ProbeKind: str = "";
         if F.hasFnAttribute("probe-stack") {
             ProbeKind = F.getFnAttribute("probe-stack").getValueAsString();
-        } else if  {
-            ProbeKind = ();
+        } else if dyn_cast_or_null(F.getParent().getModuleFlag("probe-stack")) {
+            PS;
+        } else {
+            ProbeKind = PS.getString();
         }
         if ProbeKind.len {
             if ProbeKind != "inline-asm" {
@@ -105,12 +110,12 @@ fn AArch64FunctionInfo::AArch64FunctionInfo(self, F: *Function, STI: *AArch64Sub
     }
 }
 
-fn AArch64FunctionInfo::clone(self: *AArch64FunctionInfo, Allocator: *mut BumpPtrAllocator, DestMF: *mut MachineFunction, Src2DstMBB: i32) -> *mut MachineFunctionInfo {
-    return DestMF;
+fn AArch64FunctionInfo::clone(self: *AArch64FunctionInfo, Allocator: *mut BumpPtrAllocator, DestMF: *mut MachineFunction, Src2DstMBB: *DenseMap<MachineBasicBlock *, MachineBasicBlock *>) -> *mut MachineFunctionInfo {
+    return DestMF.cloneInfo(*self);
 }
 
 fn isLRSpilled(MF: *MachineFunction) -> bool {
-    return any_of(MF.getFrameInfo()(), Closure_1 {});
+    return any_of(MF.getFrameInfo().getCalleeSavedInfo(), Closure_1 {});
 }
 
 fn AArch64FunctionInfo::shouldSignReturnAddress(self, Condition: SignReturnAddress, IsLRSpilled: bool) -> bool {
@@ -125,7 +130,7 @@ fn AArch64FunctionInfo::shouldSignReturnAddress(self, Condition: SignReturnAddre
             return true;
         },
     }
-    llvm_unreachable_internal("Unknown SignReturnAddress enum", "llvm\\lib\\Target\\AArch64\\AArch64MachineFunctionInfo.cpp", 193);
+    llvm_unreachable_internal("Unknown SignReturnAddress enum", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64MachineFunctionInfo.cpp", 193);
 }
 
 fn AArch64FunctionInfo::shouldSignReturnAddress(self: *AArch64FunctionInfo, MF: *MachineFunction) -> bool {
@@ -136,7 +141,7 @@ fn AArch64FunctionInfo::needsShadowCallStackPrologueEpilogue(self: *AArch64Funct
     if !(isLRSpilled(MF) && MF.getFunction().hasFnAttribute(ShadowCallStack)) {
         return false;
     }
-    if operator!(MF(18)) {
+    if !MF.getSubtarget().isXRegisterReserved(18) {
         report_fatal_error("Must reserve x18 to use shadow call stack", true);
     }
     return true;
@@ -144,7 +149,7 @@ fn AArch64FunctionInfo::needsShadowCallStackPrologueEpilogue(self: *AArch64Funct
 
 fn AArch64FunctionInfo::needsDwarfUnwindInfo(self: *AArch64FunctionInfo, MF: *MachineFunction) -> bool {
     if !self.NeedsDwarfUnwindInfo {
-        self.NeedsDwarfUnwindInfo;
+        self.NeedsDwarfUnwindInfo = MF.needsFrameMoves() && !MF.getTarget().getMCAsmInfo().usesWindowsCFI();
     }
     return operator(self.NeedsDwarfUnwindInfo);
 }
@@ -152,12 +157,14 @@ fn AArch64FunctionInfo::needsDwarfUnwindInfo(self: *AArch64FunctionInfo, MF: *Ma
 fn AArch64FunctionInfo::needsAsyncDwarfUnwindInfo(self: *AArch64FunctionInfo, MF: *MachineFunction) -> bool {
     if !self.NeedsAsyncDwarfUnwindInfo {
         let mut F: *Function = MF.getFunction();
-        let mut AFI: *AArch64FunctionInfo = MF;
-        self.NeedsAsyncDwarfUnwindInfo;
+        let mut AFI: *AArch64FunctionInfo = MF.getInfo();
+        self.NeedsAsyncDwarfUnwindInfo = self.needsDwarfUnwindInfo(MF) && ((F.getUWTableKind() == Async && !F.hasMinSize()) || AFI.hasStreamingModeChanges());
     }
     return operator(self.NeedsAsyncDwarfUnwindInfo);
 }
 
 struct Closure_1 {}
 
-fn Closure_1::call(self: *Closure_1) {}
+fn Closure_1::call(self: *Closure_1) {
+        return Info.getReg() == LR;
+    }

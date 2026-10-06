@@ -1,5 +1,5 @@
 struct ICF {
-    chunks: i32,
+    chunks: []*mut SectionChunk,
     cnt: i32,
     repeat: atomic<bool>,
     ctx: *mut COFFLinkerContext,
@@ -26,14 +26,14 @@ fn ICF::isEligible(self, c: *mut SectionChunk) -> bool {
 
 fn ICF::assocEquals(self, a: *SectionChunk, b: *SectionChunk) -> bool {
     let mut considerForICF: Closure_1 = Closure_1 {};
-    let mut ra: auto = make_filter_range(a.children(), considerForICF);
-    let mut rb: auto = make_filter_range(b.children(), considerForICF);
-    return equal(Closure_2 { cap_0: self });
+    let mut ra: AssociatedIterator>>, (lambda at P:\Goraw\llvm-project\lld\COFF\ICF.cpp:133:25)>> = make_filter_range(a.children(), considerForICF);
+    let mut rb: AssociatedIterator>>, (lambda at P:\Goraw\llvm-project\lld\COFF\ICF.cpp:133:25)>> = make_filter_range(b.children(), considerForICF);
+    return equal(ra.begin(), ra.end(), rb.begin(), rb.end(), Closure_2 { cap_0: self });
 }
 
 fn ICF::findBoundary(self, begin: u64, end: u64) -> u64 {
     for let mut i: u64 = begin + 1; i < end; i += 1 {
-        if  {
+        if self.chunks[begin].eqClass[self.cnt % 2] != self.chunks[i].eqClass[self.cnt % 2] {
             return i;
         }
     }
@@ -43,48 +43,68 @@ fn ICF::findBoundary(self, begin: u64, end: u64) -> u64 {
 fn ICF::forEachClassRange(self, begin: u64, end: u64, fn: function<void (size_t, size_t)>) {
     while begin < end {
         let mut mid: u64 = self.findBoundary(begin, end);
-        fn()(begin, mid);
+        fn.call(begin, mid);
         begin = mid;
     }
 }
 
 fn ICF::forEachClass(self, fn: function<void (size_t, size_t)>) {
-    if  {
-        self.forEachClassRange;
+    if self.chunks.len < 1024 {
+        self.forEachClassRange(0, self.chunks.len, fn);
         self.cnt += 1;
         return;
     }
     let mut numShards: u64 = 256;
-    let mut step: u64 = 0;
+    let mut step: u64 = self.chunks.len / numShards;
     let mut boundaries: [257]u64 = zeroed();
     boundaries[0] = 0;
-    parallelFor(1, numShards, Closure_3 { boundaries: &mut boundaries, cap_1: self, step: &mut step });
-    parallelFor(1, numShards + 1, Closure_4 { boundaries: &mut boundaries, cap_1: self });
+    boundaries[numShards] = self.chunks.len;
+    parallelFor(1, numShards, function_ref<void (size_t)> { Closure_3 { boundaries: &mut boundaries, cap_1: self, step: &mut step }, null, null });
+    parallelFor(1, numShards + 1, function_ref<void (size_t)> { Closure_4 { boundaries: &mut boundaries, cap_1: self, fn: &mut fn }, null, null });
     self.cnt += 1;
 }
 
 fn ICF::run(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "ICF" };
-    let mut t: ScopedTimer = self.ctx;
+    let mut timeScope: TimeTraceScope = "ICF";
+    let mut t: ScopedTimer = self.ctx.icfTimer;
     let mut nextId: u32 = 1;
-    parallelForEach(Closure_5 {});
-    for let mut cnt: u32 = 0; cnt != 2; cnt += 1 {
-        parallelForEach(Closure_6 { cnt: &mut cnt });
+    for c in self.ctx.driver.getChunks() {
+        if dyn_cast(c) {
+            sc;
+        } else {
+            if self.isEligible(sc) {
+                self.chunks.push(sc);
+            } else {
+                sc.eqClass[0] = nextId += 1;
+            }
+        }
     }
-    stable_sort(Closure_7 {});
-    self.forEachClass;
+    for mc in self.ctx.mergeChunkInstances[..] {
+        if mc {
+            for sc in mc.sections {
+                sc.eqClass[0] = nextId += 1;
+            }
+        }
+    }
+    parallelForEach(self.chunks, Closure_5 {});
+    for let mut cnt: u32 = 0; cnt != 2; cnt += 1 {
+        parallelForEach(self.chunks, Closure_6 { cnt: &mut cnt });
+    }
+    stable_sort(self.chunks, Closure_7 {});
+    self.forEachClass(Closure_8 { cap_0: self });
     while true {
         {
-        self.forEachClass;
+        self.repeat = false;
+        self.forEachClass(Closure_9 { cap_0: self });
     }
-        if !() { break; }
+        if !(self.repeat) { break; }
     }
-    Log(self.ctx) << "ICF needed " << " iterations";
-    self.forEachClass;
+    Log(self.ctx) << "ICF needed " << self.cnt << " iterations";
+    self.forEachClass(Closure_10 { cap_0: self });
 }
 
 fn doICF(ctx: *mut COFFLinkerContext) {
-    ICF { ctx }.run();
+    ctx.run();
 }
 
 struct Closure_1 {}
@@ -109,17 +129,18 @@ struct Closure_3 {
 }
 
 unsafe fn Closure_3::call(self: *mut Closure_3, i: u64) {
-        (*self.boundaries)[i] = self.findBoundary;
+        (*self.boundaries)[i] = self.findBoundary((i - 1) * (*self.step), self.chunks.len);
     }
 
 struct Closure_4 {
     boundaries: *mut [257]size_t (&),
     cap_1: *mut ICF,
+    fn: *mut function<void (size_t, size_t)>,
 }
 
 unsafe fn Closure_4::call(self: *mut Closure_4, i: u64) {
         if (*self.boundaries)[i - 1] < (*self.boundaries)[i] {
-            self.forEachClassRange((*self.boundaries)[i - 1], (*self.boundaries)[i]);
+            self.forEachClassRange((*self.boundaries)[i - 1], (*self.boundaries)[i], (*self.fn));
         }
     }
 
@@ -136,8 +157,10 @@ struct Closure_6 {
 unsafe fn Closure_6::call(self: *mut Closure_6, sc: *mut SectionChunk) {
             let mut hash: u32 = sc.eqClass[(*self.cnt) % 2];
             for b in sc.symbols() {
-                if  {
-                    operator+=(hash, ()[(*self.cnt) % 2]);
+                if dyn_cast_or_null(b) {
+                    sym;
+                } else {
+                    hash += sym.getChunk().eqClass[(*self.cnt) % 2];
                 }
             }
             sc.eqClass[((*self.cnt) + 1) % 2] = hash | (1 << 31);
@@ -147,4 +170,35 @@ struct Closure_7 {}
 
 fn Closure_7::call(self: *Closure_7, a: *SectionChunk, b: *SectionChunk) -> bool {
         return a.eqClass[0] < b.eqClass[0];
+    }
+
+struct Closure_8 {
+    cap_0: *mut ICF,
+}
+
+fn Closure_8::call(self: *Closure_8, begin: u64, end: u64) {
+        self.segregate(begin, end);
+    }
+
+struct Closure_9 {
+    cap_0: *mut ICF,
+}
+
+fn Closure_9::call(self: *Closure_9, begin: u64, end: u64) {
+            self.segregate(begin, end);
+        }
+
+struct Closure_10 {
+    cap_0: *mut ICF,
+}
+
+fn Closure_10::call(self: *Closure_10, begin: u64, end: u64) {
+        if end - begin == 1 {
+            return;
+        }
+        Log(self.ctx) << "Selected " << self.chunks[begin].getDebugName();
+        for let mut i: u64 = begin + 1; i < end; i += 1 {
+            Log(self.ctx) << "  Removed " << self.chunks[i].getDebugName();
+            self.chunks[begin].replace(self.chunks[i]);
+        }
     }

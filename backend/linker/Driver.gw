@@ -19,14 +19,14 @@ fn Fatal(ctx: *mut COFFLinkerContext) -> COFFSyncStream {
 }
 
 fn errCount(ctx: *mut COFFLinkerContext) -> u64 {
-    return ctx();
+    return ctx.e.errorCount;
 }
 
 fn link(args: ArrayRef<const char *>, stdoutOS: *mut raw_ostream, stderrOS: *mut raw_ostream, exitEarly: bool, disableOutput: bool) -> bool {
     let mut ctx: *mut COFFLinkerContext = COFFLinkerContext {};
-    ctx()(stdoutOS, stderrOS, exitEarly, disableOutput);
-    ctx() = getFilenameWithoutExe(args[0]);
-    ctx() = "too many errors emitted, stopping now (use /errorlimit:0 to see all errors)";
+    ctx.e.initialize(stdoutOS, stderrOS, exitEarly, disableOutput);
+    ctx.e.logName = getFilenameWithoutExe(args[0]);
+    ctx.e.errorLimitExceededMsg = "too many errors emitted, stopping now (use /errorlimit:0 to see all errors)";
     ctx.driver.linkerMain(args);
     return errCount(*ctx) == 0;
 }
@@ -36,12 +36,12 @@ fn getOldNewOptions(ctx: *mut COFFLinkerContext, args: *mut InputArgList, id: u3
     if operator!() {
         return void { "", "" };
     }
-    let mut s: str = ();
+    let mut s: str = self.getValue();
     let mut ret: pair<StringRef, StringRef> = s.split(';');
-    if ret.second.len == 0 {
-        Err(ctx) << () << " expects 'old;new' format, but got " << s;
+    if ret.second.is_empty() {
+        Err(ctx) << self.getSpelling() << " expects 'old;new' format, but got " << s;
     }
-    return pair<StringRef, StringRef> { ret };
+    return ret;
 }
 
 fn getOldNewOptionsExtra(ctx: *mut COFFLinkerContext, args: *mut InputArgList, id: u32) -> tuple<StringRef, StringRef, StringRef> {
@@ -105,22 +105,22 @@ fn LinkerDriver::addFile(self, file: *mut InputFile) {
     Log(self.ctx) << "Reading ";
     if file.lazy {
         if  {
-            f()();
+            f().parseLazy();
         } else {
-            cast(file)();
+            cast(file).parseLazy();
         }
     } else {
         self.ctx.consumedInputsSize += file.mb.getBufferSize();
         file.parse();
         if  {
-            self.ctx();
+            self.ctx.objFileInstances;
         } else if  {
             if self.ltoCompilationDone {
                 Err(self.ctx) << "LTO object file " << " linked in after doing LTO compilation.";
             }
-            f()();
+            f().symtab.bitcodeFileInstances.push();
         } else if  {
-            self.ctx();
+            self.ctx.importFileInstances;
         }
     }
     let mut mt: MachineTypes = file.getMachineType();
@@ -160,12 +160,12 @@ fn LinkerDriver::addObjectFile(self, ctx: *mut COFFLinkerContext, mb: MemoryBuff
     }
     if ctx.config.fatLTOObjects {
         let mut fatLTOData: Expected<MemoryBufferRef> = zeroed();
-        if operator!(errorToBool()) {
+        if operator!(errorToBool(self.takeError())) {
             obj = create(ctx, operator*(), archiveName, offsetInArchive, lazy);
         }
     }
     if !obj {
-        obj = create(ctx, lazy);
+        obj = create(ctx, self.release(), lazy);
     }
     obj.parentName = archiveName;
     self.addFile(obj);
@@ -173,7 +173,7 @@ fn LinkerDriver::addObjectFile(self, ctx: *mut COFFLinkerContext, mb: MemoryBuff
 }
 
 fn LinkerDriver::addBuffer(self, mb: i32, wholeArchive: bool, lazy: bool) {
-    let mut filename: str = ();
+    let mut filename: str = self.getBufferIdentifier();
     let mut mbref: MemoryBufferRef = self.takeBuffer(move());
     match identify_magic(mbref.getBuffer()).operator llvm::file_magic::Impl() {
         windows_resource => {
@@ -181,8 +181,8 @@ fn LinkerDriver::addBuffer(self, mb: i32, wholeArchive: bool, lazy: bool) {
         },
         archive => {
             let mut file: i32 = check2((create(mbref)), Closure_1 { filename: &mut filename });
-            if wholeArchive || (self.ctx.symtab.isEC() && ()) {
-                let mut archive: *mut Archive = ();
+            if wholeArchive || (self.ctx.symtab.isEC() && self.isThin()) {
+                let mut archive: *mut Archive = self.get();
                 let mut memberIndex: i32 = 0;
                 return;
             }
@@ -212,11 +212,11 @@ fn LinkerDriver::addBuffer(self, mb: i32, wholeArchive: bool, lazy: bool) {
                     if  {
                         let mut hybridObj: i32 = createCOFFObject(self.ctx, self.takeBuffer(move()));
                         self.addFile(make(self.ctx.symtab));
-                        self.addFile(make(operator*(self.ctx)));
+                        self.addFile(make(operator(self.ctx.hybridSymtab)));
                         break;
                     }
                 }
-                let mut machine: auto = () as MachineTypes;
+                let mut machine: auto = self.getMachine() as MachineTypes;
                 self.addFile(make(self.ctx.getSymtab()));
                 break;
             }
@@ -231,7 +231,7 @@ fn LinkerDriver::handleReproFile(self, path: str, inputOpt: InputOpt) {
     if !self.reproFile {
         return;
     }
-    operator(self.reproFile) << '\"';
+    operator(self.reproFile) << '"';
     if inputOpt == DefaultLib {
         operator(self.reproFile) << "/defaultlib:";
     } else if inputOpt == WholeArchive {
@@ -287,9 +287,9 @@ fn LinkerDriver::enqueueArchiveMember(self, c: *Child, sym: *Symbol, parentName:
         let mut offsetInArchive: u64 = c.getChildOffset();
         let mut mbOrErr: Expected<MemoryBufferRef> = zeroed();
         if operator!() {
-            reportBufferError();
+            reportBufferError(self.takeError());
         }
-        let mut mb: MemoryBufferRef = ();
+        let mut mb: MemoryBufferRef = self.get();
         self.enqueueTask;
         return;
     }
@@ -304,14 +304,75 @@ fn LinkerDriver::isDecorated(self, sym: str) -> bool {
 
 fn LinkerDriver::parseDirectives(self, file: *mut InputFile) {
     let mut s: str = file.getDirectives();
-    if s.len == 0 {
+    if s.is_empty() {
         return;
     }
     Log(self.ctx) << "Directives: " << file << ": ";
-    let mut parser: ArgParser = ArgParser { ctx: self.ctx };
+    let mut parser: ArgParser = self.ctx;
     let mut directives: ParsedDirectives = parser.parseDirectives(s);
     for arg in directives.args {
         match arg.getOption().getID() {
+            OPT_aligncomm => {
+                file.symtab.parseAligncomm(arg.getValue(0));
+            },
+            OPT_alternatename => {
+                file.symtab.parseAlternateName(arg.getValue(0));
+            },
+            OPT_arm64xsameaddress => {
+                if file.symtab.isEC() {
+                    self.parseSameAddress(arg.getValue(0));
+                } else {
+                    Warn(self.ctx) << " is not allowed in non-ARM64EC files (" << toString(file) << ")";
+                }
+            },
+            OPT_defaultlib => {
+                if self.findLibIfNew(arg.getValue(0)) {
+                    path;
+                } else {
+                    self.enqueuePath(operator(path), false, DefaultLib);
+                }
+            },
+            OPT_entry => {
+                if !arg.getValue(0)[0] {
+                    Fatal(self.ctx) << "missing entry point symbol name";
+                }
+            },
+            OPT_failifmismatch => {
+                self.checkFailIfMismatch(arg.getValue(0), file);
+            },
+            OPT_incl => {
+                file.symtab.addGCRoot(arg.getValue(0), false);
+            },
+            OPT_manifestdependency => {
+                self.ctx.config.manifestDependencies.insert(arg.getValue(0));
+            },
+            OPT_merge => {
+                self.parseMerge(arg.getValue(0));
+            },
+            OPT_nodefaultlib => {
+                self.ctx.config.noDefaultLibs.insert;
+            },
+            OPT_release => {
+                self.ctx.config.writeCheckSum = true;
+            },
+            OPT_section => {
+                self.parseSection(arg.getValue(0));
+            },
+            OPT_stack => {
+                self.parseNumbers(arg.getValue(0), &mut self.ctx.config.stackReserve, &mut self.ctx.config.stackCommit);
+            },
+            OPT_subsystem => {
+                let mut gotVersion: bool = false;
+                self.parseSubsystem(arg.getValue(0), &mut self.ctx.config.subsystem, &mut self.ctx.config.majorSubsystemVersion, &mut self.ctx.config.minorSubsystemVersion, &mut gotVersion);
+                if gotVersion {
+                    self.ctx.config.majorOSVersion = self.ctx.config.majorSubsystemVersion;
+                    self.ctx.config.minorOSVersion = self.ctx.config.minorSubsystemVersion;
+                }
+                break;
+            },
+            OPT_editandcontinue => {
+                OPT_guardsym;
+            },
             _ => {
                 Err(self.ctx) << " is not allowed in .drectve (" << toString(file) << ")";
             },
@@ -339,9 +400,9 @@ fn getUniqueID(path: str) -> UniqueID> {
 fn LinkerDriver::findFileIfNew(self, filename: str) -> optional<StringRef> {
     let mut path: str = self.findFile(filename);
     if  {
-        let mut seen: bool = operator!(self.visitedFiles(operator*()));
+        let mut seen: bool = operator!(self.visitedFiles(operator*()).second);
         if seen {
-            return optional<StringRef> { nullopt };
+            return nullopt;
         }
     }
     if path.ends_with_insensitive(".lib") {
@@ -374,18 +435,18 @@ fn LinkerDriver::findLib(self, filename: str) -> str {
 
 fn LinkerDriver::findLibIfNew(self, filename: str) -> optional<StringRef> {
     if self.ctx.config.noDefaultLibAll {
-        return optional<StringRef> { nullopt };
+        return nullopt;
     }
-    if operator!(self.visitedLibs) {
-        return optional<StringRef> { nullopt };
+    if operator!(self.visitedLibs.second) {
+        return nullopt;
     }
     let mut path: str = self.findLib(filename);
     if self.ctx.config.noDefaultLibs.contains(path.lower()) {
-        return optional<StringRef> { nullopt };
+        return nullopt;
     }
     if  {
-        if operator!(self.visitedFiles(operator*())) {
-            return optional<StringRef> { nullopt };
+        if operator!(self.visitedFiles(operator*()).second) {
+            return nullopt;
         }
     }
     return path;
@@ -399,7 +460,7 @@ fn LinkerDriver::setMachine(self, machine: MachineTypes) {
         self.ctx.symtab.machine = machine;
     } else {
         self.ctx.symtab.machine = ARM64EC;
-        self.ctx(self.ctx, ARM64);
+        self.ctx.hybridSymtab;
     }
     self.addWinSysRootLibSearchPaths();
 }
@@ -410,20 +471,20 @@ fn LinkerDriver::detectWinSysRoot(self, Args: *InputArgList) {
     let mut VCToolsVersion: optional<StringRef> = optional<StringRef> {};
     let mut WinSysRoot: optional<StringRef> = optional<StringRef> {};
     if  {
-        VCToolsDir = ();
+        VCToolsDir = self.getValue();
     }
     if  {
-        VCToolsVersion = ();
+        VCToolsVersion = self.getValue();
     }
     if  {
-        WinSysRoot = ();
+        WinSysRoot = self.getValue();
     }
     if !findVCToolChainViaCommandLine(operator(VFS), VCToolsDir, VCToolsVersion, WinSysRoot, self.vcToolChainPath, self.vsLayout) && (Args || !findVCToolChainViaEnvironment(operator(VFS), self.vcToolChainPath, self.vsLayout)) && !findVCToolChainViaSetupConfig(operator(VFS), StringRef> {}, self.vcToolChainPath, self.vsLayout) && !findVCToolChainViaRegistry(self.vcToolChainPath, self.vsLayout) {
         return;
     }
     if  {
-        self.diaPath = ();
-        if  {
+        self.diaPath = self.getValue();
+        if A().getOption().getID() == OPT_winsysroot {
             append(self.diaPath, "DIA SDK", "", "", "");
         }
     }
@@ -432,10 +493,10 @@ fn LinkerDriver::detectWinSysRoot(self, Args: *InputArgList) {
         let mut WinSdkDir: optional<StringRef> = optional<StringRef> {};
         let mut WinSdkVersion: optional<StringRef> = optional<StringRef> {};
         if  {
-            WinSdkDir = ();
+            WinSdkDir = self.getValue();
         }
         if  {
-            WinSdkVersion = ();
+            WinSdkVersion = self.getValue();
         }
         if useUniversalCRT(self.vsLayout, self.vcToolChainPath, self.getArch(), operator(VFS)) {
             let mut UniversalCRTSdkPath: str = "";
@@ -466,7 +527,7 @@ fn LinkerDriver::addClangLibSearchPaths(self, argv0: str) {
     let mut libDir: str = rootDir;
     append(libDir, "lib", "", "", "");
     let mut runtimeLibDir: str = rootDir;
-    append(runtimeLibDir, "lib", "clang", to_string(20), "lib");
+    append(runtimeLibDir, "lib", "clang", to_string(24), "lib");
     let mut runtimeLibDirWithOS: str = runtimeLibDir;
     append(runtimeLibDirWithOS, "windows", "", "", "");
     self.searchPaths.push(saver().save(runtimeLibDirWithOS));
@@ -529,13 +590,43 @@ fn rewritePath(s: str) -> str {
 
 fn createResponseFile(args: *InputArgList, searchPaths: ArrayRef<StringRef>) -> str {
     let mut data: str = "";
-    let mut os: raw_svector_ostream = raw_svector_ostream { data };
+    let mut os: raw_svector_ostream = data;
     for arg in args {
         match arg.getOption().getID() {
+            OPT_linkrepro => {
+                OPT_reproduce;
+            },
+            OPT_INPUT => {
+                os << quote(rewritePath(arg.getValue(0))) << "\n";
+            },
+            OPT_wholearchive_file => {
+                os << arg.getSpelling() << quote(rewritePath(arg.getValue(0))) << "\n";
+            },
+            OPT_call_graph_ordering_file => {
+                OPT_deffile;
+            },
+            OPT_order => {
+                let mut orderFile: str = arg.getValue(0);
+                orderFile.consume_front("@");
+                os << arg.getSpelling() << '@' << quote(rewritePath(orderFile)) << 10;
+                break;
+            },
+            OPT_pdbstream => {
+                let mut nameFile: pair<StringRef, StringRef> = arg.getValue(0).split("=");
+                os << arg.getSpelling() << nameFile.first << '=' << quote(rewritePath(nameFile.second)) << 10;
+                break;
+            },
+            OPT_implib => {
+                OPT_manifestfile;
+            },
             _ => {
                 os << toString(*arg) << "\n";
             },
         }
+    }
+    for path in searchPaths {
+        let mut relPath: str = relativeToRoot(path);
+        os << "/libpath:" << quote(relPath) << "\n";
     }
     return data.operator basic_string();
 }
@@ -544,7 +635,7 @@ fn parseDebugTypes(ctx: *mut COFFLinkerContext, args: *InputArgList) -> u32 {
     let mut debugTypes: u32 = None as u32;
     if  {
         let mut types: SmallVector<StringRef, 3> = SmallVector<StringRef, 3> {};
-        ().split(types, ',', -1, false);
+        self.getValue().split(types, ',', -1, false);
         for type in types {
             let mut v: u32 = 0;
             if v == 0 {
@@ -570,10 +661,10 @@ fn LinkerDriver::getMapFile(self, args: *InputArgList, os: OptSpecifier, osFile:
     if operator!() {
         return "";
     }
-    if arg()()() == osFile.getID() {
-        return ();
+    if arg().getOption().getID() == osFile.getID() {
+        return self.getValue();
     }
-    (((operator!(operator!((arg()()() == os.getID())))) || (_wassert(L"arg->getOption().getID() == os.getID()", L"lld\\COFF\\Driver.cpp", (1042) as u32) , 0)) as void);
+    (((operator!(operator!((arg().getOption().getID() == os.getID())))) || (_wassert(L"arg->getOption().getID() == os.getID()", L"P:/Goraw/llvm-project/lld/COFF/Driver.cpp", (1042) as u32) , 0)) as void);
     let mut outFile: str = self.ctx.config.outputFile;
     return (outFile[0..0 + outFile.rfind('.', npos)] + ".map");
 }
@@ -589,7 +680,7 @@ fn LinkerDriver::getImplibPath(self) -> str {
 
 fn LinkerDriver::getImportName(self, asLib: bool) -> str {
     let mut out: str = "";
-    if self.ctx.config.importName.len == 0 {
+    if self.ctx.config.importName.is_empty() {
         out.assign(filename(self.ctx.config.outputFile, native));
         if asLib {
             replace_extension(out, ".dll", native);
@@ -604,12 +695,12 @@ fn LinkerDriver::getImportName(self, asLib: bool) -> str {
 }
 
 fn LinkerDriver::createImportLibrary(self, asLib: bool) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Create import library" };
+    let mut timeScope: TimeTraceScope = "Create import library";
     let mut exports: i32 = 0;
     let mut getExports: Closure_6 = Closure_6 {};
     getExports(self.ctx.symtab);
     if self.ctx.config.machine == ARM64X {
-        getExports(operator*(self.ctx));
+        getExports(operator(self.ctx.hybridSymtab));
     }
     let mut libName: str = self.getImportName(asLib);
     let mut path: str = self.getImplibPath();
@@ -635,8 +726,8 @@ fn LinkerDriver::createImportLibrary(self, asLib: bool) {
         return;
     }
     let mut newBuf: i32 = check(getFile(tmpName, false, false));
-    if (operator*())() != () {
-        oldBuf()();
+    if (operator*()).getBuffer() != self.getBuffer() {
+        oldBuf().reset();
         checkError(errorCodeToError(rename(tmpName, path)));
     } else {
         remove(tmpName, true);
@@ -648,8 +739,8 @@ fn LinkerDriver::enqueueTask(self, task: function<void ()>) {
 }
 
 fn LinkerDriver::run(self) -> bool {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Read input files" };
-    let mut t: ScopedTimer = self.ctx;
+    let mut timeScope: TimeTraceScope = "Read input files";
+    let mut t: ScopedTimer = self.ctx.inputFileTimer;
     let mut didWork: bool = !self.taskQueue.is_empty();
     while !self.taskQueue.is_empty() {
         self.taskQueue.front().call();
@@ -680,7 +771,7 @@ fn readCallGraphsFromObjectFiles(ctx: *mut COFFLinkerContext) {}
 
 fn markAddrsig(s: *mut Symbol) {
     if  {
-        if dyn_cast_or_null() {
+        if dyn_cast_or_null(self.getChunk()) {
             c;
         } else {
             c.keepUnique = true;
@@ -689,7 +780,7 @@ fn markAddrsig(s: *mut Symbol) {
 }
 
 fn findKeepUniqueSections(ctx: *mut COFFLinkerContext) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Find keep unique sections" };
+    let mut timeScope: TimeTraceScope = "Find keep unique sections";
     ctx.forEachSymtab;
 }
 
@@ -724,13 +815,13 @@ fn LinkerDriver::parsePDBAltPath(self) {
 }
 
 fn LinkerDriver::convertResources(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Convert resources" };
+    let mut timeScope: TimeTraceScope = "Convert resources";
     let mut resourceObjFiles: i32 = 0;
-    if !self.ctx.config.mingw && (resourceObjFiles()() > 1 || (resourceObjFiles()() == 1 && !self.resources.is_empty())) {
-        Err(self.ctx) << (if !self.resources.is_empty() { "internal .obj file created from .res files" } else { toString([1]) }) << ": more than one resource obj file not allowed, already got " << ();
+    if !self.ctx.config.mingw && (resourceObjFiles().len > 1 || (resourceObjFiles().len == 1 && !self.resources.is_empty())) {
+        Err(self.ctx) << (if !self.resources.is_empty() { "internal .obj file created from .res files" } else { toString([1]) }) << ": more than one resource obj file not allowed, already got " << self.front();
         return;
     }
-    if self.resources.len == 0 && () <= 1 {
+    if self.resources.is_empty() && self.len <= 1 {
         return;
     }
     let mut f: *mut ObjFile = create(self.ctx, self.convertResToCOFF(self.resources));
@@ -746,7 +837,7 @@ fn LinkerDriver::maybeCreateECExportThunk(self, name: str, sym: *mut *mut Symbol
     if !def {
         return;
     }
-    if def.getChunk()() != Arm64EC {
+    if def.getChunk().getArm64ECRangeType() {
         return;
     }
     let mut expName: str = "";
@@ -757,9 +848,9 @@ fn LinkerDriver::maybeCreateECExportThunk(self, name: str, sym: *mut *mut Symbol
     }
     sym = self.ctx.symtab.addGCRoot(expName, false);
     if  {
-        if operator!() {
+        if operator!(self.getWeakAlias()) {
             let mut thunk: auto = make(def);
-            replaceSymbol();
+            replaceSymbol(self.getName());
         }
     }
 }
@@ -777,11 +868,11 @@ fn LinkerDriver::pullArm64ECIcallHelper(self) {
 }
 
 fn LinkerDriver::maybeExportMinGWSymbols(self, args: *InputArgList) {
-    if operator!(args) {
+    if !args {
         if !self.ctx.config.dll {
             return;
         }
-        if self.ctx.symtab.hadExplicitExports || (self.ctx.config.machine == ARM64X && self.ctx) {
+        if self.ctx.symtab.hadExplicitExports || (self.ctx.config.machine == ARM64X && operator(self.ctx.hybridSymtab).hadExplicitExports) {
             return;
         }
         if args {
@@ -793,7 +884,7 @@ fn LinkerDriver::maybeExportMinGWSymbols(self, args: *InputArgList) {
 
 fn getReproduceFile(args: *InputArgList) -> string> {
     if  {
-        return ();
+        return self.getValue();
     }
     if  {
         let mut path: str = zeroed();
@@ -805,7 +896,7 @@ fn getReproduceFile(args: *InputArgList) -> string> {
     } else {
         return path;
     }
-    return string> { nullopt };
+    return nullopt;
 }
 
 fn getVFS(ctx: *mut COFFLinkerContext, args: *InputArgList) -> i32 {
@@ -815,7 +906,7 @@ fn getVFS(ctx: *mut COFFLinkerContext, args: *InputArgList) -> i32 {
     }
     let mut bufOrErr: auto = getFile(arg.getValue(0));
     if operator!() {
-        checkError(errorCodeToError());
+        checkError(errorCodeToError(self.getError()));
         return null;
     }
     if  {
@@ -836,7 +927,7 @@ fn DllDefaultEntryPoint(machine: MachineTypes, mingw: bool) -> str {
 const lldsaveTempsValues: [9]char *const = ["resolution", "preopt", "promote", "internalize", "import", "opt", "precodegen", "prelink", "combinedindex"];
 
 fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
-    let mut rootTimer: ScopedTimer = self.ctx;
+    let mut rootTimer: ScopedTimer = self.ctx.rootTimer;
     let mut config: *mut Configuration = &mut self.ctx.config;
     InitializeAllTargetInfos();
     InitializeAllTargets();
@@ -849,38 +940,38 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
         }
         return;
     }
-    let mut parser: ArgParser = ArgParser { ctx: self.ctx };
+    let mut parser: ArgParser = self.ctx;
     let mut args: InputArgList = parser.parse(argsArr);
     config.timeTraceEnabled = args;
-    config.timeTraceGranularity = getInteger(args, 500);
+    config.timeTraceGranularity = getInteger(args, OPT_time_trace_granularity_eq, 500);
     if config.timeTraceEnabled {
         timeTraceProfilerInitialize(config.timeTraceGranularity, argsArr[0], false);
     }
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "COFF link" };
+    let mut timeScope: TimeTraceScope = "COFF link";
     let mut v: i32 = 0;
-    v()("lld-link (LLVM option parsing)");
+    v().push("lld-link (LLVM option parsing)");
     {
-        let mut timeScope2: TimeTraceScope = TimeTraceScope { Entry: "Parse cl::opt" };
+        let mut timeScope2: TimeTraceScope = "Parse cl::opt";
         ResetAllOptionOccurrences();
-        ParseCommandLineOptions();
+        ParseCommandLineOptions(self.len, self.ptr);
     }
     if  {
         let mut n: i32 = 20;
-        let mut s: str = ();
+        let mut s: str = self.getValue();
         if s {
-            Err(self.ctx) << () << " number expected, but got " << s;
+            Err(self.ctx) << self.getSpelling() << " number expected, but got " << s;
         }
-        self.ctx = n;
+        self.ctx.e.errorLimit = n;
     }
     if args {
         self.printHelp(argsArr[0]);
         return;
     }
     if  {
-        let mut v: str = arg()();
+        let mut v: str = arg().getValue();
         let mut threads: u32 = 0;
         if !to_integer(v, threads, 0) || threads == 0 {
-            Err(self.ctx) << () << ": expected a positive integer, but got '" << () << "'";
+            Err(self.ctx) << self.getSpelling() << ": expected a positive integer, but got '" << self.getValue() << "'";
         }
         strategy = hardware_concurrency(threads);
         config.thinLTOJobs = v;
@@ -896,10 +987,10 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
     }
     config.mingw = args;
     if config.mingw {
-        self.ctx = "too many errors emitted, stopping now (use --error-limit=0 to see all errors)";
+        self.ctx.e.errorLimitExceededMsg = "too many errors emitted, stopping now (use --error-limit=0 to see all errors)";
     }
     {
-        let mut timeScope2: TimeTraceScope = TimeTraceScope { Entry: "Reproducer" };
+        let mut timeScope2: TimeTraceScope = "Reproducer";
         if getReproduceFile(args) {
             path;
         } else {
@@ -907,19 +998,19 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
             if errOrWriter() {
                 self.tar = move(operator*());
             } else {
-                Err(self.ctx) << "/linkrepro: failed to open " << ": " << toString();
+                Err(self.ctx) << "/linkrepro: failed to open " << ": " << toString(self.takeError());
             }
         }
     }
     if  {
         let mut ec: error_code = error_code {};
-        self.reproFile = make_unique(ec);
+        self.reproFile = make_unique(self.getValue(), ec);
         if ec {
-            Err(self.ctx) << "cannot open " << () << ": " << ec.message();
+            Err(self.ctx) << "cannot open " << self.getValue() << ": " << ec.message();
             self.reproFile.reset;
         }
     }
-    if operator!(args) {
+    if !args {
         if args {
             config.noEntry = true;
         } else {
@@ -927,12 +1018,12 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
         }
     }
     {
-        let mut timeScope2: TimeTraceScope = TimeTraceScope { Entry: "Search paths" };
+        let mut timeScope2: TimeTraceScope = "Search paths";
         self.searchPaths;
         if !config.mingw {
             self.addClangLibSearchPaths(argsArr[0]);
             self.detectWinSysRoot(args);
-            if operator!(args) {
+            if !args {
                 self.addLibSearchPaths();
             }
         } else {
@@ -942,12 +1033,12 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
         }
     }
     if  {
-        config.outputFile = ();
+        config.outputFile = self.getValue();
     }
     if args {
         config.verbose = true;
     }
-    self.ctx = config.verbose;
+    self.ctx.e.verbose = config.verbose;
     if args {
         config.forceUnresolved = true;
     }
@@ -962,27 +1053,27 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
     }
     let mut doGC: bool = true;
     let mut shouldCreatePDB: bool = false;
-    config.demangle = args;
+    config.demangle = args.hasFlag(OPT_demangle, OPT_demangle_no, true);
     config.debugTypes = parseDebugTypes(self.ctx, args);
     config.driverUponly = args || args || args;
     config.driverWdm = args || args || args;
     config.driver = config.driverUponly || config.driverWdm || args;
     if shouldCreatePDB {
         if  {
-            config.pdbPath = ();
+            config.pdbPath = self.getValue();
         }
         if  {
-            config.pdbAltPath = ();
+            config.pdbAltPath = self.getValue();
         }
         if  {
-            self.parsePDBPageSize();
+            self.parsePDBPageSize(self.getValue());
         }
         if args {
-            config.natvisFiles = args.getAllArgValues;
+            config.natvisFiles = args.getAllArgValues(OPT_natvis);
         }
         if args {}
         if  {
-            config.pdbSourcePath = ();
+            config.pdbSourcePath = self.getValue();
         }
     }
     if args {
@@ -1000,61 +1091,61 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
         config.manifestID = 2;
     }
     let mut dynamicBaseArg: *mut auto = args;
-    if  {
+    if dynamicBaseArg() && self.getOption().getID() == OPT_dynamicbase_no {
         config.dynamicBase = false;
     }
-    let mut fixed: bool = args;
+    let mut fixed: bool = args.hasFlag(OPT_fixed, OPT_fixed_no, false);
     if fixed {
-        if  {
+        if dynamicBaseArg() && self.getOption().getID() == OPT_dynamicbase {
             Err(self.ctx) << "/fixed must not be specified with /dynamicbase";
         } else {
             config.relocatable = false;
             config.dynamicBase = false;
         }
     }
-    config.appContainer = args;
+    config.appContainer = args.hasFlag(OPT_appcontainer, OPT_appcontainer_no, false);
     {
-        let mut timeScope2: TimeTraceScope = TimeTraceScope { Entry: "Machine arg" };
+        let mut timeScope2: TimeTraceScope = "Machine arg";
         if  {
-            let mut machine: MachineTypes = getMachineType();
+            let mut machine: MachineTypes = getMachineType(self.getValue());
             if machine == IMAGE_FILE_MACHINE_UNKNOWN {
-                Fatal(self.ctx) << "unknown /machine argument: " << ();
+                Fatal(self.ctx) << "unknown /machine argument: " << self.getValue();
             }
             self.setMachine(machine);
         }
     }
     {
-        let mut timeScope2: TimeTraceScope = TimeTraceScope { Entry: "Nodefaultlib" };
+        let mut timeScope2: TimeTraceScope = "Nodefaultlib";
     }
     if args {
         config.noDefaultLibAll = true;
     }
     if  {
-        self.parseNumbers(&mut config.imageBase);
+        self.parseNumbers(self.getValue(), &mut config.imageBase);
     }
     if  {
-        self.parseNumbers(&mut config.fileAlign);
+        self.parseNumbers(self.getValue(), &mut config.fileAlign);
         if !isPowerOf2_64(config.fileAlign) {
             Err(self.ctx) << "/filealign: not a power of two: ";
         }
     }
     if  {
-        self.parseNumbers(&mut config.stackReserve, &mut config.stackCommit);
+        self.parseNumbers(self.getValue(), &mut config.stackReserve, &mut config.stackCommit);
     }
     if  {
-        self.parseGuard();
+        self.parseGuard(self.getValue());
     }
     if  {
-        self.parseNumbers(&mut config.heapReserve, &mut config.heapCommit);
+        self.parseNumbers(self.getValue(), &mut config.heapReserve, &mut config.heapCommit);
     }
     if  {
-        self.parseVersion(&mut config.majorImageVersion, &mut config.minorImageVersion);
+        self.parseVersion(self.getValue(), &mut config.majorImageVersion, &mut config.minorImageVersion);
     }
     if  {
-        self.parseSubsystem(&mut config.subsystem, &mut config.majorSubsystemVersion, &mut config.minorSubsystemVersion);
+        self.parseSubsystem(self.getValue(), &mut config.subsystem, &mut config.majorSubsystemVersion, &mut config.minorSubsystemVersion);
     }
     if  {
-        self.parseVersion(&mut config.majorOSVersion, &mut config.minorOSVersion);
+        self.parseVersion(self.getValue(), &mut config.majorOSVersion, &mut config.minorOSVersion);
     } else {
         config.majorOSVersion = config.majorSubsystemVersion;
         config.minorOSVersion = config.minorSubsystemVersion;
@@ -1062,7 +1153,7 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
     if args {
         arg;
     } else {
-        if  {
+        if arg.getOption().getID() == OPT_repro {
             config.timestamp = 0;
             config.repro = true;
         } else {
@@ -1074,7 +1165,7 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
         }
     }
     if  {
-        config.implib = ();
+        config.implib = self.getValue();
     }
     config.noimplib = args;
     if args {
@@ -1097,7 +1188,7 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
         config.saveTempsArgs;
     } else {}
     if  {
-        let mut s: str = ();
+        let mut s: str = self.getValue();
         if s == "obj" {
             config.emit = Obj;
         } else if s == "llvm" {
@@ -1112,10 +1203,10 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
         config.killAt = true;
     }
     if  {
-        config.ltoCache = ();
+        config.ltoCache = self.getValue();
     }
     if  {
-        config.ltoCachePolicy = check2((parseCachePruningPolicy()), Closure_10 {});
+        config.ltoCachePolicy = check2((parseCachePruningPolicy(self.getValue())), Closure_10 {});
     }
     self.parseMerge(".idata=.rdata");
     self.parseMerge(".didat=.rdata");
@@ -1133,70 +1224,70 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
         self.parseMerge(".data_cygwin_nocopy=.data");
     }
     if  {
-        self.parseSectionLayout();
+        self.parseSectionLayout(self.getValue());
     }
     if  {
-        self.parseNumbers(&mut config.align);
+        self.parseNumbers(self.getValue(), &mut config.align);
         if !isPowerOf2_64(config.align) {
             Err(self.ctx) << "/align: not a power of two: ";
         }
-        if operator!(args) {
+        if !args {
             Warn(self.ctx) << "/align specified without /driver; image may not run";
         }
     }
     if  {
-        if  {
+        if arg().getOption().getID() == OPT_manifest {
             config.manifest = SideBySide;
         } else {
-            self.parseManifest();
+            self.parseManifest(self.getValue());
         }
     }
     if  {
-        self.parseManifestUAC();
+        self.parseManifestUAC(self.getValue());
     }
     if  {
-        config.manifestFile = ();
+        config.manifestFile = self.getValue();
     }
     if !config.manifestInput.is_empty() && config.manifest != Embed {
         Fatal(self.ctx) << "/manifestinput: requires /manifest:embed";
     }
-    config.dtltoDistributor = args.getLastArgValue;
-    config.dtltoDistributorArgs = getStrings(args);
-    config.dtltoCompiler = args.getLastArgValue;
+    config.dtltoDistributor = args.getLastArgValue(OPT_thinlto_distributor, "");
+    config.dtltoDistributorArgs = getStrings(args, OPT_thinlto_distributor_arg);
+    config.dtltoCompiler = args.getLastArgValue(OPT_thinlto_remote_compiler, "");
     if !config.dtltoDistributor.is_empty() && config.dtltoCompiler.is_empty() {
         Err(self.ctx) << "A value must be specified for /thinlto-remote-compiler if /thinlto-distributor is specified.";
     }
-    config.dtltoCompilerPrependArgs = getStrings(args);
-    config.dtltoCompilerArgs = getStrings(args);
-    config.fatLTOObjects = args;
-    config.dwoDir = args.getLastArgValue;
+    config.dtltoCompilerPrependArgs = getStrings(args, OPT_thinlto_remote_compiler_prepend_arg);
+    config.dtltoCompilerArgs = getStrings(args, OPT_thinlto_remote_compiler_arg);
+    config.fatLTOObjects = args.hasFlag(OPT_fat_lto_objects, OPT_fat_lto_objects_no, false);
+    config.dwoDir = args.getLastArgValue(OPT_dwodir, "");
     config.thinLTOEmitImportsFiles = args;
     config.thinLTOIndexOnly = args || args;
-    config.thinLTOIndexOnlyArg = args.getLastArgValue;
-    config.thinLTOObjectSuffixReplace = getOldNewOptions(self.ctx, args);
-    config.ltoObjPath = args.getLastArgValue;
+    config.thinLTOIndexOnlyArg = args.getLastArgValue(OPT_thinlto_index_only_arg, "");
+    config.thinLTOObjectSuffixReplace;
+    config.ltoObjPath = args.getLastArgValue(OPT_lto_obj_path, "");
     config.ltoCSProfileGenerate = args;
-    config.ltoCSProfileFile = args.getLastArgValue;
-    config.ltoSampleProfileName = args.getLastArgValue;
-    config.ltoPGOWarnMismatch = args;
-    config.allowBind = args;
-    config.allowIsolation = args;
-    config.incremental = args;
-    config.integrityCheck = args;
-    config.cetCompat = args;
-    config.cetCompatStrict = args;
-    config.cetCompatIpValidationRelaxed = args;
-    config.cetCompatDynamicApisInProcOnly = args;
-    config.hotpatchCompat = args;
-    config.nxCompat = args;
-    config.terminalServerAware = !config.dll && args;
-    config.autoImport = args;
-    config.pseudoRelocs = args;
-    config.callGraphProfileSort = args;
-    config.stdcallFixup = args;
-    config.warnStdcallFixup = operator!(args);
-    config.allowDuplicateWeak = args;
-    if args {
+    config.ltoCSProfileFile = args.getLastArgValue(OPT_lto_cs_profile_file, "");
+    config.ltoSampleProfileName = args.getLastArgValue(OPT_lto_sample_profile, "");
+    config.ltoPGOWarnMismatch = args.hasFlag(OPT_lto_pgo_warn_mismatch, OPT_lto_pgo_warn_mismatch_no, true);
+    config.allowBind = args.hasFlag(OPT_allowbind, OPT_allowbind_no, true);
+    config.allowIsolation = args.hasFlag(OPT_allowisolation, OPT_allowisolation_no, true);
+    config.incremental = args.hasFlag(OPT_incremental, OPT_incremental_no, !config.doGC && config.doICF == None && !args && !args);
+    config.integrityCheck = args.hasFlag(OPT_integritycheck, OPT_integritycheck_no, false);
+    config.cetCompat = args.hasFlag(OPT_cetcompat, OPT_cetcompat_no, false);
+    config.cetCompatStrict = args.hasFlag(OPT_cetcompatstrict, OPT_cetcompatstrict_no, false);
+    config.cetCompatIpValidationRelaxed = args.hasFlag(OPT_cetipvalidationrelaxed, OPT_cetipvalidationrelaxed_no, false);
+    config.cetCompatDynamicApisInProcOnly = args.hasFlag(OPT_cetdynamicapisinproc, OPT_cetdynamicapisinproc_no, false);
+    config.hotpatchCompat = args.hasFlag(OPT_hotpatchcompatible, OPT_hotpatchcompatible_no, false);
+    config.nxCompat = args.hasFlag(OPT_nxcompat, OPT_nxcompat_no, true);
+    config.terminalServerAware = !config.dll && args.hasFlag(OPT_tsaware, OPT_tsaware_no, true);
+    config.autoImport = args.hasFlag(OPT_auto_import, OPT_auto_import_no, config.mingw);
+    config.pseudoRelocs = args.hasFlag(OPT_runtime_pseudo_reloc, OPT_runtime_pseudo_reloc_no, config.mingw);
+    config.callGraphProfileSort = args.hasFlag(OPT_call_graph_profile_sort, OPT_call_graph_profile_sort_no, true);
+    config.stdcallFixup = args.hasFlag(OPT_stdcall_fixup, OPT_stdcall_fixup_no, config.mingw);
+    config.warnStdcallFixup = !args;
+    config.allowDuplicateWeak = args.hasFlag(OPT_lld_allow_duplicate_weak, OPT_lld_allow_duplicate_weak_no, config.mingw);
+    if args.hasFlag(OPT_inferasanlibs, OPT_inferasanlibs_no, false) {
         Warn(self.ctx) << "ignoring '/inferasanlibs', this flag is not supported";
     }
     if config.incremental && args {
@@ -1215,17 +1306,17 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
         Warn(self.ctx) << "ignoring '/incremental' because ICF is enabled; use '/opt:noicf' to disable";
         config.incremental = false;
     }
-    if args {
+    if args.hasFlag(OPT_prefetch_inputs, OPT_prefetch_inputs_no, false) {
         config.prefetchInputs = true;
     }
-    config.optRemarksFilename = args.getLastArgValue;
-    config.optRemarksPasses = args.getLastArgValue;
-    config.optRemarksFormat = args.getLastArgValue;
+    config.optRemarksFilename = args.getLastArgValue(OPT_opt_remarks_filename, "");
+    config.optRemarksPasses = args.getLastArgValue(OPT_opt_remarks_passes, "");
+    config.optRemarksFormat = args.getLastArgValue(OPT_opt_remarks_format, "");
     config.optRemarksWithHotness = args;
     if  {
-        let mut resultOrErr: auto = ();
+        let mut resultOrErr: auto = (self.getValue());
         if operator!() {
-            Err(self.ctx) << () << ": invalid argument '" << () << "', only integer or 'auto' is supported";
+            Err(self.ctx) << self.getSpelling() << ": invalid argument '" << self.getValue() << "', only integer or 'auto' is supported";
         } else {
             config.optRemarksHotnessThreshold = operator*();
         }
@@ -1236,10 +1327,34 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
     let mut wholeArchives: i32 = 0;
     let mut isWholeArchive: Closure_11 = Closure_11 { args: &mut args };
     {
-        let mut timeScope2: TimeTraceScope = TimeTraceScope { Entry: "Parse & queue inputs" };
+        let mut timeScope2: TimeTraceScope = "Parse & queue inputs";
         let mut inLib: bool = false;
         for arg in args {
             match arg.getOption().getID() {
+                OPT_end_lib => {
+                    if !inLib {
+                        Err(self.ctx) << "stray ";
+                    }
+                },
+                OPT_start_lib => {
+                    if inLib {
+                        Err(self.ctx) << "nested ";
+                    }
+                },
+                OPT_wholearchive_file => {
+                    if self.findFileIfNew(arg.getValue(0)) {
+                        path;
+                    } else {
+                        self.enqueuePath(operator(path), inLib, WholeArchive);
+                    }
+                },
+                OPT_INPUT => {
+                    if self.findFileIfNew(arg.getValue(0)) {
+                        path;
+                    } else {
+                        self.enqueuePath(operator(path), inLib, if isWholeArchive.call(operator(path)) { WholeArchive } else { None });
+                    }
+                },
                 _ => {
                     break;
                 },
@@ -1257,7 +1372,7 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
     config.wordsize = if config.is64() { 8 } else { 4 };
     if config.printSearchPaths {
         let mut buffer: str = "";
-        let mut stream: raw_svector_ostream = raw_svector_ostream { buffer };
+        let mut stream: raw_svector_ostream = buffer;
         stream << "Library search paths:\n";
         Msg(self.ctx);
     }
@@ -1269,37 +1384,37 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
         config.writeCheckSum = true;
     }
     if config.machine == I386 {
-        config.safeSEH = args;
+        config.safeSEH = args.hasFlag(OPT_safeseh, OPT_safeseh_no, !config.mingw);
         config.noSEH = args;
     }
     if  {
-        self.parseDosStub();
+        self.parseDosStub(self.getValue());
     }
     if config.hotpatchCompat && config.functionPadMin < 6 {
         Err(self.ctx) << "/hotpatchcompatible: requires at least 6 bytes of /functionpadmin";
     }
     if self.tar {
-        let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Reproducer: response file" };
-        operator(self.tar).append("response.txt", createResponseFile(args, self.searchPaths(1)));
+        let mut timeScope: TimeTraceScope = "Reproducer: response file";
+        operator(self.tar).append("response.txt", createResponseFile(args, self.searchPaths.slice(1)));
     }
-    config.largeAddressAware = args;
-    config.highEntropyVA = config.is64() && args;
-    config.mergeDebugDirectory = operator!(args);
+    config.largeAddressAware = args.hasFlag(OPT_largeaddressaware, OPT_largeaddressaware_no, config.is64());
+    config.highEntropyVA = config.is64() && args.hasFlag(OPT_highentropyva, OPT_highentropyva_no, true);
+    config.mergeDebugDirectory = !args;
     if !config.dynamicBase && (config.machine == ARMNT || isAnyArm64(config.machine)) {
         Err(self.ctx) << "/dynamicbase:no is not compatible with ";
     }
     {
-        let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Parse /export" };
+        let mut timeScope: TimeTraceScope = "Parse /export";
     }
     if  {
-        self.ctx.symtab.parseModuleDefs();
+        self.ctx.symtab.parseModuleDefs(self.getValue());
         if self.ctx.config.machine == ARM64X {
             if  {
-                self.ctx();
+                operator(self.ctx.hybridSymtab).parseModuleDefs(self.getValue());
             }
         }
     }
-    if operator!(args) {
+    if !args {
         self.ctx.forEachSymtab;
         if !config.noimplib {
             self.createImportLibrary(true);
@@ -1307,7 +1422,7 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
         return;
     }
     if config.subsystem == IMAGE_SUBSYSTEM_UNKNOWN {
-        let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Infer subsystem" };
+        let mut timeScope: TimeTraceScope = "Infer subsystem";
         config.subsystem = self.ctx.symtab.inferSubsystem();
         if config.subsystem == IMAGE_SUBSYSTEM_UNKNOWN {
             Fatal(self.ctx) << "subsystem must be defined";
@@ -1315,10 +1430,10 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
     }
     self.ctx.forEachActiveSymtab;
     {
-        let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Delay load" };
+        let mut timeScope: TimeTraceScope = "Delay load";
     }
-    if config.outputFile.len == 0 {
-        config.outputFile = getOutputPath((operator*(args()))(), config.dll, config.driver);
+    if config.outputFile.is_empty() {
+        config.outputFile = getOutputPath((operator*(args.begin())).getValue(), config.dll, config.driver);
     }
     if tryCreateFile(config.outputFile) {
         e;
@@ -1326,22 +1441,22 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
         Err(self.ctx) << "cannot open output file " << ": " << e.message();
         return;
     }
-    config.lldmapFile = self.getMapFile;
-    config.mapFile = self.getMapFile;
+    config.lldmapFile = self.getMapFile(args, OPT_lldmap, OPT_lldmap_file);
+    config.mapFile = self.getMapFile(args, OPT_map, OPT_map_file);
     if config.mapFile != "" && args {}
     if config.lldmapFile != "" && config.lldmapFile == config.mapFile {
         Warn(self.ctx) << "/lldmap and /map have the same output file '" << "'.\n>>> ignoring /lldmap";
         config.lldmapFile.clear();
     }
-    if args {
+    if args.hasFlag(OPT_build_id, OPT_build_id_no, false) {
         config.buildIDHash = Binary;
     }
     if shouldCreatePDB {
-        if config.pdbPath.len == 0 {
+        if config.pdbPath.is_empty() {
             config.pdbPath = config.outputFile;
             replace_extension(config.pdbPath, ".pdb", native);
         }
-        if config.pdbAltPath.len == 0 {
+        if config.pdbAltPath.is_empty() {
             config.pdbAltPath = config.pdbPath;
             make_absolute(config.pdbAltPath);
             remove_dots(config.pdbAltPath, false, native);
@@ -1355,7 +1470,7 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
     }
     self.ctx.forEachSymtab;
     {
-        let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Add unresolved symbols" };
+        let mut timeScope: TimeTraceScope = "Add unresolved symbols";
         while true {
             {
             self.ctx.forEachSymtab;
@@ -1363,6 +1478,9 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
         }
             if !(self.run()) { break; }
         }
+    }
+    for pat in getStrings(args, OPT_incl_glob) {
+        self.ctx.forEachActiveSymtab;
     }
     self.ctx.forEachSymtab;
     if config.autoImport || config.stdcallFixup {
@@ -1395,7 +1513,7 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
     if errorCount() {
         return;
     }
-    if self.ctx {
+    if self.ctx.hybridSymtab {
         let mut maybeReplaceWithNative: Closure_12 = Closure_12 { cap_0: self };
         maybeReplaceWithNative.call("_tls_start");
         maybeReplaceWithNative.call("_tls_end");
@@ -1409,18 +1527,18 @@ fn LinkerDriver::linkerMain(self, argsArr: ArrayRef<const char *>) {
     }
     self.ctx.symtab.initializeSameAddressThunks();
     if config.mingw {
-        for let mut i: auto = self.ctx();
-let mut e: auto = self.ctx(); i() != ;  += 1 {
+        for let mut i: auto = self.ctx.objFileInstances.begin;
+let mut e: auto = self.ctx.objFileInstances.end; i() != ;  += 1 {
             let mut file: *mut ObjFile = operator*();
             if isCrtend(file.getName()) {
-                self.ctx();
-                self.ctx(file);
+                self.ctx.objFileInstances;
+                self.ctx.objFileInstances.push(file);
                 break;
             }
         }
     }
-    if config.dll || !self.ctx.symtab.exports.is_empty() || (self.ctx.config.machine == ARM64X && operator!(self.ctx())) {
-        let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Create .lib exports" };
+    if config.dll || !self.ctx.symtab.exports.is_empty() || (self.ctx.config.machine == ARM64X && !operator(self.ctx.hybridSymtab).exports.is_empty()) {
+        let mut timeScope: TimeTraceScope = "Create .lib exports";
         self.ctx.forEachActiveSymtab;
         if !config.noimplib && (!config.mingw || !config.implib.is_empty()) {
             self.createImportLibrary(false);
@@ -1428,7 +1546,7 @@ let mut e: auto = self.ctx(); i() != ;  += 1 {
         self.ctx.forEachActiveSymtab;
     }
     if  {
-        writeDefFile(self.ctx, self.ctx.symtab.exports);
+        writeDefFile(self.ctx, self.getValue(), self.ctx.symtab.exports);
     }
     self.ctx.forEachSymtab;
     if config.manifest == Embed {
@@ -1440,19 +1558,19 @@ let mut e: auto = self.ctx(); i() != ;  += 1 {
         if args {
             Err(self.ctx) << "/order and /call-graph-order-file may not be used together";
         }
-        self.parseOrderFile();
+        self.parseOrderFile(self.getValue());
         config.callGraphProfileSort = false;
     }
     if config.callGraphProfileSort {
-        let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Call graph" };
+        let mut timeScope: TimeTraceScope = "Call graph";
         if  {
-            self.parseCallGraphFile();
+            self.parseCallGraphFile(self.getValue());
         } else {
             readCallGraphsFromObjectFiles(self.ctx);
         }
     }
     if  {
-        config.printSymbolOrder = ();
+        config.printSymbolOrder = self.getValue();
     }
     self.convertResources();
     if config.doICF != None {
@@ -1463,12 +1581,12 @@ let mut e: auto = self.ctx(); i() != ;  += 1 {
     self.ctx.forEachSymtab;
     rootTimer.stop();
     if config.showTiming {
-        self.ctx();
+        self.ctx.rootTimer.print();
     }
     self.reproFile.reset;
     if config.timeTraceEnabled {
         timeTraceProfilerEnd();
-        checkError(timeTraceProfilerWrite(args.getLastArgValue(), config.outputFile));
+        checkError(timeTraceProfilerWrite(args.getLastArgValue(OPT_time_trace_eq, ""), config.outputFile));
         timeTraceProfilerCleanup();
     }
 }
@@ -1551,7 +1669,7 @@ struct Closure_9 {
 }
 
 unsafe fn Closure_9::call(self: *mut Closure_9, name: str) -> auto {
-        let mut sym: *mut Symbol = (name);
+        let mut sym: *mut Symbol = self.lookup(name);
         if !sym {
             if self.ctx.config.warnMissingOrderSymbol {
                 Warn(self.ctx) << ": no such symbol: " << name;
@@ -1579,7 +1697,7 @@ unsafe fn Closure_11::call(self: *mut Closure_11, path: str) -> auto {
             return true;
         }
         if  {
-            return (operator*());
+            return self.contains(operator*());
         }
         return false;
     }
@@ -1589,11 +1707,11 @@ struct Closure_12 {
 }
 
 fn Closure_12::call(self: *Closure_12, name: str) {
-            let mut nativeSym: auto = dyn_cast_or_null(self.ctx(name));
+            let mut nativeSym: auto = dyn_cast_or_null(operator(self.ctx.hybridSymtab).findUnderscore(name));
             if operator!() {
                 return;
             }
             if  {
-                nativeSym()()();
+                nativeSym().getChunk().replace(self.getChunk());
             }
         }

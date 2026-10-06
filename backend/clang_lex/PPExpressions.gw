@@ -81,8 +81,8 @@ fn EvaluateDefined(Result: *mut PPValue, PeekTok: *mut Token, DT: *mut DefinedTr
         Result.setEnd(PeekTok.getLocation());
         PP.LexUnexpandedNonComment(PeekTok);
         if PeekTok.isNot(r_paren) {
-            PP << "'defined'" << r_paren;
-            PP << l_paren;
+            PP.Diag(PeekTok.getLocation(), err_pp_expected_after) << "'defined'" << r_paren;
+            PP.Diag(LParenLoc, note_matching) << l_paren;
             return true;
         }
         PP.LexNonComment(PeekTok);
@@ -94,9 +94,9 @@ fn EvaluateDefined(Result: *mut PPValue, PeekTok: *mut Token, DT: *mut DefinedTr
     if beginLoc.isMacroID() {
         let mut IsFunctionTypeMacro: bool = PP.getSourceManager().getSLocEntry(PP.getSourceManager().getFileID(beginLoc), null).getExpansion().isFunctionMacroExpansion();
         if IsFunctionTypeMacro {
-            PP;
+            PP.Diag(beginLoc, warn_defined_in_function_type_macro);
         } else {
-            PP;
+            PP.Diag(beginLoc, warn_defined_in_object_type_macro);
         }
     }
     if PP.getPPCallbacks() {
@@ -129,14 +129,14 @@ fn EvaluateValue(Result: *mut PPValue, PeekTok: *mut Token, DT: *mut DefinedTrac
                 }
                 if !II.isCPlusPlusOperatorKeyword() {
                     if ValueLive {
-                        let mut DiagID: u32 = 0;
+                        let mut DiagID: u32 = if II.getName() == "true" { warn_pp_undef_true_identifier } else { warn_pp_undef_identifier };
                         PP.Diag(PeekTok, DiagID) << II;
                         let mut DiagEngine: *DiagnosticsEngine = PP.getDiagnostics();
                         if DiagEngine.isIgnored(DiagID, PeekTok.getLocation()) {
-                            let mut UndefPrefixes: i32 = DiagEngine.getDiagnosticOptions();
+                            let mut UndefPrefixes: []str = DiagEngine.getDiagnosticOptions().UndefPrefixes;
                             let mut IdentifierName: str = II.getName();
-                            if any_of(Closure_1 { IdentifierName: &mut IdentifierName }) {
-                                PP << void { join(",") } << II;
+                            if any_of(UndefPrefixes, Closure_1 { IdentifierName: &mut IdentifierName }) {
+                                PP.Diag(PeekTok, warn_pp_undef_prefix) << AddFlagValue { Val: join(UndefPrefixes, ",") } << II;
                             }
                         }
                     }
@@ -154,9 +154,9 @@ fn EvaluateValue(Result: *mut PPValue, PeekTok: *mut Token, DT: *mut DefinedTrac
             r_paren;
         },
         numeric_constant => {
-            let mut IntegerBuffer: str = zeroed();
+            let mut IntegerBuffer: str = "";
             let mut NumberInvalid: bool = false;
-            let mut Spelling: str = PP(PeekTok, &mut NumberInvalid);
+            let mut Spelling: str = PP.getSpelling(PeekTok, IntegerBuffer, &mut NumberInvalid);
             if NumberInvalid {
                 return true;
             }
@@ -165,38 +165,38 @@ fn EvaluateValue(Result: *mut PPValue, PeekTok: *mut Token, DT: *mut DefinedTrac
                 return true;
             }
             if Literal.isFloatingLiteral() || Literal.isImaginary {
-                PP;
+                PP.Diag(PeekTok, err_pp_illegal_floating_literal);
                 return true;
             }
             assert!(Literal.isIntegerLiteral(), "Unknown ppnumber");
             if Literal.hasUDSuffix() {
-                PP << 1;
+                PP.Diag(PeekTok, err_pp_invalid_udl) << 1;
             }
-            if operator!(PP.getLangOpts()) && Literal.isLongLong {
-                if PP.getLangOpts() {
-                    PP;
+            if !PP.getLangOpts().C99 && Literal.isLongLong {
+                if PP.getLangOpts().CPlusPlus {
+                    PP.Diag(PeekTok, if PP.getLangOpts().CPlusPlus11 { warn_cxx98_compat_longlong } else { ext_cxx11_longlong });
                 } else {
-                    PP;
+                    PP.Diag(PeekTok, ext_c99_longlong);
                 }
             }
             if Literal.isSizeT {
-                if PP.getLangOpts() {
-                    PP;
+                if PP.getLangOpts().CPlusPlus {
+                    PP.DiagCompat(PeekTok, size_t_suffix);
                 } else {
-                    PP;
+                    PP.Diag(PeekTok, err_cxx23_size_t_suffix);
                 }
             }
             if Literal.isBitInt {
-                PP;
+                PP.Diag(PeekTok, if PP.getLangOpts().CPlusPlus { ext_cxx_bitint_suffix } else { if PP.getLangOpts().C23 { warn_c23_compat_bitint_suffix } else { ext_c23_bitint_suffix } });
             }
             if Literal.GetIntegerValue(Result.Val) {
-                PP << 1;
+                PP.Diag(PeekTok, err_integer_literal_too_large) << 1;
                 Result.Val.setIsUnsigned(true);
             } else {
                 Result.Val.setIsUnsigned(Literal.isUnsigned);
                 if !Literal.isUnsigned && Result.Val.isNegative() {
                     if ValueLive && Literal.getRadix() == 10 {
-                        PP;
+                        PP.Diag(PeekTok, ext_integer_literal_too_large_for_signed);
                     }
                     Result.Val.setIsUnsigned(true);
                 }
@@ -219,8 +219,8 @@ fn EvaluateValue(Result: *mut PPValue, PeekTok: *mut Token, DT: *mut DefinedTrac
                     return true;
                 }
                 if PeekTok.isNot(r_paren) {
-                    PP << Result.getRange();
-                    PP << l_paren;
+                    PP.Diag(PeekTok.getLocation(), err_pp_expected_rparen) << Result.getRange();
+                    PP.Diag(Start, note_matching) << l_paren;
                     return true;
                 }
                 DT.State = Unknown;
@@ -251,7 +251,7 @@ fn EvaluateValue(Result: *mut PPValue, PeekTok: *mut Token, DT: *mut DefinedTrac
             Result.Val = operator(Result.Val);
             let mut Overflow: bool = !Result.isUnsigned() && Result.Val.isMinSignedValue();
             if Overflow && ValueLive {
-                PP << Result.getRange();
+                PP.Diag(Loc, warn_pp_expr_overflow) << Result.getRange();
             }
             DT.State = Unknown;
             return false;
@@ -346,9 +346,9 @@ fn getPrecedence(Kind: TokenKind) -> u32 {
 
 fn diagnoseUnexpectedOperator(PP: *mut Preprocessor, LHS: *mut PPValue, Tok: *mut Token) {
     if Tok.is(l_paren) && LHS.getIdentifier() {
-        PP << LHS.getIdentifier();
+        PP.Diag(LHS.getRange().getBegin(), err_pp_expr_bad_token_lparen) << LHS.getIdentifier();
     } else {
-        PP << LHS.getRange();
+        PP.Diag(Tok.getLocation(), err_pp_expr_bad_token_binop) << LHS.getRange();
     }
 }
 
@@ -416,13 +416,13 @@ fn EvaluateDirectiveSubExpr(LHS: *mut PPValue, MinPrec: u32, PeekTok: *mut Token
         let mut Overflow: bool = false;
         match Operator {
             _ => {
-                llvm_unreachable_internal("Unknown operator token!", "clang\\lib\\Lex\\PPExpressions.cpp", 717);
+                llvm_unreachable_internal("Unknown operator token!", "P:/Goraw/llvm-project/clang/lib/Lex/PPExpressions.cpp", 717);
             },
             percent => {
                 if RHS.Val != 0 {
                     Res = LHS.Val % RHS.Val;
                 } else if ValueLive {
-                    PP << LHS.getRange() << RHS.getRange();
+                    PP.Diag(OpLoc, err_pp_remainder_by_zero) << LHS.getRange() << RHS.getRange();
                     return true;
                 }
             },
@@ -434,7 +434,7 @@ fn EvaluateDirectiveSubExpr(LHS: *mut PPValue, MinPrec: u32, PeekTok: *mut Token
                         Res = LHS.Val / RHS.Val;
                     }
                 } else if ValueLive {
-                    PP << LHS.getRange() << RHS.getRange();
+                    PP.Diag(OpLoc, err_pp_division_by_zero) << LHS.getRange() << RHS.getRange();
                     return true;
                 }
             },
@@ -510,14 +510,14 @@ fn EvaluateDirectiveSubExpr(LHS: *mut PPValue, MinPrec: u32, PeekTok: *mut Token
                 Res = (LHS.Val != 0 || RHS.Val != 0);
             },
             comma => {
-                if operator!(PP.getLangOpts()) || ValueLive {
-                    PP << LHS.getRange() << RHS.getRange();
+                if !PP.getLangOpts().C99 || ValueLive {
+                    PP.Diag(OpLoc, ext_pp_comma_expr) << LHS.getRange() << RHS.getRange();
                 }
             },
             question => {
                 if PeekTok.isNot(colon) {
-                    PP << colon << LHS.getRange() << RHS.getRange();
-                    PP << question;
+                    PP.Diag(PeekTok.getLocation(), err_expected) << colon << LHS.getRange() << RHS.getRange();
+                    PP.Diag(OpLoc, note_matching) << question;
                     return true;
                 }
                 PP.LexNonComment(PeekTok);
@@ -537,11 +537,11 @@ fn EvaluateDirectiveSubExpr(LHS: *mut PPValue, MinPrec: u32, PeekTok: *mut Token
                 break;
             },
             colon => {
-                PP << LHS.getRange() << RHS.getRange();
+                PP.Diag(OpLoc, err_pp_colon_without_question) << LHS.getRange() << RHS.getRange();
             },
         }
         if Overflow && ValueLive {
-            PP << LHS.getRange() << RHS.getRange();
+            PP.Diag(OpLoc, warn_pp_expr_overflow) << LHS.getRange() << RHS.getRange();
         }
         LHS.Val = Res;
         LHS.setEnd(RHS.getRange().getEnd());
@@ -550,7 +550,7 @@ fn EvaluateDirectiveSubExpr(LHS: *mut PPValue, MinPrec: u32, PeekTok: *mut Token
 }
 
 fn Preprocessor::EvaluateDirectiveExpression(self, IfNDefMacro: *mut *mut IdentifierInfo, Tok: *mut Token, EvaluatedDefined: *mut bool, CheckForEoD: bool) -> DirectiveEvalResult {
-    let mut PPDir: SaveAndRestore = self.ParsingIfOrElifDirective;
+    let mut PPDir: SaveAndRestore<bool> = SaveAndRestore<bool> { self.ParsingIfOrElifDirective, true };
     let mut DisableMacroExpansionAtStartOfDirective: bool = self.DisableMacroExpansion;
     self.DisableMacroExpansion = false;
     self.LexNonComment(Tok);
@@ -563,7 +563,7 @@ fn Preprocessor::EvaluateDirectiveExpression(self, IfNDefMacro: *mut *mut Identi
             self.DiscardUntilEndOfDirective(Tok, null);
         }
         self.DisableMacroExpansion = DisableMacroExpansionAtStartOfDirective;
-        return DirectiveEvalResult { nullopt, false, DT.IncludedUndefinedIds, void { ExprStartLoc, Tok.getLocation() } };
+        return DirectiveEvalResult { nullopt, false, DT.IncludedUndefinedIds, ExprStartLoc, Tok.getLocation() };
     }
     EvaluatedDefined = DT.State != Unknown;
     if Tok.is(eod) {
@@ -573,17 +573,18 @@ fn Preprocessor::EvaluateDirectiveExpression(self, IfNDefMacro: *mut *mut Identi
         self.DisableMacroExpansion = DisableMacroExpansionAtStartOfDirective;
         let mut IsNonZero: bool = ResVal.Val != 0;
         let mut ValRange: SourceRange = ResVal.getRange();
-        return void { move(ResVal.Val), IsNonZero, DT.IncludedUndefinedIds, ValRange };
+        return DirectiveEvalResult { move(ResVal.Val), IsNonZero, DT.IncludedUndefinedIds, ValRange };
     }
     if EvaluateDirectiveSubExpr(ResVal, getPrecedence(question), Tok, true, DT.IncludedUndefinedIds, *self) {
         if Tok.isNot(eod) {
             self.DiscardUntilEndOfDirective(Tok, null);
         }
         self.DisableMacroExpansion = DisableMacroExpansionAtStartOfDirective;
-        return DirectiveEvalResult { nullopt, false, DT.IncludedUndefinedIds, void { ExprStartLoc, Tok.getLocation() } };
+        return DirectiveEvalResult { nullopt, false, DT.IncludedUndefinedIds, ExprStartLoc, Tok.getLocation() };
     }
     if CheckForEoD {
         if Tok.isNot(eod) {
+            self.Diag(Tok, err_pp_expected_eol);
             self.DiscardUntilEndOfDirective(Tok, null);
         }
     }
@@ -591,7 +592,7 @@ fn Preprocessor::EvaluateDirectiveExpression(self, IfNDefMacro: *mut *mut Identi
     self.DisableMacroExpansion = DisableMacroExpansionAtStartOfDirective;
     let mut IsNonZero: bool = ResVal.Val != 0;
     let mut ValRange: SourceRange = ResVal.getRange();
-    return void { move(ResVal.Val), IsNonZero, DT.IncludedUndefinedIds, ValRange };
+    return DirectiveEvalResult { move(ResVal.Val), IsNonZero, DT.IncludedUndefinedIds, ValRange };
 }
 
 fn Preprocessor::EvaluateDirectiveExpression(self, IfNDefMacro: *mut *mut IdentifierInfo, CheckForEoD: bool) -> DirectiveEvalResult {
@@ -603,15 +604,15 @@ fn Preprocessor::EvaluateDirectiveExpression(self, IfNDefMacro: *mut *mut Identi
 fn getCXXStandardLibraryVersion(PP: *mut Preprocessor, MacroName: *mut IdentifierInfo, Lib: Library) -> optional<CXXStandardLibraryVersionInfo> {
     let mut Macro: *mut MacroInfo = PP.getMacroInfo(MacroName);
     if !Macro || Macro.getNumTokens() != 1 || !Macro.isObjectLike() {
-        return nullopt();
+        return nullopt;
     }
     let mut RevisionDateTok: *Token = Macro.getReplacementToken(0);
     let mut Invalid: bool = false;
-    let mut Buffer: SmallVector<char, 10> = zeroed();
-    let mut RevisionDate: str = PP(RevisionDateTok, &mut Invalid);
+    let mut Buffer: SmallVector<char, 10> = SmallVector<char, 10> {};
+    let mut RevisionDate: str = PP.getSpelling(RevisionDateTok, Buffer, &mut Invalid);
     if !Invalid {
         let mut Value: uint64_t = zeroed();
-        if !RevisionDate {
+        if !RevisionDate.consumeInteger(10, Value) {
             return CXXStandardLibraryVersionInfo { Lib: Lib, Version: Value };
         }
     }
@@ -619,21 +620,29 @@ fn getCXXStandardLibraryVersion(PP: *mut Preprocessor, MacroName: *mut Identifie
 }
 
 fn Preprocessor::getStdLibCxxVersion(self) -> optional<uint64_t> {
-    if  {
-        return nullopt();
+    if !self.CXXStandardLibraryVersion {
+        self.CXXStandardLibraryVersion = getCXXStandardLibraryVersion(*self, self.Ident__GLIBCXX__, LibStdCXX);
     }
-    return nullopt();
+    if !self.CXXStandardLibraryVersion {
+        return nullopt;
+    }
+    if operator(self.CXXStandardLibraryVersion).Lib == LibStdCXX {
+        return operator(self.CXXStandardLibraryVersion).Version;
+    }
+    return nullopt;
 }
 
-fn Preprocessor::setStdLibCxxVersion(self, Version: uint64_t) {}
+fn Preprocessor::setStdLibCxxVersion(self, Version: uint64_t) {
+    self.CXXStandardLibraryVersion = CXXStandardLibraryVersionInfo { Lib: LibStdCXX, Version: Version };
+}
 
 fn Preprocessor::NeedsStdLibCxxWorkaroundBefore(self, FixedVersion: u64) -> bool {
     assert!(FixedVersion >= 20000000 && FixedVersion <= 21000000, "invalid value for __GLIBCXX__");
-    let mut Ver: uint64_t> = zeroed();
-    if operator!() {
+    let mut Ver: uint64_t> = self.getStdLibCxxVersion();
+    if !Ver {
         return false;
     }
-    return * < FixedVersion;
+    return operator(Ver) < FixedVersion;
 }
 
 struct Closure_1 {

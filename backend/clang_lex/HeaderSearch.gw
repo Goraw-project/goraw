@@ -25,60 +25,85 @@ fn HeaderFileInfo::getControllingMacro(self, External: *mut ExternalPreprocessor
 fn ExternalHeaderFileInfoSource::~ExternalHeaderFileInfoSource(self) {}
 
 fn HeaderSearch::PrintStats(self) {
+    errs() << "\n*** HeaderSearch Stats:\n" << self.FileInfo.len << " files tracked.\n";
     let mut NumOnceOnlyFiles: u32 = 0;
-    errs() << NumOnceOnlyFiles << " #import/#pragma once files.\n";
-    errs() << NumIncluded << " #include/#include_next/#import.\n" << "    " << NumMultiIncludeFileOptzn << " #includes skipped due to the multi-include optimization.\n";
-    errs() << " framework lookups.\n" << NumSubFrameworkLookups << " subframework lookups.\n";
+    for x in self.FileInfo {
+        NumOnceOnlyFiles += (HFI.isPragmaOnce || HFI.isImport);
+    }
+    errs() << "  " << NumOnceOnlyFiles << " #import/#pragma once files.\n";
+    errs() << "  " << NumIncluded.operator unsigned long long() << " #include/#include_next/#import.\n" << "    " << NumMultiIncludeFileOptzn.operator unsigned long long() << " #includes skipped due to the multi-include optimization.\n";
+    errs() << NumFrameworkLookups.operator unsigned long long() << " framework lookups.\n" << NumSubFrameworkLookups.operator unsigned long long() << " subframework lookups.\n";
 }
 
-fn HeaderSearch::SetSearchPaths(self, dirs: i32, angledDirIdx: u32, systemDirIdx: u32, searchDirToHSEntry: i32) {
-    assert!(angledDirIdx <= systemDirIdx && systemDirIdx <= (), "Directory indices are unordered");
+fn HeaderSearch::SetSearchPaths(self, dirs: []DirectoryLookup, angledDirIdx: u32, systemDirIdx: u32, searchDirToHSEntry: DenseMap<unsigned int, unsigned int>) {
+    assert!(angledDirIdx <= systemDirIdx && systemDirIdx <= dirs.len, "Directory indices are unordered");
+    self.SearchDirs = move(dirs);
+    self.SearchDirsUsage.assign(self.SearchDirs.len, false);
     self.AngledDirIdx = angledDirIdx;
     self.SystemDirIdx = systemDirIdx;
+    self.SearchDirToHSEntry = move(searchDirToHSEntry);
     self.indexInitialHeaderMaps();
 }
 
 fn HeaderSearch::AddSearchPath(self, dir: *DirectoryLookup, isAngled: bool) {
     let mut idx: u32 = if isAngled { self.SystemDirIdx } else { self.AngledDirIdx };
+    self.SearchDirs.insert(self.SearchDirs.begin() + idx, dir);
+    self.SearchDirsUsage.insert(self.SearchDirsUsage.begin() + idx, false);
     if !isAngled {
         self.AngledDirIdx += 1;
     }
     self.SystemDirIdx += 1;
 }
 
-fn HeaderSearch::computeUserEntryUsage(self: *HeaderSearch) -> i32 {
-    let mut UserEntryUsage: i32 = self.HSOpts();
+fn HeaderSearch::computeUserEntryUsage(self: *HeaderSearch) -> []bool {
+    let mut UserEntryUsage: []bool = []bool { self.HSOpts.UserEntries.len, allocator<bool> {} };
     for let mut I: u32 = 0;
-let mut E: u32 = 0; I < E; I += 1 {
-        if  {
-            let mut UserEntryIdxIt: auto = zeroed();
-            if  {
-                UserEntryUsage()[] = true;
+let mut E: u32 = self.SearchDirsUsage.len; I < E; I += 1 {
+        if self.SearchDirsUsage[I] {
+            let mut UserEntryIdxIt: const_iterator = self.SearchDirToHSEntry.find(I);
+            if UserEntryIdxIt != self.SearchDirToHSEntry.end() {
+                UserEntryUsage[operator(UserEntryIdxIt).second] = true;
             }
         }
     }
-    return ;
+    return UserEntryUsage;
 }
 
-fn HeaderSearch::collectVFSUsageAndClear(self: *HeaderSearch) -> i32 {
-    let mut VFSUsage: i32 = 0;
+fn HeaderSearch::collectVFSUsageAndClear(self: *HeaderSearch) -> []bool {
+    let mut VFSUsage: []bool = []bool {};
     if !self.getHeaderSearchOpts().ModulesIncludeVFSUsage {
-        return ;
+        return VFSUsage;
     }
     let mut RootFS: *mut FileSystem = self.FileMgr.getVirtualFileSystem();
-    RootFS.visit;
-    assert!(VFSUsage()() == self.getHeaderSearchOpts()(), "A different number of RedirectingFileSystem's were present than -ivfsoverlay options passed to Clang!");
-    reverse();
-    return ;
+    RootFS.visit(VisitCallbackTy { Closure_1 { VFSUsage: &mut VFSUsage }, null, null });
+    assert!(VFSUsage.len == self.getHeaderSearchOpts().VFSOverlayFiles.len, "A different number of RedirectingFileSystem's were present than -ivfsoverlay options passed to Clang!");
+    reverse(VFSUsage.begin(), VFSUsage.end());
+    return VFSUsage;
 }
 
 fn HeaderSearch::CreateHeaderMap(self, FE: FileEntryRef) -> *HeaderMap {
-    if  {}
-    if  {}
+    if !self.HeaderMaps.is_empty() {
+        for let mut i: u32 = 0;
+let mut e: u32 = self.HeaderMaps.len; i != e; i += 1 {
+            if self.HeaderMaps[i].first == FE {
+                return self.HeaderMaps[i].second.get();
+            }
+        }
+    }
+    if Create(FE, self.FileMgr) {
+        HM;
+    } else {
+        self.HeaderMaps.push(FE, move(HM));
+        return self.HeaderMaps.back().second.get();
+    }
     return null;
 }
 
-fn HeaderSearch::getHeaderMapFileNames(self: *HeaderSearch, Names: *mut string>) {}
+fn HeaderSearch::getHeaderMapFileNames(self: *HeaderSearch, Names: *mut string>) {
+    for HM in self.HeaderMaps {
+        Names.push(HM.first.getName()[0..allocator<char> {}]);
+    }
+}
 
 fn HeaderSearch::getCachedModuleFileName(self, Module: *mut Module) -> ModuleFileName {
     let mut ModuleMap: OptionalFileEntryRef = self.getModuleMap().getModuleMapFileForUniquing(Module);
@@ -89,12 +114,24 @@ fn HeaderSearch::getCachedModuleFileName(self, Module: *mut Module) -> ModuleFil
 }
 
 fn HeaderSearch::getPrebuiltModuleFileName(self, ModuleName: str, FileMapOnly: bool) -> ModuleFileName {
-    let mut i: auto = self.HSOpts(ModuleName);
-    if i() != self.HSOpts() {
-        return makeExplicit();
+    let mut i: const_iterator = self.HSOpts.PrebuiltModuleFiles.find(ModuleName);
+    if !i == self.HSOpts.PrebuiltModuleFiles.end() {
+        return makeExplicit(operator(i).second);
     }
-    if FileMapOnly || self.HSOpts() {
+    if FileMapOnly || self.HSOpts.PrebuiltModulePaths.is_empty() {
         return ModuleFileName {};
+    }
+    for Dir in self.HSOpts.PrebuiltModulePaths {
+        let mut Result: str = Dir;
+        self.FileMgr.makeAbsolutePath(Result, false);
+        if ModuleName.contains(':') {
+            append(Result, ModuleName.split(':').first + "-" + ModuleName.split(':').second + ".pcm", "", "", "");
+        } else {
+            append(Result, ModuleName + ".pcm", "", "", "");
+        }
+        if self.getFileMgr().getOptionalFileRef(Result.operator StringRef(), false, true, true) {
+            return makeExplicit(Result.operator StringRef());
+        }
     }
     return ModuleFileName {};
 }
@@ -103,6 +140,14 @@ fn HeaderSearch::getPrebuiltImplicitModuleFileName(self, Module: *mut Module) ->
     let mut ModuleMap: OptionalFileEntryRef = self.getModuleMap().getModuleMapFileForUniquing(Module);
     let mut ModuleName: str = Module.Name;
     let mut ModuleMapPath: str = operator(ModuleMap).getName();
+    for Dir in self.HSOpts.PrebuiltModulePaths {
+        let mut CachePath: str = Dir;
+        self.FileMgr.makeAbsolutePath(CachePath, false);
+        let mut FileName: ModuleFileName = self.getCachedModuleFileNameImpl(ModuleName, ModuleMapPath, CachePath.operator StringRef());
+        if !FileName.is_empty() && self.getFileMgr().getOptionalFileRef(FileName.operator StringRef(), false, true, true) {
+            return makeExplicit(FileName.operator StringRef());
+        }
+    }
     return ModuleFileName {};
 }
 
@@ -114,26 +159,26 @@ fn HeaderSearch::getCachedModuleFileNameImpl(self, ModuleName: str, ModuleMapPat
     if CachePath.is_empty() {
         return ModuleFileName {};
     }
-    let mut Result: str = zeroed();
-    let mut SuffixBegin: u32 = ();
+    let mut Result: str = CachePath;
+    let mut SuffixBegin: u32 = Result.len;
     if self.HSOpts.DisableModuleHash {
-        append(ModuleName + ".pcm");
+        append(Result, ModuleName + ".pcm", "", "", "");
     } else {
-        append(self.ContextHash);
-        let mut CanonicalPath: str = zeroed();
-        if self.getModuleMap().canonicalizeModuleMapPath() {
+        append(Result, self.ContextHash, "", "", "");
+        let mut CanonicalPath: str = ModuleMapPath;
+        if self.getModuleMap().canonicalizeModuleMapPath(CanonicalPath) {
             return ModuleFileName {};
         }
-        let mut Hash: auto = xxh3_64bits();
-        let mut HashStr: str = zeroed();
-        64.toStringUnsigned(36);
-        append(ModuleName + "-" +  + ".pcm");
+        let mut Hash: u64 = xxh3_64bits(CanonicalPath.operator StringRef());
+        let mut HashStr: str = "";
+        APInt { 64, Hash, false, false }.toStringUnsigned(HashStr, 36);
+        append(Result, ModuleName + "-" + HashStr + ".pcm", "", "", "");
     }
-    return makeImplicit(() - SuffixBegin);
+    return makeImplicit(Result.operator StringRef(), Result.len - SuffixBegin);
 }
 
 fn HeaderSearch::lookupModule(self, ModuleName: str, ImportLoc: SourceLocation, AllowSearch: bool, AllowExtraModuleMapSearch: bool) -> *mut Module {
-    let mut Module: *mut Module = null;
+    let mut Module: *mut Module = self.ModMap.findOrLoadModule(ModuleName);
     if Module || !AllowSearch || !self.HSOpts.ImplicitModuleMaps {
         return Module;
     }
@@ -150,19 +195,68 @@ fn HeaderSearch::lookupModule(self, ModuleName: str, ImportLoc: SourceLocation, 
 
 fn HeaderSearch::lookupModule(self, ModuleName: str, SearchName: str, ImportLoc: SourceLocation, AllowExtraModuleMapSearch: bool) -> *mut Module {
     let mut Module: *mut Module = null;
+    for Dir in self.search_dir_range() {
+        if Dir.isFramework() {
+            let mut FrameworkDirName: str = "";
+            operator(FrameworkDirName, operator(Dir.getFrameworkDirRef()).getName());
+            append(FrameworkDirName, SearchName + ".framework", "", "", "");
+            if self.FileMgr.getOptionalDirectoryRef(FrameworkDirName.operator StringRef(), true) {
+                FrameworkDir;
+            } else {
+                let mut IsSystem: bool = Dir.getDirCharacteristic() != C_User;
+                Module = self.loadFrameworkModule(ModuleName, operator(FrameworkDir), IsSystem, true);
+                if Module {
+                    break;
+                }
+            }
+        }
+        if !Dir.isNormalDir() {
+            continue;
+        }
+        let mut IsSystem: bool = Dir.isSystemHeaderDirectory();
+        let mut NormalDir: DirectoryEntryRef = operator(Dir.getDirRef());
+        if self.parseModuleMapFile(NormalDir, IsSystem, true, false) == MMR_NewlyProcessed {
+            Module = self.ModMap.findOrLoadModule(ModuleName);
+            if Module {
+                break;
+            }
+        }
+        let mut NestedModuleMapDirName: str = "";
+        NestedModuleMapDirName = operator(Dir.getDirRef()).getName();
+        append(NestedModuleMapDirName, ModuleName, "", "", "");
+        if self.parseModuleMapFile(NestedModuleMapDirName.operator StringRef(), IsSystem, true, false) == MMR_NewlyProcessed {
+            Module = self.ModMap.findOrLoadModule(ModuleName);
+            if Module {
+                break;
+            }
+        }
+        if self.HSOpts.AllowModuleMapSubdirectorySearch {
+            if Dir.haveSearchedAllModuleMaps() {
+                continue;
+            }
+            if AllowExtraModuleMapSearch {
+                self.loadSubdirectoryModuleMaps(Dir);
+            }
+            Module = self.ModMap.findOrLoadModule(ModuleName);
+            if Module {
+                break;
+            }
+        }
+    }
     return Module;
 }
 
 fn HeaderSearch::indexInitialHeaderMaps(self) {
-    let mut Index: i32 = 0;
-    for let mut i: u32 = 0; ; i += 1 {
-        let mut Dir: *mut auto = null;
-        if !() {
+    let mut Index: BumpPtrAllocator> = self.SearchDirs.len;
+    for let mut i: u32 = 0; i != self.SearchDirs.len; i += 1 {
+        let mut Dir: *mut DirectoryLookup = self.SearchDirs[i];
+        if !Dir.isHeaderMap() {
+            self.SearchDirHeaderMapIndex = move(Index);
             self.FirstNonHeaderMapSearchDirIdx = i;
             break;
         }
-        let mut Callback: Closure_1 = Closure_1 { i: &mut i };
-        Dir()()(Callback);
+        let mut Callback: Closure_2 = Closure_2 { Index: &mut Index, i: &mut i };
+        Dir.getHeaderMap().forEachKey(Callback);
     }
 }
 
@@ -174,62 +268,64 @@ fn DirectoryLookup::getName(self: *DirectoryLookup) -> str {
         return operator(self.getFrameworkDirRef()).getName();
     }
     assert!(self.isHeaderMap(), "Unknown DirectoryLookup");
-    return self.getHeaderMap().getFileName;
+    return self.getHeaderMap().getFileName();
 }
 
 fn HeaderSearch::getFileAndSuggestModule(self, FileName: str, IncludeLoc: SourceLocation, Dir: *DirectoryEntry, IsSystemHeaderDir: bool, RequestingModule: *mut Module, SuggestedModule: *mut KnownHeader, OpenFile: bool, CacheFailures: bool) -> OptionalFileEntryRef {
-    let mut File: auto = self.getFileMgr()(FileName, OpenFile, CacheFailures);
-    if ! {
-        let mut EC: error_code = errorToErrorCode();
-        if EC(no_such_file_or_directory) && EC(invalid_argument) && EC(is_a_directory) && EC(not_a_directory) {
-            self.Diags << FileName << EC.message();
+    let mut File: Expected<FileEntryRef> = self.getFileMgr().getFileRef(FileName, OpenFile, CacheFailures, true);
+    if !File {
+        let mut EC: error_code = errorToErrorCode(File.takeError());
+        if !EC == no_such_file_or_directory && !EC == invalid_argument && !EC == is_a_directory && !EC == not_a_directory {
+            self.Diags.Report(IncludeLoc, err_cannot_open_file) << FileName << EC.message();
         }
         return nullopt;
     }
-    if !self.findUsableModuleForHeader(*, if Dir {} else { ()() }, RequestingModule, SuggestedModule, IsSystemHeaderDir) {
+    if !self.findUsableModuleForHeader(operator(File), if Dir { Dir } else { operator(File).getFileEntry().getDir() }, RequestingModule, SuggestedModule, IsSystemHeaderDir) {
         return nullopt;
     }
-    return *;
+    return operator(File);
 }
 
 fn DirectoryLookup::LookupFile(self: *DirectoryLookup, Filename: *mut str, HS: *mut HeaderSearch, IncludeLoc: SourceLocation, SearchPath: *mut SmallVectorImpl<char>, RelativePath: *mut SmallVectorImpl<char>, RequestingModule: *mut Module, SuggestedModule: *mut KnownHeader, InUserSpecifiedSystemFramework: *mut bool, IsFrameworkFound: *mut bool, IsInHeaderMap: *mut bool, MappedName: *mut SmallVectorImpl<char>, OpenFile: bool) -> OptionalFileEntryRef {
     InUserSpecifiedSystemFramework = false;
     IsInHeaderMap = false;
-    MappedName()();
-    let mut TmpDir: str = zeroed();
+    MappedName.clear();
+    let mut TmpDir: str = "";
     if self.isNormalDir() {
-        TmpDir() = operator(self.getDirRef()).getName();
-        append(Filename);
+        TmpDir = operator(self.getDirRef()).getName();
+        append(TmpDir, Filename, "", "", "");
         if SearchPath {
             let mut SearchPathRef: str = operator(self.getDirRef()).getName();
-            SearchPath()();
-            SearchPath()(SearchPathRef.begin(), SearchPathRef.end());
+            SearchPath.clear();
+            SearchPath.append(SearchPathRef.begin(), SearchPathRef.end());
         }
         if RelativePath {
-            RelativePath()();
-            RelativePath()(Filename.begin(), Filename.end());
+            RelativePath.clear();
+            RelativePath.append(Filename.begin(), Filename.end());
         }
-        return HS.getFileAndSuggestModule(IncludeLoc, self.getDir(), self.isSystemHeaderDirectory(), RequestingModule, SuggestedModule, OpenFile);
+        return HS.getFileAndSuggestModule(TmpDir.operator StringRef(), IncludeLoc, self.getDir(), self.isSystemHeaderDirectory(), RequestingModule, SuggestedModule, OpenFile, true);
     }
     if self.isFramework() {
         return self.DoFrameworkLookup(Filename, HS, SearchPath, RelativePath, RequestingModule, SuggestedModule, InUserSpecifiedSystemFramework, IsFrameworkFound);
     }
     assert!(self.isHeaderMap(), "Unknown directory lookup");
     let mut HM: *HeaderMap = self.getHeaderMap();
-    let mut Path: str = zeroed();
-    let mut Dest: str = HM.lookupFilename(Filename);
+    let mut Path: str = "";
+    let mut Dest: str = HM.lookupFilename(Filename, Path);
     if Dest.is_empty() {
         return nullopt;
     }
     IsInHeaderMap = true;
-    let mut FixupSearchPathAndFindUsableModule: Closure_2 = Closure_2 { SearchPath: &mut SearchPath, cap_1: self, RelativePath: &mut RelativePath, Filename: &mut Filename, HS: &mut HS, RequestingModule: &mut RequestingModule, SuggestedModule: &mut SuggestedModule };
+    let mut FixupSearchPathAndFindUsableModule: Closure_3 = Closure_3 { SearchPath: &mut SearchPath, cap_1: self, RelativePath: &mut RelativePath, Filename: &mut Filename, HS: &mut HS, RequestingModule: &mut RequestingModule, SuggestedModule: &mut SuggestedModule };
     if is_relative(Dest, native) {
-        MappedName()(Dest.begin(), Dest.end());
-        Filename = MappedName()();
-        Dest = HM.lookupFilename(Filename);
+        MappedName.append(Dest.begin(), Dest.end());
+        Filename = MappedName.begin()[0..MappedName.len];
+        Dest = HM.lookupFilename(Filename, Path);
     }
-    if  {
-        return FixupSearchPathAndFindUsableModule(*);
+    if HS.getFileMgr().getOptionalFileRef(Dest, OpenFile, true, true) {
+        Res;
+    } else {
+        return FixupSearchPathAndFindUsableModule.call(operator(Res));
     }
     HS.noteLookupUsage(HS.searchDirIdx(*self), IncludeLoc);
     return nullopt;
@@ -252,7 +348,7 @@ fn getTopFrameworkDir(FileMgr: *mut FileManager, DirName: str, SubmodulePath: *m
             break;
         }
         if extension(DirName, native) == ".framework" {
-            SubmodulePath()(stem(DirName, native));
+            SubmodulePath.push(stem(DirName, native)[0..allocator<char> {}]);
             TopFrameworkDir = operator(Dir);
         }
     }
@@ -272,28 +368,28 @@ fn DirectoryLookup::DoFrameworkLookup(self: *DirectoryLookup, Filename: str, HS:
         return nullopt;
     }
     let mut CacheEntry: *mut FrameworkCacheEntry = HS.LookupFrameworkCache(Filename[0..0 + SlashPos]);
-    if CacheEntry.Directory && CacheEntry.Directory {
+    if CacheEntry.Directory && CacheEntry.Directory != self.getFrameworkDirRef() {
         return nullopt;
     }
-    let mut FrameworkName: str = zeroed();
-    FrameworkName() += operator(self.getFrameworkDirRef()).getName();
-    if FrameworkName()() || () != '/' {
-        FrameworkName()('/');
+    let mut FrameworkName: str = "";
+    operator(FrameworkName, operator(self.getFrameworkDirRef()).getName());
+    if FrameworkName.is_empty() || FrameworkName.back() != '/' {
+        FrameworkName.push('/');
     }
     let mut ModuleName: str = Filename.begin()[0..SlashPos];
-    FrameworkName() += ModuleName;
-    FrameworkName() += ".framework/";
+    operator(FrameworkName, ModuleName);
+    operator(FrameworkName, ".framework/");
     if !CacheEntry.Directory {
         operator(NumFrameworkLookups);
-        let mut Dir: auto = FileMgr.getOptionalDirectoryRef();
-        if ! {
+        let mut Dir: OptionalDirectoryEntryRef = FileMgr.getOptionalDirectoryRef(FrameworkName.operator StringRef(), true);
+        if !Dir {
             return nullopt;
         }
         CacheEntry.Directory = self.getFrameworkDirRef();
         if self.getDirCharacteristic() == C_User {
-            let mut SystemFrameworkMarker: str = zeroed();
-            SystemFrameworkMarker() += ".system_framework";
-            if FileMgr.getOptionalFileRef() {
+            let mut SystemFrameworkMarker: str = FrameworkName;
+            operator(SystemFrameworkMarker, ".system_framework");
+            if FileMgr.getOptionalFileRef(SystemFrameworkMarker.operator StringRef(), false, true, true) {
                 CacheEntry.IsUserSpecifiedSystemFramework = true;
             }
         }
@@ -301,32 +397,32 @@ fn DirectoryLookup::DoFrameworkLookup(self: *DirectoryLookup, Filename: str, HS:
     InUserSpecifiedSystemFramework = CacheEntry.IsUserSpecifiedSystemFramework;
     IsFrameworkFound = CacheEntry.Directory.has_value();
     if RelativePath {
-        RelativePath()();
-        RelativePath()(Filename.begin() + SlashPos + 1, Filename.end());
+        RelativePath.clear();
+        RelativePath.append(Filename.begin() + SlashPos + 1, Filename.end());
     }
-    let mut OrigSize: u32 = ();
-    FrameworkName() += "Headers/";
+    let mut OrigSize: u32 = FrameworkName.len;
+    operator(FrameworkName, "Headers/");
     if SearchPath {
-        SearchPath()();
-        SearchPath()(() - 1);
+        SearchPath.clear();
+        SearchPath.append(FrameworkName.begin(), FrameworkName.end() - 1);
     }
-    FrameworkName()(Filename.begin() + SlashPos + 1, Filename.end());
-    let mut File: auto = FileMgr.getOptionalFileRef(!SuggestedModule);
-    if ! {
+    FrameworkName.append(Filename.begin() + SlashPos + 1, Filename.end());
+    let mut File: OptionalFileEntryRef = FileMgr.getOptionalFileRef(FrameworkName.operator StringRef(), !SuggestedModule, true, true);
+    if !File {
         let mut Private: *u8 = "Private";
-        FrameworkName()(() + OrigSize, Private, Private + strlen(Private));
+        FrameworkName.insert(FrameworkName.begin() + OrigSize, Private, Private + strlen(Private));
         if SearchPath {
-            SearchPath()(SearchPath()() + OrigSize, Private, Private + strlen(Private));
+            SearchPath.insert(SearchPath.begin() + OrigSize, Private, Private + strlen(Private));
         }
-        File() = FileMgr.getOptionalFileRef(!SuggestedModule);
+        File = FileMgr.getOptionalFileRef(FrameworkName.operator StringRef(), !SuggestedModule, true, true);
     }
-    if File() && needModuleLookup(RequestingModule, SuggestedModule) {
-        let mut FrameworkPath: str = ()();
+    if File && needModuleLookup(RequestingModule, SuggestedModule) {
+        let mut FrameworkPath: str = operator(File).getDir().getName();
         let mut FoundFramework: bool = false;
         while true {
             {
-            let mut Dir: auto = FileMgr.getOptionalDirectoryRef(FrameworkPath, true);
-            if ! {
+            let mut Dir: OptionalDirectoryEntryRef = FileMgr.getOptionalDirectoryRef(FrameworkPath, true);
+            if !Dir {
                 break;
             }
             if extension(FrameworkPath, native) == ".framework" {
@@ -342,46 +438,49 @@ fn DirectoryLookup::DoFrameworkLookup(self: *DirectoryLookup, Filename: str, HS:
         }
         let mut IsSystem: bool = self.getDirCharacteristic() != C_User;
         if FoundFramework {
-            if !HS.findUsableModuleForFrameworkHeader(*, FrameworkPath, RequestingModule, SuggestedModule, IsSystem) {
+            if !HS.findUsableModuleForFrameworkHeader(operator(File), FrameworkPath, RequestingModule, SuggestedModule, IsSystem) {
                 return nullopt;
             }
         } else {
-            if !HS.findUsableModuleForHeader(*, self.getDir(), RequestingModule, SuggestedModule, IsSystem) {
+            if !HS.findUsableModuleForHeader(operator(File), self.getDir(), RequestingModule, SuggestedModule, IsSystem) {
                 return nullopt;
             }
         }
     }
-    if File() {
-        return *;
+    if File {
+        return operator(File);
     }
     return nullopt;
 }
 
 fn HeaderSearch::cacheLookupSuccess(self, CacheLookup: *mut LookupFileCacheInfo, HitIt: ConstSearchDirIterator, Loc: SourceLocation) {
-    CacheLookup() = ;
-    self.noteLookupUsage(Loc);
+    CacheLookup.HitIt = HitIt;
+    self.noteLookupUsage(HitIt.Idx, Loc);
 }
 
 fn HeaderSearch::noteLookupUsage(self, HitIdx: u32, Loc: SourceLocation) {
-    let mut UserEntryIdxIt: auto = zeroed();
-    if  {
-        self.Diags << self.HSOpts[];
+    self.SearchDirsUsage[HitIdx] = true;
+    let mut UserEntryIdxIt: iterator = self.SearchDirToHSEntry.find(HitIdx);
+    if UserEntryIdxIt != self.SearchDirToHSEntry.end() {
+        self.Diags.Report(Loc, remark_pp_search_path_usage) << self.HSOpts.UserEntries[operator(UserEntryIdxIt).second].Path;
     }
 }
 
-fn HeaderSearch::setTarget(self, Target: *TargetInfo) {}
+fn HeaderSearch::setTarget(self, Target: *TargetInfo) {
+    self.ModMap.setTarget(Target);
+}
 
 fn checkMSVCHeaderSearch(Diags: *mut DiagnosticsEngine, MSFE: OptionalFileEntryRef, FE: *FileEntry, IncludeLoc: SourceLocation) -> bool {
     if MSFE && FE != operator(MSFE) {
-        Diags << operator(MSFE).getName();
+        Diags.Report(IncludeLoc, ext_pp_include_search_ms) << operator(MSFE).getName();
         return true;
     }
     return false;
 }
 
-fn copyString(Str: str, Alloc: *mut i32) -> *u8 {
+fn copyString(Str: str, Alloc: *mut BumpPtrAllocator) -> *u8 {
     assert!(!Str.is_empty();
-    let mut CopyStr: *mut u8 = (Str.len + 1);
+    let mut CopyStr: *mut u8 = Alloc.Allocate(Str.len + 1);
     copy(Str.begin(), Str.end(), CopyStr);
     CopyStr[Str.len] = 0;
     return CopyStr;
@@ -393,103 +492,107 @@ fn isFrameworkStylePath(Path: str, IsPrivateHeader: *mut bool, FrameworkName: *m
     IsPrivateHeader = false;
     let mut FoundComp: i32 = 0;
     while !I == E {
-        if operator(I) {
+        if operator(I) == "Headers" {
             FoundComp += 1;
-        } else if operator(I) {
+        } else if operator(I) == "PrivateHeaders" {
             FoundComp += 1;
             IsPrivateHeader = true;
-        } else if I()(".framework") {
-            let mut Name: str = I()(10);
-            FrameworkName()();
-            FrameworkName()(Name.begin(), Name.end());
-            IncludeSpelling()();
-            IncludeSpelling()(Name.begin(), Name.end());
+        } else if operator(operator(I)).ends_with(".framework") {
+            let mut Name: str = operator(operator(I)).drop_back(10);
+            FrameworkName.clear();
+            FrameworkName.append(Name.begin(), Name.end());
+            IncludeSpelling.clear();
+            IncludeSpelling.append(Name.begin(), Name.end());
             FoundComp = 1;
         } else if FoundComp >= 2 {
-            IncludeSpelling()('/');
-            IncludeSpelling()(I()(), I()());
+            IncludeSpelling.push('/');
+            IncludeSpelling.append(operator(operator(I)).begin(), operator(operator(I)).end());
         }
         operator(I);
     }
-    return !FrameworkName()() && FoundComp >= 2;
+    return !FrameworkName.is_empty() && FoundComp >= 2;
 }
 
 fn diagnoseFrameworkInclude(Diags: *mut DiagnosticsEngine, IncludeLoc: SourceLocation, Includer: str, IncludeFilename: str, IncludeFE: FileEntryRef, isAngled: bool, FoundByHeaderMap: bool) {
     let mut IsIncluderPrivateHeader: bool = false;
-    let mut FromFramework: str = zeroed();
-    let mut ToFramework: str = zeroed();
-    let mut FromIncludeSpelling: str = zeroed();
-    let mut ToIncludeSpelling: str = zeroed();
-    if !isFrameworkStylePath(Includer, IsIncluderPrivateHeader) {
+    let mut FromFramework: str = "";
+    let mut ToFramework: str = "";
+    let mut FromIncludeSpelling: str = "";
+    let mut ToIncludeSpelling: str = "";
+    if !isFrameworkStylePath(Includer, IsIncluderPrivateHeader, FromFramework, FromIncludeSpelling) {
         return;
     }
     let mut IsIncludeePrivateHeader: bool = false;
-    let mut IsIncludeeInFramework: bool = isFrameworkStylePath(IncludeFE.getName(), IsIncludeePrivateHeader);
+    let mut IsIncludeeInFramework: bool = isFrameworkStylePath(IncludeFE.getName(), IsIncludeePrivateHeader, ToFramework, ToIncludeSpelling);
     if !isAngled && !FoundByHeaderMap {
-        let mut NewInclude: str = zeroed();
+        let mut NewInclude: str = "<";
         if IsIncludeeInFramework {
-            NewInclude() += ;
-            NewInclude() += ">";
+            operator(NewInclude, ToIncludeSpelling.operator StringRef());
+            operator(NewInclude, ">");
         } else {
-            NewInclude() += IncludeFilename;
-            NewInclude() += ">";
+            operator(NewInclude, IncludeFilename);
+            operator(NewInclude, ">");
         }
-        Diags << IncludeFilename << CreateReplacement(IncludeLoc);
+        Diags.Report(IncludeLoc, warn_quoted_include_in_framework_header) << IncludeFilename << CreateReplacement(IncludeLoc, NewInclude.operator StringRef());
     }
-    if !IsIncluderPrivateHeader && IsIncludeeInFramework && IsIncludeePrivateHeader &&  ==  {
-        Diags << IncludeFilename;
+    if !IsIncluderPrivateHeader && IsIncludeeInFramework && IsIncludeePrivateHeader && FromFramework == ToFramework {
+        Diags.Report(IncludeLoc, warn_framework_include_private_from_public) << IncludeFilename;
     }
 }
 
 fn HeaderSearch::diagnoseHeaderShadowing(self, Filename: str, FE: FileEntryRef, IncludeLoc: SourceLocation, FromDir: ConstSearchDirIterator, Includers: pair<OptionalFileEntryRef, DirectoryEntryRef>>, isAngled: bool, IncluderLoopIndex: i32, MainLoopIt: ConstSearchDirIterator) {
-    if self.Diags.isIgnored {
+    if self.Diags.isIgnored(warn_header_shadowing, IncludeLoc) {
         return;
     }
-    if MainLoopIt() && () {
+    if MainLoopIt && operator(operator(MainLoopIt)).isSystemHeaderDirectory() {
         return;
     }
-    if  {
+    if !self.ShadowCheckedHeaders[Filename].insert(FE.operator const clang::FileEntry *()).second {
         return;
     }
-    if ! {
-        for let mut i: u64 = IncluderLoopIndex + 1; i < Includers()(); i += 1 {
-            let mut IncluderAndDir: *auto = [i];
-            let mut TmpDir: str = zeroed();
-            append(Filename);
-            if  {
-                if * == FE {
+    if !MainLoopIt {
+        for let mut i: u64 = IncluderLoopIndex + 1; i < Includers.len; i += 1 {
+            let mut IncluderAndDir: *DirectoryEntryRef> const = Includers[i];
+            let mut TmpDir: str = IncluderAndDir.second.getName();
+            append(TmpDir, Filename, "", "", "");
+            if self.getFileMgr().getOptionalFileRef(TmpDir.operator StringRef(), false, true, true) {
+                File;
+            } else {
+                if operator(File) == FE {
                     continue;
                 }
-                self.Diags << Filename << FE.getDir().getName() << ();
+                self.Diags.Report(IncludeLoc, warn_header_shadowing) << Filename << FE.getDir().getName() << IncluderAndDir.second.getName();
                 return;
             }
         }
     }
-    let mut It: ConstSearchDirIterator = zeroed();
-    if MainLoopIt() {
-        It() = next();
-    } else if FromDir() {
-        It() = ;
+    let mut It: ConstSearchDirIterator = if isAngled { self.angled_dir_begin() } else { self.search_dir_begin() };
+    if MainLoopIt {
+        It = next(MainLoopIt, 1);
+    } else if FromDir {
+        It = FromDir;
     }
-    for ; ;  += 1 {
-        if It()() != C_User {
+    for ; !It == self.search_dir_end(); operator(It) {
+        if operator(operator(It)).getDirCharacteristic() != C_User {
             continue;
         }
-        let mut TmpPath: str = zeroed();
-        append(Filename);
-        if  {
-            if * == FE {
+        let mut TmpPath: str = operator(operator(It)).getName();
+        append(TmpPath, Filename, "", "", "");
+        if self.getFileMgr().getOptionalFileRef(TmpPath.operator StringRef(), false, true, true) {
+            File;
+        } else {
+            if operator(File) == FE {
                 continue;
             }
-            self.Diags << Filename << FE.getDir().getName() << ();
+            self.Diags.Report(IncludeLoc, warn_header_shadowing) << Filename << FE.getDir().getName() << operator(operator(It)).getName();
             return;
         }
     }
 }
 
 fn HeaderSearch::LookupFile(self, Filename: str, IncludeLoc: SourceLocation, isAngled: bool, FromDir: ConstSearchDirIterator, CurDirArg: *mut ConstSearchDirIterator, Includers: pair<OptionalFileEntryRef, DirectoryEntryRef>>, SearchPath: *mut SmallVectorImpl<char>, RelativePath: *mut SmallVectorImpl<char>, RequestingModule: *mut Module, SuggestedModule: *mut KnownHeader, IsMapped: *mut bool, IsFrameworkFound: *mut bool, SkipCache: bool, BuildSystemModule: bool, OpenFile: bool, CacheFailures: bool) -> OptionalFileEntryRef {
-    let mut CurDirLocal: ConstSearchDirIterator = zeroed();
-    let mut CurDir: *mut ConstSearchDirIterator = if CurDirArg { *CurDirArg } else {  };
+    let mut CurDirLocal: ConstSearchDirIterator = null;
+    let mut CurDir: *mut ConstSearchDirIterator = if CurDirArg { *CurDirArg } else { CurDirLocal };
     if IsMapped {
         *IsMapped = false;
     }
@@ -500,36 +603,80 @@ fn HeaderSearch::LookupFile(self, Filename: str, IncludeLoc: SourceLocation, isA
         *SuggestedModule = KnownHeader {};
     }
     if is_absolute(Filename, native) {
-        CurDir(null);
-        if FromDir() {
+        CurDir = null;
+        if FromDir {
             return nullopt;
         }
         if SearchPath {
-            SearchPath()();
+            SearchPath.clear();
         }
         if RelativePath {
-            RelativePath()();
-            RelativePath()(Filename.begin(), Filename.end());
+            RelativePath.clear();
+            RelativePath.append(Filename.begin(), Filename.end());
         }
         return self.getFileAndSuggestModule(Filename, IncludeLoc, null, false, RequestingModule, SuggestedModule, OpenFile, CacheFailures);
     }
     let mut MSSuggestedModule: KnownHeader = KnownHeader {};
     let mut MSFE: OptionalFileEntryRef = OptionalFileEntryRef {};
-    if !() && !isAngled {
-        let mut TmpDir: str = zeroed();
+    if !Includers.is_empty() && !isAngled {
+        let mut TmpDir: str = "";
         let mut First: bool = true;
+        for IncluderAndDir in Includers {
+            let mut Includer: OptionalFileEntryRef = IncluderAndDir.first;
+            TmpDir = IncluderAndDir.second.getName();
+            append(TmpDir, Filename, "", "", "");
+            let mut IncluderIsSystemHeader: bool = Closure_4 { Includer: &mut Includer, BuildSystemModule: &mut BuildSystemModule, cap_2: self }.call();
+            if self.getFileAndSuggestModule(TmpDir.operator StringRef(), IncludeLoc, IncluderAndDir.second.operator const clang::DirectoryEntry *(), IncluderIsSystemHeader, RequestingModule, SuggestedModule, true, true) {
+                FE;
+            } else {
+                self.diagnoseHeaderShadowing(Filename, operator(FE), IncludeLoc, FromDir, Includers, isAngled, &mut IncluderAndDir - Includers.begin(), null);
+                if !Includer {
+                    assert!(First, "only first includer can have no file");
+                    return FE;
+                }
+                let mut FromHFI: *HeaderFileInfo = self.getExistingFileInfo(operator(Includer));
+                assert!(FromHFI, "includer without file info");
+                let mut DirInfo: u32 = FromHFI.DirInfo;
+                let mut ToHFI: *mut HeaderFileInfo = self.getFileInfo(operator(FE));
+                ToHFI.DirInfo = DirInfo;
+                if SearchPath {
+                    let mut SearchPathRef: str = IncluderAndDir.second.getName();
+                    SearchPath.clear();
+                    SearchPath.append(SearchPathRef.begin(), SearchPathRef.end());
+                }
+                if RelativePath {
+                    RelativePath.clear();
+                    RelativePath.append(Filename.begin(), Filename.end());
+                }
+                if First {
+                    diagnoseFrameworkInclude(self.Diags, IncludeLoc, IncluderAndDir.second.getName(), Filename, operator(FE), false, false);
+                    return FE;
+                }
+                if self.Diags.isIgnored(ext_pp_include_search_ms, IncludeLoc) {
+                    return FE;
+                } else {
+                    MSFE = FE;
+                    if SuggestedModule {
+                        MSSuggestedModule = *SuggestedModule;
+                        *SuggestedModule = KnownHeader {};
+                    }
+                    break;
+                }
+            }
+            First = false;
+        }
     }
-    CurDir(null);
-    let mut It: ConstSearchDirIterator = zeroed();
-    if FromDir() {
-        It() = ;
+    CurDir = null;
+    let mut It: ConstSearchDirIterator = if isAngled { self.angled_dir_begin() } else { self.search_dir_begin() };
+    if FromDir {
+        It = FromDir;
     }
-    let mut CacheLookup: *mut LookupFileCacheInfo = null;
-    let mut NextIt: ConstSearchDirIterator = zeroed();
+    let mut CacheLookup: *mut LookupFileCacheInfo = self.LookupFileCache[Filename];
+    let mut NextIt: ConstSearchDirIterator = next(It, 1);
     if !SkipCache {
-        if CacheLookup() ==  && CacheLookup.RequestingModule == RequestingModule {
-            if CacheLookup() {
-                It() = CacheLookup();
+        if CacheLookup.StartIt == NextIt && CacheLookup.RequestingModule == RequestingModule {
+            if CacheLookup.HitIt {
+                It = CacheLookup.HitIt;
             }
             if CacheLookup.MappedName {
                 Filename = CacheLookup.MappedName;
@@ -538,25 +685,31 @@ fn HeaderSearch::LookupFile(self, Filename: str, IncludeLoc: SourceLocation, isA
                 }
             }
         } else {
-            CacheLookup.reset(RequestingModule);
-            if  {
-                let mut Iter: auto = zeroed();
+            CacheLookup.reset(RequestingModule, NextIt);
+            if It == self.search_dir_begin() && self.FirstNonHeaderMapSearchDirIdx > 0 {
+                let mut Iter: iterator = self.SearchDirHeaderMapIndex.find(Filename.lower());
+                if Iter == self.SearchDirHeaderMapIndex.end() {
+                    It = self.search_dir_nth(self.FirstNonHeaderMapSearchDirIdx);
+                } else {
+                    It = self.search_dir_nth(operator(Iter).second);
+                }
             }
         }
     } else {
-        CacheLookup.reset(RequestingModule);
+        CacheLookup.reset(RequestingModule, NextIt);
     }
-    let mut MappedName: str = zeroed();
-    for ; ;  += 1 {
+    let mut MappedName: str = "";
+    for ; !It == self.search_dir_end(); operator(It) {
         let mut InUserSpecifiedSystemFramework: bool = false;
         let mut IsInHeaderMap: bool = false;
         let mut IsFrameworkFoundInDir: bool = false;
-        let mut File: OptionalFileEntryRef = (Filename, *self, IncludeLoc, SearchPath, RelativePath, RequestingModule, SuggestedModule, InUserSpecifiedSystemFramework, IsFrameworkFoundInDir, IsInHeaderMap, OpenFile);
-        if !() {
+        let mut File: OptionalFileEntryRef = operator(operator(It)).LookupFile(Filename, *self, IncludeLoc, SearchPath, RelativePath, RequestingModule, SuggestedModule, InUserSpecifiedSystemFramework, IsFrameworkFoundInDir, IsInHeaderMap, MappedName, OpenFile);
+        if !MappedName.is_empty() {
             assert!(IsInHeaderMap, "MappedName should come from a header map");
+            CacheLookup.MappedName = copyString(MappedName.operator StringRef(), self.LookupFileCache.getAllocator());
         }
         if IsMapped {
-            operator|=(*IsMapped, (!() || (IsInHeaderMap && File)));
+            *IsMapped |= (!MappedName.is_empty() || (IsInHeaderMap && File));
         }
         if IsFrameworkFound {
             *IsFrameworkFound |= (IsFrameworkFoundInDir && !CacheLookup.MappedName);
@@ -565,37 +718,41 @@ fn HeaderSearch::LookupFile(self, Filename: str, IncludeLoc: SourceLocation, isA
             continue;
         }
         if !MSFE {
-            self.diagnoseHeaderShadowing(Filename, operator(File), IncludeLoc, isAngled, -1);
+            self.diagnoseHeaderShadowing(Filename, operator(File), IncludeLoc, FromDir, Includers, isAngled, -1, It);
         }
-        CurDir = ;
+        CurDir = It;
+        self.IncludeNames[operator(File).operator const clang::FileEntry *()] = Filename;
         let mut HFI: *mut HeaderFileInfo = self.getFileInfo(operator(File));
+        HFI.DirInfo = operator(operator(CurDir)).getDirCharacteristic();
         if HFI.DirInfo == C_User && InUserSpecifiedSystemFramework {
             HFI.DirInfo = C_System;
         }
-        for let mut j: u32 = 0; j; j -= 1 {
-            if Filename {
+        for let mut j: u32 = self.SystemHeaderPrefixes.len; j; j -= 1 {
+            if Filename.starts_with(self.SystemHeaderPrefixes[j - 1].first) {
+                HFI.DirInfo = if self.SystemHeaderPrefixes[j - 1].second { C_System } else { C_User };
                 break;
             }
         }
         if checkMSVCHeaderSearch(self.Diags, MSFE, &mut operator(File).getFileEntry(), IncludeLoc) {
             if SuggestedModule {
-                *SuggestedModule;
+                *SuggestedModule = MSSuggestedModule;
             }
             return MSFE;
         }
         let mut FoundByHeaderMap: bool = if !IsMapped { false } else { *IsMapped };
-        if !() {
-            diagnoseFrameworkInclude(self.Diags, IncludeLoc, ()(), Filename, operator(File), isAngled, FoundByHeaderMap);
+        if !Includers.is_empty() {
+            diagnoseFrameworkInclude(self.Diags, IncludeLoc, Includers.front().second.getName(), Filename, operator(File), isAngled, FoundByHeaderMap);
         }
-        self.cacheLookupSuccess(CacheLookup, IncludeLoc);
+        self.cacheLookupSuccess(CacheLookup, It, IncludeLoc);
         return File;
     }
     if checkMSVCHeaderSearch(self.Diags, MSFE, null, IncludeLoc) {
         if SuggestedModule {
-            *SuggestedModule;
+            *SuggestedModule = MSSuggestedModule;
         }
         return MSFE;
     }
+    CacheLookup.HitIt = self.search_dir_end();
     return nullopt;
 }
 
@@ -610,56 +767,56 @@ fn HeaderSearch::LookupSubframeworkHeader(self, Filename: str, ContextFileEnt: F
     if FrameworkPos == npos || (ContextName[FrameworkPos + DotFrameworkLen] != '/' && ContextName[FrameworkPos + DotFrameworkLen] != '\') {
         return nullopt;
     }
-    let mut FrameworkName: str = zeroed();
-    FrameworkName() += "Frameworks/";
-    FrameworkName()(Filename.begin(), Filename.begin() + SlashPos);
-    FrameworkName() += ".framework/";
-    let mut CacheLookup: *mut auto = null;
-    if CacheLookup() && ()() == () && memcmp(()(), operator&([0]), ()()) != 0 {
+    let mut FrameworkName: str = ContextName.ptr[0..ContextName.ptr + FrameworkPos + DotFrameworkLen + 1];
+    operator(FrameworkName, "Frameworks/");
+    FrameworkName.append(Filename.begin(), Filename.begin() + SlashPos);
+    operator(FrameworkName, ".framework/");
+    let mut CacheLookup: *mut FrameworkCacheEntry> = operator(self.FrameworkMap.insert(make_pair(Filename[0..0 + SlashPos], FrameworkCacheEntry {})).first);
+    if CacheLookup.second.Directory && CacheLookup.first().len == FrameworkName.len && memcmp(CacheLookup.first().ptr, &mut FrameworkName[0], CacheLookup.first().len) != 0 {
         return nullopt;
     }
-    if ! {
+    if !CacheLookup.second.Directory {
         operator(NumSubFrameworkLookups);
-        let mut Dir: auto = self.FileMgr.getOptionalDirectoryRef();
-        if ! {
+        let mut Dir: OptionalDirectoryEntryRef = self.FileMgr.getOptionalDirectoryRef(FrameworkName.operator StringRef(), true);
+        if !Dir {
             return nullopt;
         }
-        CacheLookup() = ;
+        CacheLookup.second.Directory = Dir;
     }
     if RelativePath {
-        RelativePath()();
-        RelativePath()(Filename.begin() + SlashPos + 1, Filename.end());
+        RelativePath.clear();
+        RelativePath.append(Filename.begin() + SlashPos + 1, Filename.end());
     }
-    let mut HeadersFilename: str = zeroed();
-    HeadersFilename() += "Headers/";
+    let mut HeadersFilename: str = FrameworkName;
+    operator(HeadersFilename, "Headers/");
     if SearchPath {
-        SearchPath()();
-        SearchPath()(() - 1);
+        SearchPath.clear();
+        SearchPath.append(HeadersFilename.begin(), HeadersFilename.end() - 1);
     }
-    HeadersFilename()(Filename.begin() + SlashPos + 1, Filename.end());
-    let mut File: auto = self.FileMgr.getOptionalFileRef(true);
-    if ! {
-        HeadersFilename() = ;
-        HeadersFilename() += "PrivateHeaders/";
+    HeadersFilename.append(Filename.begin() + SlashPos + 1, Filename.end());
+    let mut File: OptionalFileEntryRef = self.FileMgr.getOptionalFileRef(HeadersFilename.operator StringRef(), true, true, true);
+    if !File {
+        HeadersFilename = FrameworkName;
+        operator(HeadersFilename, "PrivateHeaders/");
         if SearchPath {
-            SearchPath()();
-            SearchPath()(() - 1);
+            SearchPath.clear();
+            SearchPath.append(HeadersFilename.begin(), HeadersFilename.end() - 1);
         }
-        HeadersFilename()(Filename.begin() + SlashPos + 1, Filename.end());
-        File() = self.FileMgr.getOptionalFileRef(true);
-        if ! {
+        HeadersFilename.append(Filename.begin() + SlashPos + 1, Filename.end());
+        File = self.FileMgr.getOptionalFileRef(HeadersFilename.operator StringRef(), true, true, true);
+        if !File {
             return nullopt;
         }
     }
     let mut ContextHFI: *HeaderFileInfo = self.getExistingFileInfo(ContextFileEnt);
     assert!(ContextHFI, "context file without file info");
     let mut DirInfo: u32 = ContextHFI.DirInfo;
-    self.getFileInfo(*) = DirInfo;
-    FrameworkName()();
-    if !self.findUsableModuleForFrameworkHeader(*, RequestingModule, SuggestedModule, false) {
+    self.getFileInfo(operator(File)).DirInfo = DirInfo;
+    FrameworkName.pop();
+    if !self.findUsableModuleForFrameworkHeader(operator(File), FrameworkName.operator StringRef(), RequestingModule, SuggestedModule, false) {
         return nullopt;
     }
-    return *;
+    return operator(File);
 }
 
 fn moduleMembershipNeedsMerge(HFI: *HeaderFileInfo, Role: ModuleHeaderRole) -> bool {
@@ -699,7 +856,7 @@ fn mergeHeaderFileInfo(HFI: *mut HeaderFileInfo, OtherHFI: *HeaderFileInfo) {
 }
 
 fn HeaderSearch::getFileInfo(self, FE: FileEntryRef) -> *mut HeaderFileInfo {
-    let mut HFI: *mut HeaderFileInfo = null;
+    let mut HFI: *mut HeaderFileInfo = &mut self.FileInfo[FE];
     if self.ExternalSource && !HFI.Resolved {
         let mut ExternalHFI: HeaderFileInfo = self.ExternalSource.GetHeaderFileInfo(FE);
         if ExternalHFI.IsValid {
@@ -717,6 +874,7 @@ fn HeaderSearch::getFileInfo(self, FE: FileEntryRef) -> *mut HeaderFileInfo {
 fn HeaderSearch::getExistingFileInfo(self: *HeaderSearch, FE: FileEntryRef) -> *HeaderFileInfo {
     let mut HFI: *mut HeaderFileInfo = null;
     if self.ExternalSource {
+        HFI = &mut self.FileInfo[FE];
         if !HFI.Resolved {
             let mut ExternalHFI: HeaderFileInfo = self.ExternalSource.GetHeaderFileInfo(FE);
             if ExternalHFI.IsValid {
@@ -726,15 +884,21 @@ fn HeaderSearch::getExistingFileInfo(self: *HeaderSearch, FE: FileEntryRef) -> *
                 }
             }
         }
-    } else if  {
-        
+    } else if self.FileInfo.find(FE) {
+        It != self.FileInfo.end();
     } else {
-        HFI = operator&();
+        HFI = &mut It.second;
     }
     return if (HFI && HFI.IsValid) { HFI } else { null };
 }
 
-fn HeaderSearch::forEachExistingLocalFileInfo(self: *HeaderSearch, Fn: function_ref<void (FileEntryRef, const HeaderFileInfo &)>) {}
+fn HeaderSearch::forEachExistingLocalFileInfo(self: *HeaderSearch, Fn: function_ref<void (FileEntryRef, const HeaderFileInfo &)>) {
+    for x in self.FileInfo {
+        if HFI.IsValid && !HFI.External {
+            Fn.call(FE, HFI);
+        }
+    }
+}
 
 fn HeaderSearch::isFileMultipleIncludeGuarded(self: *HeaderSearch, File: FileEntryRef) -> bool {
     if self.getExistingFileInfo(File) {
@@ -764,7 +928,7 @@ fn HeaderSearch::ShouldEnterIncludeFile(self, PP: *mut Preprocessor, File: FileE
     operator(NumIncluded);
     IsFirstIncludeOfFile = false;
     let mut FileInfo: *mut HeaderFileInfo = self.getFileInfo(File);
-    let mut MaybeReenterImportedFile: Closure_3 = Closure_3 { ModulesEnabled: &mut ModulesEnabled, FileInfo: &mut FileInfo, cap_2: self, File: &mut File };
+    let mut MaybeReenterImportedFile: Closure_5 = Closure_5 { ModulesEnabled: &mut ModulesEnabled, FileInfo: &mut FileInfo, cap_2: self, File: &mut File };
     if isImport {
         FileInfo.isImport = true;
         if PP.alreadyIncluded(File) && !MaybeReenterImportedFile.call() {
@@ -787,29 +951,38 @@ fn HeaderSearch::ShouldEnterIncludeFile(self, PP: *mut Preprocessor, File: FileE
     return true;
 }
 
-fn HeaderSearch::getTotalMemory(self: *HeaderSearch) -> u64 {}
+fn HeaderSearch::getTotalMemory(self: *HeaderSearch) -> u64 {
+    return self.SearchDirs.capacity() + capacity_in_bytes(self.FileInfo) + capacity_in_bytes(self.HeaderMaps) + self.LookupFileCache.getAllocator().getTotalMemory() + self.FrameworkMap.getAllocator().getTotalMemory();
+}
 
-fn HeaderSearch::searchDirIdx(self: *HeaderSearch, DL: *DirectoryLookup) -> u32 {}
+fn HeaderSearch::searchDirIdx(self: *HeaderSearch, DL: *DirectoryLookup) -> u32 {
+    return &mut DL - &mut operator(self.SearchDirs.begin());
+}
 
-fn HeaderSearch::getUniqueFrameworkName(self, Framework: str) -> str {}
+fn HeaderSearch::getUniqueFrameworkName(self, Framework: str) -> str {
+    return operator(self.FrameworkNames.insert(Framework).first).first();
+}
 
 fn HeaderSearch::getIncludeNameForHeader(self: *HeaderSearch, File: *FileEntry) -> str {
-    let mut It: auto = zeroed();
-    if  {
+    let mut It: const_iterator = self.IncludeNames.find(File);
+    if It == self.IncludeNames.end() {
         return "";
     }
-    return ;
+    return operator(It).second.operator StringRef();
 }
 
 fn HeaderSearch::buildModuleMapIndex(self, Dir: DirectoryEntryRef, MMState: *mut ModuleMapDirectoryState) {
     if !MMState.ModuleMapFile {
         return;
     }
-    let mut ParsedMM: *ModuleMapFile = null;
+    let mut ParsedMM: *ModuleMapFile = self.ModMap.getParsedModuleMap(operator(MMState.ModuleMapFile));
     if !ParsedMM {
         return;
     }
     let mut ParsedPrivateMM: *ModuleMapFile = null;
+    if MMState.PrivateModuleMapFile {
+        ParsedPrivateMM = self.ModMap.getParsedModuleMap(operator(MMState.PrivateModuleMapFile));
+    }
     self.processModuleMapForIndex(*ParsedMM, Dir, "", MMState);
     if ParsedPrivateMM {
         self.processModuleMapForIndex(*ParsedPrivateMM, Dir, "", MMState);
@@ -817,43 +990,52 @@ fn HeaderSearch::buildModuleMapIndex(self, Dir: DirectoryEntryRef, MMState: *mut
 }
 
 fn HeaderSearch::addToModuleMapIndex(self, RelPath: str, ModuleName: str, PathPrefix: str, MMState: *mut ModuleMapDirectoryState) {
-    let mut RelFromRootPath: str = zeroed();
-    append(RelPath);
-    native();
-    MMState()[](ModuleName);
+    let mut RelFromRootPath: str = PathPrefix;
+    append(RelFromRootPath, RelPath, "", "", "");
+    native(RelFromRootPath, native);
+    MMState.HeaderToModules[RelFromRootPath.operator StringRef()].push(ModuleName);
 }
 
 fn HeaderSearch::processExternModuleDeclForIndex(self, EMD: *ExternModuleDecl, MMDir: DirectoryEntryRef, PathPrefix: str, MMState: *mut ModuleMapDirectoryState) {
     let mut FileNameRef: str = EMD.Path;
-    let mut ModuleMapFileName: str = zeroed();
+    let mut ModuleMapFileName: str = "";
     if is_relative(FileNameRef, native) {
-        ModuleMapFileName() = MMDir.getName();
-        append(EMD.Path);
-        FileNameRef = ;
+        ModuleMapFileName = MMDir.getName();
+        append(ModuleMapFileName, EMD.Path, "", "", "");
+        FileNameRef = ModuleMapFileName.operator StringRef();
     }
     if self.FileMgr.getOptionalFileRef(FileNameRef, false, true, true) {
         EFile;
     } else {
-        if  {
-            let mut NewPrefix: str = zeroed();
+        if self.ModMap.getParsedModuleMap(operator(EFile)) {
+            ExtMMF;
+        } else {
+            let mut NewPrefix: str = PathPrefix;
             let mut ExternDir: str = parent_path(EMD.Path, native);
             if !ExternDir.is_empty() {
-                append(ExternDir);
-                native();
+                append(NewPrefix, ExternDir, "", "", "");
+                native(NewPrefix, native);
             }
-            self.processModuleMapForIndex(*, operator(EFile).getDir(), MMState);
+            self.processModuleMapForIndex(*ExtMMF, operator(EFile).getDir(), NewPrefix.operator StringRef(), MMState);
         }
     }
 }
 
 fn HeaderSearch::processModuleDeclForIndex(self, MD: *ModuleDecl, ModuleName: str, MMDir: DirectoryEntryRef, PathPrefix: str, MMState: *mut ModuleMapDirectoryState) {
-    if MD()() == "*" {
+    if MD.Id.front().first == "*" {
         return;
     }
-    let mut ProcessDecl: auto = makeVisitor(Closure_4 { MMState: &mut MMState, ModuleName: &mut ModuleName, cap_2: self, PathPrefix: &mut PathPrefix }, Closure_5 { PathPrefix: &mut PathPrefix, MMState: &mut MMState, ModuleName: &mut ModuleName }, Closure_6 { cap_0: self, ModuleName: &mut ModuleName, MMDir: &mut MMDir, PathPrefix: &mut PathPrefix, MMState: &mut MMState }, Closure_7 { cap_0: self, MMDir: &mut MMDir, PathPrefix: &mut PathPrefix, MMState: &mut MMState }, Closure_8 {});
+    let mut ProcessDecl: Visitor<(lambda at P:\Goraw\llvm-project\clang\lib\Lex\HeaderSearch.cpp:1679:7), (lambda at P:\Goraw\llvm-project\clang\lib\Lex\HeaderSearch.cpp:1686:7), (lambda at P:\Goraw\llvm-project\clang\lib\Lex\HeaderSearch.cpp:1693:7), (lambda at P:\Goraw\llvm-project\clang\lib\Lex\HeaderSearch.cpp:1697:7), (lambda at P:\Goraw\llvm-project\clang\lib\Lex\HeaderSearch.cpp:1700:7)> = makeVisitor(Closure_6 { MMState: &mut MMState, ModuleName: &mut ModuleName, cap_2: self, PathPrefix: &mut PathPrefix }, Closure_7 { PathPrefix: &mut PathPrefix, MMState: &mut MMState, ModuleName: &mut ModuleName }, Closure_8 { cap_0: self, ModuleName: &mut ModuleName, MMDir: &mut MMDir, PathPrefix: &mut PathPrefix, MMState: &mut MMState }, Closure_9 { cap_0: self, MMDir: &mut MMDir, PathPrefix: &mut PathPrefix, MMState: &mut MMState }, Closure_10 {});
+    for Decl in MD.Decls {
+        visit(ProcessDecl, Decl);
+    }
 }
 
-fn HeaderSearch::processModuleMapForIndex(self, MMF: *ModuleMapFile, MMDir: DirectoryEntryRef, PathPrefix: str, MMState: *mut ModuleMapDirectoryState) {}
+fn HeaderSearch::processModuleMapForIndex(self, MMF: *ModuleMapFile, MMDir: DirectoryEntryRef, PathPrefix: str, MMState: *mut ModuleMapDirectoryState) {
+    for Decl in MMF.Decls {
+        visit(makeVisitor(Closure_11 { cap_0: self, MMDir: &mut MMDir, PathPrefix: &mut PathPrefix, MMState: &mut MMState }, Closure_12 { cap_0: self, MMDir: &mut MMDir, PathPrefix: &mut PathPrefix, MMState: &mut MMState }), Decl);
+    }
+}
 
 fn computeRelativePath(FileName: str, DirPath: str) -> str {
     if !FileName.starts_with(DirPath) {
@@ -867,13 +1049,18 @@ fn computeRelativePath(FileName: str, DirPath: str) -> str {
 }
 
 fn HeaderSearch::findMatchingModulesInIndex(self: *HeaderSearch, RelativePath: str, MMState: *ModuleMapDirectoryState) -> SmallVector<StringRef, 1> {
-    let mut Modules: SmallVector<StringRef, 1> = zeroed();
-    let mut CachedMods: auto = MMState()(RelativePath);
-    if CachedMods() != MMState()() {
-        Modules()();
+    let mut Modules: SmallVector<StringRef, 1> = SmallVector<StringRef, 1> {};
+    let mut CachedMods: const_iterator = MMState.HeaderToModules.find(RelativePath);
+    if CachedMods != MMState.HeaderToModules.end() {
+        Modules.append(operator(CachedMods).second.begin(), operator(CachedMods).second.end());
     }
-    Modules()(MMState()(), MMState()());
-    return ;
+    for UmbrellaDir in MMState.UmbrellaDirModules {
+        if RelativePath.starts_with(UmbrellaDir.first) || UmbrellaDir.first == "." {
+            Modules.push(UmbrellaDir.second);
+        }
+    }
+    Modules.append(MMState.UmbrellaHeaderModules.begin(), MMState.UmbrellaHeaderModules.end());
+    return Modules;
 }
 
 fn HeaderSearch::hasModuleMap(self, FileName: str, Root: *DirectoryEntry, IsSystem: bool) -> bool {
@@ -895,25 +1082,30 @@ fn HeaderSearch::hasModuleMap(self, FileName: str, Root: *DirectoryEntry, IsSyst
         CurDir = operator(Dir).operator const clang::DirectoryEntry *();
         let mut IsFramework: bool = extension(operator(Dir).getName(), native) == ".framework";
         self.parseModuleMapFile(operator(Dir), IsSystem, true, IsFramework);
-        let mut DirState: auto = zeroed();
-        if  {
+        let mut DirState: iterator = self.DirectoryModuleMap.find(operator(Dir).operator const clang::DirectoryEntry *());
+        if DirState == self.DirectoryModuleMap.end() || !operator(DirState).second.ModuleMapFile {
             continue;
         }
-        if !self.HSOpts.LazyLoadModuleMaps && self.Diags.isIgnored {
+        if !self.HSOpts.LazyLoadModuleMaps && self.Diags.isIgnored(warn_mmap_deprecated_symlink_to_modular_header, SourceLocation {}) {
             return true;
         }
-        let mut MMState: *mut auto = ;
-        if MMState()() && () && () {
-            self.buildModuleMapIndex(operator(Dir));
+        let mut MMState: *mut ModuleMapDirectoryState = operator(DirState).second;
+        if MMState.HeaderToModules.is_empty() && MMState.UmbrellaDirModules.is_empty() && MMState.UmbrellaHeaderModules.is_empty() {
+            self.buildModuleMapIndex(operator(Dir), MMState);
         }
         if !self.HSOpts.LazyLoadModuleMaps {
             return true;
         }
         let mut RelativePath: str = computeRelativePath(FileName, DirName);
-        let mut RelativePathNative: str = zeroed();
-        native();
-        let mut ModulesToLoad: auto = zeroed();
+        let mut RelativePathNative: str = RelativePath;
+        native(RelativePathNative, native);
+        let mut ModulesToLoad: SmallVector<StringRef, 1> = self.findMatchingModulesInIndex(RelativePathNative.operator StringRef(), MMState);
         let mut LoadedAny: bool = false;
+        for ModName in ModulesToLoad {
+            if self.ModMap.findOrLoadModule(ModName) {
+                LoadedAny = true;
+            }
+        }
         if LoadedAny {
             return true;
         }
@@ -927,18 +1119,21 @@ fn HeaderSearch::findModuleForHeader(self: *HeaderSearch, File: FileEntryRef, Al
     if self.ExternalSource {
         self.getExistingFileInfo(File) as void;
     }
+    return self.ModMap.findModuleForHeader(File, AllowTextual, AllowExcluded);
 }
 
 fn HeaderSearch::findAllModulesForHeader(self: *HeaderSearch, File: FileEntryRef) -> KnownHeader> {
     if self.ExternalSource {
         self.getExistingFileInfo(File) as void;
     }
+    return self.ModMap.findAllModulesForHeader(File);
 }
 
 fn HeaderSearch::findResolvedModulesForHeader(self: *HeaderSearch, File: FileEntryRef) -> KnownHeader> {
     if self.ExternalSource {
         self.getExistingFileInfo(File) as void;
     }
+    return self.ModMap.findResolvedModulesForHeader(File);
 }
 
 fn suggestModule(HS: *mut HeaderSearch, Module: KnownHeader, File: FileEntryRef, RequestingModule: *mut Module, SuggestedModule: *mut KnownHeader) -> bool {
@@ -947,7 +1142,7 @@ fn suggestModule(HS: *mut HeaderSearch, Module: KnownHeader, File: FileEntryRef,
         if !RequestingModule.directlyUses(Module.getModule()) {
             if HS.getModuleMap().isBuiltinHeader(File) {
                 if SuggestedModule {
-                    *SuggestedModule;
+                    *SuggestedModule = KnownHeader {};
                 }
                 return true;
             }
@@ -955,7 +1150,7 @@ fn suggestModule(HS: *mut HeaderSearch, Module: KnownHeader, File: FileEntryRef,
         }
     }
     if SuggestedModule {
-        *SuggestedModule;
+        *SuggestedModule = if (Module.getRole() & TextualHeader) { KnownHeader {} } else { Module };
     }
     return true;
 }
@@ -967,17 +1162,17 @@ fn HeaderSearch::diagnoseUncoveredSymlink(self, File: FileEntryRef, Module: *mut
     if !self.HSOpts.ImplicitModuleMaps || Module.getModule().isPartOfFramework() || !Module.getModule().isModuleMapModule() {
         return;
     }
-    if self.Diags.isIgnored {
+    if self.Diags.isIgnored(warn_mmap_deprecated_symlink_to_modular_header, Module.getModule().DefinitionLoc) {
         return;
     }
     if File.isDeviceFile() || File.isNamedPipe() {
         return;
     }
-    let mut AbsPath: str = zeroed();
-    self.FileMgr.makeAbsolutePath();
-    remove_dots(true);
-    let mut LinkTarget: str = zeroed();
-    if readlink() {
+    let mut AbsPath: str = File.getName();
+    self.FileMgr.makeAbsolutePath(AbsPath, false);
+    remove_dots(AbsPath, true, native);
+    let mut LinkTarget: str = "";
+    if readlink(AbsPath, LinkTarget) {
         return;
     }
     let mut FileName: str = File.getNameAsRequested();
@@ -994,25 +1189,25 @@ fn HeaderSearch::diagnoseUncoveredSymlink(self, File: FileEntryRef, Module: *mut
             break;
         }
         CurDir = operator(Dir).operator const clang::DirectoryEntry *();
-        let mut DirState: auto = zeroed();
-        if  {
+        let mut DirState: iterator = self.DirectoryModuleMap.find(operator(Dir).operator const clang::DirectoryEntry *());
+        if DirState == self.DirectoryModuleMap.end() || !operator(DirState).second.ModuleMapFile {
             continue;
         }
         let mut RelativePath: str = computeRelativePath(FileName, DirName);
         if RelativePath.is_empty() {
             continue;
         }
-        let mut RelativePathNative: str = zeroed();
-        native();
-        let mut MatchingModules: auto = zeroed();
-        if !() {
+        let mut RelativePathNative: str = RelativePath;
+        native(RelativePathNative, native);
+        let mut MatchingModules: SmallVector<StringRef, 1> = self.findMatchingModulesInIndex(RelativePathNative.operator StringRef(), operator(DirState).second);
+        if !MatchingModules.is_empty() {
             return;
         }
     }
         if !(CurDir != Root) { break; }
     }
-    self.Diags << File.getName() <<  << Module.getModule().getFullModuleName(false);
-    self.Diags;
+    self.Diags.Report(warn_mmap_deprecated_symlink_to_modular_header) << File.getName() << LinkTarget << Module.getModule().getFullModuleName(false);
+    self.Diags.Report(Module.getModule().DefinitionLoc, note_mmap_module_defined_here);
 }
 
 fn HeaderSearch::findUsableModuleForHeader(self, File: FileEntryRef, Root: *DirectoryEntry, RequestingModule: *mut Module, SuggestedModule: *mut KnownHeader, IsSystemHeaderDir: bool) -> bool {
@@ -1026,6 +1221,7 @@ fn HeaderSearch::findUsableModuleForHeader(self, File: FileEntryRef, Root: *Dire
         let mut Module: KnownHeader = self.findModuleForHeader(File, true, false);
         if !Module {
             self.hasModuleMap(File.getNameAsRequested(), Root, IsSystemHeaderDir);
+            Module = self.ModMap.findModuleForHeader(File, true, false);
         }
         self.diagnoseUncoveredSymlink(File, Module, Root);
         return suggestModule(*self, Module, File, RequestingModule, SuggestedModule);
@@ -1035,8 +1231,8 @@ fn HeaderSearch::findUsableModuleForHeader(self, File: FileEntryRef, Root: *Dire
 
 fn HeaderSearch::findUsableModuleForFrameworkHeader(self, File: FileEntryRef, FrameworkName: str, RequestingModule: *mut Module, SuggestedModule: *mut KnownHeader, IsSystemFramework: bool) -> bool {
     if needModuleLookup(RequestingModule, SuggestedModule) {
-        let mut SubmodulePath: string, 4> = zeroed();
-        let mut TopFrameworkDir: OptionalDirectoryEntryRef = getTopFrameworkDir(self.FileMgr, FrameworkName);
+        let mut SubmodulePath: string, 4> = string, 4> {};
+        let mut TopFrameworkDir: OptionalDirectoryEntryRef = getTopFrameworkDir(self.FileMgr, FrameworkName, SubmodulePath);
         assert!(TopFrameworkDir, "Could not find the top-most framework dir");
         let mut ModuleName: str = stem(operator(TopFrameworkDir).getName(), native);
         self.loadFrameworkModule(ModuleName, operator(TopFrameworkDir), IsSystemFramework, true);
@@ -1048,21 +1244,21 @@ fn HeaderSearch::findUsableModuleForFrameworkHeader(self, File: FileEntryRef, Fr
 
 fn getPrivateModuleMap(File: FileEntryRef, FileMgr: *mut FileManager, Diags: *mut DiagnosticsEngine, Diagnose: bool) -> OptionalFileEntryRef {
     let mut Filename: str = filename(File.getName(), native);
-    let mut PrivateFilename: str = zeroed();
+    let mut PrivateFilename: str = File.getDir().getName();
     if Filename == "module.map" {
-        append("module_private.map");
+        append(PrivateFilename, "module_private.map", "", "", "");
     } else if Filename == "module.modulemap" {
-        append("module.private.modulemap");
+        append(PrivateFilename, "module.private.modulemap", "", "", "");
     } else {
         return nullopt;
     }
-    let mut PMMFile: auto = FileMgr.getOptionalFileRef();
-    if PMMFile() {
+    let mut PMMFile: OptionalFileEntryRef = FileMgr.getOptionalFileRef(PrivateFilename.operator StringRef(), false, true, true);
+    if PMMFile {
         if Diagnose && Filename == "module.map" {
-            Diags <<  << 1 << File.getDir().getName().ends_with(".framework");
+            Diags.Report(warn_deprecated_module_dot_map) << PrivateFilename << 1 << File.getDir().getName().ends_with(".framework");
         }
     }
-    return ;
+    return PMMFile;
 }
 
 fn HeaderSearch::parseAndLoadModuleMapFile(self, File: FileEntryRef, IsSystem: bool, ImplicitlyDiscovered: bool, ID: FileID, Offset: *mut u32, OriginalModuleMapFile: str) -> bool {
@@ -1102,21 +1298,23 @@ fn HeaderSearch::parseAndLoadModuleMapFile(self, File: FileEntryRef, IsSystem: b
             MMR_InvalidModuleMap;
         },
     }
-    llvm_unreachable_internal("Unknown load module map result", "clang\\lib\\Lex\\HeaderSearch.cpp", 2116);
+    llvm_unreachable_internal("Unknown load module map result", "P:/Goraw/llvm-project/clang/lib/Lex/HeaderSearch.cpp", 2116);
 }
 
 fn HeaderSearch::parseAndLoadModuleMapFileImpl(self, File: FileEntryRef, IsSystem: bool, ImplicitlyDiscovered: bool, Dir: DirectoryEntryRef, ID: FileID, Offset: *mut u32, DiagnosePrivMMap: bool) -> ModuleMapResult {
-    let mut AddResult: auto = zeroed();
-    if ! {
-        return if  { MMR_AlreadyProcessed } else { MMR_InvalidModuleMap };
+    let mut AddResult: pair<iterator, bool> = self.LoadedModuleMaps.insert(make_pair(File, true));
+    if !AddResult.second {
+        return if operator(AddResult.first).second { MMR_AlreadyProcessed } else { MMR_InvalidModuleMap };
     }
-    if  {
+    if self.ModMap.parseAndLoadModuleMapFile(File, IsSystem, ImplicitlyDiscovered, Dir, ID, Offset, SourceLocation {}) {
+        self.LoadedModuleMaps[File.operator const clang::FileEntry *()] = false;
         return MMR_InvalidModuleMap;
     }
     if getPrivateModuleMap(File, self.FileMgr, self.Diags, DiagnosePrivMMap) {
         PMMFile;
     } else {
-        if  {
+        if self.ModMap.parseAndLoadModuleMapFile(operator(PMMFile), IsSystem, ImplicitlyDiscovered, Dir, FileID {}, null, SourceLocation {}) {
+            self.LoadedModuleMaps[File.operator const clang::FileEntry *()] = false;
             return MMR_InvalidModuleMap;
         }
     }
@@ -1124,17 +1322,19 @@ fn HeaderSearch::parseAndLoadModuleMapFileImpl(self, File: FileEntryRef, IsSyste
 }
 
 fn HeaderSearch::parseModuleMapFileImpl(self, File: FileEntryRef, IsSystem: bool, ImplicitlyDiscovered: bool, Dir: DirectoryEntryRef, ID: FileID) -> ModuleMapResult {
-    let mut AddResult: auto = zeroed();
-    if ! {
-        return if  { MMR_AlreadyProcessed } else { MMR_InvalidModuleMap };
+    let mut AddResult: pair<iterator, bool> = self.ParsedModuleMaps.insert(make_pair(File, true));
+    if !AddResult.second {
+        return if operator(AddResult.first).second { MMR_AlreadyProcessed } else { MMR_InvalidModuleMap };
     }
-    if  {
+    if self.ModMap.parseModuleMapFile(File, IsSystem, ImplicitlyDiscovered, Dir, ID, SourceLocation {}) {
+        self.ParsedModuleMaps[File.operator const clang::FileEntry *()] = false;
         return MMR_InvalidModuleMap;
     }
     if getPrivateModuleMap(File, self.FileMgr, self.Diags, false) {
         PMMFile;
     } else {
-        if  {
+        if self.ModMap.parseModuleMapFile(operator(PMMFile), IsSystem, ImplicitlyDiscovered, Dir, FileID {}, SourceLocation {}) {
+            self.ParsedModuleMaps[File.operator const clang::FileEntry *()] = false;
             return MMR_InvalidModuleMap;
         }
     }
@@ -1145,25 +1345,31 @@ fn HeaderSearch::lookupModuleMapFile(self, Dir: DirectoryEntryRef, IsFramework: 
     if !self.HSOpts.ImplicitModuleMaps {
         return nullopt;
     }
-    let mut ModuleMapFileName: str = zeroed();
+    let mut ModuleMapFileName: str = Dir.getName();
     if IsFramework {
-        append("Modules");
+        append(ModuleMapFileName, "Modules", "", "", "");
     }
-    append("module.modulemap");
-    if  {
-        return *;
+    append(ModuleMapFileName, "module.modulemap", "", "", "");
+    if self.FileMgr.getOptionalFileRef(ModuleMapFileName.operator StringRef(), false, true, true) {
+        F;
+    } else {
+        return operator(F);
     }
-    ModuleMapFileName() = Dir.getName();
-    append("module.map");
-    if  {
-        self.Diags <<  << 0 << IsFramework;
-        return *;
+    ModuleMapFileName = Dir.getName();
+    append(ModuleMapFileName, "module.map", "", "", "");
+    if self.FileMgr.getOptionalFileRef(ModuleMapFileName.operator StringRef(), false, true, true) {
+        F;
+    } else {
+        self.Diags.Report(warn_deprecated_module_dot_map) << ModuleMapFileName << 0 << IsFramework;
+        return operator(F);
     }
     if IsFramework {
-        ModuleMapFileName() = Dir.getName();
-        append("Modules", "module.private.modulemap");
-        if  {
-            return *;
+        ModuleMapFileName = Dir.getName();
+        append(ModuleMapFileName, "Modules", "module.private.modulemap", "", "");
+        if self.FileMgr.getOptionalFileRef(ModuleMapFileName.operator StringRef(), false, true, true) {
+            F;
+        } else {
+            return operator(F);
         }
     }
     return nullopt;
@@ -1172,7 +1378,9 @@ fn HeaderSearch::lookupModuleMapFile(self, Dir: DirectoryEntryRef, IsFramework: 
 fn HeaderSearch::loadFrameworkModule(self, Name: str, Dir: DirectoryEntryRef, IsSystem: bool, ImplicitlyDiscovered: bool) -> *mut Module {
     match self.parseAndLoadModuleMapFile(Dir, IsSystem, ImplicitlyDiscovered, true) {
         MMR_InvalidModuleMap => {
-            
+            if self.HSOpts.ImplicitModuleMaps {
+                self.ModMap.inferFrameworkModule(Dir, IsSystem, null);
+            }
         },
         MMR_NoDirectory => {
             return null;
@@ -1181,6 +1389,7 @@ fn HeaderSearch::loadFrameworkModule(self, Name: str, Dir: DirectoryEntryRef, Is
             MMR_NewlyProcessed;
         },
     }
+    return self.ModMap.findOrLoadModule(Name);
 }
 
 fn HeaderSearch::parseAndLoadModuleMapFile(self, DirName: str, IsSystem: bool, ImplicitlyDiscovered: bool, IsFramework: bool) -> ModuleMapResult {
@@ -1193,9 +1402,9 @@ fn HeaderSearch::parseAndLoadModuleMapFile(self, DirName: str, IsSystem: bool, I
 }
 
 fn HeaderSearch::parseAndLoadModuleMapFile(self, Dir: DirectoryEntryRef, IsSystem: bool, ImplicitlyDiscovered: bool, IsFramework: bool) -> ModuleMapResult {
-    let mut InsertRes: auto = zeroed();
-    let mut MMState: *mut ModuleMapDirectoryState = ;
-    if ! {
+    let mut InsertRes: pair<iterator, bool> = self.DirectoryModuleMap.insert(ModuleMapDirectoryState> { Dir, ModuleMapDirectoryState { OptionalFileEntryRef {}, OptionalFileEntryRef {}, Invalid, SmallVector<StringRef, 1>> {}, string, StringRef>, 2> {}, SmallVector<StringRef, 2> {} } });
+    let mut MMState: *mut ModuleMapDirectoryState = operator(InsertRes.first).second;
+    if !InsertRes.second {
         match MMState.Status {
             Parsed => {
                 break;
@@ -1239,9 +1448,9 @@ fn HeaderSearch::parseModuleMapFile(self, Dir: DirectoryEntryRef, IsSystem: bool
     if !self.HSOpts.LazyLoadModuleMaps {
         return self.parseAndLoadModuleMapFile(Dir, IsSystem, ImplicitlyDiscovered, IsFramework);
     }
-    let mut InsertRes: auto = zeroed();
-    let mut MMState: *mut ModuleMapDirectoryState = ;
-    if ! {
+    let mut InsertRes: pair<iterator, bool> = self.DirectoryModuleMap.insert(ModuleMapDirectoryState> { Dir, ModuleMapDirectoryState { OptionalFileEntryRef {}, OptionalFileEntryRef {}, Invalid, SmallVector<StringRef, 1>> {}, string, StringRef>, 2> {}, SmallVector<StringRef, 2> {} } });
+    let mut MMState: *mut ModuleMapDirectoryState = operator(InsertRes.first).second;
+    if !InsertRes.second {
         match MMState.Status {
             Parsed => {
                 Loaded;
@@ -1270,14 +1479,47 @@ fn HeaderSearch::parseModuleMapFile(self, Dir: DirectoryEntryRef, IsSystem: bool
 }
 
 fn HeaderSearch::collectAllModules(self, Modules: *mut SmallVectorImpl<Module *>) {
-    Modules()();
-    if self.HSOpts.ImplicitModuleMaps {}
-    append_range(Modules, make_second_range());
+    Modules.clear();
+    if self.HSOpts.ImplicitModuleMaps {
+        for DL in self.search_dir_range() {
+            let mut IsSystem: bool = DL.isSystemHeaderDirectory();
+            if DL.isFramework() {
+                let mut EC: error_code = error_code {};
+                let mut DirNative: str = "";
+                native(operator(DL.getFrameworkDirRef()).getName(), DirNative, native);
+                let mut FS: *mut FileSystem = self.FileMgr.getVirtualFileSystem();
+                for let mut Dir: directory_iterator = FS.dir_begin(DirNative, EC);
+let mut DirEnd: directory_iterator = directory_iterator {}; Dir != DirEnd && !EC; Dir.increment(EC) {
+                    if extension(operator(Dir).path(), native) != ".framework" {
+                        continue;
+                    }
+                    let mut FrameworkDir: OptionalDirectoryEntryRef = self.FileMgr.getOptionalDirectoryRef(operator(Dir).path(), true);
+                    if !FrameworkDir {
+                        continue;
+                    }
+                    self.loadFrameworkModule(stem(operator(Dir).path(), native), operator(FrameworkDir), IsSystem, true);
+                }
+                continue;
+            }
+            if DL.isHeaderMap() {
+                continue;
+            }
+            self.parseAndLoadModuleMapFile(operator(DL.getDirRef()), IsSystem, true, false);
+            self.loadSubdirectoryModuleMaps(DL);
+        }
+    }
+    append_range(Modules, make_second_range(self.ModMap.modules()));
 }
 
 fn HeaderSearch::loadTopLevelSystemModules(self) {
     if !self.HSOpts.ImplicitModuleMaps {
         return;
+    }
+    for DL in self.search_dir_range() {
+        if !DL.isNormalDir() {
+            continue;
+        }
+        self.parseAndLoadModuleMapFile(operator(DL.getDirRef()), DL.isSystemHeaderDirectory(), true, DL.isFramework());
     }
 }
 
@@ -1287,12 +1529,12 @@ fn HeaderSearch::loadSubdirectoryModuleMaps(self, SearchDir: *mut DirectoryLooku
         return;
     }
     let mut EC: error_code = error_code {};
-    let mut Dir: str = zeroed();
-    self.FileMgr.makeAbsolutePath();
-    let mut DirNative: str = zeroed();
-    native();
+    let mut Dir: str = operator(SearchDir.getDirRef()).getName();
+    self.FileMgr.makeAbsolutePath(Dir, false);
+    let mut DirNative: str = "";
+    native(Dir, DirNative, native);
     let mut FS: *mut FileSystem = self.FileMgr.getVirtualFileSystem();
-    for let mut Dir: directory_iterator = FS.dir_begin(EC);
+    for let mut Dir: directory_iterator = FS.dir_begin(DirNative, EC);
 let mut DirEnd: directory_iterator = directory_iterator {}; Dir != DirEnd && !EC; Dir.increment(EC) {
         if operator(Dir).type() == regular_file {
             continue;
@@ -1310,48 +1552,78 @@ fn HeaderSearch::suggestPathToFileForDiagnostics(self: *HeaderSearch, File: File
 }
 
 fn HeaderSearch::suggestPathToFileForDiagnostics(self: *HeaderSearch, File: str, WorkingDir: str, MainFile: str, IsAngled: *mut bool) -> str {
-    let mut FilePath: str = zeroed();
-    if !WorkingDir.is_empty() && !is_absolute() {
-        make_absolute(WorkingDir);
+    let mut FilePath: str = File;
+    if !WorkingDir.is_empty() && !is_absolute(FilePath, native) {
+        make_absolute(WorkingDir, FilePath);
     }
-    remove_dots(true);
-    native(posix);
-    File = ;
+    remove_dots(FilePath, true, native);
+    native(FilePath, posix);
+    File = FilePath.operator StringRef();
     let mut BestPrefixLength: u32 = 0;
-    let mut CheckDir: Closure_9 = Closure_9 { WorkingDir: &mut WorkingDir, File: &mut File, BestPrefixLength: &mut BestPrefixLength };
+    let mut CheckDir: Closure_13 = Closure_13 { WorkingDir: &mut WorkingDir, File: &mut File, BestPrefixLength: &mut BestPrefixLength };
     let mut BestPrefixIsFramework: bool = false;
-    if !BestPrefixLength && CheckDir(parent_path(MainFile, native)) {
+    for DL in self.search_dir_range() {
+        if DL.isNormalDir() {
+            let mut Dir: str = operator(DL.getDirRef()).getName();
+            if CheckDir.call(Dir) {
+                if IsAngled {
+                    *IsAngled = BestPrefixLength && isSystem(DL.getDirCharacteristic());
+                }
+                BestPrefixIsFramework = false;
+            }
+        } else if DL.isFramework() {
+            let mut Dir: str = operator(DL.getFrameworkDirRef()).getName();
+            if CheckDir.call(Dir) {
+                if IsAngled {
+                    *IsAngled = BestPrefixLength;
+                }
+                BestPrefixIsFramework = true;
+            }
+        }
+    }
+    if !BestPrefixLength && CheckDir.call(parent_path(MainFile, native)) {
         if IsAngled {
             *IsAngled = false;
         }
         BestPrefixIsFramework = false;
     }
     let mut Filename: str = File.drop_front(BestPrefixLength);
+    for DL in self.search_dir_range() {
+        if !DL.isHeaderMap() {
+            continue;
+        }
+        let mut SpelledFilename: str = DL.getHeaderMap().reverseLookupFilename(Filename);
+        if !SpelledFilename.is_empty() {
+            Filename = SpelledFilename;
+            BestPrefixIsFramework = false;
+            break;
+        }
+    }
     let mut IsPrivateHeader: bool = false;
-    let mut FrameworkName: str = zeroed();
-    let mut IncludeSpelling: str = zeroed();
-    if BestPrefixIsFramework && isFrameworkStylePath(Filename, IsPrivateHeader) {
-        Filename = ;
+    let mut FrameworkName: str = "";
+    let mut IncludeSpelling: str = "";
+    if BestPrefixIsFramework && isFrameworkStylePath(Filename, IsPrivateHeader, FrameworkName, IncludeSpelling) {
+        Filename = IncludeSpelling.operator StringRef();
     }
     return convert_to_slash(Filename, native);
 }
 
 fn normalizeModuleCachePath(FileMgr: *mut FileManager, Path: str, NormalizedPath: *mut SmallVectorImpl<char>) {
-    NormalizedPath()(Path.begin(), Path.end());
-    if !NormalizedPath()() {
+    NormalizedPath.assign(Path.begin(), Path.end());
+    if !NormalizedPath.is_empty() {
         FileMgr.makeAbsolutePath(NormalizedPath, false);
         remove_dots(NormalizedPath, false, native);
     }
 }
 
 fn createSpecificModuleCachePathImpl(FileMgr: *mut FileManager, ModuleCachePath: str, DisableModuleHash: bool, ContextHash: str, NormalizedModuleCachePathLen: *mut u64) -> str {
-    let mut SpecificModuleCachePath: str = zeroed();
-    normalizeModuleCachePath(FileMgr, ModuleCachePath);
-    NormalizedModuleCachePathLen = ();
-    if !() && !DisableModuleHash {
-        append(ContextHash);
+    let mut SpecificModuleCachePath: str = "";
+    normalizeModuleCachePath(FileMgr, ModuleCachePath, SpecificModuleCachePath);
+    NormalizedModuleCachePathLen = SpecificModuleCachePath.len;
+    if !SpecificModuleCachePath.is_empty() && !DisableModuleHash {
+        append(SpecificModuleCachePath, ContextHash, "", "", "");
     }
-    return ;
+    return SpecificModuleCachePath.operator basic_string();
 }
 
 fn HeaderSearch::initializeModuleCachePath(self, NewContextHash: str) {
@@ -1365,14 +1637,30 @@ fn createSpecificModuleCachePath(FileMgr: *mut FileManager, ModuleCachePath: str
 }
 
 struct Closure_1 {
+    VFSUsage: *mut []bool,
+}
+
+unsafe fn Closure_1::call(self: *mut Closure_1, FS: *mut FileSystem) {
+        if dyn_cast(&mut FS) {
+            RFS;
+        } else {
+            if !RFS.getOverlayFileDir().is_empty() {
+                (*self.VFSUsage).push(RFS.hasBeenUsed());
+                RFS.clearHasBeenUsed();
+            }
+        }
+    }
+
+struct Closure_2 {
+    Index: *mut BumpPtrAllocator>,
     i: *mut u32,
 }
 
-unsafe fn Closure_1::call(self: *mut Closure_1, Filename: str) {
-            Index()(Filename.lower(), (*self.i));
+unsafe fn Closure_2::call(self: *mut Closure_2, Filename: str) {
+            (*self.Index).try_emplace(Filename.lower(), (*self.i));
         }
 
-struct Closure_2 {
+struct Closure_3 {
     SearchPath: *mut *mut SmallVectorImpl<char>,
     cap_1: *DirectoryLookup,
     RelativePath: *mut *mut SmallVectorImpl<char>,
@@ -1382,15 +1670,15 @@ struct Closure_2 {
     SuggestedModule: *mut *mut KnownHeader,
 }
 
-unsafe fn Closure_2::call(self: *mut Closure_2, File: FileEntryRef) -> auto {
+unsafe fn Closure_3::call(self: *mut Closure_3, File: FileEntryRef) -> auto {
         if (*self.SearchPath) {
             let mut SearchPathRef: str = self.getName();
-            (*self.SearchPath)()();
-            (*self.SearchPath)()(SearchPathRef.begin(), SearchPathRef.end());
+            (*self.SearchPath).clear();
+            (*self.SearchPath).append(SearchPathRef.begin(), SearchPathRef.end());
         }
         if (*self.RelativePath) {
-            (*self.RelativePath)()();
-            (*self.RelativePath)()((*self.Filename).begin(), (*self.Filename).end());
+            (*self.RelativePath).clear();
+            (*self.RelativePath).append((*self.Filename).begin(), (*self.Filename).end());
         }
         if !(*self.HS).findUsableModuleForHeader(File, File.getFileEntry().getDir(), (*self.RequestingModule), (*self.SuggestedModule), self.isSystemHeaderDirectory()) {
             return nullopt;
@@ -1398,23 +1686,39 @@ unsafe fn Closure_2::call(self: *mut Closure_2, File: FileEntryRef) -> auto {
         return File;
     }
 
-struct Closure_3 {
+struct Closure_4 {
+    Includer: *mut OptionalFileEntryRef,
+    BuildSystemModule: *mut bool,
+    cap_2: *mut HeaderSearch,
+}
+
+unsafe fn Closure_4::call(self: *mut Closure_4) -> bool {
+                if !(*self.Includer) {
+                    return (*self.BuildSystemModule);
+                }
+                let mut HFI: *HeaderFileInfo = self.getExistingFileInfo(operator((*self.Includer)));
+                assert!(HFI, "includer without file info");
+                return HFI.DirInfo != C_User;
+            }
+
+struct Closure_5 {
     ModulesEnabled: *mut bool,
     FileInfo: *mut HeaderFileInfo,
     cap_2: *mut HeaderSearch,
     File: *mut FileEntryRef,
 }
 
-unsafe fn Closure_3::call(self: *mut Closure_3) -> auto {
+unsafe fn Closure_5::call(self: *mut Closure_5) -> auto {
         if !(*self.ModulesEnabled) || (*self.FileInfo).isPragmaOnce {
             return false;
         }
+        self.ModMap.resolveHeaderDirectives((*self.File).operator const clang::FileEntry *());
         if (*self.FileInfo).isTextualModuleHeader {
             return true;
         }
         if (*self.FileInfo).isCompilingModuleHeader {
             if (*self.FileInfo).isModuleHeader {
-                if  {
+                if self.ModMap.isBuiltinHeader((*self.File)) {
                     return true;
                 }
             } else {
@@ -1426,35 +1730,35 @@ unsafe fn Closure_3::call(self: *mut Closure_3) -> auto {
         return false;
     }
 
-struct Closure_4 {
+struct Closure_6 {
     MMState: *mut ModuleMapDirectoryState,
     ModuleName: *mut str,
     cap_2: *mut HeaderSearch,
     PathPrefix: *mut str,
 }
 
-unsafe fn Closure_4::call(self: *mut Closure_4, HD: *HeaderDecl) {
+unsafe fn Closure_6::call(self: *mut Closure_6, HD: *HeaderDecl) {
         if HD.Umbrella {
-            (*self.MMState)()((*self.ModuleName));
+            (*self.MMState).UmbrellaHeaderModules.push((*self.ModuleName));
         } else {
             self.addToModuleMapIndex(HD.Path, (*self.ModuleName), (*self.PathPrefix), (*self.MMState));
         }
     }
 
-struct Closure_5 {
+struct Closure_7 {
     PathPrefix: *mut str,
     MMState: *mut ModuleMapDirectoryState,
     ModuleName: *mut str,
 }
 
-unsafe fn Closure_5::call(self: *mut Closure_5, UDD: *UmbrellaDirDecl) {
-        let mut FullPath: str = zeroed();
-        append(UDD.Path);
-        native();
-        (*self.MMState)()(make_pair((*self.ModuleName)));
+unsafe fn Closure_7::call(self: *mut Closure_7, UDD: *UmbrellaDirDecl) {
+        let mut FullPath: str = (*self.PathPrefix);
+        append(FullPath, UDD.Path, "", "", "");
+        native(FullPath, native);
+        (*self.MMState).UmbrellaDirModules.push(make_pair(FullPath.operator basic_string(), (*self.ModuleName)));
     }
 
-struct Closure_6 {
+struct Closure_8 {
     cap_0: *mut HeaderSearch,
     ModuleName: *mut str,
     MMDir: *mut DirectoryEntryRef,
@@ -1462,41 +1766,63 @@ struct Closure_6 {
     MMState: *mut ModuleMapDirectoryState,
 }
 
-unsafe fn Closure_6::call(self: *mut Closure_6, SubMD: *ModuleDecl) {
+unsafe fn Closure_8::call(self: *mut Closure_8, SubMD: *ModuleDecl) {
         self.processModuleDeclForIndex(SubMD, (*self.ModuleName), (*self.MMDir), (*self.PathPrefix), (*self.MMState));
     }
 
-struct Closure_7 {
+struct Closure_9 {
     cap_0: *mut HeaderSearch,
     MMDir: *mut DirectoryEntryRef,
     PathPrefix: *mut str,
     MMState: *mut ModuleMapDirectoryState,
 }
 
-unsafe fn Closure_7::call(self: *mut Closure_7, EMD: *ExternModuleDecl) {
+unsafe fn Closure_9::call(self: *mut Closure_9, EMD: *ExternModuleDecl) {
         self.processExternModuleDeclForIndex(EMD, (*self.MMDir), (*self.PathPrefix), (*self.MMState));
     }
 
-struct Closure_8 {}
+struct Closure_10 {}
 
-fn Closure_8::call(self: *Closure_8) {}
+fn Closure_10::call(self: *Closure_10) {}
 
-struct Closure_9 {
+struct Closure_11 {
+    cap_0: *mut HeaderSearch,
+    MMDir: *mut DirectoryEntryRef,
+    PathPrefix: *mut str,
+    MMState: *mut ModuleMapDirectoryState,
+}
+
+unsafe fn Closure_11::call(self: *mut Closure_11, MD: *ModuleDecl) {
+            self.processModuleDeclForIndex(MD, MD.Id.front().first, (*self.MMDir), (*self.PathPrefix), (*self.MMState));
+        }
+
+struct Closure_12 {
+    cap_0: *mut HeaderSearch,
+    MMDir: *mut DirectoryEntryRef,
+    PathPrefix: *mut str,
+    MMState: *mut ModuleMapDirectoryState,
+}
+
+unsafe fn Closure_12::call(self: *mut Closure_12, EMD: *ExternModuleDecl) {
+            self.processExternModuleDeclForIndex(EMD, (*self.MMDir), (*self.PathPrefix), (*self.MMState));
+        }
+
+struct Closure_13 {
     WorkingDir: *mut str,
     File: *mut str,
     BestPrefixLength: *mut u32,
 }
 
-unsafe fn Closure_9::call(self: *mut Closure_9, Dir: str) -> auto {
-        if !(*self.WorkingDir).is_empty() && !is_absolute() {
-            make_absolute((*self.WorkingDir));
+unsafe fn Closure_13::call(self: *mut Closure_13, Dir: str) -> auto {
+        if !(*self.WorkingDir).is_empty() && !is_absolute(Dir, native) {
+            make_absolute((*self.WorkingDir), Dir);
         }
-        remove_dots(true);
+        remove_dots(Dir, true, native);
         for let mut NI: const_iterator = begin((*self.File), native);
 let mut NE: const_iterator = end((*self.File));
-let mut DI: auto = begin();
-let mut DE: auto = end(); !NI == NE; operator(NI) ,  += 1 {
-            if DI() ==  {
+let mut DI: const_iterator = begin(Dir.operator StringRef(), native);
+let mut DE: const_iterator = end(Dir.operator StringRef()); !NI == NE; operator(NI) , operator(DI) {
+            if DI == DE {
                 let mut PrefixLength: u32 = NI - begin((*self.File), native);
                 if PrefixLength > (*self.BestPrefixLength) {
                     (*self.BestPrefixLength) = PrefixLength;
@@ -1504,17 +1830,17 @@ let mut DE: auto = end(); !NI == NE; operator(NI) ,  += 1 {
                 }
                 break;
             }
-            if NI()() == 1 && () == 1 && is_separator(NI()()) && is_separator() {
+            if operator(operator(NI)).len == 1 && operator(operator(DI)).len == 1 && is_separator(operator(operator(NI)).front(), native) && is_separator(operator(operator(DI)).front(), native) {
                 continue;
             }
-            if NI()(".sdk") && (".sdk") {
-                let mut NBasename: str = stem(operator(NI));
-                let mut DBasename: str = stem(*);
+            if operator(operator(NI)).ends_with(".sdk") && operator(operator(DI)).ends_with(".sdk") {
+                let mut NBasename: str = stem(operator(NI), native);
+                let mut DBasename: str = stem(operator(DI), native);
                 if DBasename.starts_with(NBasename) {
                     continue;
                 }
             }
-            if operator(NI) != * {
+            if operator(NI) != operator(DI) {
                 break;
             }
         }

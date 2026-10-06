@@ -69,11 +69,11 @@ fn isTileDef(MRI: *mut MachineRegisterInfo, MI: *mut MachineInstr) -> bool {
     if MO.isReg() {
         let mut Reg: Register = MO.getReg();
         if Reg.isVirtual() {
-            if  {
+            if MRI.getRegClass(Reg).getID() == TILERegClassID {
                 return true;
             }
         }
-        if  {
+        if Reg.operator unsigned int() >= TMM0 && Reg.operator unsigned int() <= TMM7 {
             return true;
         }
     }
@@ -81,23 +81,55 @@ fn isTileDef(MRI: *mut MachineRegisterInfo, MI: *mut MachineInstr) -> bool {
 }
 
 fn getTMMIndex(Reg: Register) -> u32 {
-    llvm_unreachable_internal("Invalid Tmm Reg!", "llvm\\lib\\Target\\X86\\X86FastTileConfig.cpp", 114);
+    if Reg.operator unsigned int() >= TMM0 && Reg.operator unsigned int() <= TMM7 {
+        return Reg.operator unsigned int() - TMM0;
+    }
+    llvm_unreachable_internal("Invalid Tmm Reg!", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86FastTileConfig.cpp", 114);
 }
 
 fn X86FastTileConfigImpl::configBasicBlock(self, MBB: *mut MachineBasicBlock) -> bool {
     let mut Change: bool = false;
-    let mut ShapeInfos: pair<unsigned int, ShapeT>, 6> = zeroed();
+    let mut ShapeInfos: pair<unsigned int, ShapeT>, 6> = pair<unsigned int, ShapeT>, 6> {};
+    for MI in reverse(MBB) {
+        if !isTileDef(self.MRI, MI) && MI.getOpcode() != PLDTILECFGV {
+            continue;
+        }
+        if MI.getOpcode() != PLDTILECFGV {
+            let mut Row: *mut MachineOperand = MI.getOperand(1);
+            let mut TMMIdx: u32 = getTMMIndex(MI.getOperand(0).getReg());
+            let mut Col: *mut MachineOperand = MI.getOperand(2);
+            ShapeInfos.push(ShapeT> { TMMIdx, ShapeT { &mut Row, &mut Col, null } });
+        } else {
+            let mut SS: i32 = MI.getOperand(0).getIndex();
+            for ShapeInfo in ShapeInfos {
+                let mut DL: DebugLoc = null;
+                let mut TMMIdx: u32 = ShapeInfo.first;
+                let mut RowReg: Register = ShapeInfo.second.getRow().getReg();
+                let mut ColReg: Register = ShapeInfo.second.getCol().getReg();
+                let mut RowOffset: i32 = 48 + TMMIdx;
+                let mut ColOffset: i32 = 16 + TMMIdx * 2;
+                let mut SubRowReg: Register = self.TRI.getSubReg(RowReg.operator MCRegister(), sub_8bit);
+                BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(IMPLICIT_DEF), SubRowReg);
+                let mut StoreRow: MachineInstrBuilder = BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MOV8mr));
+                addFrameReference(StoreRow, SS, RowOffset).addReg(SubRowReg, RegState {}, 0);
+                let mut StoreCol: MachineInstrBuilder = BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MOV16mr));
+                addFrameReference(StoreCol, SS, ColOffset).addReg(ColReg, RegState {}, 0);
+            }
+            ShapeInfos.clear();
+            Change = true;
+        }
+    }
     return Change;
 }
 
 fn X86FastTileConfigImpl::runOnMachineFunction(self, MFunc: *mut MachineFunction) -> bool {
-    self.X86FI = MFunc;
+    self.X86FI = MFunc.getInfo();
     if self.X86FI.getAMXProgModel() != ManagedRA {
         return false;
     }
     self.MF = &mut MFunc;
     self.MRI = &mut MFunc.getRegInfo();
-    let mut ST: *TargetSubtargetInfo = operator&(MFunc);
+    let mut ST: *TargetSubtargetInfo = &mut MFunc.getSubtarget();
     self.TRI = ST.getRegisterInfo();
     self.TII = MFunc.getSubtarget().getInstrInfo();
     let mut Change: bool = false;
@@ -119,5 +151,5 @@ fn X86FastTileConfigLegacy::runOnMachineFunction(self, MF: *mut MachineFunction)
 fn X86FastTileConfigPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
     let mut Impl: X86FastTileConfigImpl = X86FastTileConfigImpl {};
     Impl.runOnMachineFunction(MF);
-    return getMachineFunctionPassPreservedAnalyses();
+    return getMachineFunctionPassPreservedAnalyses().preserveSet();
 }

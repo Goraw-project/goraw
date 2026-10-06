@@ -1,4 +1,4 @@
-static mut FixupBWInsts: i32 = "fixup-byte-word-insts";
+static mut FixupBWInsts: opt<bool> = opt<bool> { "fixup-byte-word-insts", "Change byte and word instructions to larger sizes", init(true), Hidden };
 
 struct X86FixupBWInstImpl {
     MF: *mut MachineFunction,
@@ -24,8 +24,8 @@ fn X86FixupBWInstLegacy::getPassName(self: *X86FixupBWInstLegacy) -> str {
 }
 
 fn X86FixupBWInstLegacy::getAnalysisUsage(self: *X86FixupBWInstLegacy, AU: *mut AnalysisUsage) {
-    AU;
-    AU;
+    AU.addRequired();
+    AU.addRequired();
     self.getAnalysisUsage(AU);
 }
 
@@ -70,13 +70,13 @@ fn createX86FixupBWInstsLegacyPass() -> *mut FunctionPass {
 }
 
 fn X86FixupBWInstImpl::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
-    if operator!() {
+    if !FixupBWInsts {
         return false;
     }
     self.MF = &mut MF;
-    self.TII = MF();
+    self.TII = MF.getSubtarget().getInstrInfo();
     self.TRI = MF.getRegInfo().getTargetRegisterInfo();
-    self.LiveUnits.init;
+    self.LiveUnits.init(self.TII.getRegisterInfo());
     while true {
         {
         if DebugFlag && isCurrentDebugType("x86-fixup-bw-insts", 1) {
@@ -102,21 +102,28 @@ fn X86FixupBWInstImpl::runOnMachineFunction(self, MF: *mut MachineFunction) -> b
 fn X86FixupBWInstImpl::getSuperRegDestIfDead(self: *X86FixupBWInstImpl, OrigMI: *mut MachineInstr) -> Register {
     let mut TRI: *X86RegisterInfo = &mut self.TII.getRegisterInfo();
     let mut OrigDestReg: Register = OrigMI.getOperand(0).getReg();
-    let mut SuperDestReg: Register = Register { Reg: getX86SubSuperRegister(OrigDestReg.operator MCRegister(), 32, false) };
+    let mut SuperDestReg: Register = getX86SubSuperRegister(OrigDestReg.operator MCRegister(), 32, false);
     assert!(SuperDestReg.isValid(), "Invalid Operand");
-    let mut SubRegIdx: auto = TRI()(SuperDestReg, OrigDestReg);
-    if  {
+    let mut SubRegIdx: u32 = TRI.getSubRegIndex(SuperDestReg.operator MCRegister(), OrigDestReg.operator MCRegister());
+    if SubRegIdx == sub_8bit_hi {
         return Register { Reg: 0 };
     }
     let mut SuperIsLive: bool = false;
-    let mut Range: auto = TRI()(OrigDestReg);
-    let mut I: MCRegUnitIterator = ();
-    let mut E: MCRegUnitIterator = ();
+    let mut Range: iterator_range<MCRegUnitIterator> = TRI.regunits(OrigDestReg.operator MCRegister());
+    let mut I: MCRegUnitIterator = Range.begin();
+    let mut E: MCRegUnitIterator = Range.end();
+    for S in TRI.regunits(SuperDestReg.operator MCRegister()) {
+        I = lower_bound(I, E, S);
+        if (I == E || operator(I) > S) && self.LiveUnits.getBitVector().test(S as u32) {
+            SuperIsLive = true;
+            break;
+        }
+    }
     if !SuperIsLive {
         return SuperDestReg;
     }
     let mut Opc: u32 = OrigMI.getOpcode();
-    if  {
+    if Opc != MOV8rm && Opc != MOV16rm && Opc != MOV8rr && Opc != MOV16rr {
         return Register { Reg: 0 };
     }
     let mut IsDefined: bool = false;
@@ -124,10 +131,10 @@ fn X86FixupBWInstImpl::getSuperRegDestIfDead(self: *X86FixupBWInstImpl, OrigMI: 
         if !MO.isReg() {
             continue;
         }
-        if MO.isDef() && TRI()(OrigDestReg, MO.getReg()) {
+        if MO.isDef() && TRI.isSuperRegisterEq(OrigDestReg.operator MCRegister(), MO.getReg().operator MCRegister()) {
             IsDefined = true;
         }
-        if MO.isUse() && operator!(TRI()(OrigDestReg, MO.getReg())) && TRI()(SuperDestReg, MO.getReg()) {
+        if MO.isUse() && !TRI.isSubRegisterEq(OrigDestReg.operator MCRegister(), MO.getReg().operator MCRegister()) && TRI.regsOverlap(SuperDestReg, MO.getReg()) {
             return Register { Reg: 0 };
         }
     }
@@ -142,7 +149,7 @@ fn X86FixupBWInstImpl::tryReplaceLoad(self: *X86FixupBWInstImpl, New32BitOpcode:
     if !NewDestReg.operator unsigned int() {
         return null;
     }
-    let mut MIB: MachineInstrBuilder = BuildMI(*self.MF, MIMetadata { *MI }, self.TII(New32BitOpcode), NewDestReg);
+    let mut MIB: MachineInstrBuilder = BuildMI(*self.MF, *MI, self.TII.get(New32BitOpcode), NewDestReg);
     let mut NumArgs: u32 = MI.getNumOperands();
     for let mut i: u32 = 1; i < NumArgs; i += 1 {
         MIB.add(MI.getOperand(i));
@@ -151,9 +158,9 @@ fn X86FixupBWInstImpl::tryReplaceLoad(self: *X86FixupBWInstImpl, New32BitOpcode:
     if MI.peekDebugInstrNum() {
         OldInstrNum;
     } else {
-        let mut Subreg: u32 = self.TRI.getSubRegIndex;
+        let mut Subreg: u32 = self.TRI.getSubRegIndex(operator(MIB).getOperand(0).getReg().operator MCRegister(), MI.getOperand(0).getReg().operator MCRegister());
         let mut NewInstrNum: u32 = operator(MIB).getDebugInstrNum(*self.MF);
-        self.MF.makeDebugValueSubstitution;
+        self.MF.makeDebugValueSubstitution(DebugInstrOperandPair { OldInstrNum, 0 }, DebugInstrOperandPair { NewInstrNum, 0 }, Subreg);
     }
     return MIB.operator llvm::MachineInstr *();
 }
@@ -166,13 +173,13 @@ fn X86FixupBWInstImpl::tryReplaceCopy(self: *X86FixupBWInstImpl, MI: *mut Machin
     if !NewDestReg.operator unsigned int() {
         return null;
     }
-    let mut NewSrcReg: Register = Register { Reg: getX86SubSuperRegister(OldSrc.getReg().operator MCRegister(), 32, false) };
+    let mut NewSrcReg: Register = getX86SubSuperRegister(OldSrc.getReg().operator MCRegister(), 32, false);
     assert!(NewSrcReg.isValid(), "Invalid Operand");
     let mut TRI: *X86RegisterInfo = &mut self.TII.getRegisterInfo();
-    if TRI()(NewSrcReg, OldSrc.getReg()) != TRI()(NewDestReg, OldDest.getReg()) {
+    if TRI.getSubRegIndex(NewSrcReg.operator MCRegister(), OldSrc.getReg().operator MCRegister()) != TRI.getSubRegIndex(NewDestReg.operator MCRegister(), OldDest.getReg().operator MCRegister()) {
         return null;
     }
-    let mut MIB: MachineInstrBuilder = BuildMI(*self.MF, MIMetadata { *MI }, self.TII, NewDestReg)(NewSrcReg, Undef)(OldSrc.getReg(), Implicit);
+    let mut MIB: MachineInstrBuilder = BuildMI(*self.MF, *MI, self.TII.get(MOV32rr), NewDestReg).addReg(NewSrcReg, Undef, 0).addReg(OldSrc.getReg(), Implicit, 0);
     for Op in MI.implicit_operands() {
         if Op.getReg() != (if Op.isDef() { NewDestReg } else { NewSrcReg }) {
             MIB.add(Op);
@@ -186,10 +193,10 @@ fn X86FixupBWInstImpl::tryReplaceExtend(self: *X86FixupBWInstImpl, New32BitOpcod
     if !NewDestReg.operator unsigned int() {
         return null;
     }
-    if  {
+    if MI.getOpcode() == MOVSX16rr8 && MI.getOperand(0).getReg() == AX && MI.getOperand(1).getReg() == AL {
         return null;
     }
-    let mut MIB: MachineInstrBuilder = BuildMI(*self.MF, MIMetadata { *MI }, self.TII(New32BitOpcode), NewDestReg);
+    let mut MIB: MachineInstrBuilder = BuildMI(*self.MF, *MI, self.TII.get(New32BitOpcode), NewDestReg);
     let mut NumArgs: u32 = MI.getNumOperands();
     for let mut i: u32 = 1; i < NumArgs; i += 1 {
         MIB.add(MI.getOperand(i));
@@ -198,15 +205,38 @@ fn X86FixupBWInstImpl::tryReplaceExtend(self: *X86FixupBWInstImpl, New32BitOpcod
     if MI.peekDebugInstrNum() {
         OldInstrNum;
     } else {
-        let mut Subreg: u32 = self.TRI.getSubRegIndex;
+        let mut Subreg: u32 = self.TRI.getSubRegIndex(operator(MIB).getOperand(0).getReg().operator MCRegister(), MI.getOperand(0).getReg().operator MCRegister());
         let mut NewInstrNum: u32 = operator(MIB).getDebugInstrNum(*self.MF);
-        self.MF.makeDebugValueSubstitution;
+        self.MF.makeDebugValueSubstitution(DebugInstrOperandPair { OldInstrNum, 0 }, DebugInstrOperandPair { NewInstrNum, 0 }, Subreg);
     }
     return MIB.operator llvm::MachineInstr *();
 }
 
 fn X86FixupBWInstImpl::tryReplaceInstr(self: *X86FixupBWInstImpl, MI: *mut MachineInstr, MBB: *mut MachineBasicBlock) -> *mut MachineInstr {
     match MI.getOpcode() {
+        MOV8rm => {
+            if !self.OptForSize {
+                return self.tryReplaceLoad(MOVZX32rm8, MI);
+            }
+        },
+        MOV16rm => {
+            return self.tryReplaceLoad(MOVZX32rm16, MI);
+        },
+        MOV8rr => {
+            MOV16rr;
+        },
+        MOVSX16rr8 => {
+            return self.tryReplaceExtend(MOVSX32rr8, MI);
+        },
+        MOVSX16rm8 => {
+            return self.tryReplaceExtend(MOVSX32rm8, MI);
+        },
+        MOVZX16rr8 => {
+            return self.tryReplaceExtend(MOVZX32rr8, MI);
+        },
+        MOVZX16rm8 => {
+            return self.tryReplaceExtend(MOVZX32rm8, MI);
+        },
         _ => {
             break;
         },
@@ -215,15 +245,25 @@ fn X86FixupBWInstImpl::tryReplaceInstr(self: *X86FixupBWInstImpl, MI: *mut Machi
 }
 
 fn X86FixupBWInstImpl::processBasicBlock(self, MF: *mut MachineFunction, MBB: *mut MachineBasicBlock) {
-    let mut MIReplacements: pair<MachineInstr *, MachineInstr *>, 8> = zeroed();
+    let mut MIReplacements: pair<MachineInstr *, MachineInstr *>, 8> = pair<MachineInstr *, MachineInstr *>, 8> {};
     self.LiveUnits.clear();
     self.LiveUnits.addLiveOuts(MBB);
     self.OptForSize = shouldOptimizeForSize(&mut MBB, self.PSI, self.MBFI, Other);
-    while operator!() {
-        let mut MI: *mut MachineInstr = ();
-        let mut NewMI: *mut MachineInstr = ();
-        MIReplacements()();
-        MBB.insert(iterator { MI }, NewMI);
+    for MI in reverse(MBB) {
+        if self.tryReplaceInstr(&mut MI, MBB) {
+            NewMI;
+        } else {
+            MIReplacements.push(make_pair(&mut MI, NewMI));
+        }
+        if !MI.isDebugInstr() {
+            self.LiveUnits.stepBackward(MI);
+        }
+    }
+    while !MIReplacements.is_empty() {
+        let mut MI: *mut MachineInstr = MIReplacements.back().first;
+        let mut NewMI: *mut MachineInstr = MIReplacements.back().second;
+        MIReplacements.pop();
+        MBB.insert(MI, NewMI);
         MBB.erase(MI);
     }
 }
@@ -232,19 +272,19 @@ fn X86FixupBWInstLegacy::runOnMachineFunction(self, MF: *mut MachineFunction) ->
     if self.skipFunction(MF.getFunction()) {
         return false;
     }
-    let mut PSI: *mut ProfileSummaryInfo = operator&();
-    let mut MBFI: *mut MachineBlockFrequencyInfo = if (PSI && PSI.hasProfileSummary()) { operator&() } else { null };
+    let mut PSI: *mut ProfileSummaryInfo = &mut self.getAnalysis().getPSI();
+    let mut MBFI: *mut MachineBlockFrequencyInfo = if (PSI && PSI.hasProfileSummary()) { &mut self.getAnalysis().getBFI() } else { null };
     let mut Impl: X86FixupBWInstImpl = X86FixupBWInstImpl { PSI, MBFI };
     return Impl.runOnMachineFunction(MF);
 }
 
 fn X86FixupBWInstsPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
-    let mut PSI: *mut ProfileSummaryInfo = MFAM(*MF.getFunction().getParent());
+    let mut PSI: *mut ProfileSummaryInfo = MFAM.getResult(MF).getCachedResult(*MF.getFunction().getParent());
     let mut MBFI: *mut MachineBlockFrequencyInfo = null;
     if PSI && PSI.hasProfileSummary() {
-        MBFI = operator&(MFAM);
+        MBFI = &mut MFAM.getResult(MF);
     }
     let mut Impl: X86FixupBWInstImpl = X86FixupBWInstImpl { PSI, MBFI };
     let mut Changed: bool = Impl.runOnMachineFunction(MF);
-    return if Changed { getMachineFunctionPassPreservedAnalyses() } else { all() };
+    return if Changed { getMachineFunctionPassPreservedAnalyses().preserveSet() } else { all() };
 }

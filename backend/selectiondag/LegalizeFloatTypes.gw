@@ -3,7 +3,7 @@ fn reportNoLibcall(DAG: *mut SelectionDAG, N: *mut SDNode, VT: EVT) {
 }
 
 fn GetFPLibCall(VT: EVT, Call_F32: Libcall, Call_F64: Libcall, Call_F80: Libcall, Call_F128: Libcall, Call_PPCF128: Libcall) -> Libcall {
-    return if VT == EVT { f32 } { Call_F32 } else { if VT == EVT { f64 } { Call_F64 } else { if VT == EVT { f80 } { Call_F80 } else { if VT == EVT { f128 } { Call_F128 } else { if VT == EVT { ppcf128 } { Call_PPCF128 } else { UNKNOWN_LIBCALL } } } } };
+    return if VT == f32 { Call_F32 } else { if VT == f64 { Call_F64 } else { if VT == f80 { Call_F80 } else { if VT == f128 { Call_F128 } else { if VT == ppcf128 { Call_PPCF128 } else { UNKNOWN_LIBCALL } } } } };
 }
 
 fn DAGTypeLegalizer::SoftenFloatResult(self, N: *mut SDNode, ResNo: u32) {
@@ -256,8 +256,8 @@ fn DAGTypeLegalizer::SoftenFloatRes_Unary(self, N: *mut SDNode, LC: Libcall) -> 
     }
     let mut CallOptions: MakeLibCallOptions = MakeLibCallOptions {};
     let mut OpVT: EVT = N.getOperand(0 + Offset).getValueType();
-    CallOptions.setTypeListBeforeSoften(ArrayRef<EVT> { OpVT }, N.getValueType(0));
-    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, NVT, ArrayRef<SDValue> { Op }, CallOptions, SDLoc { N }, Chain);
+    CallOptions.setTypeListBeforeSoften(OpVT, N.getValueType(0));
+    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, NVT, Op, CallOptions, N, Chain);
     if IsStrict {
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Tmp.second);
     }
@@ -277,8 +277,8 @@ fn DAGTypeLegalizer::SoftenFloatRes_Binary(self, N: *mut SDNode, LC: Libcall) ->
     }
     let mut CallOptions: MakeLibCallOptions = MakeLibCallOptions {};
     let mut OpsVT: [2]EVT = [N.getOperand(0 + Offset).getValueType(), N.getOperand(1 + Offset).getValueType()];
-    CallOptions.setTypeListBeforeSoften(ArrayRef<EVT> { OpsVT }, N.getValueType(0));
-    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, NVT, ArrayRef<SDValue> { Ops }, CallOptions, SDLoc { N }, Chain);
+    CallOptions.setTypeListBeforeSoften(OpsVT, N.getValueType(0));
+    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, NVT, Ops, CallOptions, N, Chain);
     if IsStrict {
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Tmp.second);
     }
@@ -291,12 +291,12 @@ fn DAGTypeLegalizer::SoftenFloatRes_BITCAST(self, N: *mut SDNode) -> SDValue {
 
 fn DAGTypeLegalizer::SoftenFloatRes_FREEZE(self, N: *mut SDNode) -> SDValue {
     let mut Ty: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), N.getValueType(0));
-    return self.DAG.getNode(FREEZE, SDLoc { N }, Ty, self.GetSoftenedFloat(N.getOperand(0)));
+    return self.DAG.getNode(FREEZE, N, Ty, self.GetSoftenedFloat(N.getOperand(0)));
 }
 
 fn DAGTypeLegalizer::SoftenFloatRes_ARITH_FENCE(self, N: *mut SDNode) -> SDValue {
     let mut Ty: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), N.getValueType(0));
-    let mut NewFence: SDValue = self.DAG.getNode(ARITH_FENCE, SDLoc { N }, Ty, self.GetSoftenedFloat(N.getOperand(0)));
+    let mut NewFence: SDValue = self.DAG.getNode(ARITH_FENCE, N, Ty, self.GetSoftenedFloat(N.getOperand(0)));
     return NewFence;
 }
 
@@ -306,29 +306,29 @@ fn DAGTypeLegalizer::SoftenFloatRes_MERGE_VALUES(self, N: *mut SDNode, ResNo: u3
 }
 
 fn DAGTypeLegalizer::SoftenFloatRes_BUILD_PAIR(self, N: *mut SDNode) -> SDValue {
-    return self.DAG.getNode(BUILD_PAIR, SDLoc { N }, self.TLI.getTypeToTransformTo(*self.DAG.getContext(), N.getValueType(0)), self.BitConvertToInteger(N.getOperand(0)), self.BitConvertToInteger(N.getOperand(1)));
+    return self.DAG.getNode(BUILD_PAIR, N, self.TLI.getTypeToTransformTo(*self.DAG.getContext(), N.getValueType(0)), self.BitConvertToInteger(N.getOperand(0)), self.BitConvertToInteger(N.getOperand(1)));
 }
 
 fn DAGTypeLegalizer::SoftenFloatRes_ConstantFP(self, N: *mut SDNode) -> SDValue {
     let mut CN: *mut ConstantFPSDNode = cast(N);
     if self.DAG.getDataLayout().isBigEndian() && CN.getValueType(0).getSimpleVT() == ppcf128 {
         let mut words: [2]u64 = [CN.getValueAPF().bitcastToAPInt().getRawData()[1], CN.getValueAPF().bitcastToAPInt().getRawData()[0]];
-        let mut Val: APInt = APInt { U: 128, BitWidth: ArrayRef<uint64_t> { words } };
-        return self.DAG.getConstant(Val, SDLoc { CN }, self.TLI.getTypeToTransformTo(*self.DAG.getContext(), CN.getValueType(0)), false, false);
+        let mut Val: APInt = APInt { U: 128, BitWidth: words };
+        return self.DAG.getConstant(Val, CN, self.TLI.getTypeToTransformTo(*self.DAG.getContext(), CN.getValueType(0)), false, false);
     } else {
-        return self.DAG.getConstant(CN.getValueAPF().bitcastToAPInt(), SDLoc { CN }, self.TLI.getTypeToTransformTo(*self.DAG.getContext(), CN.getValueType(0)), false, false);
+        return self.DAG.getConstant(CN.getValueAPF().bitcastToAPInt(), CN, self.TLI.getTypeToTransformTo(*self.DAG.getContext(), CN.getValueType(0)), false, false);
     }
 }
 
 fn DAGTypeLegalizer::SoftenFloatRes_EXTRACT_ELEMENT(self, N: *mut SDNode) -> SDValue {
     let mut Src: SDValue = N.getOperand(0);
-    assert!(Src.getValueType() == EVT { ppcf128 }, "In floats only ppcf128 can be extracted by element!");
-    return self.DAG.getNode(EXTRACT_ELEMENT, SDLoc { N }, N.getValueType(0).changeTypeToInteger(), self.DAG.getBitcast(EVT { i128 }, Src), N.getOperand(1));
+    assert!(Src.getValueType() == ppcf128, "In floats only ppcf128 can be extracted by element!");
+    return self.DAG.getNode(EXTRACT_ELEMENT, N, N.getValueType(0).changeTypeToInteger(), self.DAG.getBitcast(i128, Src), N.getOperand(1));
 }
 
 fn DAGTypeLegalizer::SoftenFloatRes_EXTRACT_VECTOR_ELT(self, N: *mut SDNode, ResNo: u32) -> SDValue {
     let mut NewOp: SDValue = self.BitConvertVectorToIntegerVector(N.getOperand(0));
-    return self.DAG.getNode(EXTRACT_VECTOR_ELT, SDLoc { N }, NewOp.getValueType().getVectorElementType(), NewOp, N.getOperand(1));
+    return self.DAG.getNode(EXTRACT_VECTOR_ELT, N, NewOp.getValueType().getVectorElementType(), NewOp, N.getOperand(1));
 }
 
 fn DAGTypeLegalizer::SoftenFloatRes_FABS(self, N: *mut SDNode) -> SDValue {
@@ -336,20 +336,20 @@ fn DAGTypeLegalizer::SoftenFloatRes_FABS(self, N: *mut SDNode) -> SDValue {
     let mut Size: u32 = NVT.getSizeInBits().operator unsigned long long();
     let mut API: APInt = getAllOnes(Size);
     API.clearBit(Size - 1);
-    let mut Mask: SDValue = self.DAG.getConstant(API, SDLoc { N }, NVT, false, false);
+    let mut Mask: SDValue = self.DAG.getConstant(API, N, NVT, false, false);
     let mut Op: SDValue = self.GetSoftenedFloat(N.getOperand(0));
-    return self.DAG.getNode(AND, SDLoc { N }, NVT, Op, Mask);
+    return self.DAG.getNode(AND, N, NVT, Op, Mask);
 }
 
 fn DAGTypeLegalizer::SoftenFloatRes_FCANONICALIZE(self, N: *mut SDNode) -> SDValue {
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut Operand: SDValue = N.getOperand(0);
     let mut VT: EVT = Operand.getValueType();
     let mut One: SDValue = self.DAG.getConstantFP(1.0, dl, VT, false);
     let mut Chain: SDValue = self.DAG.getEntryNode();
     let mut CanonicalizeFlags: SDNodeFlags = N.getFlags();
     CanonicalizeFlags.setNoFPExcept(true);
-    let mut Mul: SDValue = self.DAG.getNode(STRICT_FMUL, dl, ArrayRef<EVT> { [VT, EVT { Other }] }, ArrayRef<SDValue> { [Chain, Operand, One] }, CanonicalizeFlags);
+    let mut Mul: SDValue = self.DAG.getNode(STRICT_FMUL, dl, [VT, Other], [Chain, Operand, One], CanonicalizeFlags);
     return self.BitConvertToInteger(Mul);
 }
 
@@ -418,7 +418,7 @@ fn DAGTypeLegalizer::SoftenFloatRes_FCEIL(self, N: *mut SDNode) -> SDValue {
 fn DAGTypeLegalizer::SoftenFloatRes_FCOPYSIGN(self, N: *mut SDNode) -> SDValue {
     let mut LHS: SDValue = self.GetSoftenedFloat(N.getOperand(0));
     let mut RHS: SDValue = self.BitConvertToInteger(N.getOperand(1));
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut LVT: EVT = LHS.getValueType();
     let mut RVT: EVT = RHS.getValueType();
     let mut LSize: u32 = LVT.getSizeInBits().operator unsigned long long();
@@ -487,13 +487,13 @@ fn DAGTypeLegalizer::SoftenFloatRes_FMA(self, N: *mut SDNode) -> SDValue {
     let mut Chain: SDValue = if IsStrict { N.getOperand(0) } else { SDValue {} };
     let mut CallOptions: MakeLibCallOptions = MakeLibCallOptions {};
     let mut OpsVT: [3]EVT = [N.getOperand(0 + Offset).getValueType(), N.getOperand(1 + Offset).getValueType(), N.getOperand(2 + Offset).getValueType()];
-    CallOptions.setTypeListBeforeSoften(ArrayRef<EVT> { OpsVT }, N.getValueType(0));
+    CallOptions.setTypeListBeforeSoften(OpsVT, N.getValueType(0));
     let mut LC: Libcall = getFMA(N.getValueType(0));
     let mut LCImpl: LibcallImpl = self.DAG.getLibcalls().getLibcallImpl(LC);
     if LCImpl == Unsupported {
         return self.SoftenFloatRes_NoLibcall(N, NVT);
     }
-    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, NVT, ArrayRef<SDValue> { Ops }, CallOptions, SDLoc { N }, Chain);
+    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, NVT, Ops, CallOptions, N, Chain);
     if IsStrict {
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Tmp.second);
     }
@@ -510,7 +510,7 @@ fn DAGTypeLegalizer::SoftenFloatRes_FNEARBYINT(self, N: *mut SDNode) -> SDValue 
 
 fn DAGTypeLegalizer::SoftenFloatRes_FNEG(self, N: *mut SDNode) -> SDValue {
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), N.getValueType(0));
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut SignMask: APInt = getSignMask(NVT.getSizeInBits().operator unsigned long long());
     return self.DAG.getNode(XOR, dl, NVT, self.GetSoftenedFloat(N.getOperand(0)), self.DAG.getConstant(SignMask, dl, NVT, false, false));
 }
@@ -520,15 +520,15 @@ fn DAGTypeLegalizer::SoftenFloatRes_FP_EXTEND(self, N: *mut SDNode) -> SDValue {
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), N.getValueType(0));
     let mut Op: SDValue = N.getOperand(if IsStrict { 1 } else { 0 });
     let mut Chain: SDValue = if IsStrict { N.getOperand(0) } else { SDValue {} };
-    if (Op.getValueType() == EVT { f16 } || Op.getValueType() == EVT { bf16 }) && N.getValueType(0) != EVT { f32 } {
+    if (Op.getValueType() == f16 || Op.getValueType() == bf16) && N.getValueType(0) != f32 {
         if IsStrict {
-            Op = self.DAG.getNode(STRICT_FP_EXTEND, SDLoc { N }, ArrayRef<EVT> { [EVT { f32 }, EVT { Other }] }, ArrayRef<SDValue> { [Chain, Op] });
+            Op = self.DAG.getNode(STRICT_FP_EXTEND, N, [f32, Other], [Chain, Op]);
             Chain = Op.getValue(1);
         } else {
-            Op = self.DAG.getNode(FP_EXTEND, SDLoc { N }, EVT { f32 }, Op);
+            Op = self.DAG.getNode(FP_EXTEND, N, f32, Op);
         }
     }
-    if Op.getValueType() == EVT { bf16 } {
+    if Op.getValueType() == bf16 {
         return self.SoftenFloatRes_BF16_TO_FP(N);
     }
     let mut LC: Libcall = getFPEXT(Op.getValueType(), N.getValueType(0));
@@ -545,8 +545,8 @@ fn DAGTypeLegalizer::SoftenFloatRes_FP_EXTEND(self, N: *mut SDNode) -> SDValue {
     }
     let mut CallOptions: MakeLibCallOptions = MakeLibCallOptions {};
     let mut OpVT: EVT = N.getOperand(if IsStrict { 1 } else { 0 }).getValueType();
-    CallOptions.setTypeListBeforeSoften(ArrayRef<EVT> { OpVT }, N.getValueType(0));
-    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, NVT, ArrayRef<SDValue> { Op }, CallOptions, SDLoc { N }, Chain);
+    CallOptions.setTypeListBeforeSoften(OpVT, N.getValueType(0));
+    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, NVT, Op, CallOptions, N, Chain);
     if IsStrict {
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Tmp.second);
     }
@@ -554,27 +554,27 @@ fn DAGTypeLegalizer::SoftenFloatRes_FP_EXTEND(self, N: *mut SDNode) -> SDValue {
 }
 
 fn DAGTypeLegalizer::SoftenFloatRes_FP16_TO_FP(self, N: *mut SDNode) -> SDValue {
-    let mut MidVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), EVT { f32 });
+    let mut MidVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), f32);
     let mut Op: SDValue = N.getOperand(0);
     let mut CallOptions: MakeLibCallOptions = MakeLibCallOptions {};
     let mut OpsVT: [1]EVT = [N.getOperand(0).getValueType()];
-    CallOptions.setTypeListBeforeSoften(ArrayRef<EVT> { OpsVT }, N.getValueType(0));
-    let mut Res32: SDValue = self.TLI.makeLibCall(self.DAG, FPEXT_F16_F32, MidVT, ArrayRef<SDValue> { Op }, CallOptions, SDLoc { N }, SDValue {}).first;
-    if N.getValueType(0) == EVT { f32 } {
+    CallOptions.setTypeListBeforeSoften(OpsVT, N.getValueType(0));
+    let mut Res32: SDValue = self.TLI.makeLibCall(self.DAG, FPEXT_F16_F32, MidVT, Op, CallOptions, N, SDValue {}).first;
+    if N.getValueType(0) == f32 {
         return Res32;
     }
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), N.getValueType(0));
-    let mut LC: Libcall = getFPEXT(EVT { f32 }, N.getValueType(0));
+    let mut LC: Libcall = getFPEXT(f32, N.getValueType(0));
     assert!(LC != UNKNOWN_LIBCALL, "Unsupported FP_EXTEND!");
-    return self.TLI.makeLibCall(self.DAG, LC, NVT, ArrayRef<SDValue> { Res32 }, CallOptions, SDLoc { N }, SDValue {}).first;
+    return self.TLI.makeLibCall(self.DAG, LC, NVT, Res32, CallOptions, N, SDValue {}).first;
 }
 
 fn DAGTypeLegalizer::SoftenFloatRes_BF16_TO_FP(self, N: *mut SDNode) -> SDValue {
-    assert!(N.getValueType(0) == EVT { f32 }, "Can only soften BF16_TO_FP with f32 result");
-    let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), EVT { f32 });
+    assert!(N.getValueType(0) == f32, "Can only soften BF16_TO_FP with f32 result");
+    let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), f32);
     let mut Op: SDValue = N.getOperand(0);
-    let mut DL: SDLoc = SDLoc { N };
-    Op = self.DAG.getNode(ANY_EXTEND, DL, NVT, self.DAG.getNode(BITCAST, DL, EVT { i16 }, Op));
+    let mut DL: SDLoc = N;
+    Op = self.DAG.getNode(ANY_EXTEND, DL, NVT, self.DAG.getNode(BITCAST, DL, i16, Op));
     let mut Res: SDValue = self.DAG.getNode(SHL, DL, NVT, Op, self.DAG.getShiftAmountConstant(16, NVT, DL));
     return Res;
 }
@@ -592,8 +592,8 @@ fn DAGTypeLegalizer::SoftenFloatRes_FP_ROUND(self, N: *mut SDNode) -> SDValue {
     }
     let mut CallOptions: MakeLibCallOptions = MakeLibCallOptions {};
     let mut OpVT: EVT = N.getOperand(if IsStrict { 1 } else { 0 }).getValueType();
-    CallOptions.setTypeListBeforeSoften(ArrayRef<EVT> { OpVT }, N.getValueType(0));
-    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, NVT, ArrayRef<SDValue> { Op }, CallOptions, SDLoc { N }, Chain);
+    CallOptions.setTypeListBeforeSoften(OpVT, N.getValueType(0));
+    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, NVT, Op, CallOptions, N, Chain);
     if IsStrict {
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Tmp.second);
     }
@@ -630,9 +630,9 @@ fn DAGTypeLegalizer::SoftenFloatRes_ExpOp(self, N: *mut SDNode) -> SDValue {
     let mut Chain: SDValue = if IsStrict { N.getOperand(0) } else { SDValue {} };
     let mut CallOptions: MakeLibCallOptions = MakeLibCallOptions {};
     let mut OpsVT: [2]EVT = [N.getOperand(0 + Offset).getValueType(), N.getOperand(1 + Offset).getValueType()];
-    CallOptions.setTypeListBeforeSoften(ArrayRef<EVT> { OpsVT }, N.getValueType(0));
+    CallOptions.setTypeListBeforeSoften(OpsVT, N.getValueType(0));
     CallOptions.setIsSigned(true);
-    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, NVT, ArrayRef<SDValue> { Ops }, CallOptions, SDLoc { N }, Chain);
+    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, NVT, Ops, CallOptions, N, Chain);
     if IsStrict {
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Tmp.second);
     }
@@ -646,18 +646,18 @@ fn DAGTypeLegalizer::SoftenFloatRes_FFREXP(self, N: *mut SDNode) -> SDValue {
     let mut LC: Libcall = getFREXP(VT0);
     let mut LCImpl: LibcallImpl = self.DAG.getLibcalls().getLibcallImpl(LC);
     let mut NVT0: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), VT0);
-    let mut DL: SDLoc = SDLoc { N };
+    let mut DL: SDLoc = N;
     if LCImpl == Unsupported {
         reportNoLibcall(self.DAG, N, VT0);
         let mut PoisonExp: SDValue = self.DAG.getPOISON(VT1);
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, PoisonExp);
-        return self.DAG.getMergeValues(ArrayRef<SDValue> { [self.DAG.getPOISON(NVT0), PoisonExp] }, DL);
+        return self.DAG.getMergeValues([self.DAG.getPOISON(NVT0), PoisonExp], DL);
     }
     if self.DAG.getLibInfo().getIntSize() != VT1.getSizeInBits().operator unsigned long long() {
         self.DAG.getContext().emitError("ffrexp exponent does not match sizeof(int)");
         let mut PoisonExp: SDValue = self.DAG.getPOISON(VT1);
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, PoisonExp);
-        return self.DAG.getMergeValues(ArrayRef<SDValue> { [self.DAG.getPOISON(NVT0), PoisonExp] }, DL);
+        return self.DAG.getMergeValues([self.DAG.getPOISON(NVT0), PoisonExp], DL);
     }
     let mut StackSlot: SDValue = self.DAG.CreateStackTemporary(VT1, 1);
     let mut PointerTy: *mut PointerType = getUnqual(*self.DAG.getContext());
@@ -665,7 +665,7 @@ fn DAGTypeLegalizer::SoftenFloatRes_FFREXP(self, N: *mut SDNode) -> SDValue {
     let mut Ops: [2]SDValue = [self.GetSoftenedFloat(N.getOperand(0)), StackSlot];
     let mut OpsVT: [2]EVT = [VT0, StackSlot.getValueType()];
     let mut CallOpsTypeOverrides: [2]*mut Type = [null, PointerTy];
-    CallOptions.setTypeListBeforeSoften(ArrayRef<EVT> { OpsVT }, VT0).setOpsTypeOverrides(ArrayRef<Type *> { CallOpsTypeOverrides });
+    CallOptions.setTypeListBeforeSoften(OpsVT, VT0).setOpsTypeOverrides(CallOpsTypeOverrides);
     let mut FrameIdx: i32 = cast(StackSlot).getIndex();
     let mut PtrInfo: MachinePointerInfo = getFixedStack(self.DAG.getMachineFunction(), FrameIdx, 0);
     let mut LoadExp: SDValue = self.DAG.getLoad(VT1, DL, Chain, StackSlot, PtrInfo, MaybeAlign {}, MONone, MMOMetadata {});
@@ -682,25 +682,25 @@ fn DAGTypeLegalizer::SoftenFloatRes_UnaryWithTwoFPResults(self, N: *mut SDNode, 
         return false;
     }
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), VT);
-    let mut DL: SDLoc = SDLoc { N };
-    let mut Ops: SmallVector<SDValue, 3> = SmallVector<SDValue, 3> { [self.GetSoftenedFloat(N.getOperand(0))] };
-    let mut OpsVT: SmallVector<EVT, 3> = SmallVector<EVT, 3> { [VT] };
+    let mut DL: SDLoc = N;
+    let mut Ops: SmallVector<SDValue, 3> = [self.GetSoftenedFloat(N.getOperand(0))];
+    let mut OpsVT: SmallVector<EVT, 3> = [VT];
     let mut StackSlots: array<SDValue, 2> = array<SDValue, 2> {};
-    let mut CallOpsTypeOverrides: SmallVector<Type *, 3> = SmallVector<Type *, 3> { [null] };
+    let mut CallOpsTypeOverrides: SmallVector<Type *, 3> = [null];
     let mut PointerTy: *mut PointerType = getUnqual(*self.DAG.getContext());
     for let mut ResNum: u32 = 0; ResNum < N.getNumValues(); ResNum += 1 {
         if ResNum == CallRetResNo {
             continue;
         }
         let mut StackSlot: SDValue = self.DAG.CreateStackTemporary(NVT, 1);
-        Ops.push(ValueParamT { StackSlot });
+        Ops.push(StackSlot);
         OpsVT.push(StackSlot.getValueType());
         StackSlots[ResNum] = StackSlot;
         CallOpsTypeOverrides.push(PointerTy);
     }
     let mut CallOptions: MakeLibCallOptions = MakeLibCallOptions {};
-    CallOptions.setTypeListBeforeSoften(ArrayRef<EVT> { OpsVT }, VT).setOpsTypeOverrides(ArrayRef<Type *> { CallOpsTypeOverrides });
-    let mut CreateStackLoad: Closure_1 = Closure_1 { cap_0: type { Chain }, cap_1: self, NVT: &mut NVT, DL: &mut DL };
+    CallOptions.setTypeListBeforeSoften(OpsVT, VT).setOpsTypeOverrides(CallOpsTypeOverrides);
+    let mut CreateStackLoad: Closure_1 = Closure_1 { cap_0: Chain, cap_1: self, NVT: &mut NVT, DL: &mut DL };
     for x in enumerate(StackSlots) {
         if CallRetResNo == ResNum {
             self.SetSoftenedFloat(SDValue { Node: N, ResNo: ResNum }, ReturnVal);
@@ -735,7 +735,7 @@ fn DAGTypeLegalizer::SoftenFloatRes_FSINCOS(self, N: *mut SDNode) -> SDValue {
 
 fn DAGTypeLegalizer::SoftenFloatRes_FMODF(self, N: *mut SDNode) -> SDValue {
     let mut VT: EVT = N.getValueType(0);
-    if self.SoftenFloatRes_UnaryWithTwoFPResults(N, getMODF(VT), optional<unsigned int> { 0 }) {
+    if self.SoftenFloatRes_UnaryWithTwoFPResults(N, getMODF(VT), 0) {
         return SDValue {};
     }
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), VT);
@@ -794,7 +794,7 @@ fn DAGTypeLegalizer::SoftenFloatRes_LOAD(self, N: *mut SDNode) -> SDValue {
     let mut L: *mut LoadSDNode = cast(N);
     let mut VT: EVT = N.getValueType(0);
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), VT);
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut MMOFlags: Flags = L.getMemOperand().getFlags() & operator((MOInvariant | MODereferenceable));
     let mut NewL: SDValue = SDValue {};
     if L.getExtensionType() == NON_EXTLOAD {
@@ -813,9 +813,9 @@ fn DAGTypeLegalizer::SoftenFloatRes_ATOMIC_LOAD(self, N: *mut SDNode) -> SDValue
     let mut L: *mut AtomicSDNode = cast(N);
     let mut VT: EVT = N.getValueType(0);
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), VT);
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     if L.getExtensionType() == NON_EXTLOAD {
-        let mut NewL: SDValue = self.DAG.getAtomic(ATOMIC_LOAD, dl, NVT, self.DAG.getVTList(NVT, EVT { Other }), ArrayRef<SDValue> { [L.getChain(), L.getBasePtr()] }, L.getMemOperand(), NON_EXTLOAD);
+        let mut NewL: SDValue = self.DAG.getAtomic(ATOMIC_LOAD, dl, NVT, self.DAG.getVTList(NVT, Other), [L.getChain(), L.getBasePtr()], L.getMemOperand(), NON_EXTLOAD);
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, NewL.getValue(1));
         return NewL;
     }
@@ -825,13 +825,13 @@ fn DAGTypeLegalizer::SoftenFloatRes_ATOMIC_LOAD(self, N: *mut SDNode) -> SDValue
 fn DAGTypeLegalizer::SoftenFloatRes_SELECT(self, N: *mut SDNode) -> SDValue {
     let mut LHS: SDValue = self.GetSoftenedFloat(N.getOperand(1));
     let mut RHS: SDValue = self.GetSoftenedFloat(N.getOperand(2));
-    return self.DAG.getSelect(SDLoc { N }, LHS.getValueType(), N.getOperand(0), LHS, RHS, SDNodeFlags { Flags: None });
+    return self.DAG.getSelect(N, LHS.getValueType(), N.getOperand(0), LHS, RHS, SDNodeFlags { Flags: None });
 }
 
 fn DAGTypeLegalizer::SoftenFloatRes_SELECT_CC(self, N: *mut SDNode) -> SDValue {
     let mut LHS: SDValue = self.GetSoftenedFloat(N.getOperand(2));
     let mut RHS: SDValue = self.GetSoftenedFloat(N.getOperand(3));
-    return self.DAG.getNode(SELECT_CC, SDLoc { N }, LHS.getValueType(), N.getOperand(0), N.getOperand(1), LHS, RHS, N.getOperand(4));
+    return self.DAG.getNode(SELECT_CC, N, LHS.getValueType(), N.getOperand(0), N.getOperand(1), LHS, RHS, N.getOperand(4));
 }
 
 fn DAGTypeLegalizer::SoftenFloatRes_UNDEF(self, N: *mut SDNode) -> SDValue {
@@ -843,7 +843,7 @@ fn DAGTypeLegalizer::SoftenFloatRes_VAARG(self, N: *mut SDNode) -> SDValue {
     let mut Ptr: SDValue = N.getOperand(1);
     let mut VT: EVT = N.getValueType(0);
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), VT);
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut NewVAARG: SDValue = SDValue {};
     NewVAARG = self.DAG.getVAArg(NVT, dl, Chain, Ptr, N.getOperand(2), N.getConstantOperandVal(3));
     if N != NewVAARG.getValue(1).getNode() {
@@ -858,10 +858,10 @@ fn DAGTypeLegalizer::SoftenFloatRes_XINT_TO_FP(self, N: *mut SDNode) -> SDValue 
     let mut SVT: EVT = N.getOperand(if IsStrict { 1 } else { 0 }).getValueType();
     let mut RVT: EVT = N.getValueType(0);
     let mut NVT: EVT = EVT {};
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut LC: Libcall = UNKNOWN_LIBCALL;
     for let mut t: u32 = FIRST_INTEGER_VALUETYPE; t <= LAST_INTEGER_VALUETYPE && LC == UNKNOWN_LIBCALL; t += 1 {
-        NVT = EVT { t as SimpleValueType };
+        NVT = t as SimpleValueType;
         if NVT.bitsGE(SVT) {
             LC = if Signed { getSINTTOFP(NVT, RVT) } else { getUINTTOFP(NVT, RVT) };
         }
@@ -876,8 +876,8 @@ fn DAGTypeLegalizer::SoftenFloatRes_XINT_TO_FP(self, N: *mut SDNode) -> SDValue 
     let mut Op: SDValue = self.DAG.getNode(if Signed { SIGN_EXTEND } else { ZERO_EXTEND }, dl, NVT, N.getOperand(if IsStrict { 1 } else { 0 }));
     let mut CallOptions: MakeLibCallOptions = MakeLibCallOptions {};
     CallOptions.setIsSigned(Signed);
-    CallOptions.setTypeListBeforeSoften(ArrayRef<EVT> { SVT }, RVT);
-    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, NRVT, ArrayRef<SDValue> { Op }, CallOptions, dl, Chain);
+    CallOptions.setTypeListBeforeSoften(SVT, RVT);
+    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, NRVT, Op, CallOptions, dl, Chain);
     if IsStrict {
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Tmp.second);
     }
@@ -974,7 +974,7 @@ fn DAGTypeLegalizer::SoftenFloatOperand(self, N: *mut SDNode, OpNo: u32) -> bool
 
 fn DAGTypeLegalizer::SoftenFloatOp_BITCAST(self, N: *mut SDNode) -> SDValue {
     let mut Op0: SDValue = self.GetSoftenedFloat(N.getOperand(0));
-    return self.DAG.getNode(BITCAST, SDLoc { N }, N.getValueType(0), Op0);
+    return self.DAG.getNode(BITCAST, N, N.getValueType(0), Op0);
 }
 
 fn DAGTypeLegalizer::SoftenFloatOp_FP_ROUND(self, N: *mut SDNode) -> SDValue {
@@ -985,9 +985,9 @@ fn DAGTypeLegalizer::SoftenFloatOp_FP_ROUND(self, N: *mut SDNode) -> SDValue {
     let mut RVT: EVT = N.getValueType(0);
     let mut FloatRVT: EVT = RVT;
     if N.getOpcode() == FP_TO_FP16 || N.getOpcode() == STRICT_FP_TO_FP16 {
-        FloatRVT = EVT { f16 };
+        FloatRVT = f16;
     } else if N.getOpcode() == FP_TO_BF16 || N.getOpcode() == STRICT_FP_TO_BF16 {
-        FloatRVT = EVT { bf16 };
+        FloatRVT = bf16;
     }
     let mut LC: Libcall = getFPROUND(SVT, FloatRVT);
     assert!(LC != UNKNOWN_LIBCALL, "Unsupported FP_ROUND libcall");
@@ -1005,8 +1005,8 @@ fn DAGTypeLegalizer::SoftenFloatOp_FP_ROUND(self, N: *mut SDNode) -> SDValue {
     }
     Op = self.GetSoftenedFloat(Op);
     let mut CallOptions: MakeLibCallOptions = MakeLibCallOptions {};
-    CallOptions.setTypeListBeforeSoften(ArrayRef<EVT> { SVT }, RVT);
-    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, RVT, ArrayRef<SDValue> { Op }, CallOptions, SDLoc { N }, Chain);
+    CallOptions.setTypeListBeforeSoften(SVT, RVT);
+    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, RVT, Op, CallOptions, N, Chain);
     if IsStrict {
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Tmp.second);
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 0 }, Tmp.first);
@@ -1022,9 +1022,9 @@ fn DAGTypeLegalizer::SoftenFloatOp_BR_CC(self, N: *mut SDNode) -> SDValue {
     let mut VT: EVT = NewLHS.getValueType();
     NewLHS = self.GetSoftenedFloat(NewLHS);
     NewRHS = self.GetSoftenedFloat(NewRHS);
-    self.TLI.softenSetCCOperands(self.DAG, VT, NewLHS, NewRHS, CCCode, SDLoc { N }, N.getOperand(2), N.getOperand(3));
+    self.TLI.softenSetCCOperands(self.DAG, VT, NewLHS, NewRHS, CCCode, N, N.getOperand(2), N.getOperand(3));
     if !NewRHS.getNode() {
-        NewRHS = self.DAG.getConstant(0, SDLoc { N }, NewLHS.getValueType(), false, false);
+        NewRHS = self.DAG.getConstant(0, N, NewLHS.getValueType(), false, false);
         CCCode = SETNE;
     }
     return SDValue { Node: self.DAG.UpdateNodeOperands(N, N.getOperand(0), self.DAG.getCondCode(CCCode), NewLHS, NewRHS, N.getOperand(4)), ResNo: 0 };
@@ -1033,7 +1033,7 @@ fn DAGTypeLegalizer::SoftenFloatOp_BR_CC(self, N: *mut SDNode) -> SDValue {
 fn findFPToIntLibcall(SrcVT: EVT, RetVT: EVT, Promoted: *mut EVT, Signed: bool) -> Libcall {
     let mut LC: Libcall = UNKNOWN_LIBCALL;
     for let mut IntVT: u32 = FIRST_INTEGER_VALUETYPE; IntVT <= LAST_INTEGER_VALUETYPE && LC == UNKNOWN_LIBCALL; IntVT += 1 {
-        Promoted = EVT { IntVT as SimpleValueType };
+        Promoted = IntVT as SimpleValueType;
         if Promoted.bitsGE(RetVT) {
             LC = if Signed { getFPTOSINT(SrcVT, Promoted) } else { getFPTOUINT(SrcVT, Promoted) };
         }
@@ -1048,7 +1048,7 @@ fn DAGTypeLegalizer::SoftenFloatOp_FP_TO_XINT(self, N: *mut SDNode) -> SDValue {
     let mut SVT: EVT = Op.getValueType();
     let mut RVT: EVT = N.getValueType(0);
     let mut NVT: EVT = EVT {};
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut LC: Libcall = findFPToIntLibcall(SVT, RVT, NVT, Signed);
     assert!(LC != UNKNOWN_LIBCALL && NVT.isSimple(), "Unsupported FP_TO_XINT!");
     let mut Chain: SDValue = if IsStrict { N.getOperand(0) } else { SDValue {} };
@@ -1065,8 +1065,8 @@ fn DAGTypeLegalizer::SoftenFloatOp_FP_TO_XINT(self, N: *mut SDNode) -> SDValue {
     }
     Op = self.GetSoftenedFloat(Op);
     let mut CallOptions: MakeLibCallOptions = MakeLibCallOptions {};
-    CallOptions.setTypeListBeforeSoften(ArrayRef<EVT> { SVT }, RVT);
-    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, NVT, ArrayRef<SDValue> { Op }, CallOptions, dl, Chain);
+    CallOptions.setTypeListBeforeSoften(SVT, RVT);
+    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, NVT, Op, CallOptions, dl, Chain);
     let mut Res: SDValue = self.DAG.getNode(TRUNCATE, dl, RVT, Tmp.first);
     if !IsStrict {
         return Res;
@@ -1088,9 +1088,9 @@ fn DAGTypeLegalizer::SoftenFloatOp_SELECT_CC(self, N: *mut SDNode) -> SDValue {
     let mut VT: EVT = NewLHS.getValueType();
     NewLHS = self.GetSoftenedFloat(NewLHS);
     NewRHS = self.GetSoftenedFloat(NewRHS);
-    self.TLI.softenSetCCOperands(self.DAG, VT, NewLHS, NewRHS, CCCode, SDLoc { N }, N.getOperand(0), N.getOperand(1));
+    self.TLI.softenSetCCOperands(self.DAG, VT, NewLHS, NewRHS, CCCode, N, N.getOperand(0), N.getOperand(1));
     if !NewRHS.getNode() {
-        NewRHS = self.DAG.getConstant(0, SDLoc { N }, NewLHS.getValueType(), false, false);
+        NewRHS = self.DAG.getConstant(0, N, NewLHS.getValueType(), false, false);
         CCCode = SETNE;
     }
     return SDValue { Node: self.DAG.UpdateNodeOperands(N, NewLHS, NewRHS, N.getOperand(2), N.getOperand(3), self.DAG.getCondCode(CCCode)), ResNo: 0 };
@@ -1105,10 +1105,10 @@ fn DAGTypeLegalizer::SoftenFloatOp_SETCC(self, N: *mut SDNode) -> SDValue {
     let mut VT: EVT = Op0.getValueType();
     let mut NewLHS: SDValue = self.GetSoftenedFloat(Op0);
     let mut NewRHS: SDValue = self.GetSoftenedFloat(Op1);
-    self.TLI.softenSetCCOperands(self.DAG, VT, NewLHS, NewRHS, CCCode, SDLoc { N }, Op0, Op1, Chain, N.getOpcode() == STRICT_FSETCCS);
+    self.TLI.softenSetCCOperands(self.DAG, VT, NewLHS, NewRHS, CCCode, N, Op0, Op1, Chain, N.getOpcode() == STRICT_FSETCCS);
     if NewRHS.getNode() {
         if IsStrict {
-            NewLHS = self.DAG.getNode(SETCC, SDLoc { N }, N.getValueType(0), NewLHS, NewRHS, self.DAG.getCondCode(CCCode));
+            NewLHS = self.DAG.getNode(SETCC, N, N.getValueType(0), NewLHS, NewRHS, self.DAG.getCondCode(CCCode));
         } else {
             return SDValue { Node: self.DAG.UpdateNodeOperands(N, NewLHS, NewRHS, self.DAG.getCondCode(CCCode)), ResNo: 0 };
         }
@@ -1127,7 +1127,7 @@ fn DAGTypeLegalizer::SoftenFloatOp_STORE(self, N: *mut SDNode, OpNo: u32) -> SDV
     assert!(OpNo == 1, "Can only soften the stored value!");
     let mut ST: *mut StoreSDNode = cast(N);
     let mut Val: SDValue = ST.getValue();
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     if ST.isTruncatingStore() {
         Val = self.BitConvertToInteger(self.DAG.getNode(FP_ROUND, dl, ST.getMemoryVT(), Val, self.DAG.getIntPtrConstant(0, dl, true)));
     } else {
@@ -1142,7 +1142,7 @@ fn DAGTypeLegalizer::SoftenFloatOp_ATOMIC_STORE(self, N: *mut SDNode, OpNo: u32)
     let mut ST: *mut AtomicSDNode = cast(N);
     let mut Val: SDValue = ST.getVal();
     let mut VT: EVT = Val.getValueType();
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     assert!(ST.getMemoryVT() == VT, "truncating atomic store not handled");
     let mut NewVal: SDValue = self.GetSoftenedFloat(Val);
     return self.DAG.getAtomic(ATOMIC_STORE, dl, VT, ST.getChain(), NewVal, ST.getBasePtr(), ST.getMemOperand());
@@ -1151,7 +1151,7 @@ fn DAGTypeLegalizer::SoftenFloatOp_ATOMIC_STORE(self, N: *mut SDNode, OpNo: u32)
 fn DAGTypeLegalizer::SoftenFloatOp_FCOPYSIGN(self, N: *mut SDNode) -> SDValue {
     let mut LHS: SDValue = N.getOperand(0);
     let mut RHS: SDValue = self.BitConvertToInteger(N.getOperand(1));
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut LVT: EVT = LHS.getValueType();
     let mut ILVT: EVT = getIntegerVT(*self.DAG.getContext(), LVT.getSizeInBits().operator unsigned long long());
     let mut RVT: EVT = RHS.getValueType();
@@ -1188,8 +1188,8 @@ fn DAGTypeLegalizer::SoftenFloatOp_Unary(self, N: *mut SDNode, LC: Libcall) -> S
     }
     let mut CallOptions: MakeLibCallOptions = MakeLibCallOptions {};
     let mut OpVT: EVT = N.getOperand(0 + Offset).getValueType();
-    CallOptions.setTypeListBeforeSoften(ArrayRef<EVT> { OpVT }, N.getValueType(0));
-    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, NVT, ArrayRef<SDValue> { Op }, CallOptions, SDLoc { N }, Chain);
+    CallOptions.setTypeListBeforeSoften(OpVT, N.getValueType(0));
+    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, NVT, Op, CallOptions, N, Chain);
     if IsStrict {
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Tmp.second);
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 0 }, Tmp.first);
@@ -1220,21 +1220,21 @@ fn DAGTypeLegalizer::SoftenFloatOp_LLRINT(self, N: *mut SDNode) -> SDValue {
 
 fn DAGTypeLegalizer::SoftenFloatOp_FAKE_USE(self, N: *mut SDNode) -> SDValue {
     let mut Op1: SDValue = self.BitConvertToInteger(N.getOperand(1));
-    return self.DAG.getNode(N.getOpcode(), SDLoc { N }, N.getValueType(0), N.getOperand(0), Op1);
+    return self.DAG.getNode(N.getOpcode(), N, N.getValueType(0), N.getOperand(0), Op1);
 }
 
 fn DAGTypeLegalizer::SoftenFloatOp_STACKMAP(self, N: *mut SDNode, OpNo: u32) -> SDValue {
     assert!(OpNo > 1);
-    let mut NewOps: SmallVector<SDValue> = SmallVector<SDValue> { N.ops() };
+    let mut NewOps: SmallVector<SDValue> = N.ops();
     NewOps[OpNo] = self.GetSoftenedFloat(NewOps[OpNo]);
-    return SDValue { Node: self.DAG.UpdateNodeOperands(N, ArrayRef<SDValue> { NewOps }), ResNo: 0 };
+    return SDValue { Node: self.DAG.UpdateNodeOperands(N, NewOps), ResNo: 0 };
 }
 
 fn DAGTypeLegalizer::SoftenFloatOp_PATCHPOINT(self, N: *mut SDNode, OpNo: u32) -> SDValue {
     assert!(OpNo >= 7);
-    let mut NewOps: SmallVector<SDValue> = SmallVector<SDValue> { N.ops() };
+    let mut NewOps: SmallVector<SDValue> = N.ops();
     NewOps[OpNo] = self.GetSoftenedFloat(NewOps[OpNo]);
-    return SDValue { Node: self.DAG.UpdateNodeOperands(N, ArrayRef<SDValue> { NewOps }), ResNo: 0 };
+    return SDValue { Node: self.DAG.UpdateNodeOperands(N, NewOps), ResNo: 0 };
 }
 
 fn DAGTypeLegalizer::ExpandFloatResult(self, N: *mut SDNode, ResNo: u32) {
@@ -1444,7 +1444,7 @@ fn DAGTypeLegalizer::ExpandFloatRes_ConstantFP(self, N: *mut SDNode, Lo: *mut SD
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), N.getValueType(0));
     assert!(NVT.getSizeInBits().operator unsigned long long() == 64, "Do not know how to expand this float constant!");
     let mut C: APInt = cast(N).getValueAPF().bitcastToAPInt();
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut Sem: *fltSemantics = NVT.getFltSemantics();
     Lo = self.DAG.getConstantFP(APFloat { Sem, C.extractBits(64, 64) }, dl, NVT, false);
     Hi = self.DAG.getConstantFP(APFloat { Sem, C.extractBits(64, 0) }, dl, NVT, false);
@@ -1469,7 +1469,7 @@ fn DAGTypeLegalizer::ExpandFloatRes_Unary(self, N: *mut SDNode, LC: Libcall, Lo:
         return self.ExpandFloatRes_NoLibcall(N, Lo, Hi);
     }
     let mut CallOptions: MakeLibCallOptions = MakeLibCallOptions {};
-    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, N.getValueType(0), ArrayRef<SDValue> { Op }, CallOptions, SDLoc { N }, Chain);
+    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, N.getValueType(0), Op, CallOptions, N, Chain);
     if IsStrict {
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Tmp.second);
     }
@@ -1486,7 +1486,7 @@ fn DAGTypeLegalizer::ExpandFloatRes_Binary(self, N: *mut SDNode, LC: Libcall, Lo
         return self.ExpandFloatRes_NoLibcall(N, Lo, Hi);
     }
     let mut CallOptions: MakeLibCallOptions = MakeLibCallOptions {};
-    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, N.getValueType(0), ArrayRef<SDValue> { Ops }, CallOptions, SDLoc { N }, Chain);
+    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, N.getValueType(0), Ops, CallOptions, N, Chain);
     if IsStrict {
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Tmp.second);
     }
@@ -1494,7 +1494,7 @@ fn DAGTypeLegalizer::ExpandFloatRes_Binary(self, N: *mut SDNode, LC: Libcall, Lo
 }
 
 fn DAGTypeLegalizer::ExpandFloatRes_FMODF(self, N: *mut SDNode) {
-    self.ExpandFloatRes_UnaryWithTwoFPResults(N, getMODF(N.getValueType(0)), optional<unsigned int> { 0 });
+    self.ExpandFloatRes_UnaryWithTwoFPResults(N, getMODF(N.getValueType(0)), 0);
 }
 
 fn DAGTypeLegalizer::ExpandFloatRes_FSINCOS(self, N: *mut SDNode) {
@@ -1527,8 +1527,8 @@ let mut E: u32 = N.getNumValues(); ResNo != E; ResNo += 1 {
 }
 
 fn DAGTypeLegalizer::ExpandFloatRes_FABS(self, N: *mut SDNode, Lo: *mut SDValue, Hi: *mut SDValue) {
-    assert!(N.getValueType(0) == EVT { ppcf128 }, "Logic only correct for ppcf128!");
-    let mut dl: SDLoc = SDLoc { N };
+    assert!(N.getValueType(0) == ppcf128, "Logic only correct for ppcf128!");
+    let mut dl: SDLoc = N;
     let mut Tmp: SDValue = SDValue {};
     self.GetExpandedFloat(N.getOperand(0), Lo, Tmp);
     Hi = self.DAG.getNode(FABS, dl, Tmp.getValueType(), Tmp);
@@ -1634,7 +1634,7 @@ fn DAGTypeLegalizer::ExpandFloatRes_FMA(self, N: *mut SDNode, Lo: *mut SDValue, 
         return self.ExpandFloatRes_NoLibcall(N, Lo, Hi);
     }
     let mut CallOptions: MakeLibCallOptions = MakeLibCallOptions {};
-    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, N.getValueType(0), ArrayRef<SDValue> { Ops }, CallOptions, SDLoc { N }, Chain);
+    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, N.getValueType(0), Ops, CallOptions, N, Chain);
     if IsStrict {
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Tmp.second);
     }
@@ -1650,20 +1650,20 @@ fn DAGTypeLegalizer::ExpandFloatRes_FNEARBYINT(self, N: *mut SDNode, Lo: *mut SD
 }
 
 fn DAGTypeLegalizer::ExpandFloatRes_FNEG(self, N: *mut SDNode, Lo: *mut SDValue, Hi: *mut SDValue) {
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     self.GetExpandedFloat(N.getOperand(0), Lo, Hi);
     Lo = self.DAG.getNode(FNEG, dl, Lo.getValueType(), Lo);
     Hi = self.DAG.getNode(FNEG, dl, Hi.getValueType(), Hi);
 }
 
 fn DAGTypeLegalizer::ExpandFloatRes_AssertNoFPClass(self, N: *mut SDNode, Lo: *mut SDValue, Hi: *mut SDValue) {
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     self.GetExpandedFloat(N.getOperand(0), Lo, Hi);
 }
 
 fn DAGTypeLegalizer::ExpandFloatRes_FP_EXTEND(self, N: *mut SDNode, Lo: *mut SDValue, Hi: *mut SDValue) {
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), N.getValueType(0));
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut IsStrict: bool = N.isStrictFPOpcode();
     let mut Chain: SDValue = SDValue {};
     if IsStrict {
@@ -1671,7 +1671,7 @@ fn DAGTypeLegalizer::ExpandFloatRes_FP_EXTEND(self, N: *mut SDNode, Lo: *mut SDV
             Hi = N.getOperand(1);
             Chain = N.getOperand(0);
         } else {
-            Hi = self.DAG.getNode(STRICT_FP_EXTEND, dl, ArrayRef<EVT> { [NVT, EVT { Other }] }, ArrayRef<SDValue> { [N.getOperand(0), N.getOperand(1)] });
+            Hi = self.DAG.getNode(STRICT_FP_EXTEND, dl, [NVT, Other], [N.getOperand(0), N.getOperand(1)]);
             Chain = Hi.getValue(1);
         }
     } else {
@@ -1696,8 +1696,8 @@ fn DAGTypeLegalizer::ExpandFloatRes_FLDEXP(self, N: *mut SDNode, Lo: *mut SDValu
 }
 
 fn DAGTypeLegalizer::ExpandFloatRes_FREEZE(self, N: *mut SDNode, Lo: *mut SDValue, Hi: *mut SDValue) {
-    assert!(N.getValueType(0) == EVT { ppcf128 }, "Logic only correct for ppcf128!");
-    let mut dl: SDLoc = SDLoc { N };
+    assert!(N.getValueType(0) == ppcf128, "Logic only correct for ppcf128!");
+    let mut dl: SDLoc = N;
     self.GetExpandedFloat(N.getOperand(0), Lo, Hi);
     Lo = self.DAG.getNode(FREEZE, dl, Lo.getValueType(), Lo);
     Hi = self.DAG.getNode(FREEZE, dl, Hi.getValueType(), Hi);
@@ -1756,7 +1756,7 @@ fn DAGTypeLegalizer::ExpandFloatRes_LOAD(self, N: *mut SDNode, Lo: *mut SDValue,
     let mut LD: *mut LoadSDNode = cast(N);
     let mut Chain: SDValue = LD.getChain();
     let mut Ptr: SDValue = LD.getBasePtr();
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), LD.getValueType(0));
     assert!(NVT.isByteSized(), "Expanded type not byte sized!");
     assert!(LD.getMemoryVT().bitsLE(NVT), "Float type not round?");
@@ -1767,32 +1767,32 @@ fn DAGTypeLegalizer::ExpandFloatRes_LOAD(self, N: *mut SDNode, Lo: *mut SDValue,
 }
 
 fn DAGTypeLegalizer::ExpandFloatRes_XINT_TO_FP(self, N: *mut SDNode, Lo: *mut SDValue, Hi: *mut SDValue) {
-    assert!(N.getValueType(0) == EVT { ppcf128 }, "Unsupported XINT_TO_FP!");
+    assert!(N.getValueType(0) == ppcf128, "Unsupported XINT_TO_FP!");
     let mut VT: EVT = N.getValueType(0);
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), VT);
     let mut Strict: bool = N.isStrictFPOpcode();
     let mut Src: SDValue = N.getOperand(if Strict { 1 } else { 0 });
     let mut SrcVT: EVT = Src.getValueType();
     let mut isSigned: bool = N.getOpcode() == SINT_TO_FP || N.getOpcode() == STRICT_SINT_TO_FP;
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut Chain: SDValue = if Strict { N.getOperand(0) } else { self.DAG.getEntryNode() };
-    let mut Flags: SDNodeFlags = SDNodeFlags { Flags: None };
+    let mut Flags: SDNodeFlags = None;
     Flags.setNoFPExcept(N.getFlags().hasNoFPExcept());
-    if SrcVT.bitsLE(EVT { i32 }) {
+    if SrcVT.bitsLE(i32) {
         Lo = self.DAG.getConstantFP(getZero(NVT.getFltSemantics(), false), dl, NVT, false);
         if Strict {
-            Hi = self.DAG.getNode(N.getOpcode(), dl, self.DAG.getVTList(NVT, EVT { Other }), ArrayRef<SDValue> { [Chain, Src] }, Flags);
+            Hi = self.DAG.getNode(N.getOpcode(), dl, self.DAG.getVTList(NVT, Other), [Chain, Src], Flags);
             Chain = Hi.getValue(1);
         } else {
             Hi = self.DAG.getNode(N.getOpcode(), dl, NVT, Src);
         }
     } else {
         let mut LC: Libcall = UNKNOWN_LIBCALL;
-        if SrcVT.bitsLE(EVT { i64 }) {
-            Src = self.DAG.getNode(if isSigned { SIGN_EXTEND } else { ZERO_EXTEND }, dl, EVT { i64 }, Src);
+        if SrcVT.bitsLE(i64) {
+            Src = self.DAG.getNode(if isSigned { SIGN_EXTEND } else { ZERO_EXTEND }, dl, i64, Src);
             LC = SINTTOFP_I64_PPCF128;
-        } else if SrcVT.bitsLE(EVT { i128 }) {
-            Src = self.DAG.getNode(SIGN_EXTEND, dl, EVT { i128 }, Src);
+        } else if SrcVT.bitsLE(i128) {
+            Src = self.DAG.getNode(SIGN_EXTEND, dl, i128, Src);
             LC = SINTTOFP_I128_PPCF128;
         }
         assert!(LC != UNKNOWN_LIBCALL, "Unsupported XINT_TO_FP!");
@@ -1802,13 +1802,13 @@ fn DAGTypeLegalizer::ExpandFloatRes_XINT_TO_FP(self, N: *mut SDNode, Lo: *mut SD
         }
         let mut CallOptions: MakeLibCallOptions = MakeLibCallOptions {};
         CallOptions.setIsSigned(true);
-        let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, VT, ArrayRef<SDValue> { Src }, CallOptions, dl, Chain);
+        let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, VT, Src, CallOptions, dl, Chain);
         if Strict {
             Chain = Tmp.second;
         }
         self.GetPairElements(Tmp.first, Lo, Hi);
     }
-    if isSigned || SrcVT.bitsLE(EVT { i32 }) {
+    if isSigned || SrcVT.bitsLE(i32) {
         if Strict {
             self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Chain);
         }
@@ -1822,21 +1822,21 @@ fn DAGTypeLegalizer::ExpandFloatRes_XINT_TO_FP(self, N: *mut SDNode, Lo: *mut SD
     let mut Parts: ArrayRef<uint64_t> = ArrayRef<uint64_t> {};
     match SrcVT.getSimpleVT().SimpleTy {
         _ => {
-            llvm_unreachable_internal("Unsupported UINT_TO_FP!", "llvm\\lib\\CodeGen\\SelectionDAG\\LegalizeFloatTypes.cpp", 2133);
+            llvm_unreachable_internal("Unsupported UINT_TO_FP!", "P:/Goraw/llvm-project/llvm/lib/CodeGen/SelectionDAG/LegalizeFloatTypes.cpp", 2133);
         },
         i32 => {
-            Parts = ArrayRef<unsigned long long> { TwoE32 };
+            Parts = TwoE32;
         },
         i64 => {
-            Parts = ArrayRef<unsigned long long> { TwoE64 };
+            Parts = TwoE64;
         },
         i128 => {
-            Parts = ArrayRef<unsigned long long> { TwoE128 };
+            Parts = TwoE128;
         },
     }
-    let mut NewLo: SDValue = self.DAG.getConstantFP(APFloat { PPCDoubleDouble(), APInt { U: 128, BitWidth: ArrayRef<uint64_t> { Parts } } }, dl, EVT { ppcf128 }, false);
+    let mut NewLo: SDValue = self.DAG.getConstantFP(APFloat { PPCDoubleDouble(), APInt { U: 128, BitWidth: Parts } }, dl, ppcf128, false);
     if Strict {
-        Lo = self.DAG.getNode(STRICT_FADD, dl, self.DAG.getVTList(VT, EVT { Other }), ArrayRef<SDValue> { [Chain, Hi, NewLo] }, Flags);
+        Lo = self.DAG.getNode(STRICT_FADD, dl, self.DAG.getVTList(VT, Other), [Chain, Hi, NewLo], Flags);
         Chain = Lo.getValue(1);
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Chain);
     } else {
@@ -1925,19 +1925,19 @@ fn DAGTypeLegalizer::FloatExpandSetCCOperands(self, NewLHS: *mut SDValue, NewRHS
     let mut RHSHi: SDValue = SDValue {};
     self.GetExpandedFloat(NewLHS, LHSLo, LHSHi);
     self.GetExpandedFloat(NewRHS, RHSLo, RHSHi);
-    assert!(NewLHS.getValueType() == EVT { ppcf128 }, "Unsupported setcc type!");
+    assert!(NewLHS.getValueType() == ppcf128, "Unsupported setcc type!");
     let mut Tmp1: SDValue = SDValue {};
     let mut Tmp2: SDValue = SDValue {};
     let mut Tmp3: SDValue = SDValue {};
     let mut OutputChain: SDValue = SDValue {};
-    Tmp1 = self.DAG.getSetCC(dl, self.getSetCCResultType(LHSHi.getValueType()), LHSHi, RHSHi, SETOEQ, Chain, IsSignaling, SDNodeFlags { Flags: None });
+    Tmp1 = self.DAG.getSetCC(dl, self.getSetCCResultType(LHSHi.getValueType()), LHSHi, RHSHi, SETOEQ, Chain, IsSignaling, None);
     OutputChain = if operator(Tmp1).getNumValues() > 1 { Tmp1.getValue(1) } else { SDValue {} };
-    Tmp2 = self.DAG.getSetCC(dl, self.getSetCCResultType(LHSLo.getValueType()), LHSLo, RHSLo, CCCode, OutputChain, IsSignaling, SDNodeFlags { Flags: None });
+    Tmp2 = self.DAG.getSetCC(dl, self.getSetCCResultType(LHSLo.getValueType()), LHSLo, RHSLo, CCCode, OutputChain, IsSignaling, None);
     OutputChain = if operator(Tmp2).getNumValues() > 1 { Tmp2.getValue(1) } else { SDValue {} };
     Tmp3 = self.DAG.getNode(AND, dl, Tmp1.getValueType(), Tmp1, Tmp2);
-    Tmp1 = self.DAG.getSetCC(dl, self.getSetCCResultType(LHSHi.getValueType()), LHSHi, RHSHi, SETUNE, OutputChain, IsSignaling, SDNodeFlags { Flags: None });
+    Tmp1 = self.DAG.getSetCC(dl, self.getSetCCResultType(LHSHi.getValueType()), LHSHi, RHSHi, SETUNE, OutputChain, IsSignaling, None);
     OutputChain = if operator(Tmp1).getNumValues() > 1 { Tmp1.getValue(1) } else { SDValue {} };
-    Tmp2 = self.DAG.getSetCC(dl, self.getSetCCResultType(LHSHi.getValueType()), LHSHi, RHSHi, CCCode, OutputChain, IsSignaling, SDNodeFlags { Flags: None });
+    Tmp2 = self.DAG.getSetCC(dl, self.getSetCCResultType(LHSHi.getValueType()), LHSHi, RHSHi, CCCode, OutputChain, IsSignaling, None);
     OutputChain = if operator(Tmp2).getNumValues() > 1 { Tmp2.getValue(1) } else { SDValue {} };
     Tmp1 = self.DAG.getNode(AND, dl, Tmp1.getValueType(), Tmp1, Tmp2);
     NewLHS = self.DAG.getNode(OR, dl, Tmp1.getValueType(), Tmp1, Tmp3);
@@ -1950,37 +1950,37 @@ fn DAGTypeLegalizer::ExpandFloatOp_BR_CC(self, N: *mut SDNode) -> SDValue {
     let mut NewRHS: SDValue = N.getOperand(3);
     let mut CCCode: CondCode = cast(N.getOperand(1)).get();
     let mut Chain: SDValue = SDValue {};
-    self.FloatExpandSetCCOperands(NewLHS, NewRHS, CCCode, SDLoc { N }, Chain, false);
+    self.FloatExpandSetCCOperands(NewLHS, NewRHS, CCCode, N, Chain, false);
     if !NewRHS.getNode() {
-        NewRHS = self.DAG.getConstant(0, SDLoc { N }, NewLHS.getValueType(), false, false);
+        NewRHS = self.DAG.getConstant(0, N, NewLHS.getValueType(), false, false);
         CCCode = SETNE;
     }
     return SDValue { Node: self.DAG.UpdateNodeOperands(N, N.getOperand(0), self.DAG.getCondCode(CCCode), NewLHS, NewRHS, N.getOperand(4)), ResNo: 0 };
 }
 
 fn DAGTypeLegalizer::ExpandFloatOp_FCOPYSIGN(self, N: *mut SDNode) -> SDValue {
-    assert!(N.getOperand(1).getValueType() == EVT { ppcf128 }, "Logic only correct for ppcf128!");
+    assert!(N.getOperand(1).getValueType() == ppcf128, "Logic only correct for ppcf128!");
     let mut Lo: SDValue = SDValue {};
     let mut Hi: SDValue = SDValue {};
     self.GetExpandedFloat(N.getOperand(1), Lo, Hi);
-    return self.DAG.getNode(FCOPYSIGN, SDLoc { N }, N.getValueType(0), N.getOperand(0), Hi);
+    return self.DAG.getNode(FCOPYSIGN, N, N.getValueType(0), N.getOperand(0), Hi);
 }
 
 fn DAGTypeLegalizer::ExpandFloatOp_FP_ROUND(self, N: *mut SDNode) -> SDValue {
     let mut IsStrict: bool = N.isStrictFPOpcode();
-    assert!(N.getOperand(if IsStrict { 1 } else { 0 }).getValueType() == EVT { ppcf128 }, "Logic only correct for ppcf128!");
+    assert!(N.getOperand(if IsStrict { 1 } else { 0 }).getValueType() == ppcf128, "Logic only correct for ppcf128!");
     let mut Lo: SDValue = SDValue {};
     let mut Hi: SDValue = SDValue {};
     self.GetExpandedFloat(N.getOperand(if IsStrict { 1 } else { 0 }), Lo, Hi);
     if !IsStrict {
-        return self.DAG.getNode(FP_ROUND, SDLoc { N }, N.getValueType(0), Hi, N.getOperand(1));
+        return self.DAG.getNode(FP_ROUND, N, N.getValueType(0), Hi, N.getOperand(1));
     }
     if Hi.getValueType() == N.getValueType(0) {
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, N.getOperand(0));
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 0 }, Hi);
         return SDValue {};
     }
-    let mut Expansion: SDValue = self.DAG.getNode(STRICT_FP_ROUND, SDLoc { N }, ArrayRef<EVT> { [N.getValueType(0), EVT { Other }] }, ArrayRef<SDValue> { [N.getOperand(0), Hi, N.getOperand(2)] });
+    let mut Expansion: SDValue = self.DAG.getNode(STRICT_FP_ROUND, N, [N.getValueType(0), Other], [N.getOperand(0), Hi, N.getOperand(2)]);
     self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Expansion.getValue(1));
     self.ReplaceValueWith(SDValue { Node: N, ResNo: 0 }, Expansion);
     return SDValue {};
@@ -1988,7 +1988,7 @@ fn DAGTypeLegalizer::ExpandFloatOp_FP_ROUND(self, N: *mut SDNode) -> SDValue {
 
 fn DAGTypeLegalizer::ExpandFloatOp_FP_TO_XINT(self, N: *mut SDNode) -> SDValue {
     let mut RVT: EVT = N.getValueType(0);
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut IsStrict: bool = N.isStrictFPOpcode();
     let mut Signed: bool = N.getOpcode() == FP_TO_SINT || N.getOpcode() == STRICT_FP_TO_SINT;
     let mut Op: SDValue = N.getOperand(if IsStrict { 1 } else { 0 });
@@ -2008,7 +2008,7 @@ fn DAGTypeLegalizer::ExpandFloatOp_FP_TO_XINT(self, N: *mut SDNode) -> SDValue {
         return Poison;
     }
     let mut CallOptions: MakeLibCallOptions = MakeLibCallOptions {};
-    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, NVT, ArrayRef<SDValue> { Op }, CallOptions, dl, Chain);
+    let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LCImpl, NVT, Op, CallOptions, dl, Chain);
     if !IsStrict {
         return Tmp.first;
     }
@@ -2022,9 +2022,9 @@ fn DAGTypeLegalizer::ExpandFloatOp_SELECT_CC(self, N: *mut SDNode) -> SDValue {
     let mut NewRHS: SDValue = N.getOperand(1);
     let mut CCCode: CondCode = cast(N.getOperand(4)).get();
     let mut Chain: SDValue = SDValue {};
-    self.FloatExpandSetCCOperands(NewLHS, NewRHS, CCCode, SDLoc { N }, Chain, false);
+    self.FloatExpandSetCCOperands(NewLHS, NewRHS, CCCode, N, Chain, false);
     if !NewRHS.getNode() {
-        NewRHS = self.DAG.getConstant(0, SDLoc { N }, NewLHS.getValueType(), false, false);
+        NewRHS = self.DAG.getConstant(0, N, NewLHS.getValueType(), false, false);
         CCCode = SETNE;
     }
     return SDValue { Node: self.DAG.UpdateNodeOperands(N, NewLHS, NewRHS, N.getOperand(2), N.getOperand(3), self.DAG.getCondCode(CCCode)), ResNo: 0 };
@@ -2036,7 +2036,7 @@ fn DAGTypeLegalizer::ExpandFloatOp_SETCC(self, N: *mut SDNode) -> SDValue {
     let mut NewRHS: SDValue = N.getOperand(if IsStrict { 2 } else { 1 });
     let mut Chain: SDValue = if IsStrict { N.getOperand(0) } else { SDValue {} };
     let mut CCCode: CondCode = cast(N.getOperand(if IsStrict { 3 } else { 2 })).get();
-    self.FloatExpandSetCCOperands(NewLHS, NewRHS, CCCode, SDLoc { N }, Chain, N.getOpcode() == STRICT_FSETCCS);
+    self.FloatExpandSetCCOperands(NewLHS, NewRHS, CCCode, N, Chain, N.getOpcode() == STRICT_FSETCCS);
     assert!(!NewRHS.getNode(), "Expect to return scalar");
     assert!(NewLHS.getValueType() == N.getValueType(0), "Unexpected setcc expansion!");
     if Chain {
@@ -2063,7 +2063,7 @@ fn DAGTypeLegalizer::ExpandFloatOp_STORE(self, N: *mut SDNode, OpNo: u32) -> SDV
     let mut Lo: SDValue = SDValue {};
     let mut Hi: SDValue = SDValue {};
     self.GetExpandedOp(ST.getValue(), Lo, Hi);
-    return self.DAG.getTruncStore(Chain, SDLoc { N }, Hi, Ptr, ST.getMemoryVT(), ST.getMemOperand());
+    return self.DAG.getTruncStore(Chain, N, Hi, Ptr, ST.getMemoryVT(), ST.getMemOperand());
 }
 
 fn DAGTypeLegalizer::ExpandFloatOp_XRINT_XROUND(self, N: *mut SDNode, LC: Libcall) -> SDValue {
@@ -2074,7 +2074,7 @@ fn DAGTypeLegalizer::ExpandFloatOp_XRINT_XROUND(self, N: *mut SDNode, LC: Libcal
         return self.DAG.getPOISON(RVT);
     }
     let mut CallOptions: MakeLibCallOptions = MakeLibCallOptions {};
-    return self.TLI.makeLibCall(self.DAG, LCImpl, RVT, ArrayRef<SDValue> { N.getOperand(0) }, CallOptions, SDLoc { N }, SDValue {}).first;
+    return self.TLI.makeLibCall(self.DAG, LCImpl, RVT, N.getOperand(0), CallOptions, N, SDValue {}).first;
 }
 
 fn DAGTypeLegalizer::ExpandFloatOp_LROUND(self, N: *mut SDNode) -> SDValue {
@@ -2098,32 +2098,32 @@ fn DAGTypeLegalizer::ExpandFloatOp_LLRINT(self, N: *mut SDNode) -> SDValue {
 }
 
 fn GetPromotionOpcode(OpVT: EVT, RetVT: EVT) -> NodeType {
-    if OpVT == EVT { f16 } {
+    if OpVT == f16 {
         return FP16_TO_FP;
     }
-    if RetVT == EVT { f16 } {
+    if RetVT == f16 {
         return FP_TO_FP16;
     }
-    if OpVT == EVT { bf16 } {
+    if OpVT == bf16 {
         return BF16_TO_FP;
     }
-    if RetVT == EVT { bf16 } {
+    if RetVT == bf16 {
         return FP_TO_BF16;
     }
     report_fatal_error("Attempt at an invalid promotion-related conversion", true);
 }
 
 fn GetPromotionOpcodeStrict(OpVT: EVT, RetVT: EVT) -> NodeType {
-    if OpVT == EVT { f16 } {
+    if OpVT == f16 {
         return STRICT_FP16_TO_FP;
     }
-    if RetVT == EVT { f16 } {
+    if RetVT == f16 {
         return STRICT_FP_TO_FP16;
     }
-    if OpVT == EVT { bf16 } {
+    if OpVT == bf16 {
         return STRICT_BF16_TO_FP;
     }
-    if RetVT == EVT { bf16 } {
+    if RetVT == bf16 {
         return STRICT_FP_TO_BF16;
     }
     report_fatal_error("Attempt at an invalid promotion-related conversion", true);
@@ -2131,10 +2131,10 @@ fn GetPromotionOpcodeStrict(OpVT: EVT, RetVT: EVT) -> NodeType {
 
 fn DAGTypeLegalizer::BitcastToInt_ATOMIC_SWAP(self, N: *mut SDNode) -> SDValue {
     let mut AM: *mut AtomicSDNode = cast(N);
-    let mut SL: SDLoc = SDLoc { N };
+    let mut SL: SDLoc = N;
     let mut CastVal: SDValue = self.BitConvertToInteger(AM.getVal());
     let mut CastVT: EVT = CastVal.getValueType();
-    let mut NewAtomic: SDValue = self.DAG.getAtomic(ATOMIC_SWAP, SL, CastVT, self.DAG.getVTList(CastVT, EVT { Other }), ArrayRef<SDValue> { [AM.getChain(), AM.getBasePtr(), CastVal] }, AM.getMemOperand(), NON_EXTLOAD);
+    let mut NewAtomic: SDValue = self.DAG.getAtomic(ATOMIC_SWAP, SL, CastVT, self.DAG.getVTList(CastVT, Other), [AM.getChain(), AM.getBasePtr(), CastVal], AM.getMemOperand(), NON_EXTLOAD);
     let mut Result: SDValue = NewAtomic;
     self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, NewAtomic.getValue(1));
     return Result;
@@ -2248,7 +2248,7 @@ fn DAGTypeLegalizer::SoftPromoteHalfResult(self, N: *mut SDNode, ResNo: u32) {
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfRes_ARITH_FENCE(self, N: *mut SDNode) -> SDValue {
-    return self.DAG.getNode(ARITH_FENCE, SDLoc { N }, EVT { i16 }, self.BitConvertToInteger(N.getOperand(0)));
+    return self.DAG.getNode(ARITH_FENCE, N, i16, self.BitConvertToInteger(N.getOperand(0)));
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfRes_BITCAST(self, N: *mut SDNode) -> SDValue {
@@ -2257,18 +2257,18 @@ fn DAGTypeLegalizer::SoftPromoteHalfRes_BITCAST(self, N: *mut SDNode) -> SDValue
 
 fn DAGTypeLegalizer::SoftPromoteHalfRes_ConstantFP(self, N: *mut SDNode) -> SDValue {
     let mut CN: *mut ConstantFPSDNode = cast(N);
-    return self.DAG.getConstant(CN.getValueAPF().bitcastToAPInt(), SDLoc { CN }, EVT { i16 }, false, false);
+    return self.DAG.getConstant(CN.getValueAPF().bitcastToAPInt(), CN, i16, false, false);
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfRes_EXTRACT_VECTOR_ELT(self, N: *mut SDNode) -> SDValue {
     let mut NewOp: SDValue = self.BitConvertVectorToIntegerVector(N.getOperand(0));
-    return self.DAG.getNode(EXTRACT_VECTOR_ELT, SDLoc { N }, NewOp.getValueType().getVectorElementType(), NewOp, N.getOperand(1));
+    return self.DAG.getNode(EXTRACT_VECTOR_ELT, N, NewOp.getValueType().getVectorElementType(), NewOp, N.getOperand(1));
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfRes_FCOPYSIGN(self, N: *mut SDNode) -> SDValue {
     let mut LHS: SDValue = self.GetSoftPromotedHalf(N.getOperand(0));
     let mut RHS: SDValue = self.BitConvertToInteger(N.getOperand(1));
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut LVT: EVT = LHS.getValueType();
     let mut RVT: EVT = RHS.getValueType();
     let mut LSize: u32 = LVT.getSizeInBits().operator unsigned long long();
@@ -2296,27 +2296,27 @@ fn DAGTypeLegalizer::SoftPromoteHalfRes_FMAD(self, N: *mut SDNode) -> SDValue {
     let mut Op1: SDValue = self.GetSoftPromotedHalf(N.getOperand(1));
     let mut Op2: SDValue = self.GetSoftPromotedHalf(N.getOperand(2));
     let mut Flags: SDNodeFlags = N.getFlags();
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut PromotionOpcode: NodeType = GetPromotionOpcode(OVT, NVT);
     Op0 = self.DAG.getNode(PromotionOpcode, dl, NVT, Op0);
     Op1 = self.DAG.getNode(PromotionOpcode, dl, NVT, Op1);
     Op2 = self.DAG.getNode(PromotionOpcode, dl, NVT, Op2);
     let mut Res: SDValue = SDValue {};
-    if OVT == EVT { f16 } {
-        let mut A64: SDValue = self.DAG.getNode(FP_EXTEND, dl, EVT { f64 }, Op0, Flags);
-        let mut B64: SDValue = self.DAG.getNode(FP_EXTEND, dl, EVT { f64 }, Op1, Flags);
-        let mut C64: SDValue = self.DAG.getNode(FP_EXTEND, dl, EVT { f64 }, Op2, Flags);
+    if OVT == f16 {
+        let mut A64: SDValue = self.DAG.getNode(FP_EXTEND, dl, f64, Op0, Flags);
+        let mut B64: SDValue = self.DAG.getNode(FP_EXTEND, dl, f64, Op1, Flags);
+        let mut C64: SDValue = self.DAG.getNode(FP_EXTEND, dl, f64, Op2, Flags);
         let mut WideRes: SDValue = SDValue {};
-        if self.TLI.isFMAFasterThanFMulAndFAdd(self.DAG.getMachineFunction(), EVT { f64 }) {
-            WideRes = self.DAG.getNode(FMA, dl, EVT { f64 }, A64, B64, C64, Flags);
+        if self.TLI.isFMAFasterThanFMulAndFAdd(self.DAG.getMachineFunction(), f64) {
+            WideRes = self.DAG.getNode(FMA, dl, f64, A64, B64, C64, Flags);
         } else {
-            let mut Mul: SDValue = self.DAG.getNode(FMUL, dl, EVT { f64 }, A64, B64, Flags);
-            WideRes = self.DAG.getNode(FADD, dl, EVT { f64 }, Mul, C64, Flags);
+            let mut Mul: SDValue = self.DAG.getNode(FMUL, dl, f64, A64, B64, Flags);
+            WideRes = self.DAG.getNode(FADD, dl, f64, Mul, C64, Flags);
         }
-        return self.DAG.getNode(GetPromotionOpcode(EVT { f64 }, OVT), dl, EVT { i16 }, WideRes);
+        return self.DAG.getNode(GetPromotionOpcode(f64, OVT), dl, i16, WideRes);
     }
     Res = self.DAG.getNode(N.getOpcode(), dl, NVT, Op0, Op1, Op2, Flags);
-    return self.DAG.getNode(GetPromotionOpcode(NVT, OVT), dl, EVT { i16 }, Res);
+    return self.DAG.getNode(GetPromotionOpcode(NVT, OVT), dl, i16, Res);
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfRes_ExpOp(self, N: *mut SDNode) -> SDValue {
@@ -2324,34 +2324,34 @@ fn DAGTypeLegalizer::SoftPromoteHalfRes_ExpOp(self, N: *mut SDNode) -> SDValue {
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), OVT);
     let mut Op0: SDValue = self.GetSoftPromotedHalf(N.getOperand(0));
     let mut Op1: SDValue = N.getOperand(1);
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     Op0 = self.DAG.getNode(GetPromotionOpcode(OVT, NVT), dl, NVT, Op0);
     let mut Res: SDValue = self.DAG.getNode(N.getOpcode(), dl, NVT, Op0, Op1);
-    return self.DAG.getNode(GetPromotionOpcode(NVT, OVT), dl, EVT { i16 }, Res);
+    return self.DAG.getNode(GetPromotionOpcode(NVT, OVT), dl, i16, Res);
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfRes_FFREXP(self, N: *mut SDNode) -> SDValue {
     let mut OVT: EVT = N.getValueType(0);
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), OVT);
     let mut Op: SDValue = self.GetSoftPromotedHalf(N.getOperand(0));
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     Op = self.DAG.getNode(GetPromotionOpcode(OVT, NVT), dl, NVT, Op);
     let mut Res: SDValue = self.DAG.getNode(N.getOpcode(), dl, self.DAG.getVTList(NVT, N.getValueType(1)), Op);
     self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Res.getValue(1));
-    return self.DAG.getNode(GetPromotionOpcode(NVT, OVT), dl, EVT { i16 }, Res);
+    return self.DAG.getNode(GetPromotionOpcode(NVT, OVT), dl, i16, Res);
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfRes_UnaryWithTwoFPResults(self, N: *mut SDNode) -> SDValue {
     let mut OVT: EVT = N.getValueType(0);
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), OVT);
     let mut Op: SDValue = self.GetSoftPromotedHalf(N.getOperand(0));
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     Op = self.DAG.getNode(GetPromotionOpcode(OVT, NVT), dl, NVT, Op);
     let mut Res: SDValue = self.DAG.getNode(N.getOpcode(), dl, self.DAG.getVTList(NVT, NVT), Op);
     let mut Truncate: NodeType = GetPromotionOpcode(NVT, OVT);
     for let mut ResNum: u32 = 0;
 let mut NumValues: u32 = N.getNumValues(); ResNum < NumValues; ResNum += 1 {
-        let mut Trunc: SDValue = self.DAG.getNode(Truncate, dl, EVT { i16 }, Res.getValue(ResNum));
+        let mut Trunc: SDValue = self.DAG.getNode(Truncate, dl, i16, Res.getValue(ResNum));
         self.SetSoftPromotedHalf(SDValue { Node: N, ResNo: ResNum }, Trunc);
     }
     return SDValue {};
@@ -2368,32 +2368,32 @@ fn DAGTypeLegalizer::SoftPromoteHalfRes_FP_ROUND(self, N: *mut SDNode) -> SDValu
         let mut Chain: SDValue = if IsStrict { N.getOperand(0) } else { SDValue {} };
         Op = self.GetSoftenedFloat(Op);
         let mut CallOptions: MakeLibCallOptions = MakeLibCallOptions {};
-        CallOptions.setTypeListBeforeSoften(ArrayRef<EVT> { SVT }, RVT);
-        let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LC, RVT, ArrayRef<SDValue> { Op }, CallOptions, SDLoc { N }, Chain);
+        CallOptions.setTypeListBeforeSoften(SVT, RVT);
+        let mut Tmp: pair<SDValue, SDValue> = self.TLI.makeLibCall(self.DAG, LC, RVT, Op, CallOptions, N, Chain);
         if IsStrict {
             self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Tmp.second);
         }
-        return self.DAG.getNode(BITCAST, SDLoc { N }, EVT { i16 }, Tmp.first);
+        return self.DAG.getNode(BITCAST, N, i16, Tmp.first);
     }
     if IsStrict {
-        let mut Res: SDValue = self.DAG.getNode(GetPromotionOpcodeStrict(SVT, RVT), SDLoc { N }, ArrayRef<EVT> { [EVT { i16 }, EVT { Other }] }, ArrayRef<SDValue> { [N.getOperand(0), Op] });
+        let mut Res: SDValue = self.DAG.getNode(GetPromotionOpcodeStrict(SVT, RVT), N, [i16, Other], [N.getOperand(0), Op]);
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Res.getValue(1));
         return Res;
     }
-    return self.DAG.getNode(GetPromotionOpcode(SVT, RVT), SDLoc { N }, EVT { i16 }, N.getOperand(0));
+    return self.DAG.getNode(GetPromotionOpcode(SVT, RVT), N, i16, N.getOperand(0));
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfRes_LOAD(self, N: *mut SDNode) -> SDValue {
     let mut L: *mut LoadSDNode = cast(N);
     assert!(L.getExtensionType() == NON_EXTLOAD, "Unexpected extension!");
-    let mut NewL: SDValue = self.DAG.getLoad(L.getAddressingMode(), L.getExtensionType(), EVT { i16 }, SDLoc { N }, L.getChain(), L.getBasePtr(), L.getOffset(), L.getPointerInfo(), EVT { i16 }, L.getBaseAlign(), L.getMemOperand().getFlags(), MMOMetadata { AAInfo: L.getAAInfo(), Ranges: null, MemCacheHint: null });
+    let mut NewL: SDValue = self.DAG.getLoad(L.getAddressingMode(), L.getExtensionType(), i16, N, L.getChain(), L.getBasePtr(), L.getOffset(), L.getPointerInfo(), i16, L.getBaseAlign(), L.getMemOperand().getFlags(), MMOMetadata { AAInfo: L.getAAInfo(), Ranges: null, MemCacheHint: null });
     self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, NewL.getValue(1));
     return NewL;
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfRes_ATOMIC_LOAD(self, N: *mut SDNode) -> SDValue {
     let mut AM: *mut AtomicSDNode = cast(N);
-    let mut NewL: SDValue = self.DAG.getAtomic(ATOMIC_LOAD, SDLoc { N }, EVT { i16 }, self.DAG.getVTList(EVT { i16 }, EVT { Other }), ArrayRef<SDValue> { [AM.getChain(), AM.getBasePtr()] }, AM.getMemOperand(), NON_EXTLOAD);
+    let mut NewL: SDValue = self.DAG.getAtomic(ATOMIC_LOAD, N, i16, self.DAG.getVTList(i16, Other), [AM.getChain(), AM.getBasePtr()], AM.getMemOperand(), NON_EXTLOAD);
     self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, NewL.getValue(1));
     return NewL;
 }
@@ -2401,61 +2401,61 @@ fn DAGTypeLegalizer::SoftPromoteHalfRes_ATOMIC_LOAD(self, N: *mut SDNode) -> SDV
 fn DAGTypeLegalizer::SoftPromoteHalfRes_SELECT(self, N: *mut SDNode) -> SDValue {
     let mut Op1: SDValue = self.GetSoftPromotedHalf(N.getOperand(1));
     let mut Op2: SDValue = self.GetSoftPromotedHalf(N.getOperand(2));
-    return self.DAG.getSelect(SDLoc { N }, Op1.getValueType(), N.getOperand(0), Op1, Op2, N.getFlags());
+    return self.DAG.getSelect(N, Op1.getValueType(), N.getOperand(0), Op1, Op2, N.getFlags());
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfRes_SELECT_CC(self, N: *mut SDNode) -> SDValue {
     let mut Op2: SDValue = self.GetSoftPromotedHalf(N.getOperand(2));
     let mut Op3: SDValue = self.GetSoftPromotedHalf(N.getOperand(3));
-    return self.DAG.getNode(SELECT_CC, SDLoc { N }, Op2.getValueType(), N.getOperand(0), N.getOperand(1), Op2, Op3, N.getOperand(4));
+    return self.DAG.getNode(SELECT_CC, N, Op2.getValueType(), N.getOperand(0), N.getOperand(1), Op2, Op3, N.getOperand(4));
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfRes_XINT_TO_FP(self, N: *mut SDNode) -> SDValue {
     let mut OVT: EVT = N.getValueType(0);
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), OVT);
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     if N.isStrictFPOpcode() {
-        let mut Op: SDValue = self.DAG.getNode(N.getOpcode(), dl, ArrayRef<EVT> { [NVT, EVT { Other }] }, ArrayRef<SDValue> { [N.getOperand(0), N.getOperand(1)] });
-        Op = self.DAG.getNode(GetPromotionOpcodeStrict(NVT, OVT), dl, ArrayRef<EVT> { [EVT { i16 }, EVT { Other }] }, ArrayRef<SDValue> { [Op.getValue(1), Op] });
+        let mut Op: SDValue = self.DAG.getNode(N.getOpcode(), dl, [NVT, Other], [N.getOperand(0), N.getOperand(1)]);
+        Op = self.DAG.getNode(GetPromotionOpcodeStrict(NVT, OVT), dl, [i16, Other], [Op.getValue(1), Op]);
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Op.getValue(1));
         return Op;
     }
     let mut Res: SDValue = self.DAG.getNode(N.getOpcode(), dl, NVT, N.getOperand(0));
-    return self.DAG.getNode(GetPromotionOpcode(NVT, OVT), dl, EVT { i16 }, Res);
+    return self.DAG.getNode(GetPromotionOpcode(NVT, OVT), dl, i16, Res);
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfRes_CONVERT_FROM_ARBITRARY_FP(self, N: *mut SDNode) -> SDValue {
     let mut OVT: EVT = N.getValueType(0);
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), OVT);
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut Res: SDValue = self.DAG.getNode(CONVERT_FROM_ARBITRARY_FP, dl, NVT, N.getOperand(0), N.getOperand(1));
-    return self.DAG.getNode(GetPromotionOpcode(NVT, OVT), dl, EVT { i16 }, Res);
+    return self.DAG.getNode(GetPromotionOpcode(NVT, OVT), dl, i16, Res);
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfRes_UNDEF(self, N: *mut SDNode) -> SDValue {
-    return self.DAG.getUNDEF(EVT { i16 });
+    return self.DAG.getUNDEF(i16);
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfRes_UnaryOp(self, N: *mut SDNode) -> SDValue {
     let mut OVT: EVT = N.getValueType(0);
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), OVT);
     let mut Op: SDValue = self.GetSoftPromotedHalf(N.getOperand(0));
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     Op = self.DAG.getNode(GetPromotionOpcode(OVT, NVT), dl, NVT, Op);
     let mut Res: SDValue = self.DAG.getNode(N.getOpcode(), dl, NVT, Op);
-    return self.DAG.getNode(GetPromotionOpcode(NVT, OVT), dl, EVT { i16 }, Res);
+    return self.DAG.getNode(GetPromotionOpcode(NVT, OVT), dl, i16, Res);
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfRes_FABS(self, N: *mut SDNode) -> SDValue {
     let mut Op: SDValue = self.GetSoftPromotedHalf(N.getOperand(0));
-    let mut dl: SDLoc = SDLoc { N };
-    return self.DAG.getNode(AND, dl, EVT { i16 }, Op, self.DAG.getConstant(32767, dl, EVT { i16 }, false, false));
+    let mut dl: SDLoc = N;
+    return self.DAG.getNode(AND, dl, i16, Op, self.DAG.getConstant(32767, dl, i16, false, false));
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfRes_FNEG(self, N: *mut SDNode) -> SDValue {
     let mut Op: SDValue = self.GetSoftPromotedHalf(N.getOperand(0));
-    let mut dl: SDLoc = SDLoc { N };
-    return self.DAG.getNode(XOR, dl, EVT { i16 }, Op, self.DAG.getConstant(32768, dl, EVT { i16 }, false, false));
+    let mut dl: SDLoc = N;
+    return self.DAG.getNode(XOR, dl, i16, Op, self.DAG.getConstant(32768, dl, i16, false, false));
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfRes_AssertNoFPClass(self, N: *mut SDNode) -> SDValue {
@@ -2467,12 +2467,12 @@ fn DAGTypeLegalizer::SoftPromoteHalfRes_BinOp(self, N: *mut SDNode) -> SDValue {
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), OVT);
     let mut Op0: SDValue = self.GetSoftPromotedHalf(N.getOperand(0));
     let mut Op1: SDValue = self.GetSoftPromotedHalf(N.getOperand(1));
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut PromotionOpcode: NodeType = GetPromotionOpcode(OVT, NVT);
     Op0 = self.DAG.getNode(PromotionOpcode, dl, NVT, Op0);
     Op1 = self.DAG.getNode(PromotionOpcode, dl, NVT, Op1);
     let mut Res: SDValue = self.DAG.getNode(N.getOpcode(), dl, NVT, Op0, Op1);
-    return self.DAG.getNode(GetPromotionOpcode(NVT, OVT), dl, EVT { i16 }, Res);
+    return self.DAG.getNode(GetPromotionOpcode(NVT, OVT), dl, i16, Res);
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfRes_VECREDUCE(self, N: *mut SDNode) -> SDValue {
@@ -2571,19 +2571,19 @@ fn DAGTypeLegalizer::SoftPromoteHalfOperand(self, N: *mut SDNode, OpNo: u32) -> 
 
 fn DAGTypeLegalizer::SoftPromoteHalfOp_BITCAST(self, N: *mut SDNode) -> SDValue {
     let mut Op0: SDValue = self.GetSoftPromotedHalf(N.getOperand(0));
-    return self.DAG.getNode(BITCAST, SDLoc { N }, N.getValueType(0), Op0);
+    return self.DAG.getNode(BITCAST, N, N.getValueType(0), Op0);
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfOp_BUILD_VECTOR(self, N: *mut SDNode) -> SDValue {
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut VT: EVT = N.getValueType(0);
-    let mut Ops: SmallVector<SDValue, 8> = SmallVector<SDValue, 8> { N.getNumOperands() };
+    let mut Ops: SmallVector<SDValue, 8> = N.getNumOperands();
     for let mut I: u32 = 0;
 let mut E: u32 = N.getNumOperands(); I != E; I += 1 {
         Ops[I] = self.GetSoftPromotedHalf(N.getOperand(I));
     }
     let mut IVT: EVT = VT.changeVectorElementTypeToInteger();
-    let mut Res: SDValue = self.DAG.getBuildVector(IVT, dl, ArrayRef<SDValue> { Ops });
+    let mut Res: SDValue = self.DAG.getBuildVector(IVT, dl, Ops);
     return self.DAG.getBitcast(VT, Res);
 }
 
@@ -2591,21 +2591,21 @@ fn DAGTypeLegalizer::SoftPromoteHalfOp_INSERT_VECTOR_ELT(self, N: *mut SDNode, O
     assert!(OpNo == 1, "Only Operand 1 must need promotion here");
     let mut Vec: SDValue = self.BitConvertVectorToIntegerVector(N.getOperand(0));
     let mut Elt: SDValue = self.GetSoftPromotedHalf(N.getOperand(OpNo));
-    let mut Res: SDValue = self.DAG.getNode(INSERT_VECTOR_ELT, SDLoc { N }, Vec.getValueType(), Vec, Elt, N.getOperand(2));
+    let mut Res: SDValue = self.DAG.getNode(INSERT_VECTOR_ELT, N, Vec.getValueType(), Vec, Elt, N.getOperand(2));
     return self.DAG.getBitcast(N.getValueType(0), Res);
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfOp_FAKE_USE(self, N: *mut SDNode, OpNo: u32) -> SDValue {
     assert!(OpNo == 1, "Only Operand 1 must need promotion here");
     let mut Op: SDValue = self.GetSoftPromotedHalf(N.getOperand(OpNo));
-    return self.DAG.getNode(N.getOpcode(), SDLoc { N }, EVT { Other }, N.getOperand(0), Op);
+    return self.DAG.getNode(N.getOpcode(), N, Other, N.getOperand(0), Op);
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfOp_FCOPYSIGN(self, N: *mut SDNode, OpNo: u32) -> SDValue {
     assert!(OpNo == 1, "Only Operand 1 must need promotion here");
     let mut Op1: SDValue = N.getOperand(1);
     let mut RVT: EVT = Op1.getValueType();
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), Op1.getValueType());
     Op1 = self.GetSoftPromotedHalf(Op1);
     Op1 = self.DAG.getNode(GetPromotionOpcode(RVT, NVT), dl, NVT, Op1);
@@ -2619,12 +2619,12 @@ fn DAGTypeLegalizer::SoftPromoteHalfOp_FP_EXTEND(self, N: *mut SDNode) -> SDValu
     let mut SVT: EVT = Op.getValueType();
     Op = self.GetSoftPromotedHalf(N.getOperand(if IsStrict { 1 } else { 0 }));
     if IsStrict {
-        let mut Res: SDValue = self.DAG.getNode(GetPromotionOpcodeStrict(SVT, RVT), SDLoc { N }, ArrayRef<EVT> { [RVT, EVT { Other }] }, ArrayRef<SDValue> { [N.getOperand(0), Op] });
+        let mut Res: SDValue = self.DAG.getNode(GetPromotionOpcodeStrict(SVT, RVT), N, [RVT, Other], [N.getOperand(0), Op]);
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Res.getValue(1));
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 0 }, Res);
         return SDValue {};
     }
-    return self.DAG.getNode(GetPromotionOpcode(SVT, RVT), SDLoc { N }, RVT, Op);
+    return self.DAG.getNode(GetPromotionOpcode(SVT, RVT), N, RVT, Op);
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfOp_Op0WithStrict(self, N: *mut SDNode) -> SDValue {
@@ -2632,12 +2632,12 @@ fn DAGTypeLegalizer::SoftPromoteHalfOp_Op0WithStrict(self, N: *mut SDNode) -> SD
     let mut IsStrict: bool = N.isStrictFPOpcode();
     let mut Op: SDValue = N.getOperand(if IsStrict { 1 } else { 0 });
     let mut SVT: EVT = Op.getValueType();
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), SVT);
     Op = self.GetSoftPromotedHalf(Op);
     if IsStrict {
-        Op = self.DAG.getNode(GetPromotionOpcodeStrict(SVT, RVT), dl, ArrayRef<EVT> { [NVT, EVT { Other }] }, ArrayRef<SDValue> { [N.getOperand(0), Op] });
-        Op = self.DAG.getNode(N.getOpcode(), dl, ArrayRef<EVT> { [RVT, EVT { Other }] }, ArrayRef<SDValue> { [Op.getValue(1), Op] });
+        Op = self.DAG.getNode(GetPromotionOpcodeStrict(SVT, RVT), dl, [NVT, Other], [N.getOperand(0), Op]);
+        Op = self.DAG.getNode(N.getOpcode(), dl, [RVT, Other], [Op.getValue(1), Op]);
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 1 }, Op.getValue(1));
         self.ReplaceValueWith(SDValue { Node: N, ResNo: 0 }, Op);
         return SDValue {};
@@ -2650,7 +2650,7 @@ fn DAGTypeLegalizer::SoftPromoteHalfOp_FP_TO_XINT_SAT(self, N: *mut SDNode) -> S
     let mut RVT: EVT = N.getValueType(0);
     let mut Op: SDValue = N.getOperand(0);
     let mut SVT: EVT = Op.getValueType();
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), Op.getValueType());
     Op = self.GetSoftPromotedHalf(Op);
     let mut Res: SDValue = self.DAG.getNode(GetPromotionOpcode(SVT, RVT), dl, NVT, Op);
@@ -2661,7 +2661,7 @@ fn DAGTypeLegalizer::SoftPromoteHalfOp_CONVERT_TO_ARBITRARY_FP(self, N: *mut SDN
     let mut RVT: EVT = N.getValueType(0);
     let mut Op: SDValue = N.getOperand(0);
     let mut SVT: EVT = Op.getValueType();
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), Op.getValueType());
     Op = self.GetSoftPromotedHalf(Op);
     let mut Res: SDValue = self.DAG.getNode(GetPromotionOpcode(SVT, RVT), dl, NVT, Op);
@@ -2671,7 +2671,7 @@ fn DAGTypeLegalizer::SoftPromoteHalfOp_CONVERT_TO_ARBITRARY_FP(self, N: *mut SDN
 fn DAGTypeLegalizer::SoftPromoteHalfOp_BR_CC(self, N: *mut SDNode) -> SDValue {
     let mut Op0: SDValue = N.getOperand(2);
     let mut Op1: SDValue = N.getOperand(3);
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut SVT: EVT = Op0.getValueType();
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), SVT);
     Op0 = self.GetSoftPromotedHalf(Op0);
@@ -2679,14 +2679,14 @@ fn DAGTypeLegalizer::SoftPromoteHalfOp_BR_CC(self, N: *mut SDNode) -> SDValue {
     let mut PromotionOpcode: u32 = GetPromotionOpcode(SVT, NVT);
     Op0 = self.DAG.getNode(PromotionOpcode, dl, NVT, Op0);
     Op1 = self.DAG.getNode(PromotionOpcode, dl, NVT, Op1);
-    return self.DAG.getNode(BR_CC, dl, EVT { Other }, N.getOperand(0), N.getOperand(1), Op0, Op1, N.getOperand(4));
+    return self.DAG.getNode(BR_CC, dl, Other, N.getOperand(0), N.getOperand(1), Op0, Op1, N.getOperand(4));
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfOp_SELECT_CC(self, N: *mut SDNode, OpNo: u32) -> SDValue {
     assert!(OpNo == 0, "Can only soften the comparison values");
     let mut Op0: SDValue = N.getOperand(0);
     let mut Op1: SDValue = N.getOperand(1);
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut SVT: EVT = Op0.getValueType();
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), SVT);
     Op0 = self.GetSoftPromotedHalf(Op0);
@@ -2694,14 +2694,14 @@ fn DAGTypeLegalizer::SoftPromoteHalfOp_SELECT_CC(self, N: *mut SDNode, OpNo: u32
     let mut PromotionOpcode: NodeType = GetPromotionOpcode(SVT, NVT);
     Op0 = self.DAG.getNode(PromotionOpcode, dl, NVT, Op0);
     Op1 = self.DAG.getNode(PromotionOpcode, dl, NVT, Op1);
-    return self.DAG.getNode(SELECT_CC, SDLoc { N }, N.getValueType(0), Op0, Op1, N.getOperand(2), N.getOperand(3), N.getOperand(4));
+    return self.DAG.getNode(SELECT_CC, N, N.getValueType(0), Op0, Op1, N.getOperand(2), N.getOperand(3), N.getOperand(4));
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfOp_SETCC(self, N: *mut SDNode) -> SDValue {
     let mut Op0: SDValue = N.getOperand(0);
     let mut Op1: SDValue = N.getOperand(1);
     let mut CCCode: CondCode = cast(N.getOperand(2)).get();
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut SVT: EVT = Op0.getValueType();
     let mut NVT: EVT = self.TLI.getTypeToTransformTo(*self.DAG.getContext(), Op0.getValueType());
     Op0 = self.GetSoftPromotedHalf(Op0);
@@ -2709,14 +2709,14 @@ fn DAGTypeLegalizer::SoftPromoteHalfOp_SETCC(self, N: *mut SDNode) -> SDValue {
     let mut PromotionOpcode: NodeType = GetPromotionOpcode(SVT, NVT);
     Op0 = self.DAG.getNode(PromotionOpcode, dl, NVT, Op0);
     Op1 = self.DAG.getNode(PromotionOpcode, dl, NVT, Op1);
-    return self.DAG.getSetCC(SDLoc { N }, N.getValueType(0), Op0, Op1, CCCode, SDValue {}, false, SDNodeFlags { Flags: None });
+    return self.DAG.getSetCC(N, N.getValueType(0), Op0, Op1, CCCode, SDValue {}, false, None);
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfOp_STORE(self, N: *mut SDNode, OpNo: u32) -> SDValue {
     assert!(OpNo == 1, "Can only soften the stored value!");
     let mut ST: *mut StoreSDNode = cast(N);
     let mut Val: SDValue = ST.getValue();
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     assert!(!ST.isTruncatingStore(), "Unexpected truncating store.");
     let mut Promoted: SDValue = self.GetSoftPromotedHalf(Val);
     return self.DAG.getStore(ST.getChain(), dl, Promoted, ST.getBasePtr(), ST.getMemOperand());
@@ -2726,17 +2726,17 @@ fn DAGTypeLegalizer::SoftPromoteHalfOp_ATOMIC_STORE(self, N: *mut SDNode, OpNo: 
     assert!(OpNo == 1, "Can only soften the stored value!");
     let mut ST: *mut AtomicSDNode = cast(N);
     let mut Val: SDValue = ST.getVal();
-    let mut dl: SDLoc = SDLoc { N };
+    let mut dl: SDLoc = N;
     let mut Promoted: SDValue = self.GetSoftPromotedHalf(Val);
     return self.DAG.getAtomic(ATOMIC_STORE, dl, Promoted.getValueType(), ST.getChain(), Promoted, ST.getBasePtr(), ST.getMemOperand());
 }
 
 fn DAGTypeLegalizer::SoftPromoteHalfOp_STACKMAP(self, N: *mut SDNode, OpNo: u32) -> SDValue {
     assert!(OpNo > 1);
-    let mut NewOps: SmallVector<SDValue> = SmallVector<SDValue> { N.ops() };
+    let mut NewOps: SmallVector<SDValue> = N.ops();
     let mut Op: SDValue = N.getOperand(OpNo);
     NewOps[OpNo] = self.GetSoftPromotedHalf(Op);
-    let mut NewNode: SDValue = self.DAG.getNode(N.getOpcode(), SDLoc { N }, N.getVTList(), ArrayRef<SDValue> { NewOps });
+    let mut NewNode: SDValue = self.DAG.getNode(N.getOpcode(), N, N.getVTList(), NewOps);
     for let mut ResNum: u32 = 0; ResNum < N.getNumValues(); ResNum += 1 {
         self.ReplaceValueWith(SDValue { Node: N, ResNo: ResNum }, NewNode.getValue(ResNum));
     }
@@ -2745,10 +2745,10 @@ fn DAGTypeLegalizer::SoftPromoteHalfOp_STACKMAP(self, N: *mut SDNode, OpNo: u32)
 
 fn DAGTypeLegalizer::SoftPromoteHalfOp_PATCHPOINT(self, N: *mut SDNode, OpNo: u32) -> SDValue {
     assert!(OpNo >= 7);
-    let mut NewOps: SmallVector<SDValue> = SmallVector<SDValue> { N.ops() };
+    let mut NewOps: SmallVector<SDValue> = N.ops();
     let mut Op: SDValue = N.getOperand(OpNo);
     NewOps[OpNo] = self.GetSoftPromotedHalf(Op);
-    let mut NewNode: SDValue = self.DAG.getNode(N.getOpcode(), SDLoc { N }, N.getVTList(), ArrayRef<SDValue> { NewOps });
+    let mut NewNode: SDValue = self.DAG.getNode(N.getOpcode(), N, N.getVTList(), NewOps);
     for let mut ResNum: u32 = 0; ResNum < N.getNumValues(); ResNum += 1 {
         self.ReplaceValueWith(SDValue { Node: N, ResNo: ResNum }, NewNode.getValue(ResNum));
     }
@@ -2765,5 +2765,5 @@ struct Closure_1 {
 unsafe fn Closure_1::call(self: *mut Closure_1, StackSlot: SDValue) -> SDValue {
         let mut FrameIdx: i32 = cast(StackSlot).getIndex();
         let mut PtrInfo: MachinePointerInfo = getFixedStack(self.DAG.getMachineFunction(), FrameIdx, 0);
-        return self.DAG.getLoad((*self.NVT), (*self.DL), SDValue { Chain }, StackSlot, PtrInfo, MaybeAlign {}, MONone, MMOMetadata {});
+        return self.DAG.getLoad((*self.NVT), (*self.DL), Chain, StackSlot, PtrInfo, MaybeAlign {}, MONone, MMOMetadata {});
     }

@@ -1,12 +1,12 @@
 static mut NumLFENCEsInserted: Statistic = Statistic { "x86-seses", "NumLFENCEsInserted", "Number of lfence instructions inserted" };
 
-static mut EnableSpeculativeExecutionSideEffectSuppression: i32 = "x86-seses-enable-without-lvi-cfi";
+static mut EnableSpeculativeExecutionSideEffectSuppression: opt<bool> = opt<bool> { "x86-seses-enable-without-lvi-cfi", "Force enable speculative execution side effect suppression. (Note: User must pass -mlvi-cfi in order to mitigate indirect branches and returns.)", init(false), Hidden };
 
-static mut OneLFENCEPerBasicBlock: i32 = "x86-seses-one-lfence-per-bb";
+static mut OneLFENCEPerBasicBlock: opt<bool> = opt<bool> { "x86-seses-one-lfence-per-bb", "Omit all lfences other than the first to be placed in a basic block.", init(false), Hidden };
 
-static mut OnlyLFENCENonConst: i32 = "x86-seses-only-lfence-non-const";
+static mut OnlyLFENCENonConst: opt<bool> = opt<bool> { "x86-seses-only-lfence-non-const", "Only lfence before groups of terminators where at least one branch instruction has an input to the addressing mode that is a register other than %rip.", init(false), Hidden };
 
-static mut OmitBranchLFENCEs: i32 = "x86-seses-omit-branch-lfences";
+static mut OmitBranchLFENCEs: opt<bool> = opt<bool> { "x86-seses-omit-branch-lfences", "Omit all lfences before branch instructions.", init(false), Hidden };
 
 const X86SESESPassName: str = "X86 Speculative Execution Side Effect Suppression";
 
@@ -61,7 +61,7 @@ static mut ID: i8 = 0;
 
 fn hasConstantAddressingMode(MI: *MachineInstr) -> bool {
     for MO in MI.uses() {
-        if  {
+        if MO.isReg() && RIP != MO.getReg().operator unsigned int() {
             return false;
         }
     }
@@ -70,8 +70,8 @@ fn hasConstantAddressingMode(MI: *MachineInstr) -> bool {
 
 fn runX86SpeculativeExecutionSideEffectSuppression(MF: *mut MachineFunction) -> bool {
     let mut OptLevel: *CodeGenOptLevel = MF.getTarget().getOptLevel();
-    let mut Subtarget: *X86Subtarget = MF;
-    if operator!() && operator!((Subtarget()() && OptLevel == None)) && operator!(Subtarget()()) {
+    let mut Subtarget: *X86Subtarget = MF.getSubtarget();
+    if !EnableSpeculativeExecutionSideEffectSuppression && !(Subtarget.useLVILoadHardening() && OptLevel == None) && !Subtarget.useSpeculativeExecutionSideEffectSuppression() {
         return false;
     }
     while true {
@@ -88,34 +88,34 @@ fn runX86SpeculativeExecutionSideEffectSuppression(MF: *mut MachineFunction) -> 
         let mut FirstTerminator: *mut MachineInstr = null;
         let mut PrevInstIsLFENCE: bool = false;
         for MI in MBB {
-            if  {
+            if MI.getOpcode() == LFENCE {
                 PrevInstIsLFENCE = true;
                 continue;
             }
             if MI.mayLoadOrStore(AnyInBundle) && !MI.isTerminator(AnyInBundle) {
                 if !PrevInstIsLFENCE {
-                    BuildMI(MBB, MI, DebugLoc { Loc: null }, TII());
+                    BuildMI(MBB, MI, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(LFENCE));
                     operator(NumLFENCEsInserted, 0);
                     Modified = true;
                 }
-                if OneLFENCEPerBasicBlock() {
+                if OneLFENCEPerBasicBlock {
                     break;
                 }
             }
             if MI.isTerminator(AnyInBundle) && FirstTerminator == null {
                 FirstTerminator = &mut MI;
             }
-            if !MI.isBranch(AnyInBundle) ||  {
+            if !MI.isBranch(AnyInBundle) || OmitBranchLFENCEs {
                 PrevInstIsLFENCE = false;
                 continue;
             }
-            if OnlyLFENCENonConst() && hasConstantAddressingMode(MI) {
+            if OnlyLFENCENonConst && hasConstantAddressingMode(MI) {
                 PrevInstIsLFENCE = false;
                 continue;
             }
             if !PrevInstIsLFENCE {
                 assert!(FirstTerminator, "Unknown terminator instruction");
-                BuildMI(MBB, FirstTerminator, DebugLoc { Loc: null }, TII());
+                BuildMI(MBB, FirstTerminator, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(LFENCE));
                 operator(NumLFENCEsInserted, 0);
                 Modified = true;
             }
@@ -130,7 +130,7 @@ fn X86SpeculativeExecutionSideEffectSuppressionLegacy::runOnMachineFunction(self
 }
 
 fn X86SpeculativeExecutionSideEffectSuppressionPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
-    return if runX86SpeculativeExecutionSideEffectSuppression(MF) { getMachineFunctionPassPreservedAnalyses() } else { all() };
+    return if runX86SpeculativeExecutionSideEffectSuppression(MF) { getMachineFunctionPassPreservedAnalyses().preserveSet() } else { all() };
 }
 
 fn createX86SpeculativeExecutionSideEffectSuppressionLegacyPass() -> *mut FunctionPass {

@@ -25,11 +25,25 @@ fn MIRef::operator!=(self: *MIRef, RHS: *MIRef) -> bool {
 }
 
 fn MIRef::operator<(self: *MIRef, RHS: *MIRef) -> bool {
-    return tie(self.MBB, self.Pos) < tie(RHS.MBB, RHS.Pos);
+    return operator(tie(self.MBB, self.Pos), tie(RHS.MBB, RHS.Pos)) < 0;
 }
 
 fn MIRef::operator>(self: *MIRef, RHS: *MIRef) -> bool {
-    return tie(self.MBB, self.Pos) > tie(RHS.MBB, RHS.Pos);
+    return operator(tie(self.MBB, self.Pos), tie(RHS.MBB, RHS.Pos)) > 0;
+}
+
+fn MIRef::operator=(self, arg: *MIRef) -> *mut MIRef {
+    self.MI = .MI;
+    self.MBB = .MBB;
+    self.Pos = .Pos;
+    return *self;
+}
+
+fn MIRef::operator=(self, arg: *mut *mut MIRef) -> *mut MIRef {
+    self.MI =  as MIRef.MI;
+    self.MBB =  as MIRef.MBB;
+    self.Pos =  as MIRef.Pos;
+    return *self;
 }
 
 struct BBInfo {
@@ -45,16 +59,16 @@ struct X86PreTileConfigImpl {
     MRI: *mut MachineRegisterInfo,
     MLI: *MachineLoopInfo,
     DefVisited: SmallPtrSet<MachineInstr *, 8>,
-    BBVisitedInfo: i32,
-    ShapeBBs: i32,
+    BBVisitedInfo: DenseMap<MachineBasicBlock *, BBInfo>,
+    ShapeBBs: DenseMap<MachineBasicBlock *, SmallVector<MIRef, 8>>,
 }
 
 fn X86PreTileConfigImpl::isDestructiveCall(self, MI: *mut MachineInstr, UsableRegs: BitVector) -> bool {
-    let mut Iter: auto = find_if(MI.operands(), Closure_1 {});
-    if Iter() == MI.operands_end() {
+    let mut Iter: *mut MachineOperand = find_if(MI.operands(), Closure_1 {});
+    if Iter == MI.operands_end() {
         return false;
     }
-    UsableRegs.clearBitsInMask();
+    UsableRegs.clearBitsInMask(Iter.getRegMask(), ~0);
     return !UsableRegs.none();
 }
 
@@ -63,13 +77,15 @@ fn X86PreTileConfigImpl::isAMXInstruction(self, MI: *mut MachineInstr) -> bool {
         return false;
     }
     match MI.getOpcode() {
-
+        PTILESTOREDV => {
+            PTCVTROWD2PSrteV;
+        },
     }
     let mut MO: *mut MachineOperand = MI.getOperand(0);
     if !MO.isReg() || !MO.getReg().isVirtual() {
         return false;
     }
-    if  {
+    if self.MRI.getRegClass(MO.getReg()).getID() != TILERegClassID {
         return false;
     }
     self.collectShapeInfo(MI);
@@ -77,33 +93,45 @@ fn X86PreTileConfigImpl::isAMXInstruction(self, MI: *mut MachineInstr) -> bool {
 }
 
 fn X86PreTileConfigImpl::isLoopBackEdge(self, Header: *mut MachineBasicBlock, Bottom: *mut MachineBasicBlock) -> bool {
-    if operator!(self.MLI(Header)) {
+    if !self.MLI.isLoopHeader(Header) {
         return false;
     }
-    let mut ML: *mut auto = self.MLI(Header);
-    if ML()(Bottom) && (Bottom) {
+    let mut ML: *mut MachineLoop = self.MLI.getLoopFor(Header);
+    if ML.contains(Bottom) && ML.isLoopLatch(Bottom) {
         return true;
     }
     return false;
 }
 
 fn X86PreTileConfigImpl::hoistShapesInBB(self, MBB: *mut MachineBasicBlock, Shapes: *mut SmallVectorImpl<MIRef>) -> bool {
-    let mut FirstAMX: *mut MIRef = null;
-    let mut FirstShapeBelowAMX: auto = lower_bound(Shapes, FirstAMX);
+    let mut FirstAMX: *mut MIRef = self.BBVisitedInfo[MBB].FirstAMX;
+    let mut FirstShapeBelowAMX: *mut MIRef = lower_bound(Shapes, FirstAMX);
     let mut InsertPoint: self_iterator = FirstAMX.MI.getIterator();
-    for let mut I: auto = ;
-let mut E: auto = Shapes()(); I() != ;  += 1 {
-        if I()() {
+    for let mut I: *mut MIRef = FirstShapeBelowAMX;
+let mut E: iterator = Shapes.end(); I != E; I += 1 {
+        if I.MI.mayLoadOrStore(AnyInBundle) {
             return false;
         }
-        MBB(InsertPoint);
+        for MO in I.MI.operands() {
+            if MO.isDef() {
+                continue;
+            }
+            if MO.isReg() && self.MRI.getVRegDef(MO.getReg()) > FirstAMX {
+                return false;
+            }
+        }
+        MBB.insert(InsertPoint, I.MI.removeFromParent());
     }
-    Shapes()();
-    Shapes()(MIRef { &mut operator(operator(InsertPoint)), MBB });
+    Shapes.clear();
+    Shapes.push(MIRef { &mut operator(operator(InsertPoint)), MBB });
     return true;
 }
 
-fn X86PreTileConfigImpl::releaseMemory(self) {}
+fn X86PreTileConfigImpl::releaseMemory(self) {
+    self.ShapeBBs.clear();
+    self.DefVisited.clear();
+    self.BBVisitedInfo.clear();
+}
 
 struct X86PreTileConfigLegacy {
     Resolver: *mut AnalysisResolver,
@@ -120,7 +148,7 @@ fn X86PreTileConfigLegacy::getPassName(self: *X86PreTileConfigLegacy) -> str {
 
 fn X86PreTileConfigLegacy::getAnalysisUsage(self: *X86PreTileConfigLegacy, AU: *mut AnalysisUsage) {
     AU.setPreservesAll();
-    AU;
+    AU.addRequired();
     self.getAnalysisUsage(AU);
 }
 
@@ -162,13 +190,13 @@ static mut ID: i8 = 0;
 
 fn X86PreTileConfigImpl::collectShapeInfo(self, MI: *mut MachineInstr) {
     let mut RecordShape: Closure_2 = Closure_2 { cap_0: self };
-    let mut WorkList: SmallVector<Register, 8> = zeroed();
-    while operator!() {
-        let mut R: Register = ();
+    let mut WorkList: SmallVector<Register, 8> = [MI.getOperand(1).getReg(), MI.getOperand(2).getReg()];
+    while !WorkList.is_empty() {
+        let mut R: Register = WorkList.pop_back_val();
         let mut DefMI: *mut MachineInstr = self.MRI.getVRegDef(R);
         assert!(DefMI, "R must has one define instruction");
         let mut DefMBB: *mut MachineBasicBlock = DefMI.getParent();
-        if  {
+        if DefMI.isMoveImmediate(IgnoreBundle) || !self.DefVisited.insert(DefMI).second {
             continue;
         }
         if DefMI.isPHI() {
@@ -176,7 +204,7 @@ fn X86PreTileConfigImpl::collectShapeInfo(self, MI: *mut MachineInstr) {
                 if self.isLoopBackEdge(DefMBB, DefMI.getOperand(I + 1).getMBB()) {
                     RecordShape.call(DefMI, DefMBB);
                 } else {
-                    WorkList()(DefMI.getOperand(I).getReg());
+                    WorkList.push(DefMI.getOperand(I).getReg());
                 }
             }
         } else {
@@ -186,87 +214,156 @@ fn X86PreTileConfigImpl::collectShapeInfo(self, MI: *mut MachineInstr) {
 }
 
 fn X86PreTileConfigImpl::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
-    let mut ClearStateOnExit: scope_exit = Closure_3 { cap_0: self };
-    let mut X86FI: *mut X86MachineFunctionInfo = MF;
+    let mut ClearStateOnExit: Closure_3 = Closure_3 { cap_0: self };
+    let mut X86FI: *mut X86MachineFunctionInfo = MF.getInfo();
     if X86FI.getAMXProgModel() != ManagedRA {
         return false;
     }
-    let mut ST: *X86Subtarget = MF;
+    let mut ST: *X86Subtarget = MF.getSubtarget();
     let mut TII: *TargetInstrInfo = ST.getInstrInfo();
     let mut TRI: *TargetRegisterInfo = ST.getRegisterInfo();
-    let mut RC: *TargetRegisterClass = TRI.getRegClass;
+    let mut RC: *TargetRegisterClass = TRI.getRegClass(TILERegClassID);
     let mut AMXRegs: BitVector = BitVector { Bits: TRI.getNumRegs(), Size: false };
     for let mut I: u32 = 0; I < RC.getNumRegs(); I += 1 {
-        AMXRegs;
+        AMXRegs.set(TMM0 + I);
     }
     self.MRI = &mut MF.getRegInfo();
-    let mut CfgNeedInsert: i32 = 0;
-    let mut CfgLiveInBBs: SmallVector<MachineBasicBlock *, 8> = zeroed();
+    self.MLI = self.GetMLI.call();
+    let mut CfgNeedInsert: SmallSet<MIRef, 8> = SmallSet<MIRef, 8> {};
+    let mut CfgLiveInBBs: SmallVector<MachineBasicBlock *, 8> = SmallVector<MachineBasicBlock *, 8> {};
     for MBB in MF {
         let mut Pos: u64 = 0;
-        let mut Info: *mut auto = null;
+        let mut Info: *mut BBInfo = self.BBVisitedInfo[&mut MBB];
         for MI in MBB {
             Pos += 1;
             if self.isAMXInstruction(MI) {
-                if Info() {
-                    CfgNeedInsert()();
+                if Info.LastCall {
+                    CfgNeedInsert.insert(Info.LastCall);
                 } else {
-                    Info() = true;
+                    Info.NeedTileCfgLiveIn = true;
                 }
-                if operator!() {
-                    Info() = MIRef { MI: &mut MI, MBB: &mut MBB, Pos: Pos };
+                if !Info.FirstAMX {
+                    Info.FirstAMX = MIRef { MI: &mut MI, MBB: &mut MBB, Pos: Pos };
                 }
             } else if MI.isCall(AnyInBundle) && self.isDestructiveCall(MI, AMXRegs) {
-                Info() = MIRef { MI: &mut MI, MBB: &mut MBB, Pos: Pos };
+                Info.LastCall = MIRef { MI: &mut MI, MBB: &mut MBB, Pos: Pos };
             }
         }
-        if Info() {
+        if Info.NeedTileCfgLiveIn {
             if &mut MBB == &mut MF.front() {
-                CfgNeedInsert()(MIRef { &mut MBB });
+                CfgNeedInsert.insert(&mut MBB);
             } else {
-                CfgLiveInBBs()(&mut MBB);
+                CfgLiveInBBs.push(&mut MBB);
+            }
+        }
+        if Info.FirstAMX || Info.HasAMXRegLiveIn {
+            for Succ in MBB.successors() {
+                if !self.isLoopBackEdge(Succ, &mut MBB) {
+                    self.BBVisitedInfo[Succ].HasAMXRegLiveIn = true;
+                }
             }
         }
     }
-    while operator!() {
-        let mut MBB: *mut MachineBasicBlock = ();
+    while !CfgLiveInBBs.is_empty() {
+        let mut MBB: *mut MachineBasicBlock = CfgLiveInBBs.pop_back_val();
+        for Pred in MBB.predecessors() {
+            let mut Info: *mut BBInfo = self.BBVisitedInfo[Pred];
+            if Info.LastCall {
+                CfgNeedInsert.insert(Info.LastCall);
+            } else if !Info.NeedTileCfgLiveIn {
+                Info.NeedTileCfgLiveIn = true;
+                if Pred == &mut MF.front() {
+                    CfgNeedInsert.insert(Pred);
+                } else {
+                    CfgLiveInBBs.push(Pred);
+                }
+            }
+        }
     }
-    if CfgNeedInsert()() {
+    if CfgNeedInsert.is_empty() {
         return false;
     }
-    let mut WorkList: SmallVector<MachineBasicBlock *, 8> = zeroed();
-    while operator!() {
-        let mut MBB: *mut MachineBasicBlock = ();
+    let mut WorkList: SmallVector<MachineBasicBlock *, 8> = SmallVector<MachineBasicBlock *, 8> {};
+    for I in self.ShapeBBs {
+        let mut Info: *mut BBInfo = self.BBVisitedInfo[I.first];
+        if Info.HasAMXRegLiveIn {
+            emitErrorMsg(MF);
+            return false;
+        }
+        if Info.FirstAMX && Info.FirstAMX < I.second.back() && !self.hoistShapesInBB(I.first, I.second) {
+            emitErrorMsg(MF);
+            return false;
+        }
+        WorkList.push(I.first);
     }
-    let mut DL: DebugLoc = DebugLoc { Loc: null };
-    let mut VisitedOrInserted: i32 = 0;
+    while !WorkList.is_empty() {
+        let mut MBB: *mut MachineBasicBlock = WorkList.pop_back_val();
+        for Pred in MBB.predecessors() {
+            let mut Info: *mut BBInfo = self.BBVisitedInfo[Pred];
+            if !Info.TileCfgForbidden && !self.isLoopBackEdge(MBB, Pred) {
+                Info.TileCfgForbidden = true;
+                WorkList.push(Pred);
+            }
+        }
+    }
+    let mut DL: DebugLoc = null;
+    let mut VisitedOrInserted: SmallSet<MIRef, 8> = SmallSet<MIRef, 8> {};
     let mut SS: i32 = MF.getFrameInfo().CreateStackObject(ST.getTileConfigSize(), ST.getTileConfigAlignment(), false, null, 0);
+    for I in CfgNeedInsert {
+        let mut InsertPoints: SmallSet<MIRef, 8> = SmallSet<MIRef, 8> {};
+        let mut WorkList: SmallVector<MIRef, 8> = [I];
+        while !WorkList.is_empty() {
+            let mut I: MIRef = WorkList.pop_back_val();
+            if !VisitedOrInserted.count(I) {
+                if !self.BBVisitedInfo[I.MBB].TileCfgForbidden {
+                    InsertPoints.insert(I);
+                } else {
+                    VisitedOrInserted.insert(I);
+                    for Succ in I.MBB.successors() {
+                        if self.BBVisitedInfo[Succ].NeedTileCfgLiveIn {
+                            WorkList.push(Succ);
+                        }
+                    }
+                }
+            }
+        }
+        for I in InsertPoints {
+            let mut It: iterator = self.ShapeBBs.find(I.MBB);
+            if It != self.ShapeBBs.end() && I < operator(It).second.back() {
+                I = operator(It).second.back();
+            }
+            if VisitedOrInserted.insert(I).second {
+                let mut II: MachineInstr, true, true, void, false, void>, false, false> = if I.MI { I.MI.getIterator() } else { I.MBB.instr_begin() };
+                operator(addFrameReference(BuildMI(*I.MBB, operator(II), MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(PLDTILECFGV)), SS, 0)).setImplicitPhysRegDefsDead();
+            }
+        }
+    }
     let mut MBB: *mut MachineBasicBlock = MF.front();
     let mut MI: *mut MachineInstr = &mut operator(MBB.begin());
     if ST.hasAVX512() {
-        let mut Xmm: Register = self.MRI;
-        BuildMI(MBB, MI, DL, TII.get, Xmm);
-        let mut Zmm: Register = self.MRI;
-        BuildMI(MBB, MI, DL, TII.get, Zmm)(Xmm);
-        addFrameReference(BuildMI(MBB, MI, DL, TII.get), SS)(Zmm);
+        let mut Xmm: Register = self.MRI.createVirtualRegister(&mut VR128XRegClass, "");
+        BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(AVX512_128_SET0), Xmm);
+        let mut Zmm: Register = self.MRI.createVirtualRegister(&mut VR512RegClass, "");
+        BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(SUBREG_TO_REG), Zmm).addReg(Xmm, RegState {}, 0).addImm(sub_xmm);
+        addFrameReference(BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(VMOVUPSZmr)), SS, 0).addReg(Zmm, RegState {}, 0);
     } else if ST.hasAVX2() {
-        let mut Xmm: Register = self.MRI;
-        BuildMI(MBB, MI, DL, TII.get, Xmm);
-        let mut Ymm: Register = self.MRI;
-        BuildMI(MBB, MI, DL, TII.get, Ymm)(Xmm);
-        addFrameReference(BuildMI(MBB, MI, DL, TII.get), SS)(Ymm);
-        addFrameReference(BuildMI(MBB, MI, DL, TII.get), SS, 32)(Ymm);
+        let mut Xmm: Register = self.MRI.createVirtualRegister(&mut VR128RegClass, "");
+        BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(V_SET0), Xmm);
+        let mut Ymm: Register = self.MRI.createVirtualRegister(&mut VR256RegClass, "");
+        BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(SUBREG_TO_REG), Ymm).addReg(Xmm, RegState {}, 0).addImm(sub_xmm);
+        addFrameReference(BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(VMOVUPSYmr)), SS, 0).addReg(Ymm, RegState {}, 0);
+        addFrameReference(BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(VMOVUPSYmr)), SS, 32).addReg(Ymm, RegState {}, 0);
     } else {
         assert!(ST.hasSSE2(), "AMX should assume SSE2 enabled");
-        let mut StoreOpc: u32 = 0;
-        let mut Xmm: Register = self.MRI;
-        BuildMI(MBB, MI, DL, TII.get, Xmm);
-        addFrameReference(BuildMI(MBB, MI, DL, TII.get), SS)(Xmm);
-        addFrameReference(BuildMI(MBB, MI, DL, TII.get), SS, 16)(Xmm);
-        addFrameReference(BuildMI(MBB, MI, DL, TII.get), SS, 32)(Xmm);
-        addFrameReference(BuildMI(MBB, MI, DL, TII.get), SS, 48)(Xmm);
+        let mut StoreOpc: u32 = if ST.hasAVX() { VMOVUPSmr } else { MOVUPSmr };
+        let mut Xmm: Register = self.MRI.createVirtualRegister(&mut VR128RegClass, "");
+        BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(V_SET0), Xmm);
+        addFrameReference(BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(StoreOpc)), SS, 0).addReg(Xmm, RegState {}, 0);
+        addFrameReference(BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(StoreOpc)), SS, 16).addReg(Xmm, RegState {}, 0);
+        addFrameReference(BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(StoreOpc)), SS, 32).addReg(Xmm, RegState {}, 0);
+        addFrameReference(BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(StoreOpc)), SS, 48).addReg(Xmm, RegState {}, 0);
     }
-    addFrameReference(BuildMI(MBB, MI, DL, TII.get), SS)(1);
+    addFrameReference(BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(MOV8mi)), SS, 0).addImm(1);
     return true;
 }
 
@@ -281,7 +378,7 @@ fn X86PreTileConfigLegacy::runOnMachineFunction(self, MF: *mut MachineFunction) 
 
 fn X86PreTileConfigPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
     let mut Impl: X86PreTileConfigImpl = Closure_5 { MFAM: &mut MFAM, MF: &mut MF };
-    return if Impl.runOnMachineFunction(MF) { getMachineFunctionPassPreservedAnalyses() } else { all() };
+    return if Impl.runOnMachineFunction(MF) { getMachineFunctionPassPreservedAnalyses().preserveSet() } else { all() };
 }
 
 struct Closure_1 {}
@@ -296,10 +393,10 @@ struct Closure_2 {
 
 fn Closure_2::call(self: *Closure_2, MI: *mut MachineInstr, MBB: *mut MachineBasicBlock) {
         let mut MIR: MIRef = MIRef { MI, MBB };
-        let mut Refs: *mut auto = null;
-        let mut I: auto = lower_bound(MIR);
-        if I() == () || operator*() != MIR {
-            Refs()(MIR);
+        let mut Refs: *mut MIRef, 8> = self.ShapeBBs[MBB];
+        let mut I: *mut MIRef = lower_bound(Refs, MIR);
+        if I == Refs.end() || *I != MIR {
+            Refs.insert(I, MIR);
         }
     }
 
@@ -315,11 +412,15 @@ struct Closure_4 {
     cap_0: *mut X86PreTileConfigLegacy,
 }
 
-fn Closure_4::call(self: *Closure_4) -> auto {}
+fn Closure_4::call(self: *Closure_4) -> *mut MachineLoopInfo {
+        return &mut self.getAnalysis().getLI();
+    }
 
 struct Closure_5 {
     MFAM: *mut MachineFunctionAnalysisManager,
     MF: *mut MachineFunction,
 }
 
-unsafe fn Closure_5::call(self: *mut Closure_5) -> auto {}
+unsafe fn Closure_5::call(self: *mut Closure_5) -> *mut Result {
+        return &mut (*self.MFAM).getResult((*self.MF));
+    }

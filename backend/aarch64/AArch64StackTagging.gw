@@ -1,17 +1,17 @@
-static mut ClMergeInit: i32 = "stack-tagging-merge-init";
+static mut ClMergeInit: opt<bool> = opt<bool> { "stack-tagging-merge-init", Hidden, init(true), "merge stack variable initializers with tagging when possible" };
 
-static mut ClUseStackSafety: i32 = "stack-tagging-use-stack-safety";
+static mut ClUseStackSafety: opt<bool> = opt<bool> { "stack-tagging-use-stack-safety", Hidden, init(true), "Use Stack Safety analysis results" };
 
-static mut ClScanLimit: i32 = "stack-tagging-merge-init-scan-limit";
+static mut ClScanLimit: opt<unsigned int> = opt<unsigned int> { "stack-tagging-merge-init-scan-limit", init(40), Hidden };
 
-static mut ClMergeInitSizeLimit: i32 = "stack-tagging-merge-init-size-limit";
+static mut ClMergeInitSizeLimit: opt<unsigned int> = opt<unsigned int> { "stack-tagging-merge-init-size-limit", init(272), Hidden };
 
 enum StackTaggingRecordStackHistoryMode {
     none = 0,
     instr = 1,
 }
 
-static mut ClRecordStackHistory: i32 = "stack-tagging-record-stack-history";
+static mut ClRecordStackHistory: opt<StackTaggingRecordStackHistoryMode> = opt<StackTaggingRecordStackHistoryMode> { "stack-tagging-record-stack-history", "Record stack frames with tagged allocations in a thread-local ring buffer", values(OptionEnumValue { Name: "none", Value: none, Description: "Do not record stack ring history" }, OptionEnumValue { Name: "instr", Value: instr, Description: "Insert instructions into the prologue for storing into the stack ring buffer" }), Hidden, init(none) };
 
 const kTagGranuleSize: Align = 16;
 
@@ -23,36 +23,39 @@ struct InitializerBuilder {
     SetTagZeroFn: *mut Function,
     StgpFn: *mut Function,
     Ranges: SmallVector<Range, 4>,
-    Out: i32,
+    Out: map<uint64_t, Value *>,
 }
 
 fn InitializerBuilder::addRange(self, Start: u64, End: u64, Inst: *mut Instruction) -> bool {
-    let mut I: auto = lower_bound(Start, Closure_1 {});
-    if  {
+    let mut I: *mut Range = lower_bound(self.Ranges, Start, Closure_1 {});
+    if I != self.Ranges.end() && End > I.Start {
         return false;
     }
+    self.Ranges.insert(I, Range { Start, End, Inst });
     return true;
 }
 
 fn InitializerBuilder::addStore(self, Offset: u64, SI: *mut StoreInst, DL: *DataLayout) -> bool {
-    let mut StoreSize: i64 = DL.getTypeStoreSize(SI.getOperand(0).getType());
-    if !self.addRange {
+    let mut StoreSize: i64 = DL.getTypeStoreSize(SI.getOperand(0).getType()).operator unsigned long long();
+    if !self.addRange(Offset, Offset + StoreSize, SI) {
         return false;
     }
-    let mut IRB: i32 = SI;
+    let mut IRB: IRBuilder<> = SI;
+    self.applyStore(IRB, Offset, Offset + StoreSize, SI.getOperand(0));
     return true;
 }
 
 fn InitializerBuilder::addMemSet(self, Offset: u64, MSI: *mut MemSetInst) -> bool {
-    let mut StoreSize: u64 = cast(MSI()())();
-    if !self.addRange {
+    let mut StoreSize: u64 = cast(MSI.getLength()).getZExtValue();
+    if !self.addRange(Offset, Offset + StoreSize, MSI) {
         return false;
     }
-    let mut IRB: i32 = MSI;
+    let mut IRB: IRBuilder<> = MSI;
+    self.applyMemSet(IRB, Offset, Offset + StoreSize, cast(MSI.getValue()));
     return true;
 }
 
-fn InitializerBuilder::applyMemSet(self, IRB: *mut i32, Start: i64, End: i64, V: *mut ConstantInt) {
+fn InitializerBuilder::applyMemSet(self, IRB: *mut IRBuilder<>, Start: i64, End: i64, V: *mut ConstantInt) {
     if V.isZero() {
         return;
     }
@@ -66,42 +69,43 @@ fn InitializerBuilder::applyMemSet(self, IRB: *mut i32, Start: i64, End: i64, V:
         if HighBits {
             Cst = (Cst << HighBits) >> HighBits;
         }
-        let mut C: *mut ConstantInt = get(Cst * V.getZExtValue());
-        let mut CurrentV: *mut *mut Value = null;
+        let mut C: *mut ConstantInt = get(IRB.getInt64Ty(), Cst * V.getZExtValue(), false, false);
+        let mut CurrentV: *mut *mut Value = self.Out[Offset];
         if !CurrentV {
             CurrentV = C;
         } else {
-            CurrentV = (CurrentV, C);
+            CurrentV = IRB.CreateOr(CurrentV, C, "", false);
         }
     }
 }
 
-fn InitializerBuilder::sliceValue(self, IRB: *mut i32, V: *mut Value, Offset: i64) -> *mut Value {
+fn InitializerBuilder::sliceValue(self, IRB: *mut IRBuilder<>, V: *mut Value, Offset: i64) -> *mut Value {
     if Offset > 0 {
-        V = (V, Offset * 8);
-        V = (V);
+        V = IRB.CreateLShr(V, Offset * 8, "", false);
+        V = IRB.CreateZExtOrTrunc(V, IRB.getInt64Ty(), "");
     } else if Offset < 0 {
-        V = (V);
-        V = (V, -Offset * 8);
+        V = IRB.CreateZExtOrTrunc(V, IRB.getInt64Ty(), "");
+        V = IRB.CreateShl(V, -Offset * 8, "", false, false);
     } else {
-        V = (V);
+        V = IRB.CreateZExtOrTrunc(V, IRB.getInt64Ty(), "");
     }
     return V;
 }
 
-fn InitializerBuilder::applyStore(self, IRB: *mut i32, Start: i64, End: i64, StoredValue: *mut Value) {
+fn InitializerBuilder::applyStore(self, IRB: *mut IRBuilder<>, Start: i64, End: i64, StoredValue: *mut Value) {
+    StoredValue = self.flatten(IRB, StoredValue);
     for let mut Offset: i64 = Start - Start % 8; Offset < End; Offset += 8 {
-        let mut V: *mut Value = null;
-        let mut CurrentV: *mut *mut Value = null;
+        let mut V: *mut Value = self.sliceValue(IRB, StoredValue, Offset - Start);
+        let mut CurrentV: *mut *mut Value = self.Out[Offset];
         if !CurrentV {
             CurrentV = V;
         } else {
-            CurrentV = (CurrentV, V);
+            CurrentV = IRB.CreateOr(CurrentV, V, "", false);
         }
     }
 }
 
-fn InitializerBuilder::generate(self, IRB: *mut i32) {
+fn InitializerBuilder::generate(self, IRB: *mut IRBuilder<>) {
     while true {
         {
         if DebugFlag && isCurrentDebugType("aarch64-stack-tagging", 1) {
@@ -110,23 +114,34 @@ fn InitializerBuilder::generate(self, IRB: *mut i32) {
     }
         if !(false) { break; }
     }
-    if  {
+    if self.Ranges.is_empty() {
+        self.emitUndef(IRB, 0, self.Size);
         return;
     }
     let mut LastOffset: u64 = 0;
     for let mut Offset: u64 = 0; Offset < self.Size; Offset += 16 {
-        let mut I1: auto = zeroed();
-        let mut I2: auto = zeroed();
-        if  {
+        let mut I1: iterator = self.Out.find(Offset);
+        let mut I2: iterator = self.Out.find(Offset + 8);
+        if I1 == self.Out.end() && I2 == self.Out.end() {
             continue;
         }
-        let mut Store1: *mut Value = null;
-        let mut Store2: *mut Value = null;
+        if Offset > LastOffset {
+            self.emitZeroes(IRB, LastOffset, Offset - LastOffset);
+        }
+        let mut Store1: *mut Value = if I1 == self.Out.end() { getNullValue(IRB.getInt64Ty()) } else { operator(I1).second };
+        let mut Store2: *mut Value = if I2 == self.Out.end() { getNullValue(IRB.getInt64Ty()) } else { operator(I2).second };
+        self.emitPair(IRB, Offset, Store1, Store2);
         LastOffset = Offset + 16;
+    }
+    if LastOffset < self.Size {
+        self.emitZeroes(IRB, LastOffset, self.Size - LastOffset);
+    }
+    for R in self.Ranges {
+        R.Inst.eraseFromParent();
     }
 }
 
-fn InitializerBuilder::emitZeroes(self, IRB: *mut i32, Offset: u64, Size: u64) {
+fn InitializerBuilder::emitZeroes(self, IRB: *mut IRBuilder<>, Offset: u64, Size: u64) {
     while true {
         {
         if DebugFlag && isCurrentDebugType("aarch64-stack-tagging", 1) {
@@ -137,12 +152,12 @@ fn InitializerBuilder::emitZeroes(self, IRB: *mut i32, Offset: u64, Size: u64) {
     }
     let mut Ptr: *mut Value = self.BasePtr;
     if Offset {
-        Ptr = (Ptr, Offset);
+        Ptr = IRB.CreateConstGEP1_32(IRB.getInt8Ty(), Ptr, Offset, "");
     }
-    IRB()(self.SetTagZeroFn, void { Ptr, get(Size) });
+    IRB.CreateCall(self.SetTagZeroFn, [Ptr, get(IRB.getInt64Ty(), Size, false, false)], "", null);
 }
 
-fn InitializerBuilder::emitUndef(self, IRB: *mut i32, Offset: u64, Size: u64) {
+fn InitializerBuilder::emitUndef(self, IRB: *mut IRBuilder<>, Offset: u64, Size: u64) {
     while true {
         {
         if DebugFlag && isCurrentDebugType("aarch64-stack-tagging", 1) {
@@ -153,12 +168,12 @@ fn InitializerBuilder::emitUndef(self, IRB: *mut i32, Offset: u64, Size: u64) {
     }
     let mut Ptr: *mut Value = self.BasePtr;
     if Offset {
-        Ptr = (Ptr, Offset);
+        Ptr = IRB.CreateConstGEP1_32(IRB.getInt8Ty(), Ptr, Offset, "");
     }
-    IRB()(self.SetTagFn, void { Ptr, get(Size) });
+    IRB.CreateCall(self.SetTagFn, [Ptr, get(IRB.getInt64Ty(), Size, false, false)], "", null);
 }
 
-fn InitializerBuilder::emitPair(self, IRB: *mut i32, Offset: u64, A: *mut Value, B: *mut Value) {
+fn InitializerBuilder::emitPair(self, IRB: *mut IRBuilder<>, Offset: u64, A: *mut Value, B: *mut Value) {
     while true {
         {
         if DebugFlag && isCurrentDebugType("aarch64-stack-tagging", 1) {
@@ -177,27 +192,27 @@ fn InitializerBuilder::emitPair(self, IRB: *mut i32, Offset: u64, A: *mut Value,
     }
     let mut Ptr: *mut Value = self.BasePtr;
     if Offset {
-        Ptr = (Ptr, Offset);
+        Ptr = IRB.CreateConstGEP1_32(IRB.getInt8Ty(), Ptr, Offset, "");
     }
-    IRB()(self.StgpFn, void { Ptr, A, B });
+    IRB.CreateCall(self.StgpFn, [Ptr, A, B], "", null);
 }
 
-fn InitializerBuilder::flatten(self, IRB: *mut i32, V: *mut Value) -> *mut Value {
+fn InitializerBuilder::flatten(self, IRB: *mut IRBuilder<>, V: *mut Value) -> *mut Value {
     if V.getType().isIntegerTy() {
         return V;
     }
     if dyn_cast(V.getType()) {
         VecTy;
     } else {
-        let mut Ctx: *mut LLVMContext = ();
+        let mut Ctx: *mut LLVMContext = IRB.getContext();
         let mut EltTy: *mut Type = VecTy.getElementType();
         if EltTy.isPointerTy() {
-            let mut EltSize: u32 = self.DL.getTypeSizeInBits(EltTy);
-            let mut NewTy: *mut auto = get(get(Ctx, EltSize), cast(VecTy)());
-            V = (V);
+            let mut EltSize: u32 = self.DL.getTypeSizeInBits(EltTy).operator unsigned long long();
+            let mut NewTy: *mut FixedVectorType = get(get(Ctx, EltSize), cast(VecTy).getNumElements());
+            V = IRB.CreatePointerCast(V, NewTy, "");
         }
     }
-    return (V, (self.DL.getTypeStoreSize(V.getType())));
+    return IRB.CreateBitOrPointerCast(V, IRB.getIntNTy(self.DL.getTypeStoreSize(V.getType()) * 8.operator unsigned long long()), "");
 }
 
 struct AArch64StackTagging {
@@ -220,12 +235,12 @@ fn AArch64StackTagging::getPassName(self: *AArch64StackTagging) -> str {
 fn AArch64StackTagging::getAnalysisUsage(self: *AArch64StackTagging, AU: *mut AnalysisUsage) {
     AU.setPreservesCFG();
     if self.UseStackSafety {
-        AU;
+        AU.addRequired();
     }
     if self.MergeInit {
-        AU;
+        AU.addRequired();
     }
-    AU;
+    AU.addUsedIfAvailable();
 }
 
 fn AArch64StackTagging::getPassKind(self: *AArch64StackTagging) -> PassKind {
@@ -259,98 +274,108 @@ fn createAArch64StackTaggingPass(IsOptNone: bool) -> *mut FunctionPass {
 fn AArch64StackTagging::collectInitializers(self, StartInst: *mut Instruction, StartPtr: *mut Value, Size: u64, IB: *mut InitializerBuilder) -> *mut Instruction {
     let mut AllocaLoc: MemoryLocation = MemoryLocation { Ptr: StartPtr, Size: Size, AATags: AAMDNodes {} };
     let mut LastInst: *mut Instruction = StartInst;
+    let mut BI: iterator = StartInst;
     let mut Count: u32 = 0;
-    while  {
+    for ; Count < ClScanLimit.operator unsigned int() && !operator(BI).isTerminator(); operator(BI) {
         Count += 1;
-        if isNoModRef(self.AA) {
+        if isNoModRef(self.AA.getModRefInfo(&mut operator(BI), AllocaLoc)) {
             continue;
         }
-        if operator!(isa()) && operator!(isa()) {
-            if  {
+        if !isa(BI) && !isa(BI) {
+            if operator(BI).mayWriteToMemory() || operator(BI).mayReadFromMemory() {
                 break;
             }
             continue;
         }
-        if dyn_cast() {
+        if dyn_cast(BI) {
             NextStore;
         } else {
             if !NextStore.isSimple() {
                 break;
             }
-            let mut Offset: optional<int64_t> = zeroed();
-            if operator!() {
+            let mut Offset: optional<int64_t> = NextStore.getPointerOperand().getPointerOffsetFrom(StartPtr, *self.DL);
+            if !Offset {
                 break;
             }
-            if operator!(IB.addStore(operator*(), NextStore, self.DL)) {
+            if !IB.addStore(operator(Offset), NextStore, self.DL) {
                 break;
             }
-            LastInst(NextStore);
+            LastInst = NextStore;
         }
     }
     return LastInst;
 }
 
 fn AArch64StackTagging::tagAlloca(self, AI: *mut AllocaInst, InsertBefore: *mut Instruction, Ptr: *mut Value, Size: u64) {
-    let mut SetTagZeroFunc: auto = getOrInsertDeclaration(self.F);
-    let mut StgpFunc: auto = getOrInsertDeclaration(self.F);
-    let mut IB: InitializerBuilder = Size;
-    let mut LittleEndian: bool = AI()();
-    if self.MergeInit && !self.F.hasOptNone() && LittleEndian && Size < ClMergeInitSizeLimit() {
+    let mut SetTagZeroFunc: *mut Function = getOrInsertDeclaration(self.F.getParent(), aarch64_settag_zero, ArrayRef<Type *> {});
+    let mut StgpFunc: *mut Function = getOrInsertDeclaration(self.F.getParent(), aarch64_stgp, ArrayRef<Type *> {});
+    let mut IB: InitializerBuilder = InitializerBuilder { Size, self.DL, Ptr, self.SetTagFunc, SetTagZeroFunc, StgpFunc };
+    let mut LittleEndian: bool = AI.getModule().getTargetTriple().isLittleEndian();
+    if self.MergeInit && !self.F.hasOptNone() && LittleEndian && Size < ClMergeInitSizeLimit.operator unsigned int() {
         while true {
             {
             if DebugFlag && isCurrentDebugType("aarch64-stack-tagging", 1) {
-                dbgs() << "collecting initializers for " << ", size = " << Size << "\n";
+                dbgs() << "collecting initializers for " << *AI << ", size = " << Size << "\n";
             }
         }
             if !(false) { break; }
         }
         InsertBefore = self.collectInitializers(InsertBefore, Ptr, Size, IB);
     }
-    let mut IRB: i32 = InsertBefore;
-    IB()();
+    let mut IRB: IRBuilder<> = InsertBefore;
+    IB.generate(IRB);
 }
 
 fn AArch64StackTagging::untagAlloca(self, AI: *mut AllocaInst, InsertBefore: *mut Instruction, Size: u64) {
-    let mut IRB: i32 = InsertBefore;
-    IRB()(self.SetTagFunc, void { (AI), get(Size) });
+    let mut IRB: IRBuilder<> = InsertBefore;
+    IRB.CreateCall(self.SetTagFunc, [IRB.CreatePointerCast(AI, IRB.getPtrTy(0), ""), get(IRB.getInt64Ty(), Size, false, false)], "", null);
 }
 
-fn getSlotPtr(IRB: *mut i32, TargetTriple: *Triple, HasInstrumentedAllocas: bool) -> *mut Value {
+fn getSlotPtr(IRB: *mut IRBuilder<>, TargetTriple: *Triple, HasInstrumentedAllocas: bool) -> *mut Value {
     if !HasInstrumentedAllocas {
         return null;
     }
-    if ClRecordStackHistory() == instr || (operator!() && TargetTriple.isOSDarwin()) {
+    if ClRecordStackHistory.operator StackTaggingRecordStackHistoryMode() == instr || (!ClRecordStackHistory.getNumOccurrences() && TargetTriple.isOSDarwin()) {
         if TargetTriple.isAndroid() && TargetTriple.isAArch64() && !TargetTriple.isAndroidVersionLT(35) {
-            return (-3);
+            return getAndroidSlotPtr(IRB, -3);
         }
         if TargetTriple.isOSDarwin() && TargetTriple.isAArch64() && !TargetTriple.isSimulatorEnvironment() {
-            return (231);
+            return getDarwinSlotPtr(IRB, 231);
         }
     }
     return null;
 }
 
-fn AArch64StackTagging::insertBaseTaggedPointer(self, M: *Module, AllocasToInstrument: i32, DT: *DominatorTree) -> *mut Instruction {
+fn AArch64StackTagging::insertBaseTaggedPointer(self, M: *Module, AllocasToInstrument: *AllocaInfo>, DT: *DominatorTree) -> *mut Instruction {
     let mut PrologueBB: *mut BasicBlock = null;
+    for I in AllocasToInstrument {
+        let mut Info: *AllocaInfo = I.second;
+        let mut AI: *mut AllocaInst = Info.AI;
+        if !PrologueBB {
+            PrologueBB = AI.getParent();
+            continue;
+        }
+        PrologueBB = DT.findNearestCommonDominator(PrologueBB, AI.getParent());
+    }
     assert!(PrologueBB);
-    let mut IRB: i32 = &mut PrologueBB.front();
-    let mut Base: *mut Instruction = ;
-    Base.setName;
+    let mut IRB: IRBuilder<> = &mut PrologueBB.front();
+    let mut Base: *mut Instruction = IRB.CreateIntrinsicWithoutFolding(aarch64_irg_sp, ArrayRef<Type *> {}, [getNullValue(IRB.getInt64Ty())], FMFSource {}, "", ArrayRef<OperandBundleDef> {});
+    Base.setName("basetag");
     let mut TargetTriple: *Triple = M.getTargetTriple();
-    if  {
+    if getSlotPtr(IRB, TargetTriple, !AllocasToInstrument.is_empty()) {
         SlotPtr;
     } else {
         let mut TagMask: u64 = 15 << 56;
-        let mut IntptrTy: *mut auto = (M.getDataLayout());
-        let mut ThreadLong: *mut auto = (SlotPtr);
-        let mut FP: *mut Value = ();
-        let mut Tag: *mut Value = ((Base), TagMask);
-        let mut TaggedFP: *mut Value = (FP, Tag);
-        let mut PC: *mut Value = (TargetTriple);
-        let mut RecordPtr: *mut Value = ((0));
-        IRB()(PC, RecordPtr);
-        IRB()(TaggedFP, (RecordPtr, 1));
-        IRB()((16, TargetTriple.isOSDarwin()), SlotPtr);
+        let mut IntptrTy: *mut IntegerType = IRB.getIntPtrTy(M.getDataLayout(), 0);
+        let mut ThreadLong: *mut LoadInst = IRB.CreateLoad(IntptrTy, SlotPtr, "");
+        let mut FP: *mut Value = getFP(IRB);
+        let mut Tag: *mut Value = IRB.CreateAnd(IRB.CreatePtrToInt(Base, IntptrTy, ""), TagMask, "");
+        let mut TaggedFP: *mut Value = IRB.CreateOr(FP, Tag, "", false);
+        let mut PC: *mut Value = getPC(TargetTriple, IRB);
+        let mut RecordPtr: *mut Value = IRB.CreateIntToPtr(ThreadLong, IRB.getPtrTy(0), "");
+        IRB.CreateStore(PC, RecordPtr, false);
+        IRB.CreateStore(TaggedFP, IRB.CreateConstGEP1_64(IntptrTy, RecordPtr, 1, ""), false);
+        IRB.CreateStore(incrementThreadLong(IRB, ThreadLong, 16, TargetTriple.isOSDarwin()), SlotPtr, false);
     }
     return Base;
 }
@@ -360,56 +385,103 @@ fn AArch64StackTagging::runOnFunction(self, Fn: *mut Function) -> bool {
         return false;
     }
     if self.UseStackSafety {
-        self.SSI = operator&();
+        self.SSI = &mut self.getAnalysis().getResult();
     }
     self.F = &mut Fn;
     self.DL = &mut Fn.getDataLayout();
     if self.MergeInit {
-        self.AA = operator&();
+        self.AA = &mut self.getAnalysis().getAAResults();
     }
-    let mut DeleteORE: i32 = 0;
+    let mut DeleteORE: unique_ptr<OptimizationRemarkEmitter> = unique_ptr<OptimizationRemarkEmitter> {};
     let mut ORE: *mut OptimizationRemarkEmitter = null;
-    if  {
-        ORE = operator&();
+    if self.getAnalysisIfAvailable() {
+        P;
+    } else {
+        ORE = &mut P.getORE();
     }
     if ORE == null {
-        DeleteORE() = make_unique(self.F);
-        ORE = ();
+        DeleteORE = make_unique(self.F);
+        ORE = DeleteORE.get();
     }
     let mut SIB: StackInfoBuilder = StackInfoBuilder { self.SSI, "aarch64-stack-tagging" };
+    for I in instructions(self.F) {
+        SIB.visit(*ORE, I);
+    }
     let mut SInfo: *mut StackInfo = SIB.get();
-    if SInfo()() {
+    if SInfo.AllocasToInstrument.is_empty() {
         return false;
     }
-    let mut DeleteDT: i32 = 0;
+    let mut DeleteDT: unique_ptr<DominatorTree> = unique_ptr<DominatorTree> {};
     let mut DT: *mut DominatorTree = null;
-    if  {
-        DT = operator&();
+    if self.getAnalysisIfAvailable() {
+        P;
+    } else {
+        DT = &mut P.getDomTree();
     }
     if DT == null {
-        DeleteDT() = make_unique(*self.F);
-        DT = ();
+        DeleteDT = make_unique(*self.F);
+        DT = DeleteDT.get();
     }
-    let mut DeletePDT: i32 = 0;
+    let mut DeletePDT: unique_ptr<PostDominatorTree> = unique_ptr<PostDominatorTree> {};
     let mut PDT: *mut PostDominatorTree = null;
-    if  {
-        PDT = operator&();
+    if self.getAnalysisIfAvailable() {
+        P;
+    } else {
+        PDT = &mut P.getPostDomTree();
     }
     if PDT == null {
-        DeletePDT() = make_unique(*self.F);
-        PDT = ();
+        DeletePDT = make_unique(*self.F);
+        PDT = DeletePDT.get();
     }
-    let mut DeleteLI: i32 = 0;
+    let mut DeleteLI: unique_ptr<LoopInfo> = unique_ptr<LoopInfo> {};
     let mut LI: *mut LoopInfo = null;
-    if  {
-        LI = operator&();
+    if self.getAnalysisIfAvailable() {
+        LIWP;
     } else {
-        DeleteLI() = make_unique(*DT);
-        LI = ();
+        LI = &mut LIWP.getLoopInfo();
     }
-    self.SetTagFunc = getOrInsertDeclaration(self.F);
-    let mut Base: *mut Instruction = null;
+    self.SetTagFunc = getOrInsertDeclaration(self.F.getParent(), aarch64_settag, ArrayRef<Type *> {});
+    let mut Base: *mut Instruction = self.insertBaseTaggedPointer(*Fn.getParent(), SInfo.AllocasToInstrument, DT);
     let mut NextTag: u32 = 0;
+    for I in SInfo.AllocasToInstrument {
+        let mut Info: *mut AllocaInfo = I.second;
+        assert!(Info.AI && SIB.getAllocaInterestingness(*Info.AI) == kInteresting);
+        alignAndPadAlloca(Info, kTagGranuleSize);
+        let mut AI: *mut AllocaInst = Info.AI;
+        let mut Tag: u32 = NextTag;
+        NextTag = (NextTag + 1) % 16;
+        let mut IRB: IRBuilder<> = Info.AI.getNextNode();
+        let mut TagPCall: *mut Instruction = IRB.CreateIntrinsicWithoutFolding(aarch64_tagp, [Info.AI.getType()], [getNullValue(Info.AI.getType()), Base, get(IRB.getInt64Ty(), Tag, false, false)], FMFSource {}, "", ArrayRef<OperandBundleDef> {});
+        if Info.AI.hasName() {
+            TagPCall.setName(Info.AI.getName() + ".tag");
+        }
+        Info.AI.replaceUsesWithIf(TagPCall, function_ref<bool (Use &)> { Closure_2 {}, null, null });
+        TagPCall.setOperand(0, Info.AI);
+        let mut StandardLifetime: bool = !SInfo.CallsReturnTwice && isSupportedLifetime(Info, DT, LI);
+        if StandardLifetime {
+            let mut Size: u64 = operator(Info.AI.getAllocationSize(*self.DL)).operator unsigned long long();
+            Size = alignTo(Size, kTagGranuleSize);
+            for Start in Info.LifetimeStart {
+                self.tagAlloca(AI, Start.getNextNode(), TagPCall, Size);
+            }
+            let mut TagEnd: Closure_3 = Closure_3 { cap_0: self, AI: &mut AI, Size: &mut Size };
+            forAllReachableExits(*DT, *PDT, *LI, Info, SInfo.RetVec, function_ref<void (Instruction *)> { TagEnd, null, null });
+        } else {
+            let mut Size: u64 = operator(Info.AI.getAllocationSize(*self.DL)).operator unsigned long long();
+            let mut Ptr: *mut Value = IRB.CreatePointerCast(TagPCall, IRB.getPtrTy(0), "");
+            self.tagAlloca(AI, &mut operator(IRB.GetInsertPoint()), Ptr, Size);
+            for RI in SInfo.RetVec {
+                self.untagAlloca(AI, RI, Size);
+            }
+            for II in Info.LifetimeStart {
+                II.eraseFromParent();
+            }
+            for II in Info.LifetimeEnd {
+                II.eraseFromParent();
+            }
+        }
+        annotateDebugRecords(Info, Tag);
+    }
     return true;
 }
 
@@ -418,3 +490,19 @@ struct Closure_1 {}
 fn Closure_1::call(self: *Closure_1, LHS: *Range, RHS: u64) -> bool {
         return LHS.End <= RHS;
     }
+
+struct Closure_2 {}
+
+fn Closure_2::call(self: *Closure_2, U: *Use) -> bool {
+            return !isa(U.getUser());
+        }
+
+struct Closure_3 {
+    cap_0: *mut AArch64StackTagging,
+    AI: *mut *mut AllocaInst,
+    Size: *mut u64,
+}
+
+unsafe fn Closure_3::call(self: *mut Closure_3, Node: *mut Instruction) {
+                self.untagAlloca((*self.AI), Node, (*self.Size));
+            }

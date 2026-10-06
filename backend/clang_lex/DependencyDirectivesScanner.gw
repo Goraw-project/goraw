@@ -12,7 +12,7 @@ enum CXX20ModuleDirectiveKind {
 
 struct Scanner {
     ScanningPreprocessedModuleFile: bool,
-    SplitIds: i32,
+    SplitIds: StringMap<char>,
     Input: str,
     Tokens: *mut Token>,
     Diags: *mut DiagnosticsEngine,
@@ -26,22 +26,27 @@ struct Scanner {
 
 fn Scanner::getLangOptsForDepScanning(self) -> LangOptions {
     let mut LangOpts: LangOptions = LangOptions {};
-    LangOpts() = true;
-    LangOpts() = true;
-    LangOpts() = true;
-    LangOpts() = true;
+    LangOpts.ObjC = true;
+    LangOpts.LineComment = true;
+    LangOpts.RawStringLiterals = true;
+    LangOpts.AllowLiteralDigitSeparator = true;
     return LangOpts;
 }
 
 fn Scanner::pushDirective(self, Kind: DirectiveKind) -> *mut DirectiveWithTokens {
-    self.Tokens;
+    self.Tokens.append(self.CurDirToks);
+    self.DirsWithToks.push(Kind, self.CurDirToks.len);
+    self.CurDirToks.clear();
+    return self.DirsWithToks.back();
 }
 
 fn Scanner::popDirective(self) {
-    self.Tokens;
+    self.Tokens.pop_back_n(self.DirsWithToks.pop_back_val().NumTokens);
 }
 
-fn Scanner::topDirective(self: *Scanner) -> DirectiveKind {}
+fn Scanner::topDirective(self: *Scanner) -> DirectiveKind {
+    return if self.DirsWithToks.is_empty() { pp_none } else { self.DirsWithToks.back().Kind };
+}
 
 fn Scanner::getOffsetAt(self: *Scanner, CurPtr: *u8) -> u32 {
     return CurPtr - self.Input.ptr;
@@ -150,7 +155,7 @@ fn isEOL(First: *u8, End: char *const) -> u32 {
 }
 
 fn skipString(First: **mut u8, End: char *const) {
-    assert!(*First == '\'' || *First == '"' || *First == '<');
+    assert!(*First == ''' || *First == '"' || *First == '<');
     let mut Terminator: i8 = if *First == '<' { '>' } else { *First };
     for First += 1; First != End && *First != Terminator; First += 1 {
         if isVerticalWhitespace(*First) {
@@ -239,7 +244,7 @@ fn skipBlockComment(First: **mut u8, End: char *const) {
 }
 
 fn isQuoteCppDigitSeparator(Start: char *const, Cur: char *const, End: char *const) -> bool {
-    assert!(*Cur == '\'', "expected quotation character");
+    assert!(*Cur == ''', "expected quotation character");
     if Start == Cur {
         return false;
     }
@@ -269,7 +274,7 @@ fn Scanner::skipLine(self, First: **mut u8, End: char *const) {
         let mut Start: *u8 = First;
         let mut LastNonWhitespace: i8 = ' ';
         while First != End && !isVerticalWhitespace(*First) {
-            if *First == '"' || (*First == '\'' && !isQuoteCppDigitSeparator(Start, First, End)) {
+            if *First == '"' || (*First == ''' && !isQuoteCppDigitSeparator(Start, First, End)) {
                 self.LastTokenPtr = First;
                 if isRawStringLiteral(Start, First) {
                     skipRawString(First, End);
@@ -319,7 +324,7 @@ fn Scanner::skipLine(self, First: **mut u8, End: char *const) {
 }
 
 fn Scanner::skipDirective(self, Name: str, First: **mut u8, End: char *const) {
-    if  {
+    if Name.Case("warning", true).Case("error", true).Default(false) {
         skipToNewlineRaw(First, End);
     } else {
         self.skipLine(First, End);
@@ -361,16 +366,17 @@ fn skipWhitespace(First: **mut u8, End: char *const) {
 
 fn Scanner::lexModuleDirectiveBody(self, Kind: DirectiveKind, First: **mut u8, End: char *const) -> bool {
     assert!(Kind == cxx_export_import_decl || Kind == cxx_export_module_decl || Kind == cxx_import_decl || Kind == cxx_module_decl || Kind == decl_at_import);
-    let mut DirectiveLoc: *u8 = null;
+    let mut DirectiveLoc: *u8 = self.Input.ptr + self.CurDirToks.front().Offset;
     for {
         let mut Previous: *u8 = First;
         let mut Tok: *Token = self.lexToken(First, End);
         if (Tok.is(hash) || Tok.is(at)) && (Tok.Flags & StartOfLine) {
+            self.CurDirToks.pop();
             First = Previous;
             return false;
         }
-        if Tok {
-            return self.reportError;
+        if Tok.isOneOf(eof, eod) {
+            return self.reportError(DirectiveLoc, err_dep_source_scanner_missing_semi_after_at_import);
         }
         if Tok.is(semi) {
             break;
@@ -387,19 +393,27 @@ fn Scanner::lexModuleDirectiveBody(self, Kind: DirectiveKind, First: **mut u8, E
     if Tok.is(eof) || Tok.is(eod) {
         return false;
     }
-    return self.reportError;
+    return self.reportError(DirectiveLoc, err_dep_source_scanner_unexpected_tokens_at_import);
 }
 
 fn Scanner::lexToken(self, First: **mut u8, End: char *const) -> *mut Token {
     let mut Tok: Token = Token {};
+    self.TheLexer.LexFromRawLexer(Tok);
+    First = self.Input.ptr + self.TheLexer.getCurrentBufferOffset();
     assert!(First <= End);
-    let mut Offset: u32 = 0;
+    let mut Offset: u32 = self.TheLexer.getCurrentBufferOffset() - Tok.getLength();
+    self.CurDirToks.push(Offset, Tok.getLength(), Tok.getKind(), Tok.getFlags());
+    return self.CurDirToks.back();
 }
 
 fn Scanner::lexIncludeFilename(self, First: **mut u8, End: char *const) -> *mut Token {
     let mut Tok: Token = Token {};
+    self.TheLexer.LexIncludeFilename(Tok);
+    First = self.Input.ptr + self.TheLexer.getCurrentBufferOffset();
     assert!(First <= End);
-    let mut Offset: u32 = 0;
+    let mut Offset: u32 = self.TheLexer.getCurrentBufferOffset() - Tok.getLength();
+    self.CurDirToks.push(Offset, Tok.getLength(), Tok.getKind(), Tok.getFlags());
+    return self.CurDirToks.back();
 }
 
 fn Scanner::lexPPDirectiveBody(self, First: **mut u8, End: char *const) {
@@ -416,15 +430,16 @@ fn Scanner::cleanStringIfNeeded(self, Tok: *Token) -> str {
     if __builtin_expect((!NeedsCleaning) as bool, true) {
         return self.Input.slice(Tok.Offset, Tok.getEnd());
     }
-    let mut Spelling: str = zeroed();
-    Spelling()(Tok.Length);
+    let mut Spelling: str = "";
+    Spelling.resize(Tok.Length);
     let mut SpellingLength: u32 = 0;
     let mut BufPtr: *u8 = self.Input.begin() + Tok.Offset;
     let mut AfterIdent: *u8 = self.Input.begin() + Tok.getEnd();
     while BufPtr < AfterIdent {
-        Spelling()[SpellingLength += 1] = ;
-        operator+=(BufPtr);
+        Spelling[SpellingLength += 1] = Char;
+        BufPtr += Size;
     }
+    return operator(self.SplitIds.try_emplace(Spelling.begin()[0..SpellingLength], 0).first).first();
 }
 
 fn Scanner::tryLexIdentifierOrSkipLine(self, First: **mut u8, End: char *const) -> optional<StringRef> {
@@ -433,20 +448,22 @@ fn Scanner::tryLexIdentifierOrSkipLine(self, First: **mut u8, End: char *const) 
         if !Tok.is(eod) {
             self.skipLine(First, End);
         }
-        return nullopt();
+        return nullopt;
     }
     return self.cleanStringIfNeeded(Tok);
 }
 
 fn Scanner::lexIdentifier(self, First: **mut u8, End: char *const) -> str {
-    let mut Id: optional<StringRef> = zeroed();
-    (((operator!(operator!((Id() && "expected identifier token")))) || (_wassert(L"Id && \"expected identifier token\"", L"clang\\lib\\Lex\\DependencyDirectivesScanner.cpp", (676) as u32) , 0)) as void);
-    return operator*();
+    let mut Id: optional<StringRef> = self.tryLexIdentifierOrSkipLine(First, End);
+    assert!(Id, "expected identifier token");
+    return operator(Id);
 }
 
 fn Scanner::isNextIdentifierOrSkipLine(self, Id: str, First: **mut u8, End: char *const) -> bool {
-    if  {
-        if operator*() == Id {
+    if self.tryLexIdentifierOrSkipLine(First, End) {
+        FoundId;
+    } else {
+        if operator(FoundId) == Id {
             return true;
         }
         self.skipLine(First, End);
@@ -469,7 +486,7 @@ fn Scanner::tryLexStringLiteralOrSkipLine(self, First: **mut u8, End: char *cons
         if !Tok.is(eod) {
             self.skipLine(First, End);
         }
-        return nullopt();
+        return nullopt;
     }
     return self.cleanStringIfNeeded(Tok);
 }
@@ -489,11 +506,11 @@ fn Scanner::lexModule(self, First: **mut u8, End: char *const) -> bool {
     let mut Export: bool = false;
     if Id == "export" {
         Export = true;
-        let mut NextId: optional<StringRef> = zeroed();
-        if operator!() {
+        let mut NextId: optional<StringRef> = self.tryLexIdentifierOrSkipLine(First, End);
+        if !NextId {
             return false;
         }
-        Id = operator*();
+        Id = operator(NextId);
     }
     let mut Module: str = if self.ScanningPreprocessedModuleFile { "__preprocessed_module" } else { "module" };
     let mut Import: str = if self.ScanningPreprocessedModuleFile { "__preprocessed_import" } else { "import" };
@@ -513,7 +530,7 @@ fn Scanner::lexModule(self, First: **mut u8, End: char *const) -> bool {
                 return false;
             }
             self.lexToken(First, End) as void;
-            if  {
+            if !self.tryLexIdentifierOrSkipLine(First, End) {
                 return false;
             }
             break;
@@ -535,6 +552,7 @@ fn Scanner::lexModule(self, First: **mut u8, End: char *const) -> bool {
             }
         },
     }
+    self.TheLexer.seek(self.getOffsetAt(First), false);
     let mut Kind: DirectiveKind = zeroed();
     if Id == Module {
         Kind = if Export { cxx_export_module_decl } else { cxx_module_decl };
@@ -548,17 +566,17 @@ fn Scanner::lex_Pragma(self, First: **mut u8, End: char *const) -> bool {
     if !self.isNextTokenOrSkipLine(l_paren, First, End) {
         return false;
     }
-    let mut Str: optional<StringRef> = zeroed();
-    if operator!() || !self.isNextTokenOrSkipLine(r_paren, First, End) {
+    let mut Str: optional<StringRef> = self.tryLexStringLiteralOrSkipLine(First, End);
+    if !Str || !self.isNextTokenOrSkipLine(r_paren, First, End) {
         return false;
     }
-    let mut Buffer: str = zeroed();
-    prepare_PragmaString();
-    let mut DiscardTokens: i32 = 0;
-    let mut Begin: *u8 = ();
-    let mut PragmaScanner: Scanner = void { Begin, self.Diags, self.InputSourceLoc };
-    PragmaScanner()(true);
-    if PragmaScanner.lexPragma(Begin) {
+    let mut Buffer: str = operator(Str);
+    prepare_PragmaString(Buffer);
+    let mut DiscardTokens: Token> = Token> {};
+    let mut Begin: *u8 = Buffer.ptr;
+    let mut PragmaScanner: Scanner = Scanner { Begin[0..Buffer.len], DiscardTokens, self.Diags, self.InputSourceLoc };
+    PragmaScanner.TheLexer.setParsingPreprocessorDirective(true);
+    if PragmaScanner.lexPragma(Begin, Buffer.end()) {
         return true;
     }
     let mut K: DirectiveKind = PragmaScanner.topDirective();
@@ -566,31 +584,32 @@ fn Scanner::lex_Pragma(self, First: **mut u8, End: char *const) -> bool {
         self.skipLine(First, End);
         return false;
     }
-    (((operator!(operator!((Begin == ())))) || (_wassert(L"Begin == Buffer.end()", L"clang\\lib\\Lex\\DependencyDirectivesScanner.cpp", (830) as u32) , 0)) as void);
+    assert!(Begin == Buffer.end();
     self.pushDirective(K);
     return false;
 }
 
 fn Scanner::lexPragma(self, First: **mut u8, End: char *const) -> bool {
-    let mut FoundId: optional<StringRef> = zeroed();
-    if operator!() {
+    let mut FoundId: optional<StringRef> = self.tryLexIdentifierOrSkipLine(First, End);
+    if !FoundId {
         return false;
     }
-    let mut Id: str = operator*();
-    let mut Kind: auto = zeroed();
-    if Kind() != pp_none {
+    let mut Id: str = operator(FoundId);
+    let mut Kind: DirectiveKind = Id.Case("once", pp_pragma_once).Case("push_macro", pp_pragma_push_macro).Case("pop_macro", pp_pragma_pop_macro).Case("include_alias", pp_pragma_include_alias).Default(pp_none);
+    if Kind != pp_none {
         self.lexPPDirectiveBody(First, End);
-        self.pushDirective();
+        self.pushDirective(Kind);
         return false;
     }
     if Id != "clang" {
         self.skipLine(First, End);
         return false;
     }
-    if operator!() {
+    FoundId = self.tryLexIdentifierOrSkipLine(First, End);
+    if !FoundId {
         return false;
     }
-    Id = operator*();
+    Id = operator(FoundId);
     if Id == "system_header" {
         self.lexPPDirectiveBody(First, End);
         self.pushDirective(pp_pragma_system_header);
@@ -657,7 +676,8 @@ fn Scanner::lexPPLine(self, First: **mut u8, End: char *const) -> bool {
         return false;
     }
     self.LastTokenPtr = First;
-    let mut ScEx1: scope_exit = Closure_1 { cap_0: self };
+    self.TheLexer.seek(self.getOffsetAt(First), true);
+    let mut ScEx1: Closure_1 = Closure_1 { cap_0: self };
     let mut IsPreprocessedModule: bool = isStartWithPreprocessedModuleDirective(First, End);
     if *First == '_' && !IsPreprocessedModule {
         if self.isNextIdentifierOrSkipLine("_Pragma", First, End) {
@@ -665,7 +685,8 @@ fn Scanner::lexPPLine(self, First: **mut u8, End: char *const) -> bool {
         }
         return false;
     }
-    let mut ScEx2: scope_exit = Closure_2 { cap_0: self };
+    self.TheLexer.setParsingPreprocessorDirective(true);
+    let mut ScEx2: Closure_2 = Closure_2 { cap_0: self };
     if *First == '@' {
         return self.lexAt(First, End);
     }
@@ -680,23 +701,23 @@ fn Scanner::lexPPLine(self, First: **mut u8, End: char *const) -> bool {
     }
     assert!(HashTok.is(hash);
     HashTok as void;
-    let mut FoundId: optional<StringRef> = zeroed();
-    if operator!() {
+    let mut FoundId: optional<StringRef> = self.tryLexIdentifierOrSkipLine(First, End);
+    if !FoundId {
         return false;
     }
-    let mut Id: str = operator*();
+    let mut Id: str = operator(FoundId);
     if Id == "pragma" {
         return self.lexPragma(First, End);
     }
-    let mut Kind: auto = zeroed();
-    if Kind() == pp_none {
+    let mut Kind: DirectiveKind = Id.Case("include", pp_include).Case("__include_macros", pp___include_macros).Case("define", pp_define).Case("undef", pp_undef).Case("import", pp_import).Case("include_next", pp_include_next).Case("if", pp_if).Case("ifdef", pp_ifdef).Case("ifndef", pp_ifndef).Case("elif", pp_elif).Case("elifdef", pp_elifdef).Case("elifndef", pp_elifndef).Case("else", pp_else).Case("endif", pp_endif).Default(pp_none);
+    if Kind == pp_none {
         self.skipDirective(Id, First, End);
         return false;
     }
-    if Kind() == pp_endif {
+    if Kind == pp_endif {
         return self.lexEndif(First, End);
     }
-    match Kind() {
+    match Kind {
         pp_include => {
             pp___include_macros;
         },
@@ -704,7 +725,7 @@ fn Scanner::lexPPLine(self, First: **mut u8, End: char *const) -> bool {
             break;
         },
     }
-    return self.lexDefault(First, End);
+    return self.lexDefault(Kind, First, End);
 }
 
 fn skipUTF8ByteOrderMark(First: **mut u8, End: char *const) {
@@ -727,12 +748,17 @@ fn Scanner::scan(self, Directives: *mut SmallVectorImpl<Directive>) -> bool {
     self.ScanningPreprocessedModuleFile = isPreprocessedModuleFile(self.Input);
     let mut Error: bool = self.scanImpl(self.Input.begin(), self.Input.end());
     if !Error {
-        if self.LastTokenPtr && (self.Tokens() || self.LastTokenPtr > self.Input.begin() + self.Tokens()) {
+        if self.LastTokenPtr && (self.Tokens.is_empty() || self.LastTokenPtr > self.Input.begin() + self.Tokens.back().Offset) {
             self.pushDirective(tokens_present_before_eof);
         }
         self.pushDirective(pp_eof);
     }
     let mut RemainingTokens: Token> = self.Tokens;
+    for DirWithToks in self.DirsWithToks {
+        assert!(RemainingTokens.len >= DirWithToks.NumTokens);
+        Directives.push(DirWithToks.Kind, RemainingTokens.take_front(DirWithToks.NumTokens));
+        RemainingTokens = RemainingTokens.drop_front(DirWithToks.NumTokens);
+    }
     assert!(RemainingTokens.is_empty();
     return Error;
 }
@@ -743,6 +769,19 @@ fn scanSourceForDependencyDirectives(Input: str, Tokens: *mut Token>, Directives
 
 fn printDependencyDirectivesAsSource(Source: str, Directives: Directive>, OS: *mut raw_ostream) {
     let mut needsSpaceSeparator: Closure_3 = Closure_3 {};
+    for Directive in Directives {
+        if Directive.Kind == tokens_present_before_eof {
+            OS << "<TokBeforeEOF>";
+        }
+        let mut PrevTokenKind: TokenKind> = TokenKind> {};
+        for Tok in Directive.Tokens {
+            if PrevTokenKind && needsSpaceSeparator.call(operator(PrevTokenKind), Tok) {
+                OS << ' ';
+            }
+            PrevTokenKind = Tok.Kind;
+            OS << Source.slice(Tok.Offset, Tok.getEnd());
+        }
+    }
 }
 
 fn skipUntilMaybeCXX20ModuleDirective(First: **mut u8, End: char *const) {
@@ -773,14 +812,14 @@ fn scanFirstCXX20ModuleDirective(Source: str) -> CXX20ModuleDirectiveKind {
     if !(*First == 'i' || *First == 'e' || *First == 'm') {
         return None;
     }
-    let mut Tokens: i32 = 0;
-    let mut S: Scanner = First[0..End - First];
-    S()(true);
-    if S.lexModule(First, End) || S()() {
+    let mut Tokens: Token> = Token> {};
+    let mut S: Scanner = Scanner { First[0..End - First], Tokens, null, SourceLocation {} };
+    S.TheLexer.setParsingPreprocessorDirective(true);
+    if S.lexModule(First, End) || S.DirsWithToks.is_empty() {
         return None;
     }
-    (((operator!(operator!((S()() == 1)))) || (_wassert(L"S.DirsWithToks.size() == 1", L"clang\\lib\\Lex\\DependencyDirectivesScanner.cpp", (1168) as u32) , 0)) as void);
-    let mut Directive: *DirectiveWithTokens = S()();
+    assert!(S.DirsWithToks.len == 1);
+    let mut Directive: *DirectiveWithTokens = S.DirsWithToks.front();
     match Directive.Kind {
         cxx_module_decl => {
             assert!(Directive.NumTokens >= 2);
@@ -792,7 +831,7 @@ fn scanFirstCXX20ModuleDirective(Source: str) -> CXX20ModuleDirectiveKind {
             cxx_export_import_decl;
         },
         _ => {
-            llvm_unreachable_internal("unexpected C++20 module directive kind", "clang\\lib\\Lex\\DependencyDirectivesScanner.cpp", 1182);
+            llvm_unreachable_internal("unexpected C++20 module directive kind", "P:/Goraw/llvm-project/clang/lib/Lex/DependencyDirectivesScanner.cpp", 1182);
         },
     }
 }
@@ -813,7 +852,7 @@ fn scanInputForCXX20ModuleUnit(Source: str) -> ModuleUnitKind {
             ImportDeclaration;
         },
     }
-    llvm_unreachable_internal("unexpected C++20 module directive kind", "clang\\lib\\Lex\\DependencyDirectivesScanner.cpp", 1203);
+    llvm_unreachable_internal("unexpected C++20 module directive kind", "P:/Goraw/llvm-project/clang/lib/Lex/DependencyDirectivesScanner.cpp", 1203);
 }
 
 fn isPreprocessedModuleFile(Source: str) -> bool {
@@ -823,21 +862,21 @@ fn isPreprocessedModuleFile(Source: str) -> bool {
     if First == End {
         return false;
     }
-    let mut Tokens: i32 = 0;
-    let mut S: Scanner = First[0..End - First];
+    let mut Tokens: Token> = Token> {};
+    let mut S: Scanner = Scanner { First[0..End - First], Tokens, null, SourceLocation {} };
     while First != End {
         if *First == '#' {
             First += 1;
             skipToNewlineRaw(First, End);
         } else if *First == 'e' {
-            S()(S.getOffsetAt(First), true);
+            S.TheLexer.seek(S.getOffsetAt(First), true);
             let mut Id: str = S.lexIdentifier(First, End);
             if Id == "export" {
-                let mut NextId: optional<StringRef> = zeroed();
-                if operator!() {
+                let mut NextId: optional<StringRef> = S.tryLexIdentifierOrSkipLine(First, End);
+                if !NextId {
                     return false;
                 }
-                Id = operator*();
+                Id = operator(NextId);
             }
             if Id == "__preprocessed_module" || Id == "__preprocessed_import" {
                 return true;
@@ -864,27 +903,31 @@ struct Closure_1 {
     cap_0: *mut Scanner,
 }
 
-fn Closure_1::call(self: *Closure_1) {}
+fn Closure_1::call(self: *Closure_1) {
+        self.CurDirToks.clear();
+    }
 
 struct Closure_2 {
     cap_0: *mut Scanner,
 }
 
-fn Closure_2::call(self: *Closure_2) {}
+fn Closure_2::call(self: *Closure_2) {
+        self.TheLexer.setParsingPreprocessorDirective(false);
+    }
 
 struct Closure_3 {}
 
 fn Closure_3::call(self: *mut Closure_3, Prev: TokenKind, Tok: *Token) -> auto {
         if Prev == Tok.Kind {
-            return !Tok;
+            return !Tok.isOneOf(l_paren, r_paren, l_square, r_square);
         }
-        if Prev == raw_identifier && Tok {
+        if Prev == raw_identifier && Tok.isOneOf(hash, numeric_constant, string_literal, char_constant, header_name) {
             return true;
         }
-        if Prev == r_paren && Tok {
+        if Prev == r_paren && Tok.isOneOf(raw_identifier, hash, string_literal, char_constant, unknown) {
             return true;
         }
-        if Prev == comma && Tok {
+        if Prev == comma && Tok.isOneOf(l_paren, string_literal, less) {
             return true;
         }
         return false;

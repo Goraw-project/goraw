@@ -13,8 +13,8 @@ fn X86TileConfigLegacy::getPassName(self: *X86TileConfigLegacy) -> str {
 
 fn X86TileConfigLegacy::getAnalysisUsage(self: *X86TileConfigLegacy, AU: *mut AnalysisUsage) {
     AU.setPreservesAll();
-    AU;
-    AU;
+    AU.addRequired();
+    AU.addRequired();
     self.getAnalysisUsage(AU);
 }
 
@@ -55,23 +55,23 @@ fn X86TileConfigLegacy::getClearedProperties(self: *X86TileConfigLegacy) -> Mach
 static mut ID: i8 = 0;
 
 fn tileConfig(MF: *mut MachineFunction, GetLIs: function_ref<LiveIntervals *()>, GetVRM: function_ref<VirtRegMap *()>) -> bool {
-    let mut X86FI: *mut X86MachineFunctionInfo = MF;
+    let mut X86FI: *mut X86MachineFunctionInfo = MF.getInfo();
     if X86FI.getAMXProgModel() != ManagedRA {
         return false;
     }
-    let mut ST: *X86Subtarget = MF;
+    let mut ST: *X86Subtarget = MF.getSubtarget();
     let mut TRI: *X86RegisterInfo = ST.getRegisterInfo();
     let mut TII: *TargetInstrInfo = ST.getInstrInfo();
     let mut MRI: *mut MachineRegisterInfo = MF.getRegInfo();
-    let mut LIS: *mut LiveIntervals = operator*();
-    let mut VRM: *mut VirtRegMap = operator*();
+    let mut LIS: *mut LiveIntervals = *GetLIs.call();
+    let mut VRM: *mut VirtRegMap = *GetVRM.call();
     if VRM.isShapeMapEmpty() {
         return false;
     }
     let mut SS: i32 = 2147483647;
     for MBB in MF {
         for MI in MBB {
-            if  {
+            if MI.getOpcode() == PLDTILECFGV {
                 SS = MI.getOperand(0).getIndex();
                 break;
             }
@@ -86,15 +86,15 @@ fn tileConfig(MF: *mut MachineFunction, GetLIs: function_ref<LiveIntervals *()>,
     let mut ConstPos: u32 = 0;
     let mut ConstMI: *mut MachineInstr = null;
     for MI in MF.front() {
-        if  {
+        if MI.getOpcode() == MOV8mi && SS == MI.getOperand(0).getIndex() {
             ConstMI = &mut MI;
             break;
         }
         ConstPos += 1;
     }
     assert!(ConstMI, "Cannot find an insertion point");
-    let mut AMXRegNum: u32 = TRI()();
-    let mut Phys2Virt: SmallVector<Register, 8> = zeroed();
+    let mut AMXRegNum: u32 = TRI.getRegClass(TILERegClassID).getNumRegs();
+    let mut Phys2Virt: SmallVector<Register, 8> = SmallVector<Register, 8> { AMXRegNum, 0 };
     for let mut I: u32 = 0;
 let mut E: u32 = MRI.getNumVirtRegs(); I != E; I += 1 {
         let mut VirtReg: Register = index2VirtReg(I);
@@ -108,19 +108,55 @@ let mut E: u32 = MRI.getNumVirtRegs(); I != E; I += 1 {
         if !PhysReg.operator unsigned int() {
             continue;
         }
-        let mut Index: u32 = 0;
-        if operator!([Index]) {
-            Phys2Virt()[Index] = VirtReg;
+        let mut Index: u32 = PhysReg.operator unsigned int() - TMM0;
+        if !Phys2Virt[Index].operator unsigned int() {
+            Phys2Virt[Index] = VirtReg;
         }
     }
     for let mut I: u32 = 0; I < AMXRegNum; I += 1 {
-        if operator!([I]) {
+        if !Phys2Virt[I].operator unsigned int() {
             continue;
         }
-        let mut DL: DebugLoc = DebugLoc { Loc: null };
+        let mut DL: DebugLoc = null;
         let mut IsRow: bool = true;
         let mut NewMI: *mut MachineInstr = null;
-        let mut Shape: ShapeT = VRM.getShape([I]);
+        let mut Shape: ShapeT = VRM.getShape(Phys2Virt[I]);
+        for R in [Shape.getRow().getReg(), Shape.getCol().getReg()] {
+            let mut Imm: i64 = 9223372036854775807;
+            let mut Offset: i32 = if IsRow { 48 + I } else { 16 + I * 2 };
+            for DefMI in MRI.def_instructions(R) {
+                let mut MBB: *mut MachineBasicBlock = *DefMI.getParent();
+                if DefMI.isMoveImmediate(IgnoreBundle) {
+                    if Imm != 9223372036854775807 {
+                        assert!(Imm == DefMI.getOperand(1).getImm(), "Cannot initialize with different shapes");
+                        continue;
+                    }
+                    if DefMI.getOperand(1).isImm() {
+                        Imm = DefMI.getOperand(1).getImm();
+                    } else {
+                        assert!(DefMI.getOpcode() == MOV32r0, "The opcode is assumed to be MOV32r0 if the operand is not immediate.");
+                        Imm = 0;
+                    }
+                    NewMI = addFrameReference(BuildMI(MF.front(), operator(ConstMI.getIterator()), MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(if IsRow { MOV8mi } else { MOV16mi })), SS, Offset).addImm(Imm).operator llvm::MachineInstr *();
+                    ConstMI = NewMI;
+                    LIS.InsertMachineInstrInMaps(*NewMI);
+                } else {
+                    let mut SubIdx: u32 = if IsRow { sub_8bit } else { sub_16bit };
+                    let mut RegSize: u32 = TRI.getRegSizeInBits(*MRI.getRegClass(R)).operator unsigned long long();
+                    if (IsRow && RegSize == 8) || (!IsRow && RegSize == 16) {
+                        SubIdx = 0;
+                    }
+                    let mut Iter: self_iterator = DefMI.getIterator();
+                    if &mut MBB == &mut MF.front() && distance(MBB.instr_begin(), Iter) as u32 < ConstPos {
+                        Iter = ConstMI.getIterator();
+                    }
+                    NewMI = addFrameReference(BuildMI(MBB, operator(Iter), MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(if IsRow { MOV8mr } else { MOV16mr })), SS, Offset).addReg(R, RegState {}, SubIdx).operator llvm::MachineInstr *();
+                    let mut SIdx: SlotIndex = LIS.InsertMachineInstrInMaps(*NewMI);
+                    LIS.extendToIndices(LIS.getInterval(R), [SIdx.getRegSlot(false)]);
+                }
+            }
+            IsRow = false;
+        }
     }
     return true;
 }
@@ -130,36 +166,44 @@ fn createX86TileConfigLegacyPass() -> *mut FunctionPass {
 }
 
 fn X86TileConfigLegacy::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
-    return tileConfig(MF, Closure_1 { cap_0: self }, Closure_2 { cap_0: self });
+    return tileConfig(MF, function_ref<LiveIntervals *()> { Closure_1 { cap_0: self }, null, null }, function_ref<VirtRegMap *()> { Closure_2 { cap_0: self }, null, null });
 }
 
 fn X86TileConfigPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
-    let mut Changed: bool = tileConfig(MF, Closure_3 { MFAM: &mut MFAM, MF: &mut MF }, Closure_4 { MFAM: &mut MFAM, MF: &mut MF });
-    return if Changed { getMachineFunctionPassPreservedAnalyses() } else { all() };
+    let mut Changed: bool = tileConfig(MF, function_ref<LiveIntervals *()> { Closure_3 { MFAM: &mut MFAM, MF: &mut MF }, null, null }, function_ref<VirtRegMap *()> { Closure_4 { MFAM: &mut MFAM, MF: &mut MF }, null, null });
+    return if Changed { getMachineFunctionPassPreservedAnalyses().preserveSet() } else { all() };
 }
 
 struct Closure_1 {
     cap_0: *mut X86TileConfigLegacy,
 }
 
-fn Closure_1::call(self: *Closure_1) -> auto {}
+fn Closure_1::call(self: *Closure_1) -> *mut LiveIntervals {
+        return &mut self.getAnalysis().getLIS();
+    }
 
 struct Closure_2 {
     cap_0: *mut X86TileConfigLegacy,
 }
 
-fn Closure_2::call(self: *Closure_2) -> auto {}
+fn Closure_2::call(self: *Closure_2) -> *mut VirtRegMap {
+        return &mut self.getAnalysis().getVRM();
+    }
 
 struct Closure_3 {
     MFAM: *mut MachineFunctionAnalysisManager,
     MF: *mut MachineFunction,
 }
 
-unsafe fn Closure_3::call(self: *mut Closure_3) -> auto {}
+unsafe fn Closure_3::call(self: *mut Closure_3) -> *mut Result {
+        return &mut (*self.MFAM).getResult((*self.MF));
+    }
 
 struct Closure_4 {
     MFAM: *mut MachineFunctionAnalysisManager,
     MF: *mut MachineFunction,
 }
 
-unsafe fn Closure_4::call(self: *mut Closure_4) -> auto {}
+unsafe fn Closure_4::call(self: *mut Closure_4) -> *mut Result {
+        return &mut (*self.MFAM).getResult((*self.MF));
+    }

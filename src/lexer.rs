@@ -173,6 +173,16 @@ impl<'a> Lexer<'a> {
                 out.push(self.lex_number(diags));
                 continue;
             }
+            if (c == 'L' || c == 'u' || c == 'U') && (self.peek2() == Some('"') || self.peek2() == Some('\'')) {
+                self.bump();
+                if self.peek() == Some('"') {
+                    out.push(self.lex_string(diags));
+                    continue;
+                } else if self.peek() == Some('\'') {
+                    out.push(self.lex_char(diags));
+                    continue;
+                }
+            }
             if c == '_' || c.is_alphabetic() {
                 out.push(self.lex_ident());
                 continue;
@@ -249,7 +259,7 @@ impl<'a> Lexer<'a> {
         let start = self.pos();
         let mut s = String::new();
         while let Some(c) = self.peek() {
-            if c == '_' || c.is_alphanumeric() {
+            if c == '_' || c == '@' || c == '$' || c.is_alphanumeric() {
                 s.push(c);
                 self.bump();
             } else {
@@ -388,6 +398,10 @@ impl<'a> Lexer<'a> {
                     Some('t') => s.push('\t'),
                     Some('r') => s.push('\r'),
                     Some('0') => s.push('\0'),
+                    Some('v') => s.push('\x0b'),
+                    Some('a') => s.push('\x07'),
+                    Some('b') => s.push('\x08'),
+                    Some('f') => s.push('\x0c'),
                     Some('\\') => s.push('\\'),
                     Some('"') => s.push('"'),
                     Some('\'') => s.push('\''),
@@ -434,6 +448,10 @@ impl<'a> Lexer<'a> {
                 Some('t') => '\t' as u32 as i64,
                 Some('r') => '\r' as u32 as i64,
                 Some('0') => '\0' as u32 as i64,
+                Some('v') => '\x0b' as u32 as i64,
+                Some('a') => '\x07' as u32 as i64,
+                Some('b') => '\x08' as u32 as i64,
+                Some('f') => '\x0c' as u32 as i64,
                 Some('\\') => '\\' as u32 as i64,
                 Some('"') => '"' as u32 as i64,
                 Some('\'') => '\'' as u32 as i64,

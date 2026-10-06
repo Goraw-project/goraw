@@ -11,14 +11,14 @@ fn Parser::isTokenSEHExcept(self) -> bool {
     if !self.Tok.is(identifier) {
         return false;
     }
-    if !self.Ident__except && (self.getLangOpts() || self.getLangOpts()) {
+    if !self.Ident__except && (self.getLangOpts().MicrosoftExt || self.getLangOpts().Borland) {
         self.Ident__except = self.PP.getIdentifierInfo("__except");
     }
     let mut Identifier: *IdentifierInfo = self.Tok.getIdentifierInfo();
     if Identifier == self.Ident__except {
         return true;
     }
-    if self.getLangOpts() {
+    if self.getLangOpts().MSVCCompat {
         if !self.Ident_except {
             self.Ident_except = self.PP.getIdentifierInfo("_except");
         }
@@ -37,9 +37,10 @@ fn Parser::Parser(self, pp: *mut Preprocessor, actions: *mut Sema, skipFunctionB
     self.NumCachedScopes = 0;
     self.CurParsedObjCImpl = null;
     self.initializePragmaHandlers();
-    self.PP.addCommentHandler;
-    self.PP.setCodeCompletionHandler;
-    self.Actions = Closure_1 { cap_0: self };
+    self.CommentSemaHandler.reset(actions);
+    self.PP.addCommentHandler(self.CommentSemaHandler.get());
+    self.PP.setCodeCompletionHandler(*self);
+    self.Actions.ParseTypeFromStringCallback = Closure_1 { cap_0: self };
 }
 
 fn Parser::Diag(self, Loc: SourceLocation, DiagID: u32) -> DiagnosticBuilder {
@@ -64,7 +65,7 @@ fn Parser::SuggestParentheses(self, Loc: SourceLocation, DK: u32, ParenRange: So
         self.Diag(Loc, DK);
         return;
     }
-    self.Diag(Loc, DK) << CreateInsertion(EndLoc, ")", false);
+    self.Diag(Loc, DK) << CreateInsertion(ParenRange.getBegin(), "(", false) << CreateInsertion(EndLoc, ")", false);
 }
 
 fn IsCommonTypo(ExpectedTok: TokenKind, Tok: *Token) -> bool {
@@ -87,13 +88,13 @@ fn Parser::ExpectAndConsume(self, ExpectedTok: TokenKind, DiagID: u32, Msg: str)
         let mut Loc: SourceLocation = self.Tok.getLocation();
         {
             let mut DB: DiagnosticBuilder = self.Diag(Loc, DiagID);
-            DB(CreateReplacement(Loc, getPunctuatorSpelling(ExpectedTok)));
-            if  {
-                DB(ExpectedTok);
-            } else if  {
-                DB(Msg) << ExpectedTok;
+            DB << CreateReplacement(Loc, getPunctuatorSpelling(ExpectedTok));
+            if DiagID == err_expected {
+                DB << ExpectedTok;
+            } else if DiagID == err_expected_after {
+                DB << Msg << ExpectedTok;
             } else {
-                DB(Msg);
+                DB << Msg;
             }
         }
         self.ConsumeAnyToken(false);
@@ -104,13 +105,13 @@ fn Parser::ExpectAndConsume(self, ExpectedTok: TokenKind, DiagID: u32, Msg: str)
     if EndLoc.isValid() {
         Spelling = getPunctuatorSpelling(ExpectedTok);
     }
-    let mut DB: DiagnosticBuilder = if Spelling { self.Diag(EndLoc, DiagID) } else { self.Diag(self.Tok, DiagID) };
-    if  {
-        DB(ExpectedTok);
-    } else if  {
-        DB(Msg) << ExpectedTok;
+    let mut DB: DiagnosticBuilder = if Spelling { self.Diag(EndLoc, DiagID) << CreateInsertion(EndLoc, Spelling, false) } else { self.Diag(self.Tok, DiagID) };
+    if DiagID == err_expected {
+        DB << ExpectedTok;
+    } else if DiagID == err_expected_after {
+        DB << Msg << ExpectedTok;
     } else {
-        DB(Msg);
+        DB << Msg;
     }
     return true;
 }
@@ -124,7 +125,7 @@ fn Parser::ExpectAndConsumeSemi(self, DiagID: u32, TokenUsed: str) -> bool {
         return false;
     }
     if (self.Tok.is(r_paren) || self.Tok.is(r_square)) && self.NextToken().is(semi) {
-         << self.PP << CreateRemoval(self.Tok.getLocation());
+        self.Diag(self.Tok, err_extraneous_token_before_semi) << self.PP.getSpelling(self.Tok, null) << CreateRemoval(self.Tok.getLocation());
         self.ConsumeAnyToken(false);
         self.ConsumeToken();
         return false;
@@ -149,18 +150,18 @@ fn Parser::ConsumeExtraSemi(self, Kind: ExtraSemiKind, TST: TST) {
         EndLoc = self.Tok.getLocation();
         self.ConsumeToken();
     }
-    if Kind == OutsideFunction && self.getLangOpts() {
-        if self.getLangOpts() {
-            << CreateRemoval(SourceRange { B: StartLoc, E: EndLoc });
+    if Kind == OutsideFunction && self.getLangOpts().CPlusPlus {
+        if self.getLangOpts().CPlusPlus11 {
+            self.Diag(StartLoc, warn_cxx98_compat_top_level_semi) << CreateRemoval(SourceRange { B: StartLoc, E: EndLoc });
         } else {
-            << CreateRemoval(SourceRange { B: StartLoc, E: EndLoc });
+            self.Diag(StartLoc, ext_extra_semi_cxx11) << CreateRemoval(SourceRange { B: StartLoc, E: EndLoc });
         }
         return;
     }
     if Kind != AfterMemberFunctionDefinition || HadMultipleSemis {
-        << Kind << getSpecifierName(TST, self.Actions.getASTContext().getPrintingPolicy()) << CreateRemoval(SourceRange { B: StartLoc, E: EndLoc });
+        self.Diag(StartLoc, ext_extra_semi) << Kind << getSpecifierName(TST, self.Actions.getASTContext().getPrintingPolicy()) << CreateRemoval(SourceRange { B: StartLoc, E: EndLoc });
     } else {
-        << CreateRemoval(SourceRange { B: StartLoc, E: EndLoc });
+        self.Diag(StartLoc, warn_extra_semi_after_mem_fn_def) << CreateRemoval(SourceRange { B: StartLoc, E: EndLoc });
     }
 }
 
@@ -172,11 +173,11 @@ fn Parser::expectIdentifier(self) -> bool {
         II;
     } else {
         if II.isCPlusPlusKeyword(self.getLangOpts()) {
-             << identifier << self.Tok.getIdentifierInfo();
+            self.Diag(self.Tok, err_expected_token_instead_of_objcxx_keyword) << identifier << self.Tok.getIdentifierInfo();
             return false;
         }
     }
-     << identifier;
+    self.Diag(self.Tok, err_expected) << identifier;
     return true;
 }
 
@@ -186,8 +187,8 @@ fn Parser::checkCompoundToken(self, FirstTokLoc: SourceLocation, FirstTokKind: T
     }
     let mut SecondTokLoc: SourceLocation = self.Tok.getLocation();
     if (FirstTokLoc.isMacroID() || SecondTokLoc.isMacroID()) && self.PP.getSourceManager().getFileID(FirstTokLoc) != self.PP.getSourceManager().getFileID(SecondTokLoc) {
-         << (FirstTokKind == self.Tok.getKind()) << FirstTokKind << self.Tok.getKind() << Op as i32 << FirstTokLoc;
-         << (FirstTokKind == self.Tok.getKind()) << self.Tok.getKind() << SecondTokLoc;
+        self.Diag(FirstTokLoc, warn_compound_token_split_by_macro) << (FirstTokKind == self.Tok.getKind()) << FirstTokKind << self.Tok.getKind() << Op as i32 << FirstTokLoc;
+        self.Diag(SecondTokLoc, note_compound_token_split_second_token_here) << (FirstTokKind == self.Tok.getKind()) << self.Tok.getKind() << SecondTokLoc;
         return;
     }
     if self.Tok.hasLeadingSpace() || self.Tok.isAtStartOfLine() {
@@ -195,7 +196,7 @@ fn Parser::checkCompoundToken(self, FirstTokLoc: SourceLocation, FirstTokKind: T
         if SpaceLoc.isInvalid() {
             SpaceLoc = FirstTokLoc;
         }
-         << (FirstTokKind == self.Tok.getKind()) << FirstTokKind << self.Tok.getKind() << Op as i32 << SourceRange { B: FirstTokLoc, E: SecondTokLoc };
+        self.Diag(SpaceLoc, warn_compound_token_split_by_whitespace) << (FirstTokKind == self.Tok.getKind()) << FirstTokKind << self.Tok.getKind() << Op as i32 << SourceRange { B: FirstTokLoc, E: SecondTokLoc };
         return;
     }
 }
@@ -208,15 +209,15 @@ fn Parser::SkipUntil(self, Toks: TokenKind>, Flags: SkipUntilFlags) -> bool {
     let mut isFirstTokenSkipped: bool = true;
     while true {
         for let mut i: u32 = 0;
-let mut NumToks: u32 = (); i != NumToks; i += 1 {
-            if self.Tok.is([i]) {
+let mut NumToks: u32 = Toks.len; i != NumToks; i += 1 {
+            if self.Tok.is(Toks[i]) {
                 if HasFlagsSet(Flags, StopBeforeMatch) {} else {
                     self.ConsumeAnyToken(false);
                 }
                 return true;
             }
         }
-        if Toks()() == 1 && [0] == eof && !HasFlagsSet(Flags, StopAtSemi) && !HasFlagsSet(Flags, StopAtCodeCompletion) {
+        if Toks.len == 1 && Toks[0] == eof && !HasFlagsSet(Flags, StopAtSemi) && !HasFlagsSet(Flags, StopAtCodeCompletion) {
             while self.Tok.isNot(eof) {
                 self.ConsumeAnyToken(false);
             }
@@ -323,7 +324,7 @@ let mut e: u32 = self.NumCachedScopes; i != e; i += 1 {
         self.ScopeCache[i];
     }
     self.resetPragmaHandlers();
-    self.PP.removeCommentHandler;
+    self.PP.removeCommentHandler(self.CommentSemaHandler.get());
     self.PP.clearCodeCompletionHandler();
     self.DestroyTemplateIds();
 }
@@ -332,7 +333,17 @@ fn Parser::Initialize(self) {
     assert!(self.getCurScope() == null, "A scope is already active?");
     self.EnterScope(DeclScope);
     self.Actions.ActOnTranslationUnitScope(self.getCurScope());
-    if self.getLangOpts() {}
+    if self.getLangOpts().ObjC {
+        self.ObjCTypeQuals[to_underlying(in)] = &mut self.PP.getIdentifierTable().get("in");
+        self.ObjCTypeQuals[to_underlying(out)] = &mut self.PP.getIdentifierTable().get("out");
+        self.ObjCTypeQuals[to_underlying(inout)] = &mut self.PP.getIdentifierTable().get("inout");
+        self.ObjCTypeQuals[to_underlying(oneway)] = &mut self.PP.getIdentifierTable().get("oneway");
+        self.ObjCTypeQuals[to_underlying(bycopy)] = &mut self.PP.getIdentifierTable().get("bycopy");
+        self.ObjCTypeQuals[to_underlying(byref)] = &mut self.PP.getIdentifierTable().get("byref");
+        self.ObjCTypeQuals[to_underlying(nonnull)] = &mut self.PP.getIdentifierTable().get("nonnull");
+        self.ObjCTypeQuals[to_underlying(nullable)] = &mut self.PP.getIdentifierTable().get("nullable");
+        self.ObjCTypeQuals[to_underlying(null_unspecified)] = &mut self.PP.getIdentifierTable().get("null_unspecified");
+    }
     self.Ident_instancetype = null;
     self.Ident_final = null;
     self.Ident_sealed = null;
@@ -344,12 +355,12 @@ fn Parser::Initialize(self) {
     self.Ident_bool = null;
     self.Ident_Bool = null;
     self.Ident_pixel = null;
-    if self.getLangOpts() || self.getLangOpts() {
+    if self.getLangOpts().AltiVec || self.getLangOpts().ZVector {
         self.Ident_vector = &mut self.PP.getIdentifierTable().get("vector");
         self.Ident_bool = &mut self.PP.getIdentifierTable().get("bool");
         self.Ident_Bool = &mut self.PP.getIdentifierTable().get("_Bool");
     }
-    if self.getLangOpts() {
+    if self.getLangOpts().AltiVec {
         self.Ident_pixel = &mut self.PP.getIdentifierTable().get("pixel");
     }
     self.Ident_introduced = null;
@@ -366,7 +377,7 @@ fn Parser::Initialize(self) {
     self.Ident___exception_info = self.Ident___abnormal_termination = null;
     self.Ident_GetExceptionCode = self.Ident_GetExceptionInfo = null;
     self.Ident_AbnormalTermination = null;
-    if self.getLangOpts() {
+    if self.getLangOpts().Borland {
         self.Ident__exception_info = self.PP.getIdentifierInfo("_exception_info");
         self.Ident___exception_info = self.PP.getIdentifierInfo("__exception_info");
         self.Ident_GetExceptionInfo = self.PP.getIdentifierInfo("GetExceptionInformation");
@@ -376,35 +387,40 @@ fn Parser::Initialize(self) {
         self.Ident__abnormal_termination = self.PP.getIdentifierInfo("_abnormal_termination");
         self.Ident___abnormal_termination = self.PP.getIdentifierInfo("__abnormal_termination");
         self.Ident_AbnormalTermination = self.PP.getIdentifierInfo("AbnormalTermination");
-        self.PP.SetPoisonReason;
-        self.PP.SetPoisonReason;
-        self.PP.SetPoisonReason;
-        self.PP.SetPoisonReason;
-        self.PP.SetPoisonReason;
-        self.PP.SetPoisonReason;
-        self.PP.SetPoisonReason;
-        self.PP.SetPoisonReason;
-        self.PP.SetPoisonReason;
+        self.PP.SetPoisonReason(self.Ident__exception_code, err_seh___except_block);
+        self.PP.SetPoisonReason(self.Ident___exception_code, err_seh___except_block);
+        self.PP.SetPoisonReason(self.Ident_GetExceptionCode, err_seh___except_block);
+        self.PP.SetPoisonReason(self.Ident__exception_info, err_seh___except_filter);
+        self.PP.SetPoisonReason(self.Ident___exception_info, err_seh___except_filter);
+        self.PP.SetPoisonReason(self.Ident_GetExceptionInfo, err_seh___except_filter);
+        self.PP.SetPoisonReason(self.Ident__abnormal_termination, err_seh___finally_block);
+        self.PP.SetPoisonReason(self.Ident___abnormal_termination, err_seh___finally_block);
+        self.PP.SetPoisonReason(self.Ident_AbnormalTermination, err_seh___finally_block);
     }
     self.Actions.Initialize();
     self.ConsumeToken();
 }
 
-fn Parser::DestroyTemplateIds(self) {}
+fn Parser::DestroyTemplateIds(self) {
+    for Id in self.TemplateIds {
+        Id.Destroy();
+    }
+    self.TemplateIds.clear();
+}
 
 fn Parser::ParseFirstTopLevelDecl(self, Result: *mut DeclGroupPtrTy, ImportState: *mut ModuleImportState) -> bool {
     self.Actions.ActOnStartOfTranslationUnit();
     ImportState = FirstDecl;
     let mut NoTopLevelDecls: bool = self.ParseTopLevelDecl(Result, ImportState);
-    if NoTopLevelDecls && !self.Actions.getASTContext().getExternalSource() && operator!(self.getLangOpts()) && !self.getLangOpts().IsHeaderFile {
-        
+    if NoTopLevelDecls && !self.Actions.getASTContext().getExternalSource() && !self.getLangOpts().CPlusPlus && !self.getLangOpts().IsHeaderFile {
+        self.Diag(ext_empty_translation_unit);
     }
     return NoTopLevelDecls;
 }
 
 fn Parser::ParseTopLevelDecl(self, Result: *mut DeclGroupPtrTy, ImportState: *mut ModuleImportState) -> bool {
     let mut CleanupRAII: DestroyTemplateIdAnnotationsRAIIObj = *self;
-    Result(null);
+    Result = null;
     match self.Tok.getKind() {
         annot_pragma_unused => {
             self.HandlePragmaUnused();
@@ -423,7 +439,7 @@ fn Parser::ParseTopLevelDecl(self, Result: *mut DeclGroupPtrTy, ImportState: *mu
             }
         },
         kw_module => {
-            Result(self.ParseModuleDecl);
+            Result = self.ParseModuleDecl(ImportState);
         },
         kw_import => {
             self.ParseModuleImport(SourceLocation {}, ImportState);
@@ -431,12 +447,12 @@ fn Parser::ParseTopLevelDecl(self, Result: *mut DeclGroupPtrTy, ImportState: *mu
         annot_module_include => {
             let mut Loc: SourceLocation = self.Tok.getLocation();
             let mut Mod: *mut Module = self.Tok.getAnnotationValue() as *mut Module;
-            if operator!(self.getLangOpts()) || !Mod.isHeaderUnit() {
+            if !self.getLangOpts().CPlusPlusModules || !Mod.isHeaderUnit() {
                 self.Actions.ActOnAnnotModuleInclude(Loc, Mod);
             } else {
-                let mut Import: i32 = self.Actions(Loc, SourceLocation {}, Loc, Mod);
-                let mut ImportDecl: *mut Decl = if () { null } else { () };
-                Result(self.Actions.ConvertDeclToDeclGroup);
+                let mut Import: DeclResult = self.Actions.ActOnModuleImport(Loc, SourceLocation {}, Loc, Mod, ModuleIdPath {});
+                let mut ImportDecl: *mut Decl = if Import.isInvalid() { null } else { Import.get() };
+                Result = self.Actions.ConvertDeclToDeclGroup(ImportDecl, null);
             }
             self.ConsumeAnnotationToken();
             return false;
@@ -454,13 +470,13 @@ fn Parser::ParseTopLevelDecl(self, Result: *mut DeclGroupPtrTy, ImportState: *mu
             break;
         },
     }
-    let mut DeclAttrs: ParsedAttributes = zeroed();
-    let mut DeclSpecAttrs: ParsedAttributes = zeroed();
+    let mut DeclAttrs: ParsedAttributes = self.AttrFactory;
+    let mut DeclSpecAttrs: ParsedAttributes = self.AttrFactory;
     while self.MaybeParseCXX11Attributes(DeclAttrs, false) || self.MaybeParseGNUAttributes(DeclSpecAttrs, null) {
         
     }
-    Result(self.ParseExternalDeclaration);
-    if Result() {
+    Result = self.ParseExternalDeclaration(DeclAttrs, DeclSpecAttrs, null);
+    if Result {
         if ImportState == FirstDecl {
             ImportState = NotACXX20Module;
         } else if ImportState == ImportAllowed {
@@ -528,7 +544,7 @@ fn Parser::ParseExternalDeclaration(self, Attrs: *mut ParsedAttributes, DeclSpec
         },
         annot_pragma_openacc => {
             let mut AS: AccessSpecifier = AS_none;
-            return self.ParseOpenACCDirectiveDecl;
+            return self.ParseOpenACCDirectiveDecl(AS, Attrs, TST_unspecified, null);
         },
         annot_pragma_ms_pointers_to_members => {
             self.HandlePragmaMSPointersToMembers();
@@ -549,38 +565,39 @@ fn Parser::ParseExternalDeclaration(self, Attrs: *mut ParsedAttributes, DeclSpec
             self.HandlePragmaExport();
         },
         semi => {
-            SingleDecl = self.Actions.ActOnEmptyDeclaration;
+            SingleDecl = self.Actions.ActOnEmptyDeclaration(self.getCurScope(), Attrs, self.Tok.getLocation());
         },
         r_brace => {
-            
+            self.Diag(self.Tok, err_extraneous_closing_brace);
         },
         eof => {
-            
+            self.Diag(self.Tok, err_expected_external_declaration);
         },
         kw___extension__ => {
             let mut O: ExtensionRAIIObject = self.Diags;
             self.ConsumeToken();
+            return self.ParseExternalDeclaration(Attrs, DeclSpecAttrs, null);
         },
         kw_asm => {
             self.ProhibitAttributes(Attrs, SourceLocation {});
             let mut StartLoc: SourceLocation = self.Tok.getLocation();
             let mut EndLoc: SourceLocation = SourceLocation {};
-            let mut Result: i32 = 0;
-            if operator!((self.getLangOpts() || ())) {
-                let mut SL: *auto = cast();
-                if operator!(()()()) {
-                    
+            let mut Result: ExprResult = self.ParseSimpleAsm(false, &mut EndLoc);
+            if !(self.getLangOpts().GNUAsm || Result.isInvalid()) {
+                let mut SL: *StringLiteral const = cast(Result.get());
+                if !SL.getString().trim(" \t\n\v\f\r").is_empty() {
+                    self.Diag(StartLoc, err_gnu_inline_asm_disabled);
                 }
             }
-            self.ExpectAndConsume;
-            if Result()() {
+            self.ExpectAndConsume(semi, err_expected_after, "top-level asm block");
+            if Result.isInvalid() {
                 return null;
             }
-            SingleDecl = self.Actions.ActOnFileScopeAsmDecl(StartLoc, EndLoc);
+            SingleDecl = self.Actions.ActOnFileScopeAsmDecl(Result.get(), StartLoc, EndLoc);
             break;
         },
         at => {
-            return self.ParseObjCAtDirectives;
+            return self.ParseObjCAtDirectives(Attrs, DeclSpecAttrs);
         },
         minus => {
             plus;
@@ -590,15 +607,15 @@ fn Parser::ParseExternalDeclaration(self, Attrs: *mut ParsedAttributes, DeclSpec
         },
         kw_import => {
             let mut IS: ModuleImportState = NotACXX20Module;
-            if self.getLangOpts() {
-                 << true;
+            if self.getLangOpts().CPlusPlusModules {
+                self.Diag(self.Tok, err_unexpected_module_or_import_decl) << true;
                 self.SkipUntil(semi, 0 as SkipUntilFlags);
                 return null;
             }
             SingleDecl = self.ParseModuleImport(SourceLocation {}, IS);
         },
         kw_export => {
-            if self.getLangOpts() || self.getLangOpts() {
+            if self.getLangOpts().CPlusPlusModules || self.getLangOpts().HLSL {
                 self.ProhibitAttributes(Attrs, SourceLocation {});
                 SingleDecl = self.ParseExportDeclaration();
                 break;
@@ -611,69 +628,69 @@ fn Parser::ParseExternalDeclaration(self, Attrs: *mut ParsedAttributes, DeclSpec
             kw_tbuffer;
         },
         kw_static => {
-            if self.getLangOpts() && self.NextToken().is(kw_template) {
-                 << 0;
+            if self.getLangOpts().CPlusPlus && self.NextToken().is(kw_template) {
+                self.Diag(self.ConsumeToken(), warn_static_inline_explicit_inst_ignored) << 0;
                 let mut DeclEnd: SourceLocation = SourceLocation {};
-                return self.ParseDeclaration;
+                return self.ParseDeclaration(File, DeclEnd, Attrs, DeclSpecAttrs, null);
             }
         },
         kw_inline => {
-            if self.getLangOpts() {
+            if self.getLangOpts().CPlusPlus {
                 let mut NextKind: TokenKind = self.NextToken().getKind();
                 if NextKind == kw_namespace {
                     let mut DeclEnd: SourceLocation = SourceLocation {};
-                    return self.ParseDeclaration;
+                    return self.ParseDeclaration(File, DeclEnd, Attrs, DeclSpecAttrs, null);
                 }
                 if NextKind == kw_template {
-                     << 1;
+                    self.Diag(self.ConsumeToken(), warn_static_inline_explicit_inst_ignored) << 1;
                     let mut DeclEnd: SourceLocation = SourceLocation {};
-                    return self.ParseDeclaration;
+                    return self.ParseDeclaration(File, DeclEnd, Attrs, DeclSpecAttrs, null);
                 }
             }
         },
         kw_extern => {
-            if self.getLangOpts() && self.NextToken().is(kw_template) {
+            if self.getLangOpts().CPlusPlus && self.NextToken().is(kw_template) {
                 self.ProhibitAttributes(Attrs, SourceLocation {});
                 self.ProhibitAttributes(DeclSpecAttrs, SourceLocation {});
                 let mut ExternLoc: SourceLocation = self.ConsumeToken();
                 let mut TemplateLoc: SourceLocation = self.ConsumeToken();
-                 << SourceRange { B: ExternLoc, E: TemplateLoc };
+                self.DiagCompat(ExternLoc, extern_template) << SourceRange { B: ExternLoc, E: TemplateLoc };
                 let mut DeclEnd: SourceLocation = SourceLocation {};
-                return self.ParseExplicitInstantiation;
+                return self.ParseExplicitInstantiation(File, ExternLoc, TemplateLoc, DeclEnd, Attrs, AS_none);
             }
         },
         kw___if_exists => {
             kw___if_not_exists;
         },
         kw_module => {
-            << false;
+            self.Diag(self.Tok, err_unexpected_module_or_import_decl) << false;
         },
         _ => {
             self.Tok.isEditorPlaceholder();
         },
     }
-    return self.Actions.ConvertDeclToDeclGroup;
+    return self.Actions.ConvertDeclToDeclGroup(SingleDecl, null);
 }
 
 fn Parser::isDeclarationAfterDeclarator(self) -> bool {
-    if self.getLangOpts() && self.Tok.is(equal) {
+    if self.getLangOpts().CPlusPlus && self.Tok.is(equal) {
         let mut KW: *Token = self.NextToken();
         if KW.is(kw_default) || KW.is(kw_delete) {
             return false;
         }
     }
-    return self.Tok.is(equal) || self.Tok.is(comma) || self.Tok.is(semi) || self.Tok.is(kw_asm) || self.Tok.is(kw___attribute) || (self.getLangOpts() && self.Tok.is(l_paren));
+    return self.Tok.is(equal) || self.Tok.is(comma) || self.Tok.is(semi) || self.Tok.is(kw_asm) || self.Tok.is(kw___attribute) || (self.getLangOpts().CPlusPlus && self.Tok.is(l_paren));
 }
 
 fn Parser::isStartOfFunctionDefinition(self, Declarator: *ParsingDeclarator) -> bool {
-    assert!(Declarator, "Isn't a function declarator");
+    assert!(Declarator.isFunctionDeclarator(), "Isn't a function declarator");
     if self.Tok.is(l_brace) {
         return true;
     }
-    if operator!(self.getLangOpts()) && Declarator() {
+    if !self.getLangOpts().CPlusPlus && Declarator.getFunctionTypeInfo().isKNRPrototype() {
         return self.isDeclarationSpecifier(No, false);
     }
-    if self.getLangOpts() && self.Tok.is(equal) {
+    if self.getLangOpts().CPlusPlus && self.Tok.is(equal) {
         let mut KW: *Token = self.NextToken();
         return KW.is(kw_default) || KW.is(kw_delete);
     }
@@ -681,131 +698,145 @@ fn Parser::isStartOfFunctionDefinition(self, Declarator: *ParsingDeclarator) -> 
 }
 
 fn Parser::ParseDeclOrFunctionDefInternal(self, Attrs: *mut ParsedAttributes, DeclSpecAttrs: *mut ParsedAttributes, DS: *mut ParsingDeclSpec, AS: AccessSpecifier) -> DeclGroupPtrTy {
-    (((operator!(operator!((DS.getSourceRange() && "expected uninitialised source range")))) || (_wassert(L"DS.getSourceRange().isInvalid() && \"expected uninitialised source range\"", L"clang\\lib\\Parse\\Parser.cpp", (1066) as u32) , 0)) as void);
-    DS.SetRangeStart(DeclSpecAttrs()());
-    DS.SetRangeEnd(DeclSpecAttrs()());
-    DS.takeAttributesAppendingingFrom;
+    assert!(DS.getSourceRange().isInvalid(), "expected uninitialised source range");
+    DS.SetRangeStart(DeclSpecAttrs.Range.getBegin());
+    DS.SetRangeEnd(DeclSpecAttrs.Range.getEnd());
+    DS.takeAttributesAppendingingFrom(DeclSpecAttrs);
     let mut TemplateInfo: ParsedTemplateInfo = ParsedTemplateInfo {};
-    self.MaybeParseMicrosoftAttributes(DS);
-    if DS.hasTagDefinition && self.DiagnoseMissingSemiAfterTagDefinition {
+    self.MaybeParseMicrosoftAttributes(DS.getAttributes());
+    self.ParseDeclarationSpecifiers(DS, TemplateInfo, AS, DSC_top_level, null);
+    if DS.hasTagDefinition() && self.DiagnoseMissingSemiAfterTagDefinition(DS, AS, DSC_top_level, null) {
         return null;
     }
     if self.Tok.is(semi) {
         let mut CorrectLocationForAttributes: SourceLocation = SourceLocation {};
-        let mut TKind: TypeSpecifierType = DS.getTypeSpecType;
+        let mut TKind: TypeSpecifierType = DS.getTypeSpecType();
         if isDeclRep(TKind) {
             if TKind == TST_enum {
-                if  {
-                    CorrectLocationForAttributes = self.PP.getLocForEndOfToken(()());
+                if dyn_cast_or_null(DS.getRepAsDecl()) {
+                    ED;
+                } else {
+                    CorrectLocationForAttributes = self.PP.getLocForEndOfToken(ED.getEnumKeyRange().getEnd(), 0);
                 }
             }
             if CorrectLocationForAttributes.isInvalid() {
                 let mut Policy: *PrintingPolicy = self.Actions.getASTContext().getPrintingPolicy();
                 let mut Offset: u32 = getSpecifierName(TKind, Policy).len;
-                CorrectLocationForAttributes = DS.getTypeSpecTypeLoc(Offset);
+                CorrectLocationForAttributes = DS.getTypeSpecTypeLoc().getLocWithOffset(Offset);
             }
         }
         self.ProhibitAttributes(Attrs, CorrectLocationForAttributes);
         self.ConsumeToken();
         let mut AnonRecord: *mut RecordDecl = null;
-        let mut TheDecl: *mut Decl = self.Actions;
+        let mut TheDecl: *mut Decl = self.Actions.ParsedFreeStandingDeclSpec(self.getCurScope(), AS_none, DS, none(), AnonRecord);
         DS.complete(TheDecl);
         self.Actions.ActOnDefinedDeclarationSpecifier(TheDecl);
         if AnonRecord {
-            let mut decls: []*mut Decl = [AnonRecord, TheDecl];
-            return self.Actions.BuildDeclaratorGroup;
+            let mut decls: [2]*mut Decl = [AnonRecord, TheDecl];
+            return self.Actions.BuildDeclaratorGroup(decls);
         }
-        return self.Actions.ConvertDeclToDeclGroup;
+        return self.Actions.ConvertDeclToDeclGroup(TheDecl, null);
     }
-    if DS.hasTagDefinition {
-        self.Actions.ActOnDefinedDeclarationSpecifier(DS.getRepAsDecl);
+    if DS.hasTagDefinition() {
+        self.Actions.ActOnDefinedDeclarationSpecifier(DS.getRepAsDecl());
     }
-    if self.getLangOpts() && self.Tok.is(at) {
+    if self.getLangOpts().ObjC && self.Tok.is(at) {
         let mut AtLoc: SourceLocation = self.ConsumeToken();
         if !self.Tok.isObjCAtKeyword(objc_interface) && !self.Tok.isObjCAtKeyword(objc_protocol) && !self.Tok.isObjCAtKeyword(objc_implementation) {
+            self.Diag(self.Tok, err_objc_unexpected_attr);
             self.SkipUntil(semi, 0 as SkipUntilFlags);
             return null;
         }
         DS.abort();
-        DS.takeAttributesAppendingingFrom;
+        DS.takeAttributesAppendingingFrom(Attrs);
         let mut PrevSpec: *u8 = null;
         let mut DiagID: u32 = 0;
-        if DS {
-            self.Diag(AtLoc, DiagID);
+        if DS.SetTypeSpecType(TST_unspecified, AtLoc, PrevSpec, DiagID, self.Actions.getASTContext().getPrintingPolicy()) {
+            self.Diag(AtLoc, DiagID) << PrevSpec;
         }
         if self.Tok.isObjCAtKeyword(objc_protocol) {
-            return self.ParseObjCAtProtocolDeclaration(AtLoc, DS);
+            return self.ParseObjCAtProtocolDeclaration(AtLoc, DS.getAttributes());
         }
         if self.Tok.isObjCAtKeyword(objc_implementation) {
-            return self.ParseObjCAtImplementationDeclaration(AtLoc, DS);
+            return self.ParseObjCAtImplementationDeclaration(AtLoc, DS.getAttributes());
         }
-        return self.Actions.ConvertDeclToDeclGroup(self.ParseObjCAtInterfaceDeclaration(AtLoc, DS));
+        return self.Actions.ConvertDeclToDeclGroup(self.ParseObjCAtInterfaceDeclaration(AtLoc, DS.getAttributes()), null);
     }
-    if self.getLangOpts() && self.isTokenStringLiteral() && DS.getStorageClassSpec == SCS_extern && DS.getParsedSpecifiers == PQ_StorageClassSpecifier {
+    if self.getLangOpts().CPlusPlus && self.isTokenStringLiteral() && DS.getStorageClassSpec() == SCS_extern && DS.getParsedSpecifiers() == PQ_StorageClassSpecifier {
         self.ProhibitAttributes(Attrs, SourceLocation {});
         let mut TheDecl: *mut Decl = self.ParseLinkage(DS, File);
-        return self.Actions.ConvertDeclToDeclGroup;
+        return self.Actions.ConvertDeclToDeclGroup(TheDecl, null);
     }
-    return self.ParseDeclGroup;
+    return self.ParseDeclGroup(DS, File, Attrs, TemplateInfo, null, null);
 }
 
 fn Parser::ParseDeclarationOrFunctionDefinition(self, Attrs: *mut ParsedAttributes, DeclSpecAttrs: *mut ParsedAttributes, DS: *mut ParsingDeclSpec, AS: AccessSpecifier) -> DeclGroupPtrTy {
-    let mut TimeScope: TimeTraceScope = "ParseDeclarationOrFunctionDefinition";
-    if DS {} else {
+    let mut TimeScope: TimeTraceScope = TimeTraceScope { "ParseDeclarationOrFunctionDefinition", string ()> { Closure_2 { cap_0: self }, null, null } };
+    if DS {
+        return self.ParseDeclOrFunctionDefInternal(Attrs, DeclSpecAttrs, *DS, AS);
+    } else {
         let mut PDS: ParsingDeclSpec = *self;
         let mut ObjCDC: ObjCDeclContextSwitch = *self;
+        return self.ParseDeclOrFunctionDefInternal(Attrs, DeclSpecAttrs, PDS, AS);
     }
 }
 
 fn Parser::ParseFunctionDefinition(self, D: *mut ParsingDeclarator, TemplateInfo: *ParsedTemplateInfo, LateParsedAttrs: *mut LateParsedAttrList) -> *mut Decl {
-    let mut TimeScope: TimeTraceScope = "ParseFunctionDefinition";
+    let mut TimeScope: TimeTraceScope = TimeTraceScope { "ParseFunctionDefinition", string ()> { Closure_3 { cap_0: self, D: &mut D }, null, null } };
     let mut PoisonSEHIdentifiers: PoisonSEHIdentifiersRAIIObject = PoisonSEHIdentifiersRAIIObject { *self, true };
-    let mut FTI: *FunctionTypeInfo = D;
+    let mut FTI: *FunctionTypeInfo = D.getFunctionTypeInfo();
     let mut CurTemplateDepthTracker: TemplateParameterDepthRAII = self.TemplateParameterDepth;
-    if self.getLangOpts().isImplicitIntRequired() && D.getDeclSpec().isEmpty {
-         << D.getDeclSpec().getSourceRange << CreateInsertion(D.getDeclSpec().getBeginLoc, "int ");
+    if self.getLangOpts().isImplicitIntRequired() && D.getDeclSpec().isEmpty() {
+        self.Diag(D.getIdentifierLoc(), warn_missing_type_specifier) << D.getDeclSpec().getSourceRange() << CreateInsertion(D.getDeclSpec().getBeginLoc(), "int ", false);
         let mut PrevSpec: *u8 = null;
         let mut DiagID: u32 = 0;
         let mut Policy: *PrintingPolicy = self.Actions.getASTContext().getPrintingPolicy();
-        D.getMutableDeclSpec()(TST_int, D.getIdentifierLoc, PrevSpec, DiagID, Policy);
-        D.SetRangeBegin(D.getDeclSpec().getSourceRange());
+        D.getMutableDeclSpec().SetTypeSpecType(TST_int, D.getIdentifierLoc(), PrevSpec, DiagID, Policy);
+        D.SetRangeBegin(D.getDeclSpec().getSourceRange().getBegin());
     }
     if FTI.isKNRPrototype() {
-        self.ParseKNRParamDeclarations;
+        self.ParseKNRParamDeclarations(D);
     }
-    if self.Tok.isNot(l_brace) && (operator!(self.getLangOpts()) || (self.Tok.isNot(colon) && self.Tok.isNot(kw_try) && self.Tok.isNot(equal))) {
+    if self.Tok.isNot(l_brace) && (!self.getLangOpts().CPlusPlus || (self.Tok.isNot(colon) && self.Tok.isNot(kw_try) && self.Tok.isNot(equal))) {
+        self.Diag(self.Tok, err_expected_fn_body);
         self.SkipUntil(l_brace, StopAtSemi | StopBeforeMatch);
         if self.Tok.isNot(l_brace) {
             return null;
         }
     }
-    if self.Tok.isNot(equal) {}
-    if self.getLangOpts() && self.Tok.isNot(equal) && TemplateInfo.Kind == Template && LateParsedAttrs()() && self.Actions.canDelayFunctionBody {
-        let mut TemplateParameterLists: MultiTemplateParamsArg = zeroed();
+    if self.Tok.isNot(equal) {
+        for AL in D.getAttributes() {
+            if AL.isKnownToGCC() && !AL.isStandardAttributeSyntax() {
+                self.Diag(AL.getLoc(), warn_attribute_on_function_definition) << AL;
+            }
+        }
+    }
+    if self.getLangOpts().DelayedTemplateParsing && self.Tok.isNot(equal) && TemplateInfo.Kind == Template && LateParsedAttrs.is_empty() && self.Actions.canDelayFunctionBody(D) {
+        let mut TemplateParameterLists: MultiTemplateParamsArg = *TemplateInfo.TemplateParams;
         let mut BodyScope: ParseScope = ParseScope { self, FnScope | DeclScope | CompoundStmtScope, true, false };
         let mut ParentScope: *mut Scope = self.getCurScope().getParent();
-        D.setFunctionDefinitionKind;
-        let mut DP: *mut Decl = self.Actions.HandleDeclarator(ParentScope, D);
+        D.setFunctionDefinitionKind(Definition);
+        let mut DP: *mut Decl = self.Actions.HandleDeclarator(ParentScope, D, TemplateParameterLists);
         D.complete(DP);
         D.getMutableDeclSpec().abort();
         if self.SkipFunctionBodies && (!DP || self.Actions.canSkipFunctionBody(DP)) && self.trySkippingFunctionBody() {
             BodyScope.Exit();
             return self.Actions.ActOnSkippedFunctionBody(DP);
         }
-        let mut Toks: CachedTokens = zeroed();
-        self.LexTemplateFunctionForLateParsing();
+        let mut Toks: CachedTokens = CachedTokens {};
+        self.LexTemplateFunctionForLateParsing(Toks);
         if DP {
             let mut FnD: *mut FunctionDecl = DP.getAsFunction();
             self.Actions.CheckForFunctionRedefinition(FnD, null, null);
-            self.Actions.MarkAsLateParsedTemplate(FnD, DP);
+            self.Actions.MarkAsLateParsedTemplate(FnD, DP, Toks);
         }
         return DP;
     }
     if self.CurParsedObjCImpl && !TemplateInfo.TemplateParams && (self.Tok.is(l_brace) || self.Tok.is(kw_try) || self.Tok.is(colon)) && self.Actions.CurContext.isTranslationUnit() {
         let mut BodyScope: ParseScope = ParseScope { self, FnScope | DeclScope | CompoundStmtScope, true, false };
         let mut ParentScope: *mut Scope = self.getCurScope().getParent();
-        D.setFunctionDefinitionKind;
-        let mut FuncDecl: *mut Decl = self.Actions.HandleDeclarator;
+        D.setFunctionDefinitionKind(Definition);
+        let mut FuncDecl: *mut Decl = self.Actions.HandleDeclarator(ParentScope, D, MultiTemplateParamsArg {});
         D.complete(FuncDecl);
         D.getMutableDeclSpec().abort();
         if FuncDecl {
@@ -819,34 +850,34 @@ fn Parser::ParseFunctionDefinition(self, D: *mut ParsingDeclarator, TemplateInfo
     let mut BodyKind: FnBodyKind = Other;
     let mut KWLoc: SourceLocation = SourceLocation {};
     if self.TryConsumeToken(equal) {
-        (((operator!(operator!((self.getLangOpts() && "Only C++ function definitions have '='")))) || (_wassert(L"getLangOpts().CPlusPlus && \"Only C++ function definitions have '='\"", L"clang\\lib\\Parse\\Parser.cpp", (1314) as u32) , 0)) as void);
+        assert!(self.getLangOpts().CPlusPlus, "Only C++ function definitions have '='");
         if self.TryConsumeToken(kw_delete, KWLoc) {
-             << 1;
+            self.DiagCompat(KWLoc, defaulted_deleted_function) << 1;
             BodyKind = Delete;
             DeletedMessage = self.ParseCXXDeletedFunctionMessage();
-            D.SetRangeEnd;
+            D.SetRangeEnd(self.PrevTokLocation);
         } else if self.TryConsumeToken(kw_default, KWLoc) {
-             << 0;
+            self.DiagCompat(KWLoc, defaulted_deleted_function) << 0;
             BodyKind = Default;
-            D.SetRangeEnd;
+            D.SetRangeEnd(self.PrevTokLocation);
         } else {
-            llvm_unreachable_internal("function definition after = not 'delete' or 'default'", "clang\\lib\\Parse\\Parser.cpp", 1328);
+            llvm_unreachable_internal("function definition after = not 'delete' or 'default'", "P:/Goraw/llvm-project/clang/lib/Parse/Parser.cpp", 1328);
         }
         if self.Tok.is(comma) {
-             << (BodyKind == Delete);
+            self.Diag(KWLoc, err_default_delete_in_multiple_declaration) << (BodyKind == Delete);
             self.SkipUntil(semi, 0 as SkipUntilFlags);
-        } else if self.ExpectAndConsume {
+        } else if self.ExpectAndConsume(semi, err_expected_after, if BodyKind == Delete { "delete" } else { "default" }) {
             self.SkipUntil(semi, 0 as SkipUntilFlags);
         }
     }
     let mut SaveFPFeatures: FPFeaturesStateRAII = self.Actions;
     let mut SkipBody: SkipBodyInfo = SkipBodyInfo {};
-    let mut Res: *mut Decl = self.Actions(self.getCurScope(), D, TemplateInfo.TemplateParams, &mut SkipBody, BodyKind);
+    let mut Res: *mut Decl = self.Actions.ActOnStartOfFunctionDef(self.getCurScope(), D, if TemplateInfo.TemplateParams { *TemplateInfo.TemplateParams } else { MultiTemplateParamsArg {} }, &mut SkipBody, BodyKind);
     if SkipBody.ShouldSkip {
         if BodyKind == Other {
             self.SkipFunctionBody();
         }
-        if operator!(isLambdaCallOperator(dyn_cast_if_present(Res))) {
+        if !isLambdaCallOperator(dyn_cast_if_present(Res)) {
             self.Actions.PopExpressionEvaluationContext();
         }
         return Res;
@@ -859,8 +890,8 @@ fn Parser::ParseFunctionDefinition(self, D: *mut ParsingDeclarator, TemplateInfo
         self.Actions.ActOnFinishFunctionBody(Res, GeneratedBody, false, false);
         return Res;
     }
-    let mut Template: *auto = dyn_cast_if_present(Res);
-    if Template() && () && ()(0)() {
+    let mut Template: *FunctionTemplateDecl const = dyn_cast_if_present(Res);
+    if Template && Template.isAbbreviated() && Template.getTemplateParameters().getParam(0).isImplicit() {
         CurTemplateDepthTracker.addDepth(1);
     }
     if LateParsedAttrs {
@@ -883,7 +914,7 @@ fn Parser::ParseFunctionBody(self, D: *mut Decl, BodyScope: *mut ParseScope) -> 
         if !self.Tok.is(l_brace) {
             BodyScope.Exit();
             if D {
-                D.getAsFunction().setInvalidDecl;
+                D.getAsFunction().setInvalidDecl(true);
             }
             self.Actions.ActOnFinishFunctionBody(D, null, false, false);
             return D;
@@ -903,8 +934,8 @@ fn Parser::SkipFunctionBody(self) {
     if IsFunctionTryBlock {
         self.ConsumeToken();
     }
-    let mut Skipped: CachedTokens = zeroed();
-    if self.ConsumeAndStoreFunctionPrologue() {
+    let mut Skipped: CachedTokens = CachedTokens {};
+    if self.ConsumeAndStoreFunctionPrologue(Skipped) {
         self.SkipMalformedDecl();
     } else {
         self.SkipUntil(r_brace, 0 as SkipUntilFlags);
@@ -920,16 +951,19 @@ fn Parser::ParseKNRParamDeclarations(self, D: *mut Declarator) {
     let mut PrototypeScope: ParseScope = ParseScope { self, FunctionPrototypeScope | FunctionDeclarationScope | DeclScope, true, false };
     while self.isDeclarationSpecifier(No, false) {
         let mut DSStart: SourceLocation = self.Tok.getLocation();
-        let mut DS: DeclSpec = zeroed();
+        let mut DS: DeclSpec = self.AttrFactory;
         let mut TemplateInfo: ParsedTemplateInfo = ParsedTemplateInfo {};
         self.ParseDeclarationSpecifiers(DS, TemplateInfo, AS_none, DSC_normal, null);
         if self.TryConsumeToken(semi) {
+            self.Diag(DSStart, err_declaration_does_not_declare_param);
             continue;
         }
         if DS.getStorageClassSpec() != SCS_unspecified && DS.getStorageClassSpec() != SCS_register {
+            self.Diag(DS.getStorageClassSpecLoc(), err_invalid_storage_class_in_func_decl);
             DS.ClearStorageClassSpecs();
         }
         if DS.getThreadStorageClassSpec() != TSCS_unspecified {
+            self.Diag(DS.getThreadStorageClassSpecLoc(), err_invalid_storage_class_in_func_decl);
             DS.ClearStorageClassSpecs();
         }
         let mut ParmDeclarator: Declarator = Declarator { DS, none(), KNRTypeList };
@@ -940,12 +974,12 @@ fn Parser::ParseKNRParamDeclarations(self, D: *mut Declarator) {
             if Param && ParmDeclarator.getIdentifier() {
                 for let mut i: u32 = 0; ; i += 1 {
                     if i == FTI.NumParams {
-                         << ParmDeclarator.getIdentifier();
+                        self.Diag(ParmDeclarator.getIdentifierLoc(), err_no_matching_param) << ParmDeclarator.getIdentifier();
                         break;
                     }
                     if FTI.Params[i].Ident == ParmDeclarator.getIdentifier() {
                         if FTI.Params[i].Param {
-                             << ParmDeclarator.getIdentifier();
+                            self.Diag(ParmDeclarator.getIdentifierLoc(), err_param_redefinition) << ParmDeclarator.getIdentifier();
                         } else {
                             FTI.Params[i].Param = Param;
                         }
@@ -960,7 +994,7 @@ fn Parser::ParseKNRParamDeclarations(self, D: *mut Declarator) {
             ParmDeclarator.setCommaLoc(self.ConsumeToken());
             self.ParseDeclarator(ParmDeclarator);
         }
-        if operator!(self.ExpectAndConsumeSemi) {
+        if !self.ExpectAndConsumeSemi(err_expected_semi_declaration, "") {
             continue;
         }
         if self.SkipUntil(l_brace, StopAtSemi | StopBeforeMatch) {
@@ -971,44 +1005,51 @@ fn Parser::ParseKNRParamDeclarations(self, D: *mut Declarator) {
     self.Actions.ActOnFinishKNRParamDeclarations(self.getCurScope(), D, self.Tok.getLocation());
 }
 
-fn Parser::ParseAsmStringLiteral(self, ForAsmLabel: bool) -> i32 {
-    let mut AsmString: i32 = 0;
+fn Parser::ParseAsmStringLiteral(self, ForAsmLabel: bool) -> ExprResult {
+    let mut AsmString: ExprResult = false;
     if self.isTokenStringLiteral() {
-        if AsmString()() {
-            return ;
+        AsmString = self.ParseStringLiteralExpression(false);
+        if AsmString.isInvalid() {
+            return AsmString;
         }
-        let mut SL: *auto = cast();
-        if operator!() {
-             << () << ();
+        let mut SL: *StringLiteral const = cast(AsmString.get());
+        if !SL.isOrdinary() {
+            self.Diag(self.Tok, err_asm_operand_wide_string_literal) << SL.isWide() << SL.getSourceRange();
+            return ExprError();
         }
-    } else if !ForAsmLabel && self.getLangOpts() && self.Tok.is(l_paren) {
+    } else if !ForAsmLabel && self.getLangOpts().CPlusPlus11 && self.Tok.is(l_paren) {
         let mut ExprType: ParenParseOption = SimpleExpr;
         let mut RParenLoc: SourceLocation = SourceLocation {};
-        let mut CastTy: ParsedType = zeroed();
+        let mut CastTy: ParsedType = null;
         let mut ConstantEvaluated: EnterExpressionEvaluationContext = EnterExpressionEvaluationContext { self.Actions, ConstantEvaluated, null, EK_Other, true };
-        if operator!() {
-            AsmString() = self.Actions();
+        AsmString = self.ParseParenExpression(ExprType, true, Unknown, AllowBoth, CastTy, RParenLoc);
+        if !AsmString.isInvalid() {
+            AsmString = self.Actions.ActOnConstantExpression(AsmString);
+        }
+        if AsmString.isInvalid() {
+            return ExprError();
         }
     } else {
-         << (if (self.getLangOpts() && !ForAsmLabel) { 0 } else { 1 });
+        self.Diag(self.Tok, err_asm_expected_string) << (if (self.getLangOpts().CPlusPlus11 && !ForAsmLabel) { 0 } else { 1 });
     }
-    return self.Actions(ForAsmLabel);
+    return self.Actions.ActOnGCCAsmStmtString(AsmString.get(), ForAsmLabel);
 }
 
-fn Parser::ParseSimpleAsm(self, ForAsmLabel: bool, EndLoc: *mut SourceLocation) -> i32 {
+fn Parser::ParseSimpleAsm(self, ForAsmLabel: bool, EndLoc: *mut SourceLocation) -> ExprResult {
     assert!(self.Tok.is(kw_asm), "Not an asm!");
     let mut Loc: SourceLocation = self.ConsumeToken();
     if self.isGNUAsmQualifier(self.Tok) {
         let mut RemovalRange: SourceRange = SourceRange { B: self.PP.getLocForEndOfToken(Loc, 0), E: self.PP.getLocForEndOfToken(self.Tok.getLocation(), 0) };
-         << getQualifierName(self.getGNUAsmQualifier(self.Tok)) << CreateRemoval(RemovalRange);
+        self.Diag(self.Tok, err_global_asm_qualifier_ignored) << getQualifierName(self.getGNUAsmQualifier(self.Tok)) << CreateRemoval(RemovalRange);
         self.ConsumeToken();
     }
     let mut T: BalancedDelimiterTracker = BalancedDelimiterTracker { *self, l_paren, semi };
     if T.consumeOpen() {
-         << "asm";
+        self.Diag(self.Tok, err_expected_lparen_after) << "asm";
+        return ExprError();
     }
-    let mut Result: i32 = 0;
-    if operator!() {
+    let mut Result: ExprResult = self.ParseAsmStringLiteral(ForAsmLabel);
+    if !Result.isInvalid() {
         T.consumeClose();
         if EndLoc {
             *EndLoc = T.getCloseLocation();
@@ -1019,7 +1060,7 @@ fn Parser::ParseSimpleAsm(self, ForAsmLabel: bool, EndLoc: *mut SourceLocation) 
         }
         self.ConsumeParen();
     }
-    return ;
+    return Result;
 }
 
 fn Parser::takeTemplateIdAnnotation(self, tok: *Token) -> *mut TemplateIdAnnotation {
@@ -1047,7 +1088,7 @@ fn Parser::TryAnnotateName(self, CCC: *mut CorrectionCandidateCallback, AllowImp
     let mut EnteringContext: bool = false;
     let mut WasScopeAnnotation: bool = self.Tok.is(annot_cxxscope);
     let mut SS: CXXScopeSpec = CXXScopeSpec {};
-    if self.getLangOpts() &&  {
+    if self.getLangOpts().CPlusPlus && self.ParseOptionalCXXScopeSpecifier(SS, null, false, EnteringContext, null, false, null, false, false, false, false, false) {
         return Error;
     }
     if self.Tok.isNot(identifier) || SS.isInvalid() {
@@ -1089,20 +1130,20 @@ fn Parser::TryAnnotateName(self, CCC: *mut CorrectionCandidateCallback, AllowImp
             if SS.isNotEmpty() {
                 BeginLoc = SS.getBeginLoc();
             }
-            let mut Ty: ParsedType = ;
-            let mut T: QualType = self.Actions.GetTypeFromParser();
-            if self.getLangOpts() && self.NextToken().is(less) && (operator(T).isObjCObjectType() || operator(T).isObjCObjectPointerType()) {
+            let mut Ty: ParsedType = Classification.getType();
+            let mut T: QualType = self.Actions.GetTypeFromParser(Ty, null);
+            if self.getLangOpts().ObjC && self.NextToken().is(less) && (operator(T).isObjCObjectType() || operator(T).isObjCObjectPointerType()) {
                 let mut IdentifierLoc: SourceLocation = self.ConsumeToken();
                 let mut NewEndLoc: SourceLocation = SourceLocation {};
-                let mut NewType: i32 = self.parseObjCTypeArgsAndProtocolQualifiers(IdentifierLoc, false, NewEndLoc);
-                if NewType()() {
-                    Ty() = ();
+                let mut NewType: TypeResult = self.parseObjCTypeArgsAndProtocolQualifiers(IdentifierLoc, Ty, false, NewEndLoc);
+                if NewType.isUsable() {
+                    Ty = NewType.get();
                 } else if self.Tok.is(eof) {
                     return Error;
                 }
             }
             self.Tok.setKind(annot_typename);
-            (self.Tok);
+            setTypeAnnotation(self.Tok, Ty);
             self.Tok.setAnnotationEndLoc(self.Tok.getLocation());
             self.Tok.setLocation(BeginLoc);
             self.PP.AnnotateCachedTokens(self.Tok);
@@ -1149,7 +1190,7 @@ fn Parser::TryKeywordIdentFallback(self, DisableKeyword: bool) -> bool {
         self.Tok.setKind(identifier);
         return true;
     }
-     << self.PP << DisableKeyword;
+    self.Diag(self.Tok, ext_keyword_as_ident) << self.PP.getSpelling(self.Tok, null) << DisableKeyword;
     if DisableKeyword {
         II.revertTokenIDToIdentifier();
     }
@@ -1160,26 +1201,29 @@ fn Parser::TryKeywordIdentFallback(self, DisableKeyword: bool) -> bool {
 fn Parser::TryAnnotateTypeOrScopeToken(self, AllowImplicitTypename: ImplicitTypenameContext, IsAddressOfOperand: bool) -> bool {
     assert!((self.Tok.is(identifier) || self.Tok.is(coloncolon) || self.Tok.is(kw_typename) || self.Tok.is(annot_cxxscope) || self.Tok.is(kw_decltype) || self.Tok.is(annot_template_id) || self.Tok.is(kw___super) || self.Tok.is(kw_auto) || self.Tok.is(annot_pack_indexing_type)), "Cannot be a type or scope token!");
     if self.Tok.is(kw_typename) {
-        if self.getLangOpts() && self.NextToken().is(kw_typedef) {
+        if self.getLangOpts().MSVCCompat && self.NextToken().is(kw_typedef) {
             let mut TypedefToken: Token = Token {};
             self.PP.Lex(TypedefToken);
             let mut Result: bool = self.TryAnnotateTypeOrScopeToken(AllowImplicitTypename, false);
             self.PP.EnterToken(self.Tok, true);
             self.Tok = TypedefToken;
             if !Result {
-                
+                self.Diag(self.Tok.getLocation(), warn_expected_qualified_after_typename);
             }
             return Result;
         }
         let mut TypenameLoc: SourceLocation = self.ConsumeToken();
         let mut SS: CXXScopeSpec = CXXScopeSpec {};
-        if  {
+        if self.ParseOptionalCXXScopeSpecifier(SS, null, false, false, null, true, null, false, false, false, false, false) {
             return true;
         }
         if SS.isEmpty() {
             if self.Tok.is(identifier) || self.Tok.is(annot_template_id) || self.Tok.is(annot_decltype) {
                 if self.Tok.is(annot_decltype) || (!self.TryAnnotateTypeOrScopeToken(AllowImplicitTypename, false) && self.Tok.isAnnotation()) {
-                    let mut DiagID: u32 = 0;
+                    let mut DiagID: u32 = err_expected_qualified_after_typename;
+                    if self.getLangOpts().MicrosoftExt {
+                        DiagID = warn_expected_qualified_after_typename;
+                    }
                     self.Diag(self.Tok.getLocation(), DiagID);
                     return false;
                 }
@@ -1187,6 +1231,7 @@ fn Parser::TryAnnotateTypeOrScopeToken(self, AllowImplicitTypename: ImplicitType
             if self.Tok.isEditorPlaceholder() {
                 return true;
             }
+            self.Diag(self.Tok.getLocation(), err_expected_qualified_after_typename);
             return true;
         }
         let mut TemplateKWPresent: bool = false;
@@ -1194,26 +1239,28 @@ fn Parser::TryAnnotateTypeOrScopeToken(self, AllowImplicitTypename: ImplicitType
             self.ConsumeToken();
             TemplateKWPresent = true;
         }
-        let mut Ty: i32 = 0;
+        let mut Ty: TypeResult = false;
         if self.Tok.is(identifier) {
             if TemplateKWPresent && self.NextToken().isNot(less) {
+                self.Diag(self.Tok.getLocation(), missing_template_arg_list_after_template_kw);
                 return true;
             }
-            Ty() = self.Actions(self.getCurScope(), TypenameLoc, SS, *self.Tok.getIdentifierInfo(), self.Tok.getLocation());
+            Ty = self.Actions.ActOnTypenameType(self.getCurScope(), TypenameLoc, SS, *self.Tok.getIdentifierInfo(), self.Tok.getLocation(), No);
         } else if self.Tok.is(annot_template_id) {
             let mut TemplateId: *mut TemplateIdAnnotation = self.takeTemplateIdAnnotation(self.Tok);
             if !TemplateId.mightBeType() {
-                 << self.Tok.getAnnotationRange();
+                self.Diag(self.Tok, err_typename_refers_to_non_type_template) << self.Tok.getAnnotationRange();
                 return true;
             }
-            let mut TemplateArgsPtr: ASTTemplateArgsPtr = zeroed();
+            let mut TemplateArgsPtr: ASTTemplateArgsPtr = ASTTemplateArgsPtr { TemplateId.getTemplateArgs(), TemplateId.NumArgs };
+            Ty = if TemplateId.isInvalid() { TypeError() } else { self.Actions.ActOnTypenameType(self.getCurScope(), TypenameLoc, SS, TemplateId.TemplateKWLoc, TemplateId.Template, TemplateId.Name, TemplateId.TemplateNameLoc, TemplateId.LAngleLoc, TemplateArgsPtr, TemplateId.RAngleLoc) };
         } else {
-             << SS.getRange();
+            self.Diag(self.Tok, err_expected_type_name_after_typename) << SS.getRange();
             return true;
         }
         let mut EndLoc: SourceLocation = self.Tok.getLastLoc();
         self.Tok.setKind(annot_typename);
-        (self.Tok);
+        setTypeAnnotation(self.Tok, Ty);
         self.Tok.setAnnotationEndLoc(EndLoc);
         self.Tok.setLocation(TypenameLoc);
         self.PP.AnnotateCachedTokens(self.Tok);
@@ -1221,8 +1268,8 @@ fn Parser::TryAnnotateTypeOrScopeToken(self, AllowImplicitTypename: ImplicitType
     }
     let mut WasScopeAnnotation: bool = self.Tok.is(annot_cxxscope);
     let mut SS: CXXScopeSpec = CXXScopeSpec {};
-    if self.getLangOpts() {
-        if  {
+    if self.getLangOpts().CPlusPlus {
+        if self.ParseOptionalCXXScopeSpecifier(SS, null, false, false, IsAddressOfOperand) {
             return true;
         }
     }
@@ -1231,43 +1278,45 @@ fn Parser::TryAnnotateTypeOrScopeToken(self, AllowImplicitTypename: ImplicitType
 
 fn Parser::TryAnnotateTypeOrScopeTokenAfterScopeSpec(self, SS: *mut CXXScopeSpec, IsNewScope: bool, AllowImplicitTypename: ImplicitTypenameContext) -> bool {
     if self.Tok.is(identifier) {
-        if  {
+        if self.Actions.getTypeName(*self.Tok.getIdentifierInfo(), self.Tok.getLocation(), self.getCurScope(), &mut SS, false, self.NextToken().is(period), null, false, true, true, AllowImplicitTypename, null) {
+            Ty;
+        } else {
             let mut BeginLoc: SourceLocation = self.Tok.getLocation();
             if SS.isNotEmpty() {
                 BeginLoc = SS.getBeginLoc();
             }
-            let mut T: QualType = self.Actions.GetTypeFromParser();
-            if self.getLangOpts() && self.NextToken().is(less) && (operator(T).isObjCObjectType() || operator(T).isObjCObjectPointerType()) {
+            let mut T: QualType = self.Actions.GetTypeFromParser(Ty, null);
+            if self.getLangOpts().ObjC && self.NextToken().is(less) && (operator(T).isObjCObjectType() || operator(T).isObjCObjectPointerType()) {
                 let mut IdentifierLoc: SourceLocation = self.ConsumeToken();
                 let mut NewEndLoc: SourceLocation = SourceLocation {};
-                let mut NewType: i32 = self.parseObjCTypeArgsAndProtocolQualifiers(IdentifierLoc, false, NewEndLoc);
-                if NewType()() {
-                    Ty() = ();
+                let mut NewType: TypeResult = self.parseObjCTypeArgsAndProtocolQualifiers(IdentifierLoc, Ty, false, NewEndLoc);
+                if NewType.isUsable() {
+                    Ty = NewType.get();
                 } else if self.Tok.is(eof) {
                     return false;
                 }
             }
             self.Tok.setKind(annot_typename);
-            (self.Tok);
+            setTypeAnnotation(self.Tok, Ty);
             self.Tok.setAnnotationEndLoc(self.Tok.getLocation());
             self.Tok.setLocation(BeginLoc);
             self.PP.AnnotateCachedTokens(self.Tok);
             return false;
         }
-        if operator!(self.getLangOpts()) {
+        if !self.getLangOpts().CPlusPlus {
             return false;
         }
         if self.NextToken().is(less) {
-            let mut Template: TemplateTy = zeroed();
+            let mut Template: TemplateTy = null;
             let mut TemplateName: UnqualifiedId = UnqualifiedId {};
             TemplateName.setIdentifier(self.Tok.getIdentifierInfo(), self.Tok.getLocation());
             let mut MemberOfUnknownSpecialization: bool = false;
-            if self.Actions.isTemplateName(self.getCurScope(), SS, false, TemplateName, null, false, MemberOfUnknownSpecialization) {
+            if self.Actions.isTemplateName(self.getCurScope(), SS, false, TemplateName, null, false, Template, MemberOfUnknownSpecialization, true) {
                 TNK;
             } else {
                 if TNK != TNK_Undeclared_template || self.isTemplateArgumentList(1) != False {
                     self.ConsumeToken();
-                    if self.AnnotateTemplateIdToken(TNK, SS, SourceLocation {}, TemplateName) {
+                    if self.AnnotateTemplateIdToken(Template, TNK, SS, SourceLocation {}, TemplateName, true, false) {
                         return true;
                     }
                 }
@@ -1282,7 +1331,8 @@ fn Parser::TryAnnotateTypeOrScopeTokenAfterScopeSpec(self, SS: *mut CXXScopeSpec
         }
     }
     if SS.isEmpty() {
-        if self.getLangOpts() && operator!(self.getLangOpts()) && self.Tok.is(coloncolon) {
+        if self.getLangOpts().ObjC && !self.getLangOpts().CPlusPlus && self.Tok.is(coloncolon) {
+            self.Diag(self.ConsumeToken(), err_expected_type);
             return true;
         }
         return false;
@@ -1292,10 +1342,10 @@ fn Parser::TryAnnotateTypeOrScopeTokenAfterScopeSpec(self, SS: *mut CXXScopeSpec
 }
 
 fn Parser::TryAnnotateCXXScopeToken(self, EnteringContext: bool) -> bool {
-    (((operator!(operator!((self.getLangOpts() && "Call sites of this function should be guarded by checking for C++")))) || (_wassert(L"getLangOpts().CPlusPlus && \"Call sites of this function should be guarded by checking for C++\"", L"clang\\lib\\Parse\\Parser.cpp", (2132) as u32) , 0)) as void);
+    assert!(self.getLangOpts().CPlusPlus, "Call sites of this function should be guarded by checking for C++");
     assert!(self.MightBeCXXScopeToken(), "Cannot be a type or scope token!");
     let mut SS: CXXScopeSpec = CXXScopeSpec {};
-    if  {
+    if self.ParseOptionalCXXScopeSpecifier(SS, null, false, EnteringContext, null, false, null, false, false, false, false, false) {
         return true;
     }
     if SS.isEmpty() {
@@ -1369,7 +1419,7 @@ fn Parser::CodeCompleteNaturalLanguage(self) {
 }
 
 fn Parser::CodeCompleteModuleImport(self, ImportLoc: SourceLocation, Path: ModuleIdPath) {
-    self.Actions.CodeCompletion().CodeCompleteModuleImport(ImportLoc);
+    self.Actions.CodeCompletion().CodeCompleteModuleImport(ImportLoc, Path);
 }
 
 fn Parser::ParseMicrosoftIfExistsCondition(self, Result: *mut IfExistsCondition) -> bool {
@@ -1378,25 +1428,25 @@ fn Parser::ParseMicrosoftIfExistsCondition(self, Result: *mut IfExistsCondition)
     Result.KeywordLoc = self.ConsumeToken();
     let mut T: BalancedDelimiterTracker = BalancedDelimiterTracker { *self, l_paren, semi };
     if T.consumeOpen() {
-         << (if Result.IsIfExists { "__if_exists" } else { "__if_not_exists" });
+        self.Diag(self.Tok, err_expected_lparen_after) << (if Result.IsIfExists { "__if_exists" } else { "__if_not_exists" });
         return true;
     }
-    if self.getLangOpts() {
-        (Result(), null, false, false);
+    if self.getLangOpts().CPlusPlus {
+        self.ParseOptionalCXXScopeSpecifier(Result.SS, null, false, false, null, false, null, false, false, false, false, false);
     }
-    if Result()() {
+    if Result.SS.isInvalid() {
         T.skipToEnd();
         return true;
     }
     let mut TemplateKWLoc: SourceLocation = SourceLocation {};
-    if self.ParseUnqualifiedId(Result(), null, false, false, true, true, false, &mut TemplateKWLoc, Result.Name) {
+    if self.ParseUnqualifiedId(Result.SS, null, false, false, true, true, false, &mut TemplateKWLoc, Result.Name) {
         T.skipToEnd();
         return true;
     }
     if T.consumeClose() {
         return true;
     }
-    match self.Actions(self.getCurScope(), Result.KeywordLoc, Result.IsIfExists, Result(), Result.Name) {
+    match self.Actions.CheckMicrosoftIfExistsSymbol(self.getCurScope(), Result.KeywordLoc, Result.IsIfExists, Result.SS, Result.Name) {
         Exists => {
             Result.Behavior = if Result.IsIfExists { Parse } else { Skip };
         },
@@ -1420,7 +1470,7 @@ fn Parser::ParseMicrosoftIfExistsExternalDeclaration(self) {
     }
     let mut Braces: BalancedDelimiterTracker = BalancedDelimiterTracker { *self, l_brace, semi };
     if Braces.consumeOpen() {
-         << l_brace;
+        self.Diag(self.Tok, err_expected) << l_brace;
         return;
     }
     match Result.Behavior {
@@ -1428,19 +1478,19 @@ fn Parser::ParseMicrosoftIfExistsExternalDeclaration(self) {
             break;
         },
         Dependent => {
-            llvm_unreachable_internal("Cannot have a dependent external declaration", "clang\\lib\\Parse\\Parser.cpp", 2322);
+            llvm_unreachable_internal("Cannot have a dependent external declaration", "P:/Goraw/llvm-project/clang/lib/Parse/Parser.cpp", 2322);
         },
         Skip => {
             Braces.skipToEnd();
         },
     }
     while self.Tok.isNot(r_brace) && !self.isEofOrEom() {
-        let mut Attrs: ParsedAttributes = zeroed();
+        let mut Attrs: ParsedAttributes = self.AttrFactory;
         self.MaybeParseCXX11Attributes(Attrs, false);
-        let mut EmptyDeclSpecAttrs: ParsedAttributes = zeroed();
-        let mut Result: DeclGroupPtrTy = zeroed();
-        if Result() && !self.getCurScope().getParent() {
-            self.Actions.getASTConsumer().HandleTopLevelDecl();
+        let mut EmptyDeclSpecAttrs: ParsedAttributes = self.AttrFactory;
+        let mut Result: DeclGroupPtrTy = self.ParseExternalDeclaration(Attrs, EmptyDeclSpecAttrs, null);
+        if Result && !self.getCurScope().getParent() {
+            self.Actions.getASTConsumer().HandleTopLevelDecl(Result.get());
         }
     }
     Braces.consumeClose();
@@ -1453,56 +1503,56 @@ fn Parser::ParseModuleDecl(self, ImportState: *mut ModuleImportState) -> DeclGro
     assert!(self.Tok.is(kw_module), "not a module declaration");
     let mut ModuleLoc: SourceLocation = self.ConsumeToken();
     self.DiagnoseAndSkipCXX11Attributes();
-    if self.getLangOpts() && self.Tok.is(semi) {
+    if self.getLangOpts().CPlusPlusModules && self.Tok.is(semi) {
         let mut SemiLoc: SourceLocation = self.ConsumeToken();
         if ImportState != FirstDecl || Introducer.hasSeenNoTrivialPPDirective() {
-             << SourceRange { B: StartLoc, E: SemiLoc };
+            self.Diag(StartLoc, err_global_module_introducer_not_at_start) << SourceRange { B: StartLoc, E: SemiLoc };
             return null;
         }
         if MDK == Interface {
-             << 0 << CreateRemoval(StartLoc);
+            self.Diag(StartLoc, err_module_fragment_exported) << 0 << CreateRemoval(StartLoc);
         }
         ImportState = GlobalFragment;
-        return self.Actions.ActOnGlobalModuleFragmentDecl;
+        return self.Actions.ActOnGlobalModuleFragmentDecl(ModuleLoc);
     }
-    if self.getLangOpts() && self.Tok.is(colon) && self.NextToken().is(kw_private) {
+    if self.getLangOpts().CPlusPlusModules && self.Tok.is(colon) && self.NextToken().is(kw_private) {
         if MDK == Interface {
-             << 1 << CreateRemoval(StartLoc);
+            self.Diag(StartLoc, err_module_fragment_exported) << 1 << CreateRemoval(StartLoc);
         }
         self.ConsumeToken();
         let mut PrivateLoc: SourceLocation = self.ConsumeToken();
         self.DiagnoseAndSkipCXX11Attributes();
-        self.ExpectAndConsumeSemi;
-        let mut Result: auto = self.Actions.ActOnPrivateModuleFragmentDecl;
-        if Result() {
+        self.ExpectAndConsumeSemi(err_private_module_fragment_expected_semi, "");
+        let mut Result: DeclGroupPtrTy = self.Actions.ActOnPrivateModuleFragmentDecl(ModuleLoc, PrivateLoc);
+        if Result {
             ImportState = if ImportState == ImportAllowed { PrivateFragmentImportAllowed } else { PrivateFragmentImportFinished };
         }
         return null;
     }
-    let mut Path: SmallVector<IdentifierLoc, 2> = zeroed();
-    if self.ParseModuleName(ModuleLoc, false) {
+    let mut Path: SmallVector<IdentifierLoc, 2> = SmallVector<IdentifierLoc, 2> {};
+    if self.ParseModuleName(ModuleLoc, Path, false) {
         return null;
     }
-    let mut Partition: SmallVector<IdentifierLoc, 2> = zeroed();
+    let mut Partition: SmallVector<IdentifierLoc, 2> = SmallVector<IdentifierLoc, 2> {};
     if self.Tok.is(colon) {
         let mut ColonLoc: SourceLocation = self.ConsumeToken();
-        if operator!(self.getLangOpts()) {
-            << ColonLoc;
-        } else if self.ParseModuleName(ModuleLoc, false) {
+        if !self.getLangOpts().CPlusPlusModules {
+            self.Diag(ColonLoc, err_unsupported_module_partition) << SourceRange { B: ColonLoc, E: Partition.back().getLoc() };
+        } else if self.ParseModuleName(ModuleLoc, Partition, false) {
             return null;
         }
     }
-    if self.Tok {
-         << self.PP;
+    if self.Tok.isNoneOf(semi, l_square, eof) {
+        self.Diag(self.Tok, err_unexpected_tok_after_module_name) << self.PP.getSpelling(self.Tok, null);
         self.SkipUntil(semi, StopBeforeMatch);
     }
-    let mut Attrs: ParsedAttributes = zeroed();
+    let mut Attrs: ParsedAttributes = self.AttrFactory;
     self.MaybeParseCXX11Attributes(Attrs, false);
-    self.ProhibitCXX11Attributes;
-    if self.ExpectAndConsumeSemi {
+    self.ProhibitCXX11Attributes(Attrs, err_attribute_not_module_attr, err_keyword_not_module_attr, false, true);
+    if self.ExpectAndConsumeSemi(err_expected_semi_after_module_or_import, getKeywordSpelling(kw_module)) {
         self.SkipUntil(semi, 0 as SkipUntilFlags);
     }
-    return self.Actions.ActOnModuleDecl(StartLoc, ModuleLoc, MDK, ImportState, Introducer.hasSeenNoTrivialPPDirective());
+    return self.Actions.ActOnModuleDecl(StartLoc, ModuleLoc, MDK, Path, Partition, ImportState, Introducer.hasSeenNoTrivialPPDirective());
 }
 
 fn Parser::ParseModuleImport(self, AtLoc: SourceLocation, ImportState: *mut ModuleImportState) -> *mut Decl {
@@ -1512,7 +1562,7 @@ fn Parser::ParseModuleImport(self, AtLoc: SourceLocation, ImportState: *mut Modu
     assert!((if AtLoc.isInvalid() { self.Tok.is(kw_import) } else { self.Tok.isObjCAtKeyword(objc_import) }), "Improper start to module import");
     let mut IsObjCAtImport: bool = self.Tok.isObjCAtKeyword(objc_import);
     let mut ImportLoc: SourceLocation = self.ConsumeToken();
-    let mut Path: SmallVector<IdentifierLoc, 2> = zeroed();
+    let mut Path: SmallVector<IdentifierLoc, 2> = SmallVector<IdentifierLoc, 2> {};
     let mut IsPartition: bool = false;
     let mut HeaderUnit: *mut Module = null;
     if self.Tok.is(header_name) {
@@ -1522,22 +1572,22 @@ fn Parser::ParseModuleImport(self, AtLoc: SourceLocation, ImportState: *mut Modu
         self.ConsumeAnnotationToken();
     } else if self.Tok.is(colon) {
         let mut ColonLoc: SourceLocation = self.ConsumeToken();
-        if operator!(self.getLangOpts()) {
-            << ColonLoc;
-        } else if self.ParseModuleName(ColonLoc, true) {
+        if !self.getLangOpts().CPlusPlusModules {
+            self.Diag(ColonLoc, err_unsupported_module_partition) << SourceRange { B: ColonLoc, E: Path.back().getLoc() };
+        } else if self.ParseModuleName(ColonLoc, Path, true) {
             return null;
         } else {
             IsPartition = true;
         }
     } else {
-        if self.ParseModuleName(ImportLoc, true) {
+        if self.ParseModuleName(ImportLoc, Path, true) {
             return null;
         }
     }
-    let mut Attrs: ParsedAttributes = zeroed();
+    let mut Attrs: ParsedAttributes = self.AttrFactory;
     self.MaybeParseCXX11Attributes(Attrs, false);
-    self.ProhibitCXX11Attributes;
-    let mut IsCXX20NamedModuleImport: bool = self.getLangOpts() && !IsObjCAtImport && operator!();
+    self.ProhibitCXX11Attributes(Attrs, err_attribute_not_import_attr, err_keyword_not_import_attr, false, true);
+    let mut IsCXX20NamedModuleImport: bool = self.getLangOpts().CPlusPlusModules && !IsObjCAtImport && !Path.is_empty();
     if self.PP.hadModuleLoaderFatalFailure() && !IsCXX20NamedModuleImport {
         self.cutOffParsing();
         return null;
@@ -1552,7 +1602,7 @@ fn Parser::ParseModuleImport(self, AtLoc: SourceLocation, ImportState: *mut Modu
         },
         NotACXX20Module => {
             if IsPartition {
-                
+                self.Diag(ImportLoc, err_partition_import_outside_module);
             } else {
                 SeenError = false;
             }
@@ -1565,10 +1615,10 @@ fn Parser::ParseModuleImport(self, AtLoc: SourceLocation, ImportState: *mut Modu
         },
     }
     let mut LexedSemi: bool = false;
-    if self.getLangOpts() {
-        LexedSemi = operator!(self.ExpectAndConsumeSemi);
+    if self.getLangOpts().CPlusPlusModules {
+        LexedSemi = !self.ExpectAndConsumeSemi(err_expected_semi_after_module_or_import, getKeywordSpelling(kw_import));
     } else {
-        LexedSemi = operator!(self.ExpectAndConsumeSemi);
+        LexedSemi = !self.ExpectAndConsumeSemi(err_module_expected_semi, "");
     }
     if !LexedSemi {
         self.SkipUntil(semi, 0 as SkipUntilFlags);
@@ -1576,23 +1626,23 @@ fn Parser::ParseModuleImport(self, AtLoc: SourceLocation, ImportState: *mut Modu
     if SeenError {
         return null;
     }
-    let mut Import: i32 = 0;
+    let mut Import: DeclResult = false;
     if HeaderUnit {
-        Import() = self.Actions(StartLoc, ExportLoc, ImportLoc, HeaderUnit);
-    } else if operator!() {
-        Import() = self.Actions(StartLoc, ExportLoc, ImportLoc, IsPartition);
+        Import = self.Actions.ActOnModuleImport(StartLoc, ExportLoc, ImportLoc, HeaderUnit, ModuleIdPath {});
+    } else if !Path.is_empty() {
+        Import = self.Actions.ActOnModuleImport(StartLoc, ExportLoc, ImportLoc, Path, IsPartition);
     }
-    if Import()() {
+    if Import.isInvalid() {
         return null;
     }
     if IsObjCAtImport && AtLoc.isValid() {
         let mut SrcMgr: *mut SourceManager = self.PP.getSourceManager();
-        let mut FE: auto = SrcMgr()(SrcMgr.getFileID(AtLoc));
-        if FE() && parent_path(()())(".framework") {
-            self.Diags;
+        let mut FE: OptionalFileEntryRef = SrcMgr.getFileEntryRefForID(SrcMgr.getFileID(AtLoc));
+        if FE && parent_path(operator(FE).getDir().getName(), native).ends_with(".framework") {
+            self.Diags.Report(AtLoc, warn_atimport_in_framework_header);
         }
     }
-    return ();
+    return Import.get();
 }
 
 fn Parser::ParseModuleName(self, UseLoc: SourceLocation, Path: *mut SmallVectorImpl<IdentifierLoc>, IsImport: bool) -> bool {
@@ -1601,7 +1651,7 @@ fn Parser::ParseModuleName(self, UseLoc: SourceLocation, Path: *mut SmallVectorI
         return true;
     }
     let mut NameLoc: *mut ModuleNameLoc = self.Tok.getAnnotationValue() as *mut ModuleNameLoc;
-    Path()(NameLoc()()(), NameLoc()()());
+    Path.assign(NameLoc.getModuleIdPath().begin(), NameLoc.getModuleIdPath().end());
     self.ConsumeAnnotationToken();
     return false;
 }
@@ -1632,12 +1682,12 @@ fn Parser::parseMisplacedModuleImport(self) -> bool {
 }
 
 fn Parser::diagnoseUseOfC11Keyword(self, Tok: *Token) {
-     << Tok.getName();
+    self.Diag(Tok, if self.getLangOpts().C11 { warn_c11_compat_keyword } else { ext_c11_feature }) << Tok.getName();
 }
 
 fn BalancedDelimiterTracker::diagnoseOverflow(self) -> bool {
-    self.P << self.P.getLangOpts();
-    self.P;
+    self.P.Diag(self.P.Tok, err_bracket_depth_exceeded) << self.P.getLangOpts().BracketDepth;
+    self.P.Diag(self.P.Tok, note_bracket_depth);
     self.P.cutOffParsing();
     return true;
 }
@@ -1650,7 +1700,7 @@ fn BalancedDelimiterTracker::expectAndConsume(self, DiagID: u32, Msg: *u8, SkipT
         }
         return true;
     }
-    if self.getDepth() < self.P.getLangOpts() {
+    if self.getDepth() < self.P.getLangOpts().BracketDepth {
         return false;
     }
     return self.diagnoseOverflow();
@@ -1659,11 +1709,11 @@ fn BalancedDelimiterTracker::expectAndConsume(self, DiagID: u32, Msg: *u8, SkipT
 fn BalancedDelimiterTracker::diagnoseMissingClose(self) -> bool {
     assert!(!self.P.Tok.is(self.Close), "Should have consumed closing delimiter");
     if self.P.Tok.is(annot_module_end) {
-        self.P << self.Close;
+        self.P.Diag(self.P.Tok, err_missing_before_module_end) << self.Close;
     } else {
-        self.P << self.Close;
+        self.P.Diag(self.P.Tok, err_expected) << self.Close;
     }
-    self.P << self.Kind;
+    self.P.Diag(self.LOpen, note_matching) << self.Kind;
     if self.P.Tok.isNot(r_paren) && self.P.Tok.isNot(r_brace) && self.P.Tok.isNot(r_square) && self.P.SkipUntil(self.Close, self.FinalToken, StopAtSemi | StopBeforeMatch) && self.P.Tok.is(self.Close) {
         self.LClose = self.P.ConsumeAnyToken(false);
     }
@@ -1679,4 +1729,23 @@ struct Closure_1 {
     cap_0: *mut Parser,
 }
 
-fn Closure_1::call(self: *Closure_1, TypeStr: str, Context: str, IncludeLoc: SourceLocation) -> auto {}
+fn Closure_1::call(self: *Closure_1, TypeStr: str, Context: str, IncludeLoc: SourceLocation) -> TypeResult {
+        return self.ParseTypeFromString(TypeStr, Context, IncludeLoc);
+    }
+
+struct Closure_2 {
+    cap_0: *mut Parser,
+}
+
+fn Closure_2::call(self: *Closure_2) -> str {
+        return self.Tok.getLocation().printToString(self.Actions.getASTContext().getSourceManager());
+    }
+
+struct Closure_3 {
+    cap_0: *mut Parser,
+    D: *mut ParsingDeclarator,
+}
+
+unsafe fn Closure_3::call(self: *mut Closure_3) -> str {
+        return self.Actions.GetNameForDeclarator((*self.D)).getName().getAsString();
+    }

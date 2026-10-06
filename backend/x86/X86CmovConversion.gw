@@ -6,13 +6,13 @@ static mut NumOfLoopCandidate: Statistic = Statistic { "x86-cmov-conversion", "N
 
 static mut NumOfOptimizedCmovGroups: Statistic = Statistic { "x86-cmov-conversion", "NumOfOptimizedCmovGroups", "Number of optimized CMOV-groups" };
 
-static mut EnableCmovConverter: i32 = "x86-cmov-converter";
+static mut EnableCmovConverter: opt<bool> = opt<bool> { "x86-cmov-converter", "Enable the X86 cmov-to-branch optimization.", init(true), Hidden };
 
-static mut GainCycleThreshold: i32 = "x86-cmov-converter-threshold";
+static mut GainCycleThreshold: opt<unsigned int> = opt<unsigned int> { "x86-cmov-converter-threshold", "Minimum gain per loop (in cycles) threshold.", init(4), Hidden };
 
-static mut ForceMemOperand: i32 = "x86-cmov-converter-force-mem-operand";
+static mut ForceMemOperand: opt<bool> = opt<bool> { "x86-cmov-converter-force-mem-operand", "Convert cmovs to branches whenever they have memory operands.", init(true), Hidden };
 
-static mut ForceAll: i32 = "x86-cmov-converter-force-all";
+static mut ForceAll: opt<bool> = opt<bool> { "x86-cmov-converter-force-all", "Convert all cmovs to branches.", init(false), Hidden };
 
 struct X86CmovConversionImpl {
     MRI: *mut MachineRegisterInfo,
@@ -74,12 +74,12 @@ static mut ID: i8 = 0;
 
 fn X86CmovConversionLegacy::getAnalysisUsage(self: *X86CmovConversionLegacy, AU: *mut AnalysisUsage) {
     self.getAnalysisUsage(AU);
-    AU;
-    AU;
+    AU.addRequired();
+    AU.addPreserved();
 }
 
 fn X86CmovConversionImpl::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
-    if operator!() {
+    if !EnableCmovConverter {
         return false;
     }
     if !getCGPassBuilderOption().DisableSelectOptimize {
@@ -98,42 +98,171 @@ fn X86CmovConversionImpl::runOnMachineFunction(self, MF: *mut MachineFunction) -
     self.MRI = &mut MF.getRegInfo();
     self.TII = self.STI.getInstrInfo();
     self.TRI = self.STI.getRegisterInfo();
-    if ForceMemOperand() ||  {
-        let mut AllCmovGroups: CmovGroups = zeroed();
+    self.TSchedModel.init(self.STI, true, true);
+    if ForceMemOperand || ForceAll {
+        let mut AllCmovGroups: CmovGroups = CmovGroups {};
         let mut Blocks: SmallVector<MachineBasicBlock *, 4> = make_pointer_range(MF);
-        if self.collectCmovCandidates(Blocks, true) {}
-        if ForceAll() {
+        if self.collectCmovCandidates(Blocks, AllCmovGroups, true) {
+            for Group in AllCmovGroups {
+                if ForceMemOperand && !ForceAll && none_of(Group, Closure_1 {}) {
+                    continue;
+                }
+                Changed = true;
+                self.convertCmovInstsToBranches(Group);
+            }
+        }
+        if ForceAll {
             return Changed;
         }
     }
-    let mut Loops: SmallVector<MachineLoop *, 4> = zeroed();
-    for let mut i: i32 = 0; i < () as i32; i += 1 {
-        append_range([i]());
+    let mut Loops: SmallVector<MachineLoop *, 4> = SmallVector<MachineLoop *, 4> { self.MLI.begin(), self.MLI.end() };
+    for let mut i: i32 = 0; i < Loops.len as i32; i += 1 {
+        append_range(Loops, Loops[i].getSubLoops());
+    }
+    for CurrLoop in Loops {
+        if !CurrLoop.getSubLoops().is_empty() {
+            continue;
+        }
+        let mut CmovInstGroups: CmovGroups = CmovGroups {};
+        if !self.collectCmovCandidates(CurrLoop.getBlocks(), CmovInstGroups, false) {
+            continue;
+        }
+        if !self.checkForProfitableCmovCandidates(CurrLoop.getBlocks(), CmovInstGroups) {
+            continue;
+        }
+        Changed = true;
+        for Group in CmovInstGroups {
+            self.convertCmovInstsToBranches(Group);
+        }
     }
     return Changed;
 }
 
 fn X86CmovConversionImpl::collectCmovCandidates(self, Blocks: ArrayRef<MachineBasicBlock *>, CmovInstGroups: *mut CmovGroups, IncludeLoads: bool) -> bool {
-    let mut Group: CmovGroup = zeroed();
-    operator+=(NumOfCmovGroupCandidate, CmovInstGroups()());
-    return operator!(CmovInstGroups()());
+    let mut Group: CmovGroup = CmovGroup {};
+    for MBB in Blocks {
+        Group.clear();
+        let mut FirstCC: CondCode = COND_INVALID;
+        let mut FirstOppCC: CondCode = COND_INVALID;
+        let mut MemOpCC: CondCode = COND_INVALID;
+        let mut FoundNonCMOVInst: bool = false;
+        let mut SkipGroup: bool = false;
+        for I in *MBB {
+            if I.isDebugInstr() {
+                continue;
+            }
+            let mut CC: CondCode = getCondFromCMov(I);
+            if CC != COND_INVALID && !I.getFlag(Unpredictable) && (IncludeLoads || !I.mayLoad(AnyInBundle)) && !I.hasOrderedMemoryRef() {
+                if Group.is_empty() {
+                    FirstCC = CC;
+                    FirstOppCC = GetOppositeBranchCondition(CC);
+                    MemOpCC = COND_INVALID;
+                    FoundNonCMOVInst = false;
+                    SkipGroup = false;
+                }
+                Group.push(&mut I);
+                if FoundNonCMOVInst || (CC != FirstCC && CC != FirstOppCC) {
+                    SkipGroup = true;
+                }
+                if I.mayLoad(AnyInBundle) {
+                    if MemOpCC == COND_INVALID {
+                        MemOpCC = CC;
+                    } else if CC != MemOpCC {
+                        SkipGroup = true;
+                    }
+                }
+                if !SkipGroup && any_of(self.MRI.use_nodbg_instructions(I.defs().begin().getReg()), Closure_2 {}) {
+                    SkipGroup = true;
+                }
+                continue;
+            }
+            if Group.is_empty() {
+                continue;
+            }
+            FoundNonCMOVInst = true;
+            if I.definesRegister(EFLAGS, null) {
+                if !SkipGroup {
+                    CmovInstGroups.push(Group);
+                } else {
+                    operator(NumOfSkippedCmovGroups);
+                }
+                Group.clear();
+            }
+        }
+        if Group.is_empty() {
+            continue;
+        }
+        if !SkipGroup {
+            CmovInstGroups.push(Group);
+        } else {
+            operator(NumOfSkippedCmovGroups);
+        }
+    }
+    operator(NumOfCmovGroupCandidate, CmovInstGroups.len);
+    return !CmovInstGroups.is_empty();
 }
 
 fn getDepthOfOptCmov(TrueOpDepth: u32, FalseOpDepth: u32) -> u32 {
-    return max(divideCeil(TrueOpDepth * 3 + FalseOpDepth, 4), divideCeil(FalseOpDepth * 3 + TrueOpDepth, 4));
+    return if divideCeil(TrueOpDepth * 3 + FalseOpDepth, 4) > divideCeil(FalseOpDepth * 3 + TrueOpDepth, 4) { divideCeil(TrueOpDepth * 3 + FalseOpDepth, 4) } else { divideCeil(FalseOpDepth * 3 + TrueOpDepth, 4) };
 }
 
 fn X86CmovConversionImpl::checkForProfitableCmovCandidates(self, Blocks: ArrayRef<MachineBasicBlock *>, CmovInstGroups: *mut CmovGroups) -> bool {
     let mut LoopIterations: u32 = 2;
-    let mut DepthMap: i32 = 0;
+    let mut DepthMap: DenseMap<MachineInstr *, DepthInfo> = DenseMap<MachineInstr *, DepthInfo> {};
     let mut LoopDepth: [2]DepthInfo = [DepthInfo { 0, 0 }, DepthInfo { 0, 0 }];
-    let mut RegDefMaps: [2]i32 = ;
-    let mut OperandToDefMap: i32 = ;
-    DepthMap()[null] = void { 0, 0 };
-    let mut CmovInstructions: SmallPtrSet<MachineInstr *, 4> = zeroed();
-    for MaxDepth in LoopDepth[..] {}
+    let mut RegDefMaps: [2]DenseMap<Register, MachineInstr *> = [2]DenseMap<Register, MachineInstr *> {};
+    let mut OperandToDefMap: DenseMap<MachineOperand *, MachineInstr *> = DenseMap<MachineOperand *, MachineInstr *> {};
+    DepthMap[null] = DepthInfo { 0, 0 };
+    let mut CmovInstructions: SmallPtrSet<MachineInstr *, 4> = SmallPtrSet<MachineInstr *, 4> {};
+    for Group in CmovInstGroups {
+        CmovInstructions.insert_range(Group);
+    }
+    for MaxDepth in LoopDepth[..] {
+        for MBB in Blocks {
+            RegDefMaps[PhyRegType].clear();
+            for MI in *MBB {
+                if MI.isDebugInstr() {
+                    continue;
+                }
+                let mut MIDepth: u32 = 0;
+                let mut MIDepthOpt: u32 = 0;
+                let mut IsCMOV: bool = CmovInstructions.count(&mut MI);
+                for MO in MI.uses() {
+                    if !MO.isReg() || !MO.isUse() {
+                        continue;
+                    }
+                    let mut Reg: Register = MO.getReg();
+                    let mut RDM: *mut DenseMap<Register, MachineInstr *> = RegDefMaps[Reg.isVirtual()];
+                    if RDM.lookup(Reg) {
+                        DefMI;
+                    } else {
+                        OperandToDefMap[&mut MO] = DefMI;
+                        let mut Info: DepthInfo = DepthMap.lookup(DefMI);
+                        MIDepth = if MIDepth > Info.Depth { MIDepth } else { Info.Depth };
+                        if !IsCMOV {
+                            MIDepthOpt = if MIDepthOpt > Info.OptDepth { MIDepthOpt } else { Info.OptDepth };
+                        }
+                    }
+                }
+                if IsCMOV {
+                    MIDepthOpt = getDepthOfOptCmov(DepthMap[OperandToDefMap.lookup(&mut MI.getOperand(1))].OptDepth, DepthMap[OperandToDefMap.lookup(&mut MI.getOperand(2))].OptDepth);
+                }
+                for MO in MI.operands() {
+                    if !MO.isReg() || !MO.isDef() {
+                        continue;
+                    }
+                    let mut Reg: Register = MO.getReg();
+                    RegDefMaps[Reg.isVirtual()][Reg] = &mut MI;
+                }
+                let mut Latency: u32 = self.TSchedModel.computeInstrLatency(&mut MI, true);
+                DepthMap[&mut MI] = DepthInfo { MIDepth += Latency, MIDepthOpt += Latency };
+                MaxDepth.Depth = if MaxDepth.Depth > MIDepth { MaxDepth.Depth } else { MIDepth };
+                MaxDepth.OptDepth = if MaxDepth.OptDepth > MIDepthOpt { MaxDepth.OptDepth } else { MIDepthOpt };
+            }
+        }
+    }
     let mut Diff: [2]u32 = [LoopDepth[0].Depth - LoopDepth[0].OptDepth, LoopDepth[1].Depth - LoopDepth[1].OptDepth];
-    if Diff[1] <  {
+    if Diff[1] < GainCycleThreshold.operator unsigned int() {
         return false;
     }
     let mut WorthOptLoop: bool = false;
@@ -147,28 +276,50 @@ fn X86CmovConversionImpl::checkForProfitableCmovCandidates(self, Blocks: ArrayRe
     }
     operator(NumOfLoopCandidate);
     let mut MispredictPenalty: u32 = self.STI.getMispredictionPenalty();
-    let mut TempGroups: CmovGroups = zeroed();
-    swap(CmovInstGroups);
-    return operator!(CmovInstGroups()());
+    let mut TempGroups: CmovGroups = CmovGroups {};
+    swap(TempGroups, CmovInstGroups);
+    for Group in TempGroups {
+        let mut WorthOpGroup: bool = true;
+        for MI in Group {
+            let mut UIs: iterator_range<use_instr_iterator> = self.MRI.use_instructions(MI.defs().begin().getReg());
+            if hasSingleElement(UIs) {
+                let mut Op: u32 = operator(UIs.begin()).getOpcode();
+                if Op == MOV64rm || Op == MOV32rm {
+                    WorthOpGroup = false;
+                    break;
+                }
+            }
+            let mut CondCost: u32 = DepthMap[OperandToDefMap.lookup(&mut MI.getOperand(4))].Depth;
+            let mut ValCost: u32 = getDepthOfOptCmov(DepthMap[OperandToDefMap.lookup(&mut MI.getOperand(1))].Depth, DepthMap[OperandToDefMap.lookup(&mut MI.getOperand(2))].Depth);
+            if ValCost > CondCost || (CondCost - ValCost) * 4 < MispredictPenalty {
+                WorthOpGroup = false;
+                break;
+            }
+        }
+        if WorthOpGroup {
+            CmovInstGroups.push(Group);
+        }
+    }
+    return !CmovInstGroups.is_empty();
 }
 
 fn checkEFLAGSLive(MI: *mut MachineInstr) -> bool {
-    if MI.killsRegister {
+    if MI.killsRegister(EFLAGS, null) {
         return false;
     }
     let mut BB: *mut MachineBasicBlock = MI.getParent();
-    let mut ItrMI: iterator = iterator { MI };
-    for let mut I: auto = next(ItrMI);
-let mut E: iterator = BB.end(); I() != E;  += 1 {
-        if I() {
+    let mut ItrMI: iterator = MI;
+    for let mut I: MachineInstr> = next(ItrMI, 1);
+let mut E: iterator = BB.end(); I != E; operator(I) {
+        if operator(I).readsRegister(EFLAGS, null) {
             return true;
         }
-        if I() {
+        if operator(I).definesRegister(EFLAGS, null) {
             return false;
         }
     }
     for Succ in BB.successors() {
-        if Succ.isLiveIn {
+        if Succ.isLiveIn(EFLAGS, getAll()) {
             return true;
         }
     }
@@ -177,112 +328,138 @@ let mut E: iterator = BB.end(); I() != E;  += 1 {
 
 fn packCmovGroup(First: *mut MachineInstr, Last: *mut MachineInstr) {
     assert!(getCondFromCMov(*Last) != COND_INVALID, "Last instruction in a CMOV group must be a CMOV instruction");
-    let mut DBGInstructions: SmallVector<MachineInstr *, 2> = zeroed();
+    let mut DBGInstructions: SmallVector<MachineInstr *, 2> = SmallVector<MachineInstr *, 2> {};
     for let mut I: self_iterator = First.getIterator();
 let mut E: self_iterator = Last.getIterator(); I != E; operator(I, 0) {
         if operator(I).isDebugInstr() {
-            DBGInstructions()(&mut operator(I));
+            DBGInstructions.push(&mut operator(I));
         }
     }
     let mut MBB: *mut MachineBasicBlock = First.getParent();
+    for MI in DBGInstructions {
+        MBB.insertAfter(Last, MI.removeFromParent());
+    }
 }
 
 fn X86CmovConversionImpl::convertCmovInstsToBranches(self: *X86CmovConversionImpl, Group: *mut SmallVectorImpl<MachineInstr *>) {
-    (((operator!(operator!((operator!(Group()()) && "No CMOV instructions to convert")))) || (_wassert(L"!Group.empty() && \"No CMOV instructions to convert\"", L"llvm\\lib\\Target\\X86\\X86CmovConversion.cpp", (635) as u32) , 0)) as void);
+    assert!(!Group.is_empty(), "No CMOV instructions to convert");
     operator(NumOfOptimizedCmovGroups);
-    packCmovGroup(Group()(), Group()());
-    let mut MI: *mut MachineInstr = operator*(Group()());
-    let mut LastCMOV: *mut MachineInstr = Group()();
+    packCmovGroup(Group.front(), Group.back());
+    let mut MI: *mut MachineInstr = *Group.front();
+    let mut LastCMOV: *mut MachineInstr = Group.back();
     let mut DL: DebugLoc = MI.getDebugLoc();
     let mut CC: CondCode = getCondFromCMov(MI);
     let mut OppCC: CondCode = GetOppositeBranchCondition(CC);
-    if any_of(Group, Closure_1 { CC: &mut CC }) {
+    if any_of(Group, Closure_3 { CC: &mut CC }) {
         swap(CC, OppCC);
     }
     let mut MBB: *mut MachineBasicBlock = MI.getParent();
-    let mut It: iterator = iterator { operator(MBB.getIterator()) };
+    let mut It: iterator = operator(MBB.getIterator());
     let mut F: *mut MachineFunction = MBB.getParent();
     let mut BB: *BasicBlock = MBB.getBasicBlock();
-    let mut FalseMBB: *mut MachineBasicBlock = F.CreateMachineBasicBlock(BB, optional<UniqueBBID> { nullopt });
-    let mut SinkMBB: *mut MachineBasicBlock = F.CreateMachineBasicBlock(BB, optional<UniqueBBID> { nullopt });
-    F.insert(iterator { It }, FalseMBB);
-    F.insert(iterator { It }, SinkMBB);
+    let mut FalseMBB: *mut MachineBasicBlock = F.CreateMachineBasicBlock(BB, nullopt);
+    let mut SinkMBB: *mut MachineBasicBlock = F.CreateMachineBasicBlock(BB, nullopt);
+    F.insert(It, FalseMBB);
+    F.insert(It, SinkMBB);
     if checkEFLAGSLive(LastCMOV) {
-        FalseMBB;
-        SinkMBB;
+        FalseMBB.addLiveIn(EFLAGS, getAll());
+        SinkMBB.addLiveIn(EFLAGS, getAll());
     }
-    SinkMBB(SinkMBB.begin(), MBB, next(iterator { LastCMOV }), MBB.end());
+    SinkMBB.splice(SinkMBB.begin(), MBB, next(LastCMOV, 1), MBB.end());
     SinkMBB.transferSuccessorsAndUpdatePHIs(MBB);
     MBB.addSuccessor(FalseMBB, getUnknown());
     MBB.addSuccessor(SinkMBB, getUnknown());
-    BuildMI(MBB, DL, self.TII.get)(SinkMBB)(CC);
+    BuildMI(MBB, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(JCC_1)).addMBB(SinkMBB, 0).addImm(CC);
     FalseMBB.addSuccessor(SinkMBB, getUnknown());
     let mut MIB: MachineInstrBuilder = MachineInstrBuilder {};
     let mut MIItBegin: iterator = MI;
-    let mut MIItEnd: iterator = next(iterator { LastCMOV });
+    let mut MIItEnd: iterator = next(LastCMOV, 1);
     let mut FalseInsertionPoint: iterator = FalseMBB.begin();
     let mut SinkInsertionPoint: iterator = SinkMBB.begin();
-    let mut FalseBBRegRewriteTable: i32 = 0;
-    for let mut MIIt: iterator = iterator { MIItBegin }; MIIt != MIItEnd;  {
-        let mut MI: *mut auto = operator(operator(MIIt, 0));
-        if operator!() {
-            let mut FalseReg: Register = (if getCondFromCMov() == CC { 1 } else { 2 })();
+    let mut FalseBBRegRewriteTable: DenseMap<Register, Register> = DenseMap<Register, Register> {};
+    for let mut MIIt: iterator = MIItBegin; MIIt != MIItEnd;  {
+        let mut MI: *mut MachineInstr = operator(operator(MIIt, 0));
+        if !MI.mayLoad(AnyInBundle) {
+            let mut FalseReg: Register = MI.getOperand(if getCondFromCMov(MI) == CC { 1 } else { 2 }).getReg();
             while true {
-                let mut FRIt: auto = (FalseReg);
-                if FRIt() == () {
+                let mut FRIt: iterator = FalseBBRegRewriteTable.find(FalseReg);
+                if FRIt == FalseBBRegRewriteTable.end() {
                     break;
                 }
-                FalseReg = ;
+                FalseReg = operator(FRIt).second;
             }
-            FalseBBRegRewriteTable()[(0)()] = FalseReg;
+            FalseBBRegRewriteTable[MI.getOperand(0).getReg()] = FalseReg;
             continue;
         }
-        (((operator!(operator!((getCondFromCMov() == OppCC && "Can only handle memory-operand cmov instructions with a condition opposite to the selected branch direction.")))) || (_wassert(L"X86::getCondFromCMov(MI) == OppCC && \"Can only handle memory-operand cmov instructions with a condition \" \"opposite to the selected branch direction.\"", L"llvm\\lib\\Target\\X86\\X86CmovConversion.cpp", (754) as u32) , 0)) as void);
-        let mut RC: *TargetRegisterClass = self.MRI.getRegClass((0)());
+        assert!(getCondFromCMov(MI) == OppCC, "Can only handle memory-operand cmov instructions with a condition opposite to the selected branch direction.");
+        let mut RC: *TargetRegisterClass = self.MRI.getRegClass(MI.getOperand(0).getReg());
         let mut TmpReg: Register = self.MRI.createVirtualRegister(RC, "");
-        let mut OldDebugInstrNum: u32 = ();
-        let mut NewMIs: SmallVector<MachineInstr *, 4> = zeroed();
-        let mut Unfolded: bool = self.TII(*MBB.getParent(), TmpReg, true, false);
+        let mut OldDebugInstrNum: u32 = MI.peekDebugInstrNum();
+        let mut NewMIs: SmallVector<MachineInstr *, 4> = SmallVector<MachineInstr *, 4> {};
+        let mut Unfolded: bool = self.TII.unfoldMemoryOperand(*MBB.getParent(), MI, TmpReg, true, false, NewMIs);
         Unfolded as void;
         assert!(Unfolded, "Should never fail to unfold a loading cmov!");
-        let mut NewCMOV: *mut auto = ();
-        (((operator!(operator!((getCondFromCMov(operator*()) == OppCC && "Last new instruction isn't the expected CMOV!")))) || (_wassert(L"X86::getCondFromCMov(*NewCMOV) == OppCC && \"Last new instruction isn't the expected CMOV!\"", L"llvm\\lib\\Target\\X86\\X86CmovConversion.cpp", (794) as u32) , 0)) as void);
+        let mut NewCMOV: *mut MachineInstr = NewMIs.pop_back_val();
+        assert!(getCondFromCMov(*NewCMOV) == OppCC, "Last new instruction isn't the expected CMOV!");
         while true {
             {
             if DebugFlag && isCurrentDebugType("x86-cmov-conversion", 1) {
                 dbgs() << "\tRewritten cmov: ";
-                NewCMOV()();
+                NewCMOV.dump();
             }
         }
             if !(false) { break; }
         }
-        MBB();
-        if &mut operator(MIItBegin) == operator&() {
-            MIItBegin = ;
+        MBB.insert(MI, NewCMOV);
+        if &mut operator(MIItBegin) == &mut MI {
+            MIItBegin = NewCMOV;
         }
         if OldDebugInstrNum {
-            NewCMOV()(OldDebugInstrNum);
+            NewCMOV.setDebugInstrNum(OldDebugInstrNum);
         }
-        MBB(operator&());
-        FalseBBRegRewriteTable()[(0)()] = TmpReg;
+        for NewMI in NewMIs {
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("x86-cmov-conversion", 1) {
+                    dbgs() << "\tRewritten load instr: ";
+                    NewMI.dump();
+                }
+            }
+                if !(false) { break; }
+            }
+            FalseMBB.insert(FalseInsertionPoint, NewMI);
+            for MOp in NewMI.uses() {
+                if !MOp.isReg() {
+                    continue;
+                }
+                let mut It: iterator = FalseBBRegRewriteTable.find(MOp.getReg());
+                if It == FalseBBRegRewriteTable.end() {
+                    continue;
+                }
+                MOp.setReg(operator(It).second);
+                MOp.setIsKill(false);
+            }
+        }
+        MBB.erase(&mut MI);
+        FalseBBRegRewriteTable[NewCMOV.getOperand(0).getReg()] = TmpReg;
     }
-    let mut RegRewriteTable: i32 = 0;
-    for let mut MIIt: iterator = iterator { MIItBegin }; MIIt != MIItEnd; operator(MIIt) {
+    let mut RegRewriteTable: pair<Register, Register>> = pair<Register, Register>> {};
+    for let mut MIIt: iterator = MIItBegin; MIIt != MIItEnd; operator(MIIt) {
         let mut DestReg: Register = operator(MIIt).getOperand(0).getReg();
         let mut Op1Reg: Register = operator(MIIt).getOperand(1).getReg();
         let mut Op2Reg: Register = operator(MIIt).getOperand(2).getReg();
         if getCondFromCMov(operator(MIIt)) == OppCC {
             swap(Op1Reg, Op2Reg);
         }
-        let mut Op1Itr: auto = (Op1Reg);
-        if Op1Itr() != () {
-            Op1Reg = ;
+        let mut Op1Itr: iterator = RegRewriteTable.find(Op1Reg);
+        if Op1Itr != RegRewriteTable.end() {
+            Op1Reg = operator(Op1Itr).second.first;
         }
-        let mut Op2Itr: auto = (Op2Reg);
-        if Op2Itr() != () {
-            Op2Reg = ;
+        let mut Op2Itr: iterator = RegRewriteTable.find(Op2Reg);
+        if Op2Itr != RegRewriteTable.end() {
+            Op2Reg = operator(Op2Itr).second.second;
         }
-        MIB = BuildMI(*SinkMBB, SinkInsertionPoint, DL, self.TII.get, DestReg)(Op1Reg)(FalseMBB)(Op2Reg)(MBB);
+        MIB = BuildMI(*SinkMBB, SinkInsertionPoint, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(PHI), DestReg).addReg(Op1Reg, RegState {}, 0).addMBB(FalseMBB, 0).addReg(Op2Reg, RegState {}, 0).addMBB(MBB, 0);
         MIB as void;
         while true {
             {
@@ -307,17 +484,17 @@ fn X86CmovConversionImpl::convertCmovInstsToBranches(self: *X86CmovConversionImp
         } else {
             operator(MIB).setDebugInstrNum(InstrNum);
         }
-        RegRewriteTable()[DestReg] = make_pair(Op1Reg, Op2Reg);
+        RegRewriteTable[DestReg] = make_pair(Op1Reg, Op2Reg);
     }
     if MIItBegin != MIItEnd {
         F.getProperties().resetNoPHIs();
     }
-    MBB.erase(iterator { MIItBegin }, iterator { MIItEnd });
-    if self.MLI(MBB) {
+    MBB.erase(MIItBegin, MIItEnd);
+    if self.MLI.getLoopFor(MBB) {
         L;
     } else {
-        L()(FalseMBB, *self.MLI);
-        L()(SinkMBB, *self.MLI);
+        L.addBasicBlockToLoop(FalseMBB, *self.MLI);
+        L.addBasicBlockToLoop(SinkMBB, *self.MLI);
     }
 }
 
@@ -329,20 +506,34 @@ fn X86CmovConversionLegacy::runOnMachineFunction(self, MF: *mut MachineFunction)
     if self.skipFunction(MF.getFunction()) {
         return false;
     }
-    let mut MLI: *mut MachineLoopInfo = operator&();
-    let mut Impl: X86CmovConversionImpl = X86CmovConversionImpl { MLI };
+    let mut MLI: *mut MachineLoopInfo = &mut self.getAnalysis().getLI();
+    let mut Impl: X86CmovConversionImpl = MLI;
     return Impl.runOnMachineFunction(MF);
 }
 
 fn X86CmovConversionPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
-    let mut MLI: *mut MachineLoopInfo = operator&(MFAM);
-    let mut Impl: X86CmovConversionImpl = X86CmovConversionImpl { MLI };
+    let mut MLI: *mut MachineLoopInfo = &mut MFAM.getResult(MF);
+    let mut Impl: X86CmovConversionImpl = MLI;
     let mut Changed: bool = Impl.runOnMachineFunction(MF);
     return if Changed { getMachineFunctionPassPreservedAnalyses() } else { all() };
 }
 
-struct Closure_1 {
+struct Closure_1 {}
+
+fn Closure_1::call(self: *Closure_1, I: *mut MachineInstr) -> bool {
+                    return I.mayLoad(AnyInBundle);
+                }
+
+struct Closure_2 {}
+
+fn Closure_2::call(self: *Closure_2, UseI: *mut MachineInstr) -> bool {
+                    return UseI.getOpcode() == SUBREG_TO_REG;
+                }
+
+struct Closure_3 {
     CC: *mut CondCode,
 }
 
-unsafe fn Closure_1::call(self: *mut Closure_1, I: *mut MachineInstr) -> auto {}
+unsafe fn Closure_3::call(self: *mut Closure_3, I: *mut MachineInstr) -> bool {
+        return I.mayLoad(AnyInBundle) && getCondFromCMov(*I) == (*self.CC);
+    }

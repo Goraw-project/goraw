@@ -1,4 +1,4 @@
-static mut IndirectBranchTracking: i32 = "x86-indirect-branch-tracking";
+static mut IndirectBranchTracking: opt<bool> = opt<bool> { "x86-indirect-branch-tracking", init(false), Hidden, "Enable X86 indirect branch tracking pass." };
 
 static mut NumEndBranchAdded: Statistic = Statistic { "x86-indirect-branch-tracking", "NumEndBranchAdded", "Number of ENDBR instructions added" };
 
@@ -51,12 +51,13 @@ fn X86IndirectBranchTrackingLegacy::getClearedProperties(self: *X86IndirectBranc
 
 fn addENDBR(MBB: *mut MachineBasicBlock, I: iterator) -> bool {
     let mut MF: *mut MachineFunction = *MBB.getParent();
-    let mut SubTarget: *X86Subtarget = MF;
+    let mut SubTarget: *X86Subtarget = MF.getSubtarget();
     let mut TII: *X86InstrInfo = SubTarget.getInstrInfo();
-    let mut EndbrOpcode: u32 = 0;
+    let mut EndbrOpcode: u32 = if SubTarget.is64Bit() { ENDBR64 } else { ENDBR32 };
     assert!(TII, "Target instruction info was not initialized");
+    assert!((ENDBR64 == EndbrOpcode || ENDBR32 == EndbrOpcode), "Unexpected Endbr opcode");
     if I == MBB.end() || operator(I).getOpcode() != EndbrOpcode {
-        BuildMI(MBB, I, MBB.findDebugLoc(iterator { I }), TII()(EndbrOpcode));
+        BuildMI(MBB, I, MIMetadata { DL: MBB.findDebugLoc(I), PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(EndbrOpcode));
         operator(NumEndBranchAdded);
         return true;
     }
@@ -73,11 +74,11 @@ fn IsCallReturnTwice(MOp: *mut MachineOperand) -> bool {
     if !MOp.isGlobal() {
         return false;
     }
-    let mut CalleeFn: *mut auto = dyn_cast(MOp.getGlobal());
-    if operator!() {
+    let mut CalleeFn: *Function = dyn_cast(MOp.getGlobal());
+    if !CalleeFn {
         return false;
     }
-    let mut Attrs: AttributeList = ();
+    let mut Attrs: AttributeList = CalleeFn.getAttributes();
     return Attrs.hasFnAttr(ReturnsTwice);
 }
 
@@ -99,9 +100,9 @@ fn needsPrologueENDBR(MF: *mut MachineFunction, M: *Module) -> bool {
 fn runIndirectBranchTracking(MF: *mut MachineFunction) -> bool {
     let mut M: *Module = MF.getFunction().getParent();
     let mut isCFProtectionSupported: *mut Metadata = M.getModuleFlag("cf-protection-branch");
-    let mut TM: *X86TargetMachine = null;
+    let mut TM: *X86TargetMachine = &mut MF.getTarget() as *X86TargetMachine;
     let mut isJITwithCET: bool = false;
-    if !isCFProtectionSupported && operator!() && !isJITwithCET {
+    if !isCFProtectionSupported && !IndirectBranchTracking && !isJITwithCET {
         return false;
     }
     let mut Changed: bool = false;
@@ -115,23 +116,23 @@ fn runIndirectBranchTracking(MF: *mut MachineFunction) -> bool {
         }
         for let mut I: iterator = MBB.begin(); I != MBB.end(); operator(I) {
             if operator(I).isCall(AnyInBundle) && operator(I).getNumOperands() > 0 && IsCallReturnTwice(operator(I).getOperand(0)) {
-                operator|=(Changed, addENDBR(MBB, next(I)));
+                Changed |= addENDBR(MBB, next(I, 1));
             }
         }
-        if TM() == SjLj {
+        if TM.Options.ExceptionModel == SjLj {
             for let mut I: iterator = MBB.begin(); I != MBB.end(); operator(I) {
                 if MBB.isEHPad() {
                     if operator(I).isDebugInstr() {
                         continue;
                     }
-                    Changed |= addENDBR(MBB, iterator { I });
+                    Changed |= addENDBR(MBB, I);
                     break;
                 } else if operator(I).isEHLabel() {
                     let mut Sym: *mut MCSymbol = operator(I).getOperand(0).getMCSymbol();
                     if !MF.hasCallSiteLandingPad(Sym) {
                         continue;
                     }
-                    operator|=(Changed, addENDBR(MBB, next(I)));
+                    Changed |= addENDBR(MBB, next(I, 1));
                     break;
                 }
             }
@@ -140,7 +141,7 @@ fn runIndirectBranchTracking(MF: *mut MachineFunction) -> bool {
                 if !operator(I).isEHLabel() {
                     continue;
                 }
-                operator|=(Changed, addENDBR(MBB, next(I)));
+                Changed |= addENDBR(MBB, next(I, 1));
                 break;
             }
         }
@@ -153,5 +154,5 @@ fn X86IndirectBranchTrackingLegacy::runOnMachineFunction(self, MF: *mut MachineF
 }
 
 fn X86IndirectBranchTrackingPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
-    return if runIndirectBranchTracking(MF) { getMachineFunctionPassPreservedAnalyses() } else { all() };
+    return if runIndirectBranchTracking(MF) { getMachineFunctionPassPreservedAnalyses().preserveSet() } else { all() };
 }

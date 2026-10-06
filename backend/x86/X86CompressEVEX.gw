@@ -1,4 +1,4 @@
-static mut X86EnableAPXForRelocation: i32 = 0;
+static mut X86EnableAPXForRelocation: opt<bool> = zeroed();
 
 struct CompressEVEXLegacy {
     Resolver: *mut AnalysisResolver,
@@ -51,6 +51,16 @@ static mut ID: i8 = 0;
 
 fn usesExtendedRegister(MI: *MachineInstr) -> bool {
     let mut isHiRegIdx: Closure_1 = Closure_1 {};
+    for MO in MI.explicit_operands() {
+        if !MO.isReg() {
+            continue;
+        }
+        let mut Reg: MCRegister = MO.getReg().asMCReg();
+        assert!(!isZMMReg(Reg), "ZMM instructions should not be in the EVEX->VEX tables");
+        if isHiRegIdx.call(Reg) {
+            return true;
+        }
+    }
     return false;
 }
 
@@ -71,15 +81,38 @@ fn performCustomAdjustments(MI: *mut MachineInstr, NewOpc: u32) -> bool {
     NewOpc as void;
     let mut Opc: u32 = MI.getOpcode();
     match Opc {
-
+        VALIGNDZ128rri => {
+            VALIGNDZ128rmi;
+        },
+        VSHUFF32X4Z256rmi => {
+            VSHUFF32X4Z256rri;
+        },
+        VRNDSCALEPDZ128rri => {
+            VRNDSCALEPDZ128rmi;
+        },
     }
     return true;
 }
 
 fn getMovMskBits(Opc: u32) -> u32 {
     match Opc {
+        VPMOVQ2MZ128kr => {
+            VPCMPQZ128rri;
+        },
+        VPMOVQ2MZ256kr => {
+            VPMOVD2MZ128kr;
+        },
+        VPMOVD2MZ256kr => {
+            VPCMPDZ256rri;
+        },
+        VPMOVB2MZ128kr => {
+            VPCMPBZ128rri;
+        },
+        VPMOVB2MZ256kr => {
+            VPCMPBZ256rri;
+        },
         _ => {
-            llvm_unreachable_internal("Unknown opcode", "llvm\\lib\\Target\\X86\\X86CompressEVEX.cpp", 224);
+            llvm_unreachable_internal("Unknown opcode", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86CompressEVEX.cpp", 224);
         },
     }
 }
@@ -87,8 +120,17 @@ fn getMovMskBits(Opc: u32) -> u32 {
 fn isKMovNarrowing(MaskBits: u32, KMOVOpc: u32) -> bool {
     let mut KMOVSize: u32 = 0;
     match KMOVOpc {
+        KMOVBrk => {
+            KMOVSize = 8;
+        },
+        KMOVWrk => {
+            KMOVSize = 16;
+        },
+        KMOVDrk => {
+            KMOVSize = 32;
+        },
         _ => {
-            llvm_unreachable_internal("Unknown KMOV opcode", "llvm\\lib\\Target\\X86\\X86CompressEVEX.cpp", 241);
+            llvm_unreachable_internal("Unknown KMOV opcode", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86CompressEVEX.cpp", 241);
         },
     }
     return KMOVSize < MaskBits;
@@ -96,6 +138,9 @@ fn isKMovNarrowing(MaskBits: u32, KMOVOpc: u32) -> bool {
 
 fn isZeroVector(MI: *MachineInstr) -> bool {
     match MI.getOpcode() {
+        VPXORrr => {
+            VPXORYrr;
+        },
         _ => {
             return false;
         },
@@ -104,6 +149,12 @@ fn isZeroVector(MI: *MachineInstr) -> bool {
 
 fn isAllOnesVector(MI: *MachineInstr, Is256Bit: bool) -> bool {
     match MI.getOpcode() {
+        VPCMPEQDrr => {
+            return !Is256Bit && MI.getOperand(1).getReg() == MI.getOperand(2).getReg();
+        },
+        VPCMPEQDYrr => {
+            return MI.getOperand(1).getReg() == MI.getOperand(2).getReg();
+        },
         _ => {
             return false;
         },
@@ -111,11 +162,66 @@ fn isAllOnesVector(MI: *MachineInstr, Is256Bit: bool) -> bool {
 }
 
 fn getSignMaskConstantDef(MI: *mut MachineInstr, Reg: Register, IsZero: bool, Is256Bit: bool, TRI: *TargetRegisterInfo) -> *mut MachineInstr {
+    for DefMI in reverse(make_range(MI.getParent().begin(), MI)) {
+        if !DefMI.modifiesRegister(Reg, TRI) {
+            continue;
+        }
+        if if IsZero { isZeroVector(DefMI) } else { isAllOnesVector(DefMI, Is256Bit) } {
+            return &mut DefMI;
+        }
+        break;
+    }
     return null;
 }
 
 fn isCompressibleBlendVUse(BlendOpc: u32, UseOpc: u32) -> bool {
     match BlendOpc {
+        VBLENDVPSrrr => {
+            match UseOpc {
+                VMOVAPSZ128rrk => {
+                    VMOVUPSZ128rrk;
+                },
+                _ => {
+                    return false;
+                },
+            }
+        },
+        VBLENDVPSYrrr => {
+            match UseOpc {
+                VMOVAPSZ256rrk => {
+                    VMOVUPSZ256rrk;
+                },
+                _ => {
+                    return false;
+                },
+            }
+        },
+        VBLENDVPDrrr => {
+            match UseOpc {
+                VMOVAPDZ128rrk => {
+                    VMOVUPDZ128rrk;
+                },
+                _ => {
+                    return false;
+                },
+            }
+        },
+        VBLENDVPDYrrr => {
+            match UseOpc {
+                VMOVAPDZ256rrk => {
+                    VMOVUPDZ256rrk;
+                },
+                _ => {
+                    return false;
+                },
+            }
+        },
+        VPBLENDVBrrr => {
+            return UseOpc == VMOVDQU8Z128rrk;
+        },
+        VPBLENDVBYrrr => {
+            return UseOpc == VMOVDQU8Z256rrk;
+        },
         _ => {
             return false;
         },
@@ -124,6 +230,18 @@ fn isCompressibleBlendVUse(BlendOpc: u32, UseOpc: u32) -> bool {
 
 fn isCompressibleMaskedBlendUse(BlendOpc: u32, UseOpc: u32) -> bool {
     match BlendOpc {
+        VBLENDVPSrrr => {
+            return UseOpc == VPBLENDMDZ128rrk || UseOpc == VBLENDMPSZ128rrk;
+        },
+        VBLENDVPSYrrr => {
+            return UseOpc == VPBLENDMDZ256rrk || UseOpc == VBLENDMPSZ256rrk;
+        },
+        VBLENDVPDrrr => {
+            return UseOpc == VPBLENDMQZ128rrk || UseOpc == VBLENDMPDZ128rrk;
+        },
+        VBLENDVPDYrrr => {
+            return UseOpc == VPBLENDMQZ256rrk || UseOpc == VBLENDMPDZ256rrk;
+        },
         _ => {
             return false;
         },
@@ -135,8 +253,8 @@ fn tryCompressMaskProducer(MI: *mut MachineInstr, MBB: *mut MachineBasicBlock, S
     let mut TRI: *TargetRegisterInfo = ST.getRegisterInfo();
     let mut MRI: *mut MachineRegisterInfo = &mut MBB.getParent().getRegInfo();
     let mut Opc: u32 = MI.getOpcode();
-    let mut IsSignMaskCmp: bool = false;
-    if  {
+    let mut IsSignMaskCmp: bool = Opc == VPCMPBZ128rri || Opc == VPCMPBZ256rri || Opc == VPCMPDZ128rri || Opc == VPCMPDZ256rri || Opc == VPCMPQZ128rri || Opc == VPCMPQZ256rri;
+    if !IsSignMaskCmp && Opc != VPMOVD2MZ128kr && Opc != VPMOVD2MZ256kr && Opc != VPMOVQ2MZ128kr && Opc != VPMOVQ2MZ256kr && Opc != VPMOVB2MZ128kr && Opc != VPMOVB2MZ256kr {
         return false;
     }
     if usesExtendedRegister(MI) {
@@ -152,36 +270,99 @@ fn tryCompressMaskProducer(MI: *mut MachineInstr, MBB: *mut MachineBasicBlock, S
             return false;
         }
         let mut ConstantReg: Register = MI.getOperand(2).getReg();
-        let mut Is256Bit: bool = false;
+        let mut Is256Bit: bool = Opc == VPCMPBZ256rri || Opc == VPCMPDZ256rri || Opc == VPCMPQZ256rri;
         ConstantDef = getSignMaskConstantDef(MI, ConstantReg, Pred == 5, Is256Bit, TRI);
         if !ConstantDef {
             return false;
         }
         ConstantDefOnlyFeedsCmp = !TRI.regsOverlap(ConstantReg, SrcVecReg);
+        for UseMI in make_range(next(*ConstantDef, 1), MI) {
+            if UseMI.readsRegister(ConstantReg, TRI) {
+                ConstantDefOnlyFeedsCmp = false;
+                break;
+            }
+        }
     }
     let mut MovMskOpc: u32 = 0;
     let mut BlendOpc: u32 = 0;
     match Opc {
+        VPCMPDZ128rri => {
+            VPMOVD2MZ128kr;
+        },
+        VPCMPDZ256rri => {
+            VPMOVD2MZ256kr;
+        },
+        VPCMPQZ128rri => {
+            VPMOVQ2MZ128kr;
+        },
+        VPCMPQZ256rri => {
+            VPMOVQ2MZ256kr;
+        },
+        VPCMPBZ128rri => {
+            VPMOVB2MZ128kr;
+        },
+        VPCMPBZ256rri => {
+            VPMOVB2MZ256kr;
+        },
         _ => {
-            llvm_unreachable_internal("Unknown VPMOV opcode", "llvm\\lib\\Target\\X86\\X86CompressEVEX.cpp", 447);
+            llvm_unreachable_internal("Unknown VPMOV opcode", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86CompressEVEX.cpp", 447);
         },
     }
     let mut KMovMI: *mut MachineInstr = null;
     let mut BlendMI: *mut MachineInstr = null;
     let mut BlendIsMaskedBlend: bool = false;
+    for CurMI in make_range(next(MI, 1), MBB.end()) {
+        if CurMI.readsRegister(MaskReg, TRI) {
+            if KMovMI || BlendMI {
+                return false;
+            }
+            let mut UseOpc: u32 = CurMI.getOpcode();
+            let mut IsKMOV: bool = UseOpc == KMOVBrk || UseOpc == KMOVWrk || UseOpc == KMOVDrk;
+            if IsKMOV && CurMI.getOperand(1).getReg() == MaskReg && !usesExtendedRegister(CurMI) && !isKMovNarrowing(getMovMskBits(Opc), UseOpc) {
+                KMovMI = &mut CurMI;
+            } else {
+                let mut IsMaskedMove: bool = !IsSignMaskCmp && isCompressibleBlendVUse(BlendOpc, UseOpc);
+                let mut IsMaskedBlend: bool = !IsSignMaskCmp && isCompressibleMaskedBlendUse(BlendOpc, UseOpc);
+                if !IsMaskedMove && !IsMaskedBlend {
+                    return false;
+                }
+                let mut MaskOpIdx: u32 = if IsMaskedBlend { 1 } else { 2 };
+                if CurMI.getOperand(MaskOpIdx).getReg() == MaskReg && !usesExtendedRegister(CurMI) && checkPredicate(BlendOpc, &mut ST) {
+                    BlendMI = &mut CurMI;
+                    BlendIsMaskedBlend = IsMaskedBlend;
+                } else {
+                    return false;
+                }
+            }
+        }
+        if CurMI.modifiesRegister(MaskReg, TRI) {
+            if !KMovMI && !BlendMI {
+                return false;
+            }
+            break;
+        }
+        if !KMovMI && !BlendMI && CurMI.modifiesRegister(SrcVecReg, TRI) {
+            return false;
+        }
+    }
     if !KMovMI && !BlendMI {
         return false;
     }
     let mut MovMskBits: u32 = getMovMskBits(Opc);
     if IsSignMaskCmp && KMovMI {
-        if KMovMI.getOperand(0).isDead() || (MovMskBits != 32 && MBB() != LQR_Dead) {
+        if KMovMI.getOperand(0).isDead() || (MovMskBits != 32 && MBB.computeRegisterLiveness(TRI, EFLAGS, next(*KMovMI, 1), MBB.len) != LQR_Dead) {
+            return false;
+        }
+    }
+    for UseMI in MRI.use_instructions(MaskReg) {
+        if UseMI.getParent() != &mut MBB {
             return false;
         }
     }
     let mut NewMI: *mut MachineInstr = null;
     if KMovMI {
         let mut OldDst: MachineOperand = KMovMI.getOperand(0);
-        KMovMI.setDesc(TII()(MovMskOpc));
+        KMovMI.setDesc(TII.get(MovMskOpc));
         let mut NewSrc: *mut MachineOperand = KMovMI.getOperand(1);
         NewSrc.setReg(SrcVecReg);
         NewSrc.setIsKill(MI.getOperand(1).isKill());
@@ -189,28 +370,28 @@ fn tryCompressMaskProducer(MI: *mut MachineInstr, MBB: *mut MachineBasicBlock, S
         if IsSignMaskCmp {
             let mut DstReg: Register = OldDst.getReg();
             let mut ComplementMask: i64 = getLowBitsSet(32, MovMskBits).getSExtValue();
-            let mut ComplementOpc: u32 = 0;
-            let mut MIB: auto = BuildMI(MBB, next(), KMovMI.getDebugLoc(), TII()(ComplementOpc), DstReg)(DstReg, Kill);
+            let mut ComplementOpc: u32 = if MovMskBits == 32 { NOT32r } else { (if isInt(ComplementMask) { XOR32ri8 } else { XOR32ri }) };
+            let mut MIB: MachineInstrBuilder = BuildMI(MBB, next(*KMovMI, 1), MIMetadata { DL: KMovMI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(ComplementOpc), DstReg).addReg(DstReg, Kill, 0);
             if MovMskBits != 32 {
-                MIB()(ComplementMask);
-                MIB()();
+                MIB.addImm(ComplementMask);
+                operator(MIB).findRegisterDefOperand(EFLAGS, TRI, false, false).setIsDead(true);
             }
-            MIB()(0)(OldDst.isRenamable());
+            operator(MIB).getOperand(0).setIsRenamable(OldDst.isRenamable());
         }
     } else if BlendMI {
         let mut MaskVec: *MachineOperand = MI.getOperand(1);
         let mut Dst: *MachineOperand = BlendMI.getOperand(0);
         let mut Passthru: *MachineOperand = BlendMI.getOperand(if BlendIsMaskedBlend { 2 } else { 1 });
         let mut Src: *MachineOperand = BlendMI.getOperand(3);
-        let mut MIB: auto = BuildMI(MBB, *BlendMI, BlendMI.getDebugLoc(), TII()(BlendOpc))(Dst.getReg(), getRegState(Dst))(Passthru.getReg(), getRegState(Passthru))(Src.getReg(), getRegState(Src))(MaskVec.getReg(), getRegState(MaskVec));
-        NewMI = ;
-        ToErase()(BlendMI);
+        let mut MIB: MachineInstrBuilder = BuildMI(MBB, *BlendMI, MIMetadata { DL: BlendMI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(BlendOpc)).addReg(Dst.getReg(), getRegState(Dst), 0).addReg(Passthru.getReg(), getRegState(Passthru), 0).addReg(Src.getReg(), getRegState(Src), 0).addReg(MaskVec.getReg(), getRegState(MaskVec), 0);
+        NewMI = MIB.operator llvm::MachineInstr *();
+        ToErase.push(BlendMI);
     }
     assert!(NewMI, "Expected a compressed instruction");
     NewMI.setAsmPrinterFlag(AC_EVEX_2_VEX);
-    ToErase()(&mut MI);
+    ToErase.push(&mut MI);
     if ConstantDefOnlyFeedsCmp && MI.getOperand(2).isKill() {
-        ToErase()(ConstantDef);
+        ToErase.push(ConstantDef);
     }
     return true;
 }
@@ -232,52 +413,52 @@ fn CompressEVEXImpl(MI: *mut MachineInstr, MBB: *mut MachineBasicBlock, ST: *X86
     let mut IsRedundantNewDataDest: Closure_2 = Closure_2 { MI: &mut MI, ST: &mut ST };
     let mut IsND: bool = hasNewDataDest(TSFlags);
     let mut Opc: u32 = MI.getOpcode();
-    let mut IsSetZUCCm: bool = false;
+    let mut IsSetZUCCm: bool = Opc == SETZUCCm;
     if TSFlags & EVEX_B && !IsND && !IsSetZUCCm {
         return false;
     }
-    let mut IsNDLike: bool = false;
+    let mut IsNDLike: bool = IsND || Opc == MOVBE32rr || Opc == MOVBE64rr;
     let mut IsRedundantNDD: bool = if IsNDLike { IsRedundantNewDataDest.call(Opc) } else { false };
     let mut GetCompressedOpc: Closure_3 = Closure_3 { MI: &mut MI, ST: &mut ST };
     let mut Dst: Register = MI.getOperand(0).getReg();
     if IsRedundantNDD {
-        if  {
-            let mut Super: Register = Register { Reg: getX86SubSuperRegister(Dst.operator MCRegister(), 64, false) };
+        if Dst.operator unsigned int() && (GR16RegClass.contains(Dst.operator MCRegister()) || GR8RegClass.contains(Dst.operator MCRegister())) {
+            let mut Super: Register = getX86SubSuperRegister(Dst.operator MCRegister(), 64, false);
             if MI.definesRegister(Super, null) {
                 IsRedundantNDD = false;
             }
         }
-        if operator!() {
+        if !X86EnableAPXForRelocation {
             assert!(!isAddMemInstrWithRelocation(MI), "Unexpected NDD instruction with relocation!");
         }
-    } else if  {
-        if !usesExtendedRegister(MI) && MI.registerDefIsDead {
+    } else if Opc == ADD32ri_ND || Opc == ADD64ri32_ND || Opc == ADD32rr_ND || Opc == ADD64rr_ND {
+        if !usesExtendedRegister(MI) && MI.registerDefIsDead(EFLAGS, null) {
             let mut Src1: Register = MI.getOperand(1).getReg();
             let mut Src2: *MachineOperand = MI.getOperand(2);
-            let mut Is32BitReg: bool = false;
-            let mut NewDesc: *MCInstrDesc = ST.getInstrInfo();
+            let mut Is32BitReg: bool = Opc == ADD32ri_ND || Opc == ADD32rr_ND;
+            let mut NewDesc: *MCInstrDesc = ST.getInstrInfo().get(if Is32BitReg { LEA64_32r } else { LEA64r });
             if Is32BitReg {
-                Src1 = Register { Reg: getX86SubSuperRegister(Src1.operator MCRegister(), 64, false) };
+                Src1 = getX86SubSuperRegister(Src1.operator MCRegister(), 64, false);
             }
-            let mut MIB: MachineInstrBuilder = BuildMI(MBB, MI, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, NewDesc, Dst)(Src1)(1);
-            if  {
-                MIB()(0)(Src2);
+            let mut MIB: MachineInstrBuilder = BuildMI(MBB, MI, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, NewDesc, Dst).addReg(Src1, RegState {}, 0).addImm(1);
+            if Opc == ADD32ri_ND || Opc == ADD64ri32_ND {
+                MIB.addReg(0, RegState {}, 0).add(Src2);
             } else if Is32BitReg {
-                MIB()(getX86SubSuperRegister(Src2.getReg().operator MCRegister(), 64, false))(0);
+                MIB.addReg(getX86SubSuperRegister(Src2.getReg().operator MCRegister(), 64, false), RegState {}, 0).addImm(0);
             } else {
-                MIB()(Src2)(0);
+                MIB.add(Src2).addImm(0);
             }
-            MIB()(0);
+            MIB.addReg(0, RegState {}, 0);
             MI.removeFromParent();
             return true;
         }
     }
-    let mut NewOpc: u32 = if IsRedundantNDD { getNonNDVariant(Opc) } else { (if (IsNDLike && ST()() && MI.registerDefIsDead) { getNFVariant(Opc) } else { GetCompressedOpc.call(Opc) }) };
+    let mut NewOpc: u32 = if IsRedundantNDD { getNonNDVariant(Opc) } else { (if (IsNDLike && ST.hasNF() && MI.registerDefIsDead(EFLAGS, null)) { getNFVariant(Opc) } else { GetCompressedOpc.call(Opc) }) };
     if !NewOpc {
         return false;
     }
     assert!((IsND || !(TSFlags & EVEX_NF)), "Unexpected to compress NF instructions without ND.");
-    let mut NewDesc: *MCInstrDesc = ST.getInstrInfo()(NewOpc);
+    let mut NewDesc: *MCInstrDesc = ST.getInstrInfo().get(NewOpc);
     MI.setDesc(NewDesc);
     let mut AsmComment: u32 = 0;
     match NewDesc.TSFlags & EncodingMask {
@@ -291,7 +472,7 @@ fn CompressEVEXImpl(MI: *mut MachineInstr, MBB: *mut MachineBasicBlock, ST: *X86
             AsmComment = AC_EVEX_2_EVEX;
         },
         _ => {
-            llvm_unreachable_internal("Unknown EVEX compression", "llvm\\lib\\Target\\X86\\X86CompressEVEX.cpp", 734);
+            llvm_unreachable_internal("Unknown EVEX compression", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86CompressEVEX.cpp", 734);
         },
     }
     MI.setAsmPrinterFlag(AsmComment);
@@ -310,16 +491,25 @@ fn runOnMF(MF: *mut MachineFunction) -> bool {
     }
         if !(false) { break; }
     }
-    let mut TableChecked: atomic<bool> = zeroed();
-    if operator!((memory_order_relaxed)) {
-        (((operator!(operator!((is_sorted() && "X86CompressEVEXTable is not sorted!")))) || (_wassert(L"llvm::is_sorted(X86CompressEVEXTable) && \"X86CompressEVEXTable is not sorted!\"", L"llvm\\lib\\Target\\X86\\X86CompressEVEX.cpp", (750) as u32) , 0)) as void);
-        TableChecked()(true, memory_order_relaxed);
+    let mut TableChecked: atomic<bool> = false;
+    if !TableChecked.load(memory_order_relaxed) {
+        assert!(is_sorted(X86CompressEVEXTable), "X86CompressEVEXTable is not sorted!");
+        TableChecked.store(true, memory_order_relaxed);
     }
-    let mut ST: *X86Subtarget = MF;
-    if !ST.hasAVX512() && operator!(ST()()) && operator!(ST()()) && operator!(ST()()) {
+    let mut ST: *X86Subtarget = MF.getSubtarget();
+    if !ST.hasAVX512() && !ST.hasEGPR() && !ST.hasNDD() && !ST.hasZU() {
         return false;
     }
     let mut Changed: bool = false;
+    for MBB in MF {
+        let mut ToErase: SmallVector<MachineInstr *, 4> = SmallVector<MachineInstr *, 4> {};
+        for MI in make_early_inc_range(MBB) {
+            Changed |= CompressEVEXImpl(MI, MBB, ST, ToErase);
+        }
+        for MI in ToErase {
+            MI.eraseFromParent();
+        }
+    }
     while true {
         {
         if DebugFlag && isCurrentDebugType("x86-compress-evex", 1) {
@@ -345,17 +535,17 @@ fn X86CompressEVEXPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFu
         return all();
     }
     let mut PA: PreservedAnalyses = getMachineFunctionPassPreservedAnalyses();
-    PA;
+    PA.preserveSet();
     return PA;
 }
 
 struct Closure_1 {}
 
 fn Closure_1::call(self: *Closure_1, Reg: MCRegister) -> bool {
-        if  {
+        if Reg.operator unsigned int() >= XMM16 && Reg.operator unsigned int() <= XMM31 {
             return true;
         }
-        if  {
+        if Reg.operator unsigned int() >= YMM16 && Reg.operator unsigned int() <= YMM31 {
             return true;
         }
         if isApxExtendedReg(Reg) {
@@ -373,7 +563,7 @@ unsafe fn Closure_2::call(self: *mut Closure_2, Opc: *mut u32) -> bool {
         let mut Desc: *MCInstrDesc = (*self.MI).getDesc();
         let mut Reg0: Register = (*self.MI).getOperand(0).getReg();
         let mut Op1: *MachineOperand = (*self.MI).getOperand(1);
-        if  {
+        if !Op1.isReg() || getFirstAddrOperandIdx((*self.MI)) == 1 || isCFCMOVCC((*self.MI).getOpcode()) {
             return false;
         }
         let mut Reg1: Register = Op1.getReg();
@@ -383,7 +573,7 @@ unsafe fn Closure_2::call(self: *mut Closure_2, Opc: *mut u32) -> bool {
         if !Desc.isCommutable() || Desc.getNumOperands() < 3 || !(*self.MI).getOperand(2).isReg() || (*self.MI).getOperand(2).getReg() != Reg0 {
             return false;
         }
-        (*self.ST).getInstrInfo()((*self.MI), false, 1, 2);
+        (*self.ST).getInstrInfo().commuteInstruction((*self.MI), false, 1, 2);
         Opc = (*self.MI).getOpcode();
         return true;
     }
@@ -394,13 +584,13 @@ struct Closure_3 {
 }
 
 unsafe fn Closure_3::call(self: *mut Closure_3, Opc: u32) -> auto {
-        let mut Table: i32 = 0;
-        let mut I: auto = lower_bound(Opc);
-        if I() == () ||  != Opc {
+        let mut Table: ArrayRef<X86TableEntry> = X86CompressEVEXTable;
+        let mut I: *X86TableEntry = lower_bound(Table, Opc);
+        if I == Table.end() || I.OldOpc != Opc {
             return 0;
         }
-        if usesExtendedRegister((*self.MI)) || operator!(checkPredicate(&mut (*self.ST))) || operator!(performCustomAdjustments((*self.MI))) {
+        if usesExtendedRegister((*self.MI)) || !checkPredicate(I.NewOpc, &mut (*self.ST)) || !performCustomAdjustments((*self.MI), I.NewOpc) {
             return 0;
         }
-        return ;
+        return I.NewOpc;
     }

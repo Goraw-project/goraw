@@ -13,7 +13,7 @@ fn SMEPeepholeOpt::getPassName(self: *SMEPeepholeOpt) -> str {
 
 fn SMEPeepholeOpt::getAnalysisUsage(self: *SMEPeepholeOpt, AU: *mut AnalysisUsage) {
     AU.setPreservesCFG();
-    self.getAnalysisUsage;
+    self.getAnalysisUsage(AU);
 }
 
 fn SMEPeepholeOpt::getPassKind(self: *SMEPeepholeOpt) -> PassKind {
@@ -52,7 +52,9 @@ fn SMEPeepholeOpt::getClearedProperties(self: *SMEPeepholeOpt) -> MachineFunctio
 
 static mut ID: i8 = 0;
 
-fn isConditionalStartStop(MI: *MachineInstr) -> bool {}
+fn isConditionalStartStop(MI: *MachineInstr) -> bool {
+    return MI.getOpcode() == MSRpstatePseudo;
+}
 
 fn isMatchingStartStopPair(MI1: *MachineInstr, MI2: *MachineInstr) -> bool {
     if MI1.getOperand(0).getImm() != MI2.getOperand(0).getImm() {
@@ -84,7 +86,10 @@ fn isMatchingStartStopPair(MI1: *MachineInstr, MI2: *MachineInstr) -> bool {
     return true;
 }
 
-fn ChangesStreamingMode(MI: *MachineInstr) -> bool {}
+fn ChangesStreamingMode(MI: *MachineInstr) -> bool {
+    assert!((MI.getOpcode() == MSRpstatesvcrImm1 || MI.getOpcode() == MSRpstatePseudo), "Expected MI to be a smstart/smstop instruction");
+    return MI.getOperand(0).getImm() == SVCRSM || MI.getOperand(0).getImm() == SVCRSMZA;
+}
 
 fn isSVERegOp(TRI: *TargetRegisterInfo, MRI: *MachineRegisterInfo, MO: *MachineOperand) -> bool {
     if !MO.isReg() {
@@ -92,10 +97,10 @@ fn isSVERegOp(TRI: *TargetRegisterInfo, MRI: *MachineRegisterInfo, MO: *MachineO
     }
     let mut R: Register = MO.getReg();
     if R.isPhysical() {
-        return any_of(TRI()(R), Closure_1 {});
+        return any_of(TRI.subregs_inclusive(R.operator MCRegister()), Closure_1 {});
     }
     let mut RC: *TargetRegisterClass = MRI.getRegClass(R);
-    return TRI.getCommonSubClass || TRI.getCommonSubClass;
+    return TRI.getCommonSubClass(&mut ZPRRegClass, RC) || TRI.getCommonSubClass(&mut PPRRegClass, RC);
 }
 
 fn SMEPeepholeOpt::optimizeStartStopPairs(self: *SMEPeepholeOpt, MBB: *mut MachineBasicBlock, HasRemovedAllSMChanges: *mut bool) -> bool {
@@ -105,6 +110,35 @@ fn SMEPeepholeOpt::optimizeStartStopPairs(self: *SMEPeepholeOpt, MBB: *mut Machi
     let mut Prev: *mut MachineInstr = null;
     let mut NumSMChanges: u32 = 0;
     let mut NumSMChangesRemoved: u32 = 0;
+    for MI in make_early_inc_range(MBB) {
+        match MI.getOpcode() {
+            MSRpstatesvcrImm1 => {
+                MSRpstatePseudo;
+            },
+            _ => {
+                if !Prev {
+                    continue;
+                }
+            },
+        }
+        match MI.getOpcode() {
+            _ => {
+                Prev = null;
+            },
+            COALESCER_BARRIER_FPR16 => {
+                COALESCER_BARRIER_FPR32;
+            },
+            RestoreZAPseudo => {
+                InOutZAUsePseudo;
+            },
+            ADJCALLSTACKDOWN => {
+                ADJCALLSTACKUP;
+            },
+            MSRpstatesvcrImm1 => {
+                MSRpstatePseudo;
+            },
+        }
+    }
     HasRemovedAllSMChanges = NumSMChanges && (NumSMChanges == NumSMChangesRemoved);
     return Changed;
 }
@@ -113,6 +147,9 @@ fn SMEPeepholeOpt::visitRegSequence(self, MI: *mut MachineInstr) -> bool {
     assert!(MI.getMF().getRegInfo().isSSA(), "Expected to be run on SSA form!");
     let mut MRI: *mut MachineRegisterInfo = MI.getMF().getRegInfo();
     match MRI.getRegClass(MI.getOperand(0).getReg()).getID() {
+        ZPR2RegClassID => {
+            ZPR4RegClassID;
+        },
         _ => {
             return false;
         },
@@ -137,32 +174,44 @@ fn SMEPeepholeOpt::visitRegSequence(self, MI: *mut MachineInstr) -> bool {
             return false;
         }
         let mut CopySrcClass: *TargetRegisterClass = MRI.getRegClass(CopySrcOp.getReg());
-        if  {
+        if CopySrcClass != &mut ZPR2StridedOrContiguousRegClass && CopySrcClass != &mut ZPR4StridedOrContiguousRegClass {
             return false;
         }
     }
-    let mut Opc: u32 = 0;
-    let mut TII: *TargetInstrInfo = MI.getMF()();
-    let mut MIB: MachineInstrBuilder = BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII.get, MI.getOperand(0).getReg());
+    let mut Opc: u32 = if MI.getNumOperands() == 5 { FORM_TRANSPOSED_REG_TUPLE_X2_PSEUDO } else { FORM_TRANSPOSED_REG_TUPLE_X4_PSEUDO };
+    let mut TII: *TargetInstrInfo = MI.getMF().getSubtarget().getInstrInfo();
+    let mut MIB: MachineInstrBuilder = BuildMI(*MI.getParent(), MI, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(Opc), MI.getOperand(0).getReg());
     for let mut I: u32 = 1; I < MI.getNumOperands(); I += 2 {
-        MIB()(MI.getOperand(I).getReg());
+        MIB.addReg(MI.getOperand(I).getReg(), RegState {}, 0);
     }
-    MI()();
+    MI.eraseFromParent();
     return true;
 }
 
 fn SMEPeepholeOpt::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
-    if self.skipFunction {
+    if self.skipFunction(MF.getFunction()) {
         return false;
     }
-    let mut AFI: *mut AArch64FunctionInfo = MF;
+    let mut AFI: *mut AArch64FunctionInfo = MF.getInfo();
     let mut SMEFnAttrs: SMEAttrs = AFI.getSMEFnAttrs();
-    if operator!(MF()) && !SMEFnAttrs.hasStreamingCompatibleInterface() {
+    if !MF.getSubtarget().hasSME() && !SMEFnAttrs.hasStreamingCompatibleInterface() {
         return false;
     }
     assert!(MF.getRegInfo().isSSA(), "Expected to be run on SSA form!");
     let mut Changed: bool = false;
     let mut FunctionHasAllSMChangesRemoved: bool = false;
+    for MBB in MF {
+        let mut BlockHasAllSMChangesRemoved: bool = false;
+        Changed |= self.optimizeStartStopPairs(MBB, BlockHasAllSMChangesRemoved);
+        FunctionHasAllSMChangesRemoved |= BlockHasAllSMChangesRemoved;
+        if MF.getSubtarget().isStreaming() {
+            for MI in make_early_inc_range(MBB) {
+                if MI.getOpcode() == REG_SEQUENCE {
+                    Changed |= self.visitRegSequence(MI);
+                }
+            }
+        }
+    }
     if FunctionHasAllSMChangesRemoved {
         AFI.setHasStreamingModeChanges(false);
     }
@@ -175,4 +224,6 @@ fn createSMEPeepholeOptPass() -> *mut FunctionPass {
 
 struct Closure_1 {}
 
-fn Closure_1::call(self: *Closure_1, SR: *MCPhysReg) {}
+fn Closure_1::call(self: *Closure_1, SR: *MCPhysReg) -> bool {
+            return ZPRRegClass.contains(SR) || PPRRegClass.contains(SR);
+        }

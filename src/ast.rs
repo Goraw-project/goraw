@@ -164,6 +164,8 @@ pub enum Stmt {
     Break(Span),
     Continue(Span),
     Unsafe(Block, Span),
+    /// Блок инструкций `{ ... }`
+    Block(Block, Span),
     /// `assert expr;` внутри test-блока: при ложности тест падает.
     Assert(Expr, Span),
     /// `match expr { pat => block, _ => block }` по целым/enum (LLVM switch).
@@ -200,6 +202,7 @@ impl Stmt {
             | Stmt::Assert(_, span)
             | Stmt::Match { span, .. }
             | Stmt::Unsafe(_, span)
+            | Stmt::Block(_, span)
             | Stmt::InlineC { span, .. } => *span,
             Stmt::Expr(e) => e.span(),
             Stmt::Asm(a) => a.span,
@@ -302,6 +305,12 @@ pub enum Expr {
     },
     /// Оператор `?`: ранний выход при ошибке / разворачивание значения.
     Try(Box<Expr>, Span),
+    /// Выражение присваивания: `(target = value)`.
+    Assign {
+        target: Box<Expr>,
+        value: Box<Expr>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -325,6 +334,7 @@ impl Expr {
             | Expr::ArrayLit(_, s)
             | Expr::IfExpr { span: s, .. }
             | Expr::Jit { span: s, .. }
+            | Expr::Assign { span: s, .. }
             | Expr::Try(_, s) => *s,
         }
     }

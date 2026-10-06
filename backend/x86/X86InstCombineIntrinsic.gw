@@ -27,7 +27,7 @@ fn simplifyX86MaskedLoad(II: *mut IntrinsicInst, IC: *mut InstCombiner) -> *mut 
     if getBoolVecFromMask(Mask, IC.getDataLayout()) {
         BoolMask;
     } else {
-        let mut NewMaskedLoad: *mut CallInst = IC()(II.getType(), Ptr, Align { ShiftValue: 1 }, BoolMask, ZeroVec);
+        let mut NewMaskedLoad: *mut CallInst = IC.Builder.CreateMaskedLoad(II.getType(), Ptr, 1, BoolMask, ZeroVec, "");
         return IC.replaceInstUsesWith(II, NewMaskedLoad);
     }
     return null;
@@ -41,16 +41,16 @@ fn simplifyX86MaskedStore(II: *mut IntrinsicInst, IC: *mut InstCombiner) -> bool
         IC.eraseInstFromFunction(II);
         return true;
     }
-    if  {
+    if II.getIntrinsicID() == x86_sse2_maskmov_dqu {
         return false;
     }
     if getBoolVecFromMask(Mask, IC.getDataLayout()) {
         BoolMask;
     } else {
-        let mut AddrSpace: u32 = cast(Ptr.getType())();
+        let mut AddrSpace: u32 = cast(Ptr.getType()).getAddressSpace();
         let mut VecPtrTy: *mut PointerType = get(Vec.getContext(), AddrSpace);
-        let mut PtrCast: *mut Value = IC()(Ptr, VecPtrTy, "castvec");
-        IC()(Vec, PtrCast, Align { ShiftValue: 1 }, BoolMask);
+        let mut PtrCast: *mut Value = IC.Builder.CreateBitCast(Ptr, VecPtrTy, "castvec");
+        IC.Builder.CreateMaskedStore(Vec, PtrCast, 1, BoolMask);
         IC.eraseInstFromFunction(II);
         return true;
     }
@@ -63,76 +63,94 @@ fn simplifyX86immShift(II: *IntrinsicInst, Builder: *mut BuilderTy) -> *mut Valu
     let mut IsImm: bool = false;
     match II.getIntrinsicID() {
         _ => {
-            llvm_unreachable_internal("Unexpected intrinsic!", "llvm\\lib\\Target\\X86\\X86InstCombineIntrinsic.cpp", 123);
+            llvm_unreachable_internal("Unexpected intrinsic!", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86InstCombineIntrinsic.cpp", 123);
+        },
+        x86_sse2_psrai_d => {
+            x86_sse2_psrai_w;
+        },
+        x86_sse2_psra_d => {
+            x86_sse2_psra_w;
+        },
+        x86_sse2_psrli_d => {
+            x86_sse2_psrli_q;
+        },
+        x86_sse2_psrl_d => {
+            x86_sse2_psrl_q;
+        },
+        x86_sse2_pslli_d => {
+            x86_sse2_pslli_q;
+        },
+        x86_sse2_psll_d => {
+            x86_sse2_psll_q;
         },
     }
     assert!((LogicalShift || !ShiftLeft), "Only logical shifts can shift left");
     let mut Vec: *mut Value = II.getArgOperand(0);
     let mut Amt: *mut Value = II.getArgOperand(1);
-    let mut VT: *mut auto = cast(Vec.getType());
-    let mut SVT: *mut Type = ();
+    let mut VT: *mut FixedVectorType = cast(Vec.getType());
+    let mut SVT: *mut Type = VT.getElementType();
     let mut AmtVT: *mut Type = Amt.getType();
-    let mut VWidth: u32 = ();
+    let mut VWidth: u32 = VT.getNumElements();
     let mut BitWidth: u32 = SVT.getPrimitiveSizeInBits().operator unsigned long long();
     if IsImm {
         assert!(AmtVT.isIntegerTy(32), "Unexpected shift-by-immediate type");
         let mut KnownAmtBits: KnownBits = computeKnownBits(Amt, II.getDataLayout(), null, null, null, true, 0);
         if KnownAmtBits.getMaxValue().ult(BitWidth) {
-            Amt = Builder()(Amt, SVT);
-            Amt = Builder()(VWidth, Amt);
-            return (if LogicalShift { (if ShiftLeft { Builder()(Vec, Amt) } else { Builder()(Vec, Amt) }) } else { Builder()(Vec, Amt) });
+            Amt = Builder.CreateZExtOrTrunc(Amt, SVT, "");
+            Amt = Builder.CreateVectorSplat(VWidth, Amt, "");
+            return (if LogicalShift { (if ShiftLeft { Builder.CreateShl(Vec, Amt, "", false, false) } else { Builder.CreateLShr(Vec, Amt, "", false) }) } else { Builder.CreateAShr(Vec, Amt, "", false) });
         }
         if KnownAmtBits.getMinValue().uge(BitWidth) {
             if LogicalShift {
-                return get();
+                return get(VT);
             }
             Amt = get(SVT, BitWidth - 1, false, false);
-            return Builder()(Vec, Builder()(VWidth, Amt));
+            return Builder.CreateAShr(Vec, Builder.CreateVectorSplat(VWidth, Amt, ""), "", false);
         }
     } else {
-        (((operator!(operator!((AmtVT.isVectorTy() && AmtVT.getPrimitiveSizeInBits().operator unsigned long long() == 128 && cast(AmtVT)() == SVT && "Unexpected shift-by-scalar type")))) || (_wassert(L"AmtVT->isVectorTy() && AmtVT->getPrimitiveSizeInBits() == 128 && cast<VectorType>(AmtVT)->getElementType() == SVT && \"Unexpected shift-by-scalar type\"", L"llvm\\lib\\Target\\X86\\X86InstCombineIntrinsic.cpp", (229) as u32) , 0)) as void);
-        let mut NumAmtElts: u32 = cast(AmtVT)();
+        assert!(AmtVT.isVectorTy() && AmtVT.getPrimitiveSizeInBits().operator unsigned long long() == 128 && cast(AmtVT).getElementType() == SVT, "Unexpected shift-by-scalar type");
+        let mut NumAmtElts: u32 = cast(AmtVT).getNumElements();
         let mut DemandedLower: APInt = getOneBitSet(NumAmtElts, 0);
         let mut DemandedUpper: APInt = getBitsSet(NumAmtElts, 1, NumAmtElts / 2);
-        let mut KnownLowerBits: KnownBits = computeKnownBits(Amt, DemandedLower, II.getDataLayout());
-        let mut KnownUpperBits: KnownBits = computeKnownBits(Amt, DemandedUpper, II.getDataLayout());
+        let mut KnownLowerBits: KnownBits = computeKnownBits(Amt, DemandedLower, SimplifyQuery { II.getDataLayout(), null }, 0);
+        let mut KnownUpperBits: KnownBits = computeKnownBits(Amt, DemandedUpper, SimplifyQuery { II.getDataLayout(), null }, 0);
         if KnownLowerBits.getMaxValue().ult(BitWidth) && (DemandedUpper.isZero() || KnownUpperBits.isZero()) {
             let mut ZeroSplat: SmallVector<int, 16> = SmallVector<int, 16> { VWidth, 0 };
-            Amt = Builder()(Amt, ZeroSplat);
-            return (if LogicalShift { (if ShiftLeft { Builder()(Vec, Amt) } else { Builder()(Vec, Amt) }) } else { Builder()(Vec, Amt) });
+            Amt = Builder.CreateShuffleVector(Amt, ZeroSplat, "");
+            return (if LogicalShift { (if ShiftLeft { Builder.CreateShl(Vec, Amt, "", false, false) } else { Builder.CreateLShr(Vec, Amt, "", false) }) } else { Builder.CreateAShr(Vec, Amt, "", false) });
         }
     }
-    let mut CDV: *mut auto = dyn_cast(Amt);
-    if operator!() {
+    let mut CDV: *mut ConstantDataVector = dyn_cast(Amt);
+    if !CDV {
         return null;
     }
-    (((operator!(operator!((AmtVT.isVectorTy() && AmtVT.getPrimitiveSizeInBits().operator unsigned long long() == 128 && cast(AmtVT)() == SVT && "Unexpected shift-by-scalar type")))) || (_wassert(L"AmtVT->isVectorTy() && AmtVT->getPrimitiveSizeInBits() == 128 && cast<VectorType>(AmtVT)->getElementType() == SVT && \"Unexpected shift-by-scalar type\"", L"llvm\\lib\\Target\\X86\\X86InstCombineIntrinsic.cpp", (256) as u32) , 0)) as void);
+    assert!(AmtVT.isVectorTy() && AmtVT.getPrimitiveSizeInBits().operator unsigned long long() == 128 && cast(AmtVT).getElementType() == SVT, "Unexpected shift-by-scalar type");
     let mut Count: APInt = APInt { 64, 0, false, false };
     for let mut i: u32 = 0;
 let mut NumSubElts: u32 = 64 / BitWidth; i != NumSubElts; i += 1 {
         let mut SubEltIdx: u32 = (NumSubElts - 1) - i;
-        let mut SubElt: *mut auto = cast((SubEltIdx));
+        let mut SubElt: *mut ConstantInt = cast(CDV.getElementAsConstant(SubEltIdx));
         operator(Count, BitWidth);
-        operator|=(Count, ()(64));
+        operator(Count, SubElt.getValue().zextOrTrunc(64));
     }
     if Count.isZero() {
         return Vec;
     }
     if Count.uge(BitWidth) {
         if LogicalShift {
-            return get();
+            return get(VT);
         }
         Count = APInt { 64, BitWidth - 1, false, false };
     }
-    let mut ShiftAmt: auto = get(SVT, Count.zextOrTrunc(BitWidth));
-    let mut ShiftVec: auto = Builder()(VWidth);
+    let mut ShiftAmt: *mut Constant = get(SVT, Count.zextOrTrunc(BitWidth));
+    let mut ShiftVec: *mut Value = Builder.CreateVectorSplat(VWidth, ShiftAmt, "");
     if ShiftLeft {
-        return Builder()(Vec);
+        return Builder.CreateShl(Vec, ShiftVec, "", false, false);
     }
     if LogicalShift {
-        return Builder()(Vec);
+        return Builder.CreateLShr(Vec, ShiftVec, "", false);
     }
-    return Builder()(Vec);
+    return Builder.CreateAShr(Vec, ShiftVec, "", false);
 }
 
 fn simplifyX86varShift(II: *IntrinsicInst, Builder: *mut BuilderTy) -> *mut Value {
@@ -140,61 +158,85 @@ fn simplifyX86varShift(II: *IntrinsicInst, Builder: *mut BuilderTy) -> *mut Valu
     let mut ShiftLeft: bool = false;
     match II.getIntrinsicID() {
         _ => {
-            llvm_unreachable_internal("Unexpected intrinsic!", "llvm\\lib\\Target\\X86\\X86InstCombineIntrinsic.cpp", 304);
+            llvm_unreachable_internal("Unexpected intrinsic!", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86InstCombineIntrinsic.cpp", 304);
+        },
+        x86_avx2_psrav_d => {
+            x86_avx2_psrav_d_256;
+        },
+        x86_avx2_psrlv_d => {
+            x86_avx2_psrlv_d_256;
+        },
+        x86_avx2_psllv_d => {
+            x86_avx2_psllv_d_256;
         },
     }
     assert!((LogicalShift || !ShiftLeft), "Only logical shifts can shift left");
     let mut Vec: *mut Value = II.getArgOperand(0);
     let mut Amt: *mut Value = II.getArgOperand(1);
-    let mut VT: *mut auto = cast(II.getType());
-    let mut SVT: *mut Type = ();
-    let mut NumElts: i32 = ();
+    let mut VT: *mut FixedVectorType = cast(II.getType());
+    let mut SVT: *mut Type = VT.getElementType();
+    let mut NumElts: i32 = VT.getNumElements();
     let mut BitWidth: i32 = SVT.getIntegerBitWidth();
     let mut KnownAmt: KnownBits = computeKnownBits(Amt, II.getDataLayout(), null, null, null, true, 0);
     if KnownAmt.getMaxValue().ult(BitWidth) {
-        return (if LogicalShift { (if ShiftLeft { Builder()(Vec, Amt) } else { Builder()(Vec, Amt) }) } else { Builder()(Vec, Amt) });
+        return (if LogicalShift { (if ShiftLeft { Builder.CreateShl(Vec, Amt, "", false, false) } else { Builder.CreateLShr(Vec, Amt, "", false) }) } else { Builder.CreateAShr(Vec, Amt, "", false) });
     }
-    let mut CShift: *mut auto = dyn_cast(Amt);
-    if operator!() {
+    let mut CShift: *mut Constant = dyn_cast(Amt);
+    if !CShift {
         return null;
     }
     let mut AnyOutOfRange: bool = false;
-    let mut ShiftAmts: SmallVector<int, 8> = zeroed();
+    let mut ShiftAmts: SmallVector<int, 8> = SmallVector<int, 8> {};
     for let mut I: i32 = 0; I < NumElts; I += 1 {
-        let mut CElt: *mut auto = (I);
-        if isa_and_nonnull() {
-            ShiftAmts()(-1);
+        let mut CElt: *mut Constant = CShift.getAggregateElement(I);
+        if isa_and_nonnull(CElt) {
+            ShiftAmts.push(-1);
             continue;
         }
-        let mut COp: *mut auto = dyn_cast_or_null();
-        if operator!() {
+        let mut COp: *mut ConstantInt = dyn_cast_or_null(CElt);
+        if !COp {
             return null;
         }
-        let mut ShiftVal: APInt = ();
+        let mut ShiftVal: APInt = COp.getValue();
         if ShiftVal.uge(BitWidth) {
             AnyOutOfRange = LogicalShift;
-            ShiftAmts()(if LogicalShift { BitWidth } else { BitWidth - 1 });
+            ShiftAmts.push(if LogicalShift { BitWidth } else { BitWidth - 1 });
             continue;
         }
-        ShiftAmts()(ShiftVal.getZExtValue() as i32);
+        ShiftAmts.push(ShiftVal.getZExtValue() as i32);
     }
     let mut OutOfRange: Closure_1 = Closure_1 { BitWidth: &mut BitWidth };
-    if all_of(OutOfRange) {
-        let mut ConstantVec: SmallVector<Constant *, 8> = zeroed();
-        return get();
+    if all_of(ShiftAmts, OutOfRange) {
+        let mut ConstantVec: SmallVector<Constant *, 8> = SmallVector<Constant *, 8> {};
+        for Idx in ShiftAmts {
+            if Idx < 0 {
+                ConstantVec.push(get(SVT));
+            } else {
+                assert!(LogicalShift, "Logical shift expected");
+                ConstantVec.push(getNullValue(SVT));
+            }
+        }
+        return get(ConstantVec);
     }
     if AnyOutOfRange {
         return null;
     }
-    let mut ShiftVecAmts: SmallVector<Constant *, 8> = zeroed();
-    let mut ShiftVec: auto = get();
+    let mut ShiftVecAmts: SmallVector<Constant *, 8> = SmallVector<Constant *, 8> {};
+    for Idx in ShiftAmts {
+        if Idx < 0 {
+            ShiftVecAmts.push(get(SVT));
+        } else {
+            ShiftVecAmts.push(get(SVT, Idx, false, false));
+        }
+    }
+    let mut ShiftVec: *mut Constant = get(ShiftVecAmts);
     if ShiftLeft {
-        return Builder()(Vec);
+        return Builder.CreateShl(Vec, ShiftVec, "", false, false);
     }
     if LogicalShift {
-        return Builder()(Vec);
+        return Builder.CreateLShr(Vec, ShiftVec, "", false);
     }
-    return Builder()(Vec);
+    return Builder.CreateAShr(Vec, ShiftVec, "", false);
 }
 
 fn simplifyX86pack(II: *mut IntrinsicInst, Builder: *mut BuilderTy, IsSigned: bool) -> *mut Value {
@@ -204,13 +246,13 @@ fn simplifyX86pack(II: *mut IntrinsicInst, Builder: *mut BuilderTy, IsSigned: bo
     if isa(Arg0) && isa(Arg1) {
         return get(ResTy);
     }
-    let mut ArgTy: *mut auto = cast(Arg0.getType());
+    let mut ArgTy: *mut FixedVectorType = cast(Arg0.getType());
     let mut NumLanes: u32 = ResTy.getPrimitiveSizeInBits().operator unsigned long long() / 128;
-    let mut NumSrcElts: u32 = ();
-    (((operator!(operator!((cast(ResTy)() == (2 * NumSrcElts) && "Unexpected packing types")))) || (_wassert(L"cast<FixedVectorType>(ResTy)->getNumElements() == (2 * NumSrcElts) && \"Unexpected packing types\"", L"llvm\\lib\\Target\\X86\\X86InstCombineIntrinsic.cpp", (447) as u32) , 0)) as void);
+    let mut NumSrcElts: u32 = ArgTy.getNumElements();
+    assert!(cast(ResTy).getNumElements() == (2 * NumSrcElts), "Unexpected packing types");
     let mut NumSrcEltsPerLane: u32 = NumSrcElts / NumLanes;
     let mut DstScalarSizeInBits: u32 = ResTy.getScalarSizeInBits();
-    let mut SrcScalarSizeInBits: u32 = ();
+    let mut SrcScalarSizeInBits: u32 = ArgTy.getScalarSizeInBits();
     assert!(SrcScalarSizeInBits == (2 * DstScalarSizeInBits), "Unexpected packing types");
     if !isa(Arg0) || !isa(Arg1) {
         return null;
@@ -224,85 +266,87 @@ fn simplifyX86pack(II: *mut IntrinsicInst, Builder: *mut BuilderTy, IsSigned: bo
         MinValue = getZero(SrcScalarSizeInBits);
         MaxValue = getLowBitsSet(SrcScalarSizeInBits, DstScalarSizeInBits);
     }
-    let mut MinC: *mut auto = getIntegerValue(MinValue);
-    let mut MaxC: *mut auto = getIntegerValue(MaxValue);
-    Arg0 = Builder()(Builder()(Arg0), Arg0);
-    Arg1 = Builder()(Builder()(Arg1), Arg1);
-    Arg0 = Builder()(Builder()(Arg0), Arg0);
-    Arg1 = Builder()(Builder()(Arg1), Arg1);
-    let mut PackMask: SmallVector<int, 32> = zeroed();
+    let mut MinC: *mut Constant = getIntegerValue(ArgTy, MinValue);
+    let mut MaxC: *mut Constant = getIntegerValue(ArgTy, MaxValue);
+    Arg0 = Builder.CreateSelect(Builder.CreateICmpSLT(Arg0, MinC, ""), MinC, Arg0, "", null);
+    Arg1 = Builder.CreateSelect(Builder.CreateICmpSLT(Arg1, MinC, ""), MinC, Arg1, "", null);
+    Arg0 = Builder.CreateSelect(Builder.CreateICmpSGT(Arg0, MaxC, ""), MaxC, Arg0, "", null);
+    Arg1 = Builder.CreateSelect(Builder.CreateICmpSGT(Arg1, MaxC, ""), MaxC, Arg1, "", null);
+    let mut PackMask: SmallVector<int, 32> = SmallVector<int, 32> {};
     for let mut Lane: u32 = 0; Lane != NumLanes; Lane += 1 {
         for let mut Elt: u32 = 0; Elt != NumSrcEltsPerLane; Elt += 1 {
-            PackMask()(Elt + (Lane * NumSrcEltsPerLane));
+            PackMask.push(Elt + (Lane * NumSrcEltsPerLane));
         }
         for let mut Elt: u32 = 0; Elt != NumSrcEltsPerLane; Elt += 1 {
-            PackMask()(Elt + (Lane * NumSrcEltsPerLane) + NumSrcElts);
+            PackMask.push(Elt + (Lane * NumSrcEltsPerLane) + NumSrcElts);
         }
     }
-    let mut Shuffle: *mut auto = Builder()(Arg0, Arg1);
-    return Builder()(ResTy);
+    let mut Shuffle: *mut Value = Builder.CreateShuffleVector(Arg0, Arg1, PackMask, "");
+    return Builder.CreateTrunc(Shuffle, ResTy, "", false, false);
 }
 
 fn simplifyX86pmulhrsw(II: *mut IntrinsicInst, Builder: *mut BuilderTy) -> *mut Value {
     let mut Arg0: *mut Value = II.getArgOperand(0);
     let mut Arg1: *mut Value = II.getArgOperand(1);
-    let mut ResTy: *mut auto = cast(II.getType());
-    let mut ArgTy: *mut auto = cast(Arg0.getType());
-    (((operator!(operator!((ArgTy() ==  && () == 16 && "Unexpected PMULH types")))) || (_wassert(L"ArgTy == ResTy && ResTy->getScalarSizeInBits() == 16 && \"Unexpected PMULH types\"", L"llvm\\lib\\Target\\X86\\X86InstCombineIntrinsic.cpp", (506) as u32) , 0)) as void);
+    let mut ResTy: *mut FixedVectorType = cast(II.getType());
+    let mut ArgTy: *mut FixedVectorType = cast(Arg0.getType());
+    assert!(ArgTy == ResTy && ResTy.getScalarSizeInBits() == 16, "Unexpected PMULH types");
     if isa(Arg0) || isa(Arg1) {
-        return get();
+        return get(ResTy);
     }
     if isa(Arg0) || isa(Arg1) {
-        return get();
+        return get(ResTy);
     }
     if !isa(Arg0) || !isa(Arg1) {
         return null;
     }
-    let mut ExtTy: *mut auto = getExtendedElementVectorType();
-    let mut LHS: *mut Value = Builder()(Arg0);
-    let mut RHS: *mut Value = Builder()(Arg1);
-    let mut Mul: *mut Value = Builder()(LHS, RHS);
-    let mut RndEltTy: *mut auto = get(18);
-    let mut RndTy: *mut auto = get();
-    Mul = Builder()(Mul, 14);
-    Mul = Builder()(Mul);
-    Mul = Builder()(Mul, get(1));
-    Mul = Builder()(Mul, 1);
-    return Builder()(Mul);
+    let mut ExtTy: *mut FixedVectorType = getExtendedElementVectorType(ArgTy);
+    let mut LHS: *mut Value = Builder.CreateSExt(Arg0, ExtTy, "");
+    let mut RHS: *mut Value = Builder.CreateSExt(Arg1, ExtTy, "");
+    let mut Mul: *mut Value = Builder.CreateMul(LHS, RHS, "", false, false);
+    let mut RndEltTy: *mut IntegerType = get(ExtTy.getContext(), 18);
+    let mut RndTy: *mut FixedVectorType = get(RndEltTy, ExtTy);
+    Mul = Builder.CreateLShr(Mul, 14, "", false);
+    Mul = Builder.CreateTrunc(Mul, RndTy, "", false, false);
+    Mul = Builder.CreateAdd(Mul, get(RndTy, 1, false, false), "", false, false);
+    Mul = Builder.CreateLShr(Mul, 1, "", false);
+    return Builder.CreateTrunc(Mul, ResTy, "", false, false);
 }
 
 fn simplifyX86pmadd(II: *mut IntrinsicInst, Builder: *mut BuilderTy, IsPMADDWD: bool) -> *mut Value {
     let mut Arg0: *mut Value = II.getArgOperand(0);
     let mut Arg1: *mut Value = II.getArgOperand(1);
-    let mut ResTy: *mut auto = cast(II.getType());
-    let mut ArgTy: *mut auto = cast(Arg0.getType());
-    let mut NumDstElts: u32 = ();
-    (((operator!(operator!((ArgTy()() == (2 * NumDstElts) && () == (2 * ()) && "Unexpected PMADD types")))) || (_wassert(L"ArgTy->getNumElements() == (2 * NumDstElts) && ResTy->getScalarSizeInBits() == (2 * ArgTy->getScalarSizeInBits()) && \"Unexpected PMADD types\"", L"llvm\\lib\\Target\\X86\\X86InstCombineIntrinsic.cpp", (548) as u32) , 0)) as void);
+    let mut ResTy: *mut FixedVectorType = cast(II.getType());
+    let mut ArgTy: *mut FixedVectorType = cast(Arg0.getType());
+    let mut NumDstElts: u32 = ResTy.getNumElements();
+    assert!(ArgTy.getNumElements() == (2 * NumDstElts) && ResTy.getScalarSizeInBits() == (2 * ArgTy.getScalarSizeInBits()), "Unexpected PMADD types");
     if isa(Arg0) || isa(Arg1) {
-        return get();
+        return get(ResTy);
     }
     if isa(Arg0) || isa(Arg1) {
-        return get();
+        return get(ResTy);
     }
     if !isa(Arg0) || !isa(Arg1) {
         return null;
     }
-    let mut LoMask: i32 = 0;
+    let mut LoMask: SmallVector<int> = SmallVector<int> {};
+    let mut HiMask: SmallVector<int> = SmallVector<int> {};
     for let mut I: u32 = 0; I != NumDstElts; I += 1 {
-        LoMask()(2 * I + 0);
+        LoMask.push(2 * I + 0);
+        HiMask.push(2 * I + 1);
     }
-    let mut LHSLo: *mut auto = Builder()(Arg0);
-    let mut LHSHi: *mut auto = Builder();
-    let mut RHSLo: *mut auto = Builder()(Arg1);
-    let mut RHSHi: *mut auto = Builder();
+    let mut LHSLo: *mut Value = Builder.CreateShuffleVector(Arg0, LoMask, "");
+    let mut LHSHi: *mut Value = Builder.CreateShuffleVector(Arg0, HiMask, "");
+    let mut RHSLo: *mut Value = Builder.CreateShuffleVector(Arg1, LoMask, "");
+    let mut RHSHi: *mut Value = Builder.CreateShuffleVector(Arg1, HiMask, "");
     let mut LHSCast: CastOps = if IsPMADDWD { SExt } else { ZExt };
-    LHSLo() = Builder()(LHSCast);
-    LHSHi() = Builder()(LHSCast);
-    RHSLo() = Builder()(SExt);
-    RHSHi() = Builder()(SExt);
-    let mut Lo: *mut Value = Builder()();
-    let mut Hi: *mut Value = Builder()();
-    return if IsPMADDWD { Builder()(Lo, Hi) } else { Builder()(sadd_sat, void { Lo, Hi }) };
+    LHSLo = Builder.CreateCast(LHSCast, LHSLo, ResTy, "", null, FMFSource {});
+    LHSHi = Builder.CreateCast(LHSCast, LHSHi, ResTy, "", null, FMFSource {});
+    RHSLo = Builder.CreateCast(SExt, RHSLo, ResTy, "", null, FMFSource {});
+    RHSHi = Builder.CreateCast(SExt, RHSHi, ResTy, "", null, FMFSource {});
+    let mut Lo: *mut Value = Builder.CreateMul(LHSLo, RHSLo, "", false, false);
+    let mut Hi: *mut Value = Builder.CreateMul(LHSHi, RHSHi, "", false, false);
+    return if IsPMADDWD { Builder.CreateAdd(Lo, Hi, "", false, false) } else { Builder.CreateIntrinsic(ResTy, sadd_sat, [Lo, Hi], FMFSource {}, "", function_ref<void (CallInst *)> { Closure_2 {}, null, null }) };
 }
 
 fn simplifyX86movmsk(II: *IntrinsicInst, Builder: *mut BuilderTy) -> *mut Value {
@@ -311,16 +355,16 @@ fn simplifyX86movmsk(II: *IntrinsicInst, Builder: *mut BuilderTy) -> *mut Value 
     if isa(Arg) {
         return getNullValue(ResTy);
     }
-    if  {
+    if II.getIntrinsicID() == x86_mmx_pmovmskb {
         return null;
     }
-    let mut ArgTy: *mut auto = cast(Arg.getType());
-    let mut NumElts: u32 = ();
-    let mut IntegerTy: *mut Type = Builder()(NumElts);
-    let mut Res: *mut Value = Builder()(Arg, getInteger());
-    Res = Builder()(Res);
-    Res = Builder()(Res, IntegerTy);
-    Res = Builder()(Res, ResTy);
+    let mut ArgTy: *mut FixedVectorType = cast(Arg.getType());
+    let mut NumElts: u32 = ArgTy.getNumElements();
+    let mut IntegerTy: *mut Type = Builder.getIntNTy(NumElts);
+    let mut Res: *mut Value = Builder.CreateBitCast(Arg, getInteger(ArgTy), "");
+    Res = Builder.CreateIsNeg(Res, "");
+    Res = Builder.CreateBitCast(Res, IntegerTy, "");
+    Res = Builder.CreateZExtOrTrunc(Res, ResTy, "");
     return Res;
 }
 
@@ -331,33 +375,33 @@ fn simplifyX86addcarry(II: *IntrinsicInst, Builder: *mut BuilderTy) -> *mut Valu
     let mut RetTy: *mut Type = II.getType();
     let mut OpTy: *mut Type = Op1.getType();
     assert!(RetTy.getStructElementType(0).isIntegerTy(8) && RetTy.getStructElementType(1) == OpTy && OpTy == Op2.getType(), "Unexpected types for x86 addcarry");
-    if match(CarryIn) {
-        let mut UAdd: *mut Value = Builder()(uadd_with_overflow, OpTy, void { Op1, Op2 });
-        let mut UAddResult: *mut Value = Builder()(UAdd, 0);
-        let mut UAddOV: *mut Value = Builder()(Builder()(UAdd, 1), Builder()());
+    if match(CarryIn, m_ZeroInt()) {
+        let mut UAdd: *mut Value = Builder.CreateIntrinsic(uadd_with_overflow, OpTy, [Op1, Op2], FMFSource {}, "", ArrayRef<OperandBundleDef> {}, function_ref<void (CallInst *)> { Closure_3 {}, null, null });
+        let mut UAddResult: *mut Value = Builder.CreateExtractValue(UAdd, 0, "");
+        let mut UAddOV: *mut Value = Builder.CreateZExt(Builder.CreateExtractValue(UAdd, 1, ""), Builder.getInt8Ty(), "", false);
         let mut Res: *mut Value = get(RetTy);
-        Res = Builder()(Res, UAddOV, 0);
-        return Builder()(Res, UAddResult, 1);
+        Res = Builder.CreateInsertValue(Res, UAddOV, 0, "");
+        return Builder.CreateInsertValue(Res, UAddResult, 1, "");
     }
     return null;
 }
 
 fn simplifyTernarylogic(II: *IntrinsicInst, Builder: *mut BuilderTy) -> *mut Value {
-    let mut ArgImm: *mut auto = dyn_cast(II.getArgOperand(3));
-    if operator!() || ()(256) {
+    let mut ArgImm: *mut ConstantInt = dyn_cast(II.getArgOperand(3));
+    if !ArgImm || ArgImm.getValue().uge(256) {
         return null;
     }
     let mut ArgA: *mut Value = II.getArgOperand(0);
     let mut ArgB: *mut Value = II.getArgOperand(1);
     let mut ArgC: *mut Value = II.getArgOperand(2);
     let mut Ty: *mut Type = II.getType();
-    let mut Or: Closure_2 = Closure_2 { Builder: &mut Builder };
-    let mut Xor: Closure_3 = Closure_3 { Builder: &mut Builder };
-    let mut And: Closure_4 = Closure_4 { Builder: &mut Builder };
-    let mut Not: Closure_5 = Closure_5 { Builder: &mut Builder };
-    let mut Nor: Closure_6 = Closure_6 { Not: &mut Not, Or: &mut Or };
-    let mut Xnor: Closure_7 = Closure_7 { Not: &mut Not, Xor: &mut Xor };
-    let mut Nand: Closure_8 = Closure_8 { Not: &mut Not, And: &mut And };
+    let mut Or: Closure_4 = Closure_4 { Builder: &mut Builder };
+    let mut Xor: Closure_5 = Closure_5 { Builder: &mut Builder };
+    let mut And: Closure_6 = Closure_6 { Builder: &mut Builder };
+    let mut Not: Closure_7 = Closure_7 { Builder: &mut Builder };
+    let mut Nor: Closure_8 = Closure_8 { Not: &mut Not, Or: &mut Or };
+    let mut Xnor: Closure_9 = Closure_9 { Not: &mut Not, Xor: &mut Xor };
+    let mut Nand: Closure_10 = Closure_10 { Not: &mut Not, And: &mut And };
     let mut AIsConst: bool = match(ArgA, m_ImmConstant());
     let mut BIsConst: bool = match(ArgB, m_ImmConstant());
     let mut CIsConst: bool = match(ArgC, m_ImmConstant());
@@ -365,1304 +409,1304 @@ fn simplifyTernarylogic(II: *IntrinsicInst, Builder: *mut BuilderTy) -> *mut Val
     let mut ACIsConst: bool = AIsConst && CIsConst;
     let mut BCIsConst: bool = BIsConst && CIsConst;
     let mut ABCIsConst: bool = AIsConst && BIsConst && CIsConst;
-    let mut A: pair<Value *, uint8_t> = zeroed();
-    let mut B: pair<Value *, uint8_t> = zeroed();
-    let mut C: pair<Value *, uint8_t> = zeroed();
-    let mut Res: pair<Value *, uint8_t> = zeroed();
-    let mut Imm: u8 = ()();
+    let mut A: pair<Value *, uint8_t> = pair<Value *, uint8_t> { ArgA, 240 };
+    let mut B: pair<Value *, uint8_t> = pair<Value *, uint8_t> { ArgB, 204 };
+    let mut C: pair<Value *, uint8_t> = pair<Value *, uint8_t> { ArgC, 170 };
+    let mut Res: pair<Value *, uint8_t> = pair<Value *, uint8_t> { null, 0 };
+    let mut Imm: u8 = ArgImm.getValue().getZExtValue();
     match Imm {
         0 => {
-            Res() = void { getNullValue(Ty), 0 };
+            Res = Value *, unsigned char> { getNullValue(Ty), 0 };
         },
         1 => {
             if ABCIsConst {
-                Res() = Nor(Or());
+                Res = Nor.call(Or.call(A, B), C);
             }
         },
         2 => {
             if ABCIsConst {
-                Res() = And(Nor());
+                Res = And.call(Nor.call(A, B), C);
             }
         },
         3 => {
             if ABIsConst {
-                Res() = Nor();
+                Res = Nor.call(A, B);
             }
         },
         4 => {
             if ABCIsConst {
-                Res() = And(Nor());
+                Res = And.call(Nor.call(A, C), B);
             }
         },
         5 => {
             if ACIsConst {
-                Res() = Nor();
+                Res = Nor.call(A, C);
             }
         },
         6 => {
             if ABCIsConst {
-                Res() = Nor(Xnor());
+                Res = Nor.call(A, Xnor.call(B, C));
             }
         },
         7 => {
             if ABCIsConst {
-                Res() = Nor(And());
+                Res = Nor.call(A, And.call(B, C));
             }
         },
         8 => {
             if ABCIsConst {
-                Res() = Nor(Nand());
+                Res = Nor.call(A, Nand.call(B, C));
             }
         },
         9 => {
             if ABCIsConst {
-                Res() = Nor(Xor());
+                Res = Nor.call(A, Xor.call(B, C));
             }
         },
         10 => {
             if ACIsConst {
-                Res() = Nor(Not());
+                Res = Nor.call(A, Not.call(C));
             }
         },
         11 => {
             if ABCIsConst {
-                Res() = Nor(Nor(Not()));
+                Res = Nor.call(A, Nor.call(C, Not.call(B)));
             }
         },
         12 => {
             if ABIsConst {
-                Res() = Nor(Not());
+                Res = Nor.call(A, Not.call(B));
             }
         },
         13 => {
             if ABCIsConst {
-                Res() = Nor(Nor(Not()));
+                Res = Nor.call(A, Nor.call(B, Not.call(C)));
             }
         },
         14 => {
             if ABCIsConst {
-                Res() = Nor(Nor());
+                Res = Nor.call(A, Nor.call(B, C));
             }
         },
         15 => {
-            Res() = Not();
+            Res = Not.call(A);
         },
         16 => {
             if ABCIsConst {
-                Res() = And(Nor());
+                Res = And.call(A, Nor.call(B, C));
             }
         },
         17 => {
             if BCIsConst {
-                Res() = Nor();
+                Res = Nor.call(B, C);
             }
         },
         18 => {
             if ABCIsConst {
-                Res() = Nor(Xnor());
+                Res = Nor.call(Xnor.call(A, C), B);
             }
         },
         19 => {
             if ABCIsConst {
-                Res() = Nor(And());
+                Res = Nor.call(And.call(A, C), B);
             }
         },
         20 => {
             if ABCIsConst {
-                Res() = Nor(Xnor());
+                Res = Nor.call(Xnor.call(A, B), C);
             }
         },
         21 => {
             if ABCIsConst {
-                Res() = Nor(And());
+                Res = Nor.call(And.call(A, B), C);
             }
         },
         22 => {
             if ABCIsConst {
-                Res() = Xor(Xor(), And(Nand()));
+                Res = Xor.call(Xor.call(A, B), And.call(Nand.call(A, B), C));
             }
         },
         23 => {
             if ABCIsConst {
-                Res() = Xor(Or(), Or(Xnor()));
+                Res = Xor.call(Or.call(A, B), Or.call(Xnor.call(A, B), C));
             }
         },
         24 => {
             if ABCIsConst {
-                Res() = Nor(Xnor(), Xnor());
+                Res = Nor.call(Xnor.call(A, B), Xnor.call(A, C));
             }
         },
         25 => {
             if ABCIsConst {
-                Res() = And(Nand(), Xnor());
+                Res = And.call(Nand.call(A, B), Xnor.call(B, C));
             }
         },
         26 => {
             if ABCIsConst {
-                Res() = Xor(Or(And()));
+                Res = Xor.call(A, Or.call(And.call(A, B), C));
             }
         },
         27 => {
             if ABCIsConst {
-                Res() = Xor(Or(Xnor()));
+                Res = Xor.call(A, Or.call(Xnor.call(A, B), C));
             }
         },
         28 => {
             if ABCIsConst {
-                Res() = Xor(Or(And()));
+                Res = Xor.call(A, Or.call(And.call(A, C), B));
             }
         },
         29 => {
             if ABCIsConst {
-                Res() = Xor(Or(Xnor()));
+                Res = Xor.call(A, Or.call(Xnor.call(A, C), B));
             }
         },
         30 => {
             if ABCIsConst {
-                Res() = Xor(Or());
+                Res = Xor.call(A, Or.call(B, C));
             }
         },
         31 => {
             if ABCIsConst {
-                Res() = Nand(Or());
+                Res = Nand.call(A, Or.call(B, C));
             }
         },
         32 => {
             if ABCIsConst {
-                Res() = Nor(Nand());
+                Res = Nor.call(Nand.call(A, C), B);
             }
         },
         33 => {
             if ABCIsConst {
-                Res() = Nor(Xor());
+                Res = Nor.call(Xor.call(A, C), B);
             }
         },
         34 => {
             if BCIsConst {
-                Res() = Nor(Not());
+                Res = Nor.call(B, Not.call(C));
             }
         },
         35 => {
             if ABCIsConst {
-                Res() = Nor(Nor(Not()));
+                Res = Nor.call(B, Nor.call(C, Not.call(A)));
             }
         },
         36 => {
             if ABCIsConst {
-                Res() = Nor(Xnor(), Xor());
+                Res = Nor.call(Xnor.call(A, B), Xor.call(A, C));
             }
         },
         37 => {
             if ABCIsConst {
-                Res() = Xor(Nand(Nand()));
+                Res = Xor.call(A, Nand.call(Nand.call(A, B), C));
             }
         },
         38 => {
             if ABCIsConst {
-                Res() = And(Nand(), Xor());
+                Res = And.call(Nand.call(A, B), Xor.call(B, C));
             }
         },
         39 => {
             if ABCIsConst {
-                Res() = Xor(Or(Xnor()));
+                Res = Xor.call(Or.call(Xnor.call(A, B), C), B);
             }
         },
         40 => {
             if ABCIsConst {
-                Res() = And(Xor());
+                Res = And.call(Xor.call(A, B), C);
             }
         },
         41 => {
             if ABCIsConst {
-                Res() = Xor(Xor(), Nor(And()));
+                Res = Xor.call(Xor.call(A, B), Nor.call(And.call(A, B), C));
             }
         },
         42 => {
             if ABCIsConst {
-                Res() = And(Nand());
+                Res = And.call(Nand.call(A, B), C);
             }
         },
         43 => {
             if ABCIsConst {
-                Res() = Xor(Or(Xnor(), Xor()));
+                Res = Xor.call(Or.call(Xnor.call(A, B), Xor.call(A, C)), A);
             }
         },
         44 => {
             if ABCIsConst {
-                Res() = Nor(Xnor(), Nor());
+                Res = Nor.call(Xnor.call(A, B), Nor.call(B, C));
             }
         },
         45 => {
             if ABCIsConst {
-                Res() = Xor(Or(Not()));
+                Res = Xor.call(A, Or.call(B, Not.call(C)));
             }
         },
         46 => {
             if ABCIsConst {
-                Res() = Xor(Or(Xor()));
+                Res = Xor.call(A, Or.call(Xor.call(A, C), B));
             }
         },
         47 => {
             if ABCIsConst {
-                Res() = Nand(Or(Not()));
+                Res = Nand.call(A, Or.call(B, Not.call(C)));
             }
         },
         48 => {
             if ABIsConst {
-                Res() = Nor(Not());
+                Res = Nor.call(B, Not.call(A));
             }
         },
         49 => {
             if ABCIsConst {
-                Res() = Nor(Nor(Not()));
+                Res = Nor.call(Nor.call(A, Not.call(C)), B);
             }
         },
         50 => {
             if ABCIsConst {
-                Res() = Nor(Nor());
+                Res = Nor.call(Nor.call(A, C), B);
             }
         },
         51 => {
-            Res() = Not();
+            Res = Not.call(B);
         },
         52 => {
             if ABCIsConst {
-                Res() = And(Xor(), Nand());
+                Res = And.call(Xor.call(A, B), Nand.call(B, C));
             }
         },
         53 => {
             if ABCIsConst {
-                Res() = Xor(Or(Xnor()));
+                Res = Xor.call(B, Or.call(A, Xnor.call(B, C)));
             }
         },
         54 => {
             if ABCIsConst {
-                Res() = Xor(Or());
+                Res = Xor.call(Or.call(A, C), B);
             }
         },
         55 => {
             if ABCIsConst {
-                Res() = Nand(Or());
+                Res = Nand.call(Or.call(A, C), B);
             }
         },
         56 => {
             if ABCIsConst {
-                Res() = Nor(Xnor(), Nor());
+                Res = Nor.call(Xnor.call(A, B), Nor.call(A, C));
             }
         },
         57 => {
             if ABCIsConst {
-                Res() = Xor(Or(Not()));
+                Res = Xor.call(Or.call(A, Not.call(C)), B);
             }
         },
         58 => {
             if ABCIsConst {
-                Res() = Xor(Or(Xor()));
+                Res = Xor.call(B, Or.call(A, Xor.call(B, C)));
             }
         },
         59 => {
             if ABCIsConst {
-                Res() = Nand(Or(Not()));
+                Res = Nand.call(Or.call(A, Not.call(C)), B);
             }
         },
         60 => {
-            Res() = Xor();
+            Res = Xor.call(A, B);
         },
         61 => {
             if ABCIsConst {
-                Res() = Xor(Or(Nor()));
+                Res = Xor.call(A, Or.call(Nor.call(A, C), B));
             }
         },
         62 => {
             if ABCIsConst {
-                Res() = Xor(Or(Nor(Not())));
+                Res = Xor.call(A, Or.call(Nor.call(A, Not.call(C)), B));
             }
         },
         63 => {
             if ABIsConst {
-                Res() = Nand();
+                Res = Nand.call(A, B);
             }
         },
         64 => {
             if ABCIsConst {
-                Res() = Nor(Nand());
+                Res = Nor.call(Nand.call(A, B), C);
             }
         },
         65 => {
             if ABCIsConst {
-                Res() = Nor(Xor());
+                Res = Nor.call(Xor.call(A, B), C);
             }
         },
         66 => {
             if ABCIsConst {
-                Res() = Nor(Xor(), Xnor());
+                Res = Nor.call(Xor.call(A, B), Xnor.call(A, C));
             }
         },
         67 => {
             if ABCIsConst {
-                Res() = Xor(Nand(Nand()));
+                Res = Xor.call(A, Nand.call(Nand.call(A, C), B));
             }
         },
         68 => {
             if BCIsConst {
-                Res() = Nor(Not());
+                Res = Nor.call(C, Not.call(B));
             }
         },
         69 => {
             if ABCIsConst {
-                Res() = Nor(Nor(Not()));
+                Res = Nor.call(Nor.call(B, Not.call(A)), C);
             }
         },
         70 => {
             if ABCIsConst {
-                Res() = Xor(Or(And()));
+                Res = Xor.call(Or.call(And.call(A, C), B), C);
             }
         },
         71 => {
             if ABCIsConst {
-                Res() = Xor(Or(Xnor()));
+                Res = Xor.call(Or.call(Xnor.call(A, C), B), C);
             }
         },
         72 => {
             if ABCIsConst {
-                Res() = And(Xor());
+                Res = And.call(Xor.call(A, C), B);
             }
         },
         73 => {
             if ABCIsConst {
-                Res() = Xor(Or(Xnor(), And()));
+                Res = Xor.call(Or.call(Xnor.call(A, B), And.call(A, C)), C);
             }
         },
         74 => {
             if ABCIsConst {
-                Res() = Nor(Xnor(), Nor());
+                Res = Nor.call(Xnor.call(A, C), Nor.call(B, C));
             }
         },
         75 => {
             if ABCIsConst {
-                Res() = Xor(Or(Not()));
+                Res = Xor.call(A, Or.call(C, Not.call(B)));
             }
         },
         76 => {
             if ABCIsConst {
-                Res() = And(Nand());
+                Res = And.call(Nand.call(A, C), B);
             }
         },
         77 => {
             if ABCIsConst {
-                Res() = Xor(Or(Xor(), Xnor()));
+                Res = Xor.call(Or.call(Xor.call(A, B), Xnor.call(A, C)), A);
             }
         },
         78 => {
             if ABCIsConst {
-                Res() = Xor(Or(Xor()));
+                Res = Xor.call(A, Or.call(Xor.call(A, B), C));
             }
         },
         79 => {
             if ABCIsConst {
-                Res() = Nand(Nand(Not()));
+                Res = Nand.call(A, Nand.call(B, Not.call(C)));
             }
         },
         80 => {
             if ACIsConst {
-                Res() = Nor(Not());
+                Res = Nor.call(C, Not.call(A));
             }
         },
         81 => {
             if ABCIsConst {
-                Res() = Nor(Nor(Not()));
+                Res = Nor.call(Nor.call(A, Not.call(B)), C);
             }
         },
         82 => {
             if ABCIsConst {
-                Res() = And(Xor(), Nand());
+                Res = And.call(Xor.call(A, C), Nand.call(B, C));
             }
         },
         83 => {
             if ABCIsConst {
-                Res() = Xor(Or(Xnor()));
+                Res = Xor.call(Or.call(Xnor.call(B, C), A), C);
             }
         },
         84 => {
             if ABCIsConst {
-                Res() = Nor(Nor());
+                Res = Nor.call(Nor.call(A, B), C);
             }
         },
         85 => {
-            Res() = Not();
+            Res = Not.call(C);
         },
         86 => {
             if ABCIsConst {
-                Res() = Xor(Or());
+                Res = Xor.call(Or.call(A, B), C);
             }
         },
         87 => {
             if ABCIsConst {
-                Res() = Nand(Or());
+                Res = Nand.call(Or.call(A, B), C);
             }
         },
         88 => {
             if ABCIsConst {
-                Res() = Nor(Nor(), Xnor());
+                Res = Nor.call(Nor.call(A, B), Xnor.call(A, C));
             }
         },
         89 => {
             if ABCIsConst {
-                Res() = Xor(Or(Not()));
+                Res = Xor.call(Or.call(A, Not.call(B)), C);
             }
         },
         90 => {
-            Res() = Xor();
+            Res = Xor.call(A, C);
         },
         91 => {
             if ABCIsConst {
-                Res() = Xor(Or(Nor()));
+                Res = Xor.call(A, Or.call(Nor.call(A, B), C));
             }
         },
         92 => {
             if ABCIsConst {
-                Res() = Xor(Or(Xor()));
+                Res = Xor.call(Or.call(Xor.call(B, C), A), C);
             }
         },
         93 => {
             if ABCIsConst {
-                Res() = Nand(Or(Not()));
+                Res = Nand.call(Or.call(A, Not.call(B)), C);
             }
         },
         94 => {
             if ABCIsConst {
-                Res() = Xor(Or(Nor(Not())));
+                Res = Xor.call(A, Or.call(Nor.call(A, Not.call(B)), C));
             }
         },
         95 => {
             if ACIsConst {
-                Res() = Nand();
+                Res = Nand.call(A, C);
             }
         },
         96 => {
             if ABCIsConst {
-                Res() = And(Xor());
+                Res = And.call(A, Xor.call(B, C));
             }
         },
         97 => {
             if ABCIsConst {
-                Res() = Xor(Or(Xnor(), And()));
+                Res = Xor.call(Or.call(Xnor.call(A, B), And.call(B, C)), C);
             }
         },
         98 => {
             if ABCIsConst {
-                Res() = Nor(Nor(), Xnor());
+                Res = Nor.call(Nor.call(A, C), Xnor.call(B, C));
             }
         },
         99 => {
             if ABCIsConst {
-                Res() = Xor(Or(Not()));
+                Res = Xor.call(B, Or.call(C, Not.call(A)));
             }
         },
         100 => {
             if ABCIsConst {
-                Res() = Nor(Nor(), Xnor());
+                Res = Nor.call(Nor.call(A, B), Xnor.call(B, C));
             }
         },
         101 => {
             if ABCIsConst {
-                Res() = Xor(Or(Not()));
+                Res = Xor.call(Or.call(B, Not.call(A)), C);
             }
         },
         102 => {
-            Res() = Xor();
+            Res = Xor.call(B, C);
         },
         103 => {
             if ABCIsConst {
-                Res() = Or(Nor(), Xor());
+                Res = Or.call(Nor.call(A, B), Xor.call(B, C));
             }
         },
         104 => {
             if ABCIsConst {
-                Res() = Xor(Xor(), Nor(Nor()));
+                Res = Xor.call(Xor.call(A, B), Nor.call(Nor.call(A, B), C));
             }
         },
         105 => {
             if ABCIsConst {
-                Res() = Xor(Xnor());
+                Res = Xor.call(Xnor.call(A, B), C);
             }
         },
         106 => {
             if ABCIsConst {
-                Res() = Xor(And());
+                Res = Xor.call(And.call(A, B), C);
             }
         },
         107 => {
             if ABCIsConst {
-                Res() = Or(Nor(), Xor(Xnor()));
+                Res = Or.call(Nor.call(A, B), Xor.call(Xnor.call(A, B), C));
             }
         },
         108 => {
             if ABCIsConst {
-                Res() = Xor(And());
+                Res = Xor.call(And.call(A, C), B);
             }
         },
         109 => {
             if ABCIsConst {
-                Res() = Xor(Or(Xnor(), Nor()));
+                Res = Xor.call(Or.call(Xnor.call(A, B), Nor.call(A, C)), C);
             }
         },
         110 => {
             if ABCIsConst {
-                Res() = Or(Nor(Not()), Xor());
+                Res = Or.call(Nor.call(A, Not.call(B)), Xor.call(B, C));
             }
         },
         111 => {
             if ABCIsConst {
-                Res() = Nand(Xnor());
+                Res = Nand.call(A, Xnor.call(B, C));
             }
         },
         112 => {
             if ABCIsConst {
-                Res() = And(Nand());
+                Res = And.call(A, Nand.call(B, C));
             }
         },
         113 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Xor(), Xor()));
+                Res = Xor.call(Nor.call(Xor.call(A, B), Xor.call(A, C)), A);
             }
         },
         114 => {
             if ABCIsConst {
-                Res() = Xor(Or(Xor()));
+                Res = Xor.call(Or.call(Xor.call(A, B), C), B);
             }
         },
         115 => {
             if ABCIsConst {
-                Res() = Nand(Nand(Not()));
+                Res = Nand.call(Nand.call(A, Not.call(C)), B);
             }
         },
         116 => {
             if ABCIsConst {
-                Res() = Xor(Or(Xor()));
+                Res = Xor.call(Or.call(Xor.call(A, C), B), C);
             }
         },
         117 => {
             if ABCIsConst {
-                Res() = Nand(Nand(Not()));
+                Res = Nand.call(Nand.call(A, Not.call(B)), C);
             }
         },
         118 => {
             if ABCIsConst {
-                Res() = Xor(Or(Nor(Not())));
+                Res = Xor.call(B, Or.call(Nor.call(B, Not.call(A)), C));
             }
         },
         119 => {
             if BCIsConst {
-                Res() = Nand();
+                Res = Nand.call(B, C);
             }
         },
         120 => {
             if ABCIsConst {
-                Res() = Xor(And());
+                Res = Xor.call(A, And.call(B, C));
             }
         },
         121 => {
             if ABCIsConst {
-                Res() = Xor(Or(Xnor(), Nor()));
+                Res = Xor.call(Or.call(Xnor.call(A, B), Nor.call(B, C)), C);
             }
         },
         122 => {
             if ABCIsConst {
-                Res() = Or(Xor(), Nor(Not()));
+                Res = Or.call(Xor.call(A, C), Nor.call(B, Not.call(A)));
             }
         },
         123 => {
             if ABCIsConst {
-                Res() = Nand(Xnor());
+                Res = Nand.call(Xnor.call(A, C), B);
             }
         },
         124 => {
             if ABCIsConst {
-                Res() = Or(Xor(), Nor(Not()));
+                Res = Or.call(Xor.call(A, B), Nor.call(C, Not.call(A)));
             }
         },
         125 => {
             if ABCIsConst {
-                Res() = Nand(Xnor());
+                Res = Nand.call(Xnor.call(A, B), C);
             }
         },
         126 => {
             if ABCIsConst {
-                Res() = Or(Xor(), Xor());
+                Res = Or.call(Xor.call(A, B), Xor.call(A, C));
             }
         },
         127 => {
             if ABCIsConst {
-                Res() = Nand(And());
+                Res = Nand.call(And.call(A, B), C);
             }
         },
         128 => {
             if ABCIsConst {
-                Res() = And(And());
+                Res = And.call(And.call(A, B), C);
             }
         },
         129 => {
             if ABCIsConst {
-                Res() = Nor(Xor(), Xor());
+                Res = Nor.call(Xor.call(A, B), Xor.call(A, C));
             }
         },
         130 => {
             if ABCIsConst {
-                Res() = And(Xnor());
+                Res = And.call(Xnor.call(A, B), C);
             }
         },
         131 => {
             if ABCIsConst {
-                Res() = Nor(Xor(), Nor(Not()));
+                Res = Nor.call(Xor.call(A, B), Nor.call(C, Not.call(A)));
             }
         },
         132 => {
             if ABCIsConst {
-                Res() = And(Xnor());
+                Res = And.call(Xnor.call(A, C), B);
             }
         },
         133 => {
             if ABCIsConst {
-                Res() = Nor(Xor(), Nor(Not()));
+                Res = Nor.call(Xor.call(A, C), Nor.call(B, Not.call(A)));
             }
         },
         134 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Xnor(), Nor()));
+                Res = Xor.call(Nor.call(Xnor.call(A, B), Nor.call(B, C)), C);
             }
         },
         135 => {
             if ABCIsConst {
-                Res() = Xor(Nand());
+                Res = Xor.call(A, Nand.call(B, C));
             }
         },
         136 => {
-            Res() = And();
+            Res = And.call(B, C);
         },
         137 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Nor(Not())));
+                Res = Xor.call(B, Nor.call(Nor.call(B, Not.call(A)), C));
             }
         },
         138 => {
             if ABCIsConst {
-                Res() = And(Nand(Not()));
+                Res = And.call(Nand.call(A, Not.call(B)), C);
             }
         },
         139 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Xor()));
+                Res = Xor.call(Nor.call(Xor.call(A, C), B), C);
             }
         },
         140 => {
             if ABCIsConst {
-                Res() = And(Nand(Not()));
+                Res = And.call(Nand.call(A, Not.call(C)), B);
             }
         },
         141 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Xor()));
+                Res = Xor.call(Nor.call(Xor.call(A, B), C), B);
             }
         },
         142 => {
             if ABCIsConst {
-                Res() = Xor(Or(Xor(), Xor()));
+                Res = Xor.call(Or.call(Xor.call(A, B), Xor.call(A, C)), A);
             }
         },
         143 => {
             if ABCIsConst {
-                Res() = Nand(Nand());
+                Res = Nand.call(A, Nand.call(B, C));
             }
         },
         144 => {
             if ABCIsConst {
-                Res() = And(Xnor());
+                Res = And.call(A, Xnor.call(B, C));
             }
         },
         145 => {
             if ABCIsConst {
-                Res() = Nor(Nor(Not()), Xor());
+                Res = Nor.call(Nor.call(A, Not.call(B)), Xor.call(B, C));
             }
         },
         146 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Xnor(), Nor()));
+                Res = Xor.call(Nor.call(Xnor.call(A, B), Nor.call(A, C)), C);
             }
         },
         147 => {
             if ABCIsConst {
-                Res() = Xor(Nand());
+                Res = Xor.call(Nand.call(A, C), B);
             }
         },
         148 => {
             if ABCIsConst {
-                Res() = Nor(Nor(), Xor(Xnor()));
+                Res = Nor.call(Nor.call(A, B), Xor.call(Xnor.call(A, B), C));
             }
         },
         149 => {
             if ABCIsConst {
-                Res() = Xor(Nand());
+                Res = Xor.call(Nand.call(A, B), C);
             }
         },
         150 => {
             if ABCIsConst {
-                Res() = Xor(Xor());
+                Res = Xor.call(Xor.call(A, B), C);
             }
         },
         151 => {
             if ABCIsConst {
-                Res() = Xor(Xor(), Or(Nor()));
+                Res = Xor.call(Xor.call(A, B), Or.call(Nor.call(A, B), C));
             }
         },
         152 => {
             if ABCIsConst {
-                Res() = Nor(Nor(), Xor());
+                Res = Nor.call(Nor.call(A, B), Xor.call(B, C));
             }
         },
         153 => {
             if BCIsConst {
-                Res() = Xnor();
+                Res = Xnor.call(B, C);
             }
         },
         154 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Not()));
+                Res = Xor.call(Nor.call(B, Not.call(A)), C);
             }
         },
         155 => {
             if ABCIsConst {
-                Res() = Or(Nor(), Xnor());
+                Res = Or.call(Nor.call(A, B), Xnor.call(B, C));
             }
         },
         156 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Not()));
+                Res = Xor.call(B, Nor.call(C, Not.call(A)));
             }
         },
         157 => {
             if ABCIsConst {
-                Res() = Or(Nor(), Xnor());
+                Res = Or.call(Nor.call(A, C), Xnor.call(B, C));
             }
         },
         158 => {
             if ABCIsConst {
-                Res() = Xor(And(Xor(), Nand()));
+                Res = Xor.call(And.call(Xor.call(A, B), Nand.call(B, C)), C);
             }
         },
         159 => {
             if ABCIsConst {
-                Res() = Nand(Xor());
+                Res = Nand.call(A, Xor.call(B, C));
             }
         },
         160 => {
-            Res() = And();
+            Res = And.call(A, C);
         },
         161 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Nor(Not())));
+                Res = Xor.call(A, Nor.call(Nor.call(A, Not.call(B)), C));
             }
         },
         162 => {
             if ABCIsConst {
-                Res() = And(Or(Not()));
+                Res = And.call(Or.call(A, Not.call(B)), C);
             }
         },
         163 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Xor()));
+                Res = Xor.call(Nor.call(Xor.call(B, C), A), C);
             }
         },
         164 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Nor()));
+                Res = Xor.call(A, Nor.call(Nor.call(A, B), C));
             }
         },
         165 => {
             if ACIsConst {
-                Res() = Xnor();
+                Res = Xnor.call(A, C);
             }
         },
         166 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Not()));
+                Res = Xor.call(Nor.call(A, Not.call(B)), C);
             }
         },
         167 => {
             if ABCIsConst {
-                Res() = Or(Nor(), Xnor());
+                Res = Or.call(Nor.call(A, B), Xnor.call(A, C));
             }
         },
         168 => {
             if ABCIsConst {
-                Res() = And(Or());
+                Res = And.call(Or.call(A, B), C);
             }
         },
         169 => {
             if ABCIsConst {
-                Res() = Xor(Nor());
+                Res = Xor.call(Nor.call(A, B), C);
             }
         },
         170 => {
-            Res() = move();
+            Res = move(C);
         },
         171 => {
             if ABCIsConst {
-                Res() = Or(Nor());
+                Res = Or.call(Nor.call(A, B), C);
             }
         },
         172 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Xnor()));
+                Res = Xor.call(Nor.call(Xnor.call(B, C), A), C);
             }
         },
         173 => {
             if ABCIsConst {
-                Res() = Or(Xnor(), And());
+                Res = Or.call(Xnor.call(A, C), And.call(B, C));
             }
         },
         174 => {
             if ABCIsConst {
-                Res() = Or(Nor(Not()));
+                Res = Or.call(Nor.call(A, Not.call(B)), C);
             }
         },
         175 => {
             if ACIsConst {
-                Res() = Or(Not());
+                Res = Or.call(C, Not.call(A));
             }
         },
         176 => {
             if ABCIsConst {
-                Res() = And(Nand(Not()));
+                Res = And.call(A, Nand.call(B, Not.call(C)));
             }
         },
         177 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Xor()));
+                Res = Xor.call(A, Nor.call(Xor.call(A, B), C));
             }
         },
         178 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Xor(), Xnor()));
+                Res = Xor.call(Nor.call(Xor.call(A, B), Xnor.call(A, C)), A);
             }
         },
         179 => {
             if ABCIsConst {
-                Res() = Nand(Nand());
+                Res = Nand.call(Nand.call(A, C), B);
             }
         },
         180 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Not()));
+                Res = Xor.call(A, Nor.call(C, Not.call(B)));
             }
         },
         181 => {
             if ABCIsConst {
-                Res() = Or(Xnor(), Nor());
+                Res = Or.call(Xnor.call(A, C), Nor.call(B, C));
             }
         },
         182 => {
             if ABCIsConst {
-                Res() = Xor(And(Xor(), Nand()));
+                Res = Xor.call(And.call(Xor.call(A, B), Nand.call(A, C)), C);
             }
         },
         183 => {
             if ABCIsConst {
-                Res() = Nand(Xor());
+                Res = Nand.call(Xor.call(A, C), B);
             }
         },
         184 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Xnor()));
+                Res = Xor.call(Nor.call(Xnor.call(A, C), B), C);
             }
         },
         185 => {
             if ABCIsConst {
-                Res() = Xor(Nor(And()));
+                Res = Xor.call(Nor.call(And.call(A, C), B), C);
             }
         },
         186 => {
             if ABCIsConst {
-                Res() = Or(Nor(Not()));
+                Res = Or.call(Nor.call(B, Not.call(A)), C);
             }
         },
         187 => {
             if BCIsConst {
-                Res() = Or(Not());
+                Res = Or.call(C, Not.call(B));
             }
         },
         188 => {
             if ABCIsConst {
-                Res() = Xor(And(Nand()));
+                Res = Xor.call(A, And.call(Nand.call(A, C), B));
             }
         },
         189 => {
             if ABCIsConst {
-                Res() = Or(Xor(), Xnor());
+                Res = Or.call(Xor.call(A, B), Xnor.call(A, C));
             }
         },
         190 => {
             if ABCIsConst {
-                Res() = Or(Xor());
+                Res = Or.call(Xor.call(A, B), C);
             }
         },
         191 => {
             if ABCIsConst {
-                Res() = Or(Nand());
+                Res = Or.call(Nand.call(A, B), C);
             }
         },
         192 => {
-            Res() = And();
+            Res = And.call(A, B);
         },
         193 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Nor(Not())));
+                Res = Xor.call(A, Nor.call(Nor.call(A, Not.call(C)), B));
             }
         },
         194 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Nor()));
+                Res = Xor.call(A, Nor.call(Nor.call(A, C), B));
             }
         },
         195 => {
             if ABIsConst {
-                Res() = Xnor();
+                Res = Xnor.call(A, B);
             }
         },
         196 => {
             if ABCIsConst {
-                Res() = And(Or(Not()));
+                Res = And.call(Or.call(A, Not.call(C)), B);
             }
         },
         197 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Xor()));
+                Res = Xor.call(B, Nor.call(A, Xor.call(B, C)));
             }
         },
         198 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Not()));
+                Res = Xor.call(Nor.call(A, Not.call(C)), B);
             }
         },
         199 => {
             if ABCIsConst {
-                Res() = Or(Xnor(), Nor());
+                Res = Or.call(Xnor.call(A, B), Nor.call(A, C));
             }
         },
         200 => {
             if ABCIsConst {
-                Res() = And(Or());
+                Res = And.call(Or.call(A, C), B);
             }
         },
         201 => {
             if ABCIsConst {
-                Res() = Xor(Nor());
+                Res = Xor.call(Nor.call(A, C), B);
             }
         },
         202 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Xnor()));
+                Res = Xor.call(B, Nor.call(A, Xnor.call(B, C)));
             }
         },
         203 => {
             if ABCIsConst {
-                Res() = Or(Xnor(), And());
+                Res = Or.call(Xnor.call(A, B), And.call(B, C));
             }
         },
         204 => {
-            Res() = move();
+            Res = move(B);
         },
         205 => {
             if ABCIsConst {
-                Res() = Or(Nor());
+                Res = Or.call(Nor.call(A, C), B);
             }
         },
         206 => {
             if ABCIsConst {
-                Res() = Or(Nor(Not()));
+                Res = Or.call(Nor.call(A, Not.call(C)), B);
             }
         },
         207 => {
             if ABIsConst {
-                Res() = Or(Not());
+                Res = Or.call(B, Not.call(A));
             }
         },
         208 => {
             if ABCIsConst {
-                Res() = And(Or(Not()));
+                Res = And.call(A, Or.call(B, Not.call(C)));
             }
         },
         209 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Xor()));
+                Res = Xor.call(A, Nor.call(Xor.call(A, C), B));
             }
         },
         210 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Not()));
+                Res = Xor.call(A, Nor.call(B, Not.call(C)));
             }
         },
         211 => {
             if ABCIsConst {
-                Res() = Or(Xnor(), Nor());
+                Res = Or.call(Xnor.call(A, B), Nor.call(B, C));
             }
         },
         212 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Xnor(), Xor()));
+                Res = Xor.call(Nor.call(Xnor.call(A, B), Xor.call(A, C)), A);
             }
         },
         213 => {
             if ABCIsConst {
-                Res() = Nand(Nand());
+                Res = Nand.call(Nand.call(A, B), C);
             }
         },
         214 => {
             if ABCIsConst {
-                Res() = Xor(Xor(), Or(And()));
+                Res = Xor.call(Xor.call(A, B), Or.call(And.call(A, B), C));
             }
         },
         215 => {
             if ABCIsConst {
-                Res() = Nand(Xor());
+                Res = Nand.call(Xor.call(A, B), C);
             }
         },
         216 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Xnor()));
+                Res = Xor.call(Nor.call(Xnor.call(A, B), C), B);
             }
         },
         217 => {
             if ABCIsConst {
-                Res() = Or(And(), Xnor());
+                Res = Or.call(And.call(A, B), Xnor.call(B, C));
             }
         },
         218 => {
             if ABCIsConst {
-                Res() = Xor(And(Nand()));
+                Res = Xor.call(A, And.call(Nand.call(A, B), C));
             }
         },
         219 => {
             if ABCIsConst {
-                Res() = Or(Xnor(), Xor());
+                Res = Or.call(Xnor.call(A, B), Xor.call(A, C));
             }
         },
         220 => {
             if ABCIsConst {
-                Res() = Or(Nor(Not()));
+                Res = Or.call(B, Nor.call(C, Not.call(A)));
             }
         },
         221 => {
             if BCIsConst {
-                Res() = Or(Not());
+                Res = Or.call(B, Not.call(C));
             }
         },
         222 => {
             if ABCIsConst {
-                Res() = Or(Xor());
+                Res = Or.call(Xor.call(A, C), B);
             }
         },
         223 => {
             if ABCIsConst {
-                Res() = Or(Nand());
+                Res = Or.call(Nand.call(A, C), B);
             }
         },
         224 => {
             if ABCIsConst {
-                Res() = And(Or());
+                Res = And.call(A, Or.call(B, C));
             }
         },
         225 => {
             if ABCIsConst {
-                Res() = Xor(Nor());
+                Res = Xor.call(A, Nor.call(B, C));
             }
         },
         226 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Xnor()));
+                Res = Xor.call(A, Nor.call(Xnor.call(A, C), B));
             }
         },
         227 => {
             if ABCIsConst {
-                Res() = Xor(Nor(And()));
+                Res = Xor.call(A, Nor.call(And.call(A, C), B));
             }
         },
         228 => {
             if ABCIsConst {
-                Res() = Xor(Nor(Xnor()));
+                Res = Xor.call(A, Nor.call(Xnor.call(A, B), C));
             }
         },
         229 => {
             if ABCIsConst {
-                Res() = Xor(Nor(And()));
+                Res = Xor.call(A, Nor.call(And.call(A, B), C));
             }
         },
         230 => {
             if ABCIsConst {
-                Res() = Or(And(), Xor());
+                Res = Or.call(And.call(A, B), Xor.call(B, C));
             }
         },
         231 => {
             if ABCIsConst {
-                Res() = Or(Xnor(), Xnor());
+                Res = Or.call(Xnor.call(A, B), Xnor.call(A, C));
             }
         },
         232 => {
             if ABCIsConst {
-                Res() = Xor(Or(), Nor(Xnor()));
+                Res = Xor.call(Or.call(A, B), Nor.call(Xnor.call(A, B), C));
             }
         },
         233 => {
             if ABCIsConst {
-                Res() = Xor(Xor(), Nand(Nand()));
+                Res = Xor.call(Xor.call(A, B), Nand.call(Nand.call(A, B), C));
             }
         },
         234 => {
             if ABCIsConst {
-                Res() = Or(And());
+                Res = Or.call(And.call(A, B), C);
             }
         },
         235 => {
             if ABCIsConst {
-                Res() = Or(Xnor());
+                Res = Or.call(Xnor.call(A, B), C);
             }
         },
         236 => {
             if ABCIsConst {
-                Res() = Or(And());
+                Res = Or.call(And.call(A, C), B);
             }
         },
         237 => {
             if ABCIsConst {
-                Res() = Or(Xnor());
+                Res = Or.call(Xnor.call(A, C), B);
             }
         },
         238 => {
-            Res() = Or();
+            Res = Or.call(B, C);
         },
         239 => {
             if ABCIsConst {
-                Res() = Nand(Nor());
+                Res = Nand.call(A, Nor.call(B, C));
             }
         },
         240 => {
-            Res() = move();
+            Res = move(A);
         },
         241 => {
             if ABCIsConst {
-                Res() = Or(Nor());
+                Res = Or.call(A, Nor.call(B, C));
             }
         },
         242 => {
             if ABCIsConst {
-                Res() = Or(Nor(Not()));
+                Res = Or.call(A, Nor.call(B, Not.call(C)));
             }
         },
         243 => {
             if ABIsConst {
-                Res() = Or(Not());
+                Res = Or.call(A, Not.call(B));
             }
         },
         244 => {
             if ABCIsConst {
-                Res() = Or(Nor(Not()));
+                Res = Or.call(A, Nor.call(C, Not.call(B)));
             }
         },
         245 => {
             if ACIsConst {
-                Res() = Or(Not());
+                Res = Or.call(A, Not.call(C));
             }
         },
         246 => {
             if ABCIsConst {
-                Res() = Or(Xor());
+                Res = Or.call(A, Xor.call(B, C));
             }
         },
         247 => {
             if ABCIsConst {
-                Res() = Or(Nand());
+                Res = Or.call(A, Nand.call(B, C));
             }
         },
         248 => {
             if ABCIsConst {
-                Res() = Or(And());
+                Res = Or.call(A, And.call(B, C));
             }
         },
         249 => {
             if ABCIsConst {
-                Res() = Or(Xnor());
+                Res = Or.call(A, Xnor.call(B, C));
             }
         },
         250 => {
-            Res() = Or();
+            Res = Or.call(A, C);
         },
         251 => {
             if ABCIsConst {
-                Res() = Nand(Nor());
+                Res = Nand.call(Nor.call(A, C), B);
             }
         },
         252 => {
-            Res() = Or();
+            Res = Or.call(A, B);
         },
         253 => {
             if ABCIsConst {
-                Res() = Nand(Nor());
+                Res = Nand.call(Nor.call(A, B), C);
             }
         },
         254 => {
             if ABCIsConst {
-                Res() = Or(Or());
+                Res = Or.call(Or.call(A, B), C);
             }
         },
         255 => {
-            Res() = void { getAllOnesValue(Ty), 255 };
+            Res = Value *, unsigned char> { getAllOnesValue(Ty), 255 };
         },
     }
-    (((operator!(operator!(((Res() == null ||  == Imm) && "Simplification of ternary logic does not verify!")))) || (_wassert(L"(Res.first == nullptr || Res.second == Imm) && \"Simplification of ternary logic does not verify!\"", L"llvm\\lib\\Target\\X86\\X86InstCombineIntrinsic.cpp", (1713) as u32) , 0)) as void);
-    return ;
+    assert!((Res.first == null || Res.second == Imm), "Simplification of ternary logic does not verify!");
+    return Res.first;
 }
 
 fn simplifyX86FPMaxMin(II: *IntrinsicInst, IC: *mut InstCombiner, NewIID: ID, IsScalar: bool) -> *mut Value {
     let mut Arg0: *mut Value = II.getArgOperand(0);
     let mut Arg1: *mut Value = II.getArgOperand(1);
-    let mut VWidth: u32 = cast(Arg0.getType())();
+    let mut VWidth: u32 = cast(Arg0.getType()).getNumElements();
     let mut SQ: SimplifyQuery = IC.getSimplifyQuery().getWithInstruction(&mut II);
     let mut DemandedElts: APInt = if IsScalar { getOneBitSet(VWidth, 0) } else { getAllOnes(VWidth) };
     let mut Forbidden0: FPClassTest = fcNan | fcInf | fcSubnormal;
     let mut Forbidden1: FPClassTest = fcNan | fcInf | fcSubnormal;
     if NewIID == maxnum {
-        Forbidden1(fcNegZero);
+        operator(Forbidden1, fcNegZero);
     } else {
         assert!(NewIID == minnum, "Unknown intrinsic");
-        Forbidden0(fcNegZero);
+        operator(Forbidden0, fcNegZero);
     }
     let mut KnownArg0: KnownFPClass = computeKnownFPClass(Arg0, DemandedElts, Forbidden0, SQ, 0);
     let mut KnownArg1: KnownFPClass = computeKnownFPClass(Arg1, DemandedElts, Forbidden1, SQ, 0);
     if KnownArg0.isKnownNever(Forbidden0) && KnownArg1.isKnownNever(Forbidden1) {
         if IsScalar {
-            let mut Scalar0: *mut Value = IC()(Arg0, 0 as u64);
-            let mut Scalar1: *mut Value = IC()(Arg1, 0 as u64);
-            let mut NewScalar: *mut Value = if (NewIID == maxnum) { IC()(Scalar0, Scalar1) } else { IC()(Scalar0, Scalar1) };
-            return IC()(Arg0, NewScalar, 0 as u64);
+            let mut Scalar0: *mut Value = IC.Builder.CreateExtractElement(Arg0, 0 as u64, "");
+            let mut Scalar1: *mut Value = IC.Builder.CreateExtractElement(Arg1, 0 as u64, "");
+            let mut NewScalar: *mut Value = if (NewIID == maxnum) { IC.Builder.CreateMaxNum(Scalar0, Scalar1, FMFSource {}, "") } else { IC.Builder.CreateMinNum(Scalar0, Scalar1, FMFSource {}, "") };
+            return IC.Builder.CreateInsertElement(Arg0, NewScalar, 0 as u64, "");
         } else {
-            return if (NewIID == maxnum) { IC()(Arg0, Arg1) } else { IC()(Arg0, Arg1) };
+            return if (NewIID == maxnum) { IC.Builder.CreateMaxNum(Arg0, Arg1, FMFSource {}, "") } else { IC.Builder.CreateMinNum(Arg0, Arg1, FMFSource {}, "") };
         }
     }
     return null;
 }
 
 fn simplifyX86insertps(II: *IntrinsicInst, Builder: *mut BuilderTy) -> *mut Value {
-    let mut CInt: *mut auto = dyn_cast(II.getArgOperand(2));
-    if operator!() {
+    let mut CInt: *mut ConstantInt = dyn_cast(II.getArgOperand(2));
+    if !CInt {
         return null;
     }
-    let mut VecTy: *mut auto = cast(II.getType());
-    (((operator!(operator!((VecTy()() == 4 && "insertps with wrong vector type")))) || (_wassert(L"VecTy->getNumElements() == 4 && \"insertps with wrong vector type\"", L"llvm\\lib\\Target\\X86\\X86InstCombineIntrinsic.cpp", (1772) as u32) , 0)) as void);
-    let mut Imm: u8 = ();
+    let mut VecTy: *mut FixedVectorType = cast(II.getType());
+    assert!(VecTy.getNumElements() == 4, "insertps with wrong vector type");
+    let mut Imm: u8 = CInt.getZExtValue();
     let mut ZMask: u8 = Imm & 15;
     let mut DestLane: u8 = (Imm >> 4) & 3;
     let mut SourceLane: u8 = (Imm >> 6) & 3;
-    let mut ZeroVector: *mut ConstantAggregateZero = get();
+    let mut ZeroVector: *mut ConstantAggregateZero = get(VecTy);
     if ZMask == 15 {
         return ZeroVector;
     }
@@ -1683,13 +1727,13 @@ fn simplifyX86insertps(II: *IntrinsicInst, Builder: *mut BuilderTy) -> *mut Valu
     } else {
         ShuffleMask[DestLane] = SourceLane + 4;
     }
-    return Builder()(II.getArgOperand(0), V1, ShuffleMask);
+    return Builder.CreateShuffleVector(II.getArgOperand(0), V1, ShuffleMask, "");
 }
 
 fn simplifyX86extrq(II: *mut IntrinsicInst, Op0: *mut Value, CILength: *mut ConstantInt, CIIndex: *mut ConstantInt, Builder: *mut BuilderTy) -> *mut Value {
-    let mut LowConstantHighUndef: Closure_9 = Closure_9 { II: &mut II };
-    let mut C0: *mut auto = dyn_cast(Op0);
-    let mut CI0: *mut auto = if  { dyn_cast_or_null((0 as u32)) } else { null };
+    let mut LowConstantHighUndef: Closure_11 = Closure_11 { II: &mut II };
+    let mut C0: *mut Constant = dyn_cast(Op0);
+    let mut CI0: *mut ConstantInt = if C0 { dyn_cast_or_null(C0.getAggregateElement(0 as u32)) } else { null };
     if CILength && CIIndex {
         let mut APIndex: APInt = CIIndex.getValue().zextOrTrunc(6);
         let mut APLength: APInt = CILength.getValue().zextOrTrunc(6);
@@ -1714,22 +1758,22 @@ fn simplifyX86extrq(II: *mut IntrinsicInst, Op0: *mut Value, CILength: *mut Cons
             for let mut i: i32 = 8; i != 16; i += 1 {
                 ShuffleMask.push(-1);
             }
-            let mut SV: *mut Value = Builder()(Builder()(Op0, ShufTy), get(ShufTy), ShuffleMask);
-            return Builder()(SV, II.getType());
+            let mut SV: *mut Value = Builder.CreateShuffleVector(Builder.CreateBitCast(Op0, ShufTy, ""), get(ShufTy), ShuffleMask, "");
+            return Builder.CreateBitCast(SV, II.getType(), "");
         }
-        if CI0() {
-            let mut Elt: APInt = ();
+        if CI0 {
+            let mut Elt: APInt = CI0.getValue();
             Elt.lshrInPlace(Index);
             Elt = Elt.zextOrTrunc(Length);
-            return LowConstantHighUndef(Elt.getZExtValue());
+            return LowConstantHighUndef.call(Elt.getZExtValue());
         }
-        if  {
+        if II.getIntrinsicID() == x86_sse4a_extrq {
             let mut Args: [3]*mut Value = [Op0, CILength, CIIndex];
-            return Builder();
+            return Builder.CreateIntrinsic(x86_sse4a_extrqi, Args, FMFSource {}, "", function_ref<void (CallInst *)> { Closure_12 {}, null, null });
         }
     }
-    if CI0() && () {
-        return LowConstantHighUndef(0);
+    if CI0 && CI0.isZero() {
+        return LowConstantHighUndef.call(0);
     }
     return null;
 }
@@ -1761,16 +1805,16 @@ fn simplifyX86insertq(II: *mut IntrinsicInst, Op0: *mut Value, Op1: *mut Value, 
         for let mut i: i32 = 8; i != 16; i += 1 {
             ShuffleMask.push(-1);
         }
-        let mut SV: *mut Value = Builder()(Builder()(Op0, ShufTy), Builder()(Op1, ShufTy), ShuffleMask);
-        return Builder()(SV, II.getType());
+        let mut SV: *mut Value = Builder.CreateShuffleVector(Builder.CreateBitCast(Op0, ShufTy, ""), Builder.CreateBitCast(Op1, ShufTy, ""), ShuffleMask, "");
+        return Builder.CreateBitCast(SV, II.getType(), "");
     }
-    let mut C0: *mut auto = dyn_cast(Op0);
-    let mut C1: *mut auto = dyn_cast(Op1);
-    let mut CI00: *mut auto = if  { dyn_cast_or_null((0 as u32)) } else { null };
-    let mut CI10: *mut auto = if  { dyn_cast_or_null((0 as u32)) } else { null };
-    if CI00() &&  {
-        let mut V00: APInt = ();
-        let mut V10: APInt = ();
+    let mut C0: *mut Constant = dyn_cast(Op0);
+    let mut C1: *mut Constant = dyn_cast(Op1);
+    let mut CI00: *mut ConstantInt = if C0 { dyn_cast_or_null(C0.getAggregateElement(0 as u32)) } else { null };
+    let mut CI10: *mut ConstantInt = if C1 { dyn_cast_or_null(C1.getAggregateElement(0 as u32)) } else { null };
+    if CI00 && CI10 {
+        let mut V00: APInt = CI00.getValue();
+        let mut V10: APInt = CI10.getValue();
         let mut Mask: APInt = getLowBitsSet(64, Length).shl(Index);
         V00 = V00 & operator(Mask);
         V10 = V10.zextOrTrunc(Length).zextOrTrunc(64).shl(Index);
@@ -1779,27 +1823,27 @@ fn simplifyX86insertq(II: *mut IntrinsicInst, Op0: *mut Value, Op1: *mut Value, 
         let mut Args: [2]*mut Constant = [get(IntTy64, Val.getZExtValue(), false, false), get(IntTy64)];
         return get(Args);
     }
-    if  {
+    if II.getIntrinsicID() == x86_sse4a_insertq {
         let mut IntTy8: *mut Type = getInt8Ty(II.getContext());
         let mut CILength: *mut Constant = get(IntTy8, Length, false, false);
         let mut CIIndex: *mut Constant = get(IntTy8, Index, false, false);
         let mut Args: [4]*mut Value = [Op0, Op1, CILength, CIIndex];
-        return Builder();
+        return Builder.CreateIntrinsic(x86_sse4a_insertqi, Args, FMFSource {}, "", function_ref<void (CallInst *)> { Closure_13 {}, null, null });
     }
     return null;
 }
 
 fn simplifyX86pshufb(II: *IntrinsicInst, Builder: *mut BuilderTy) -> *mut Value {
-    let mut V: *mut auto = dyn_cast(II.getArgOperand(1));
-    if operator!() {
+    let mut V: *mut Constant = dyn_cast(II.getArgOperand(1));
+    if !V {
         return null;
     }
-    let mut VecTy: *mut auto = cast(II.getType());
-    let mut NumElts: u32 = ();
+    let mut VecTy: *mut FixedVectorType = cast(II.getType());
+    let mut NumElts: u32 = VecTy.getNumElements();
     assert!((NumElts == 16 || NumElts == 32 || NumElts == 64), "Unexpected number of elements in shuffle mask!");
     let mut Indexes: [64]i32 = zeroed();
     for let mut I: u32 = 0; I < NumElts; I += 1 {
-        let mut COp: *mut Constant = (I);
+        let mut COp: *mut Constant = V.getAggregateElement(I);
         if !COp || (!isa(COp) && !isa(COp)) {
             return null;
         }
@@ -1807,28 +1851,28 @@ fn simplifyX86pshufb(II: *IntrinsicInst, Builder: *mut BuilderTy) -> *mut Value 
             Indexes[I] = -1;
             continue;
         }
-        let mut Index: i8 = cast(COp)()();
+        let mut Index: i8 = cast(COp).getValue().getZExtValue();
         Index = (if (Index < 0) { NumElts } else { Index & 15 }) + (I & 240);
         Indexes[I] = Index;
     }
     let mut V1: *mut Value = II.getArgOperand(0);
-    let mut V2: auto = getNullValue();
-    return Builder()(V1, Indexes(NumElts));
+    let mut V2: *mut Constant = getNullValue(VecTy);
+    return Builder.CreateShuffleVector(V1, V2, ArrayRef<int> { Indexes, NumElts }, "");
 }
 
 fn simplifyX86vpermilvar(II: *IntrinsicInst, Builder: *mut BuilderTy) -> *mut Value {
-    let mut V: *mut auto = dyn_cast(II.getArgOperand(1));
-    if operator!() {
+    let mut V: *mut Constant = dyn_cast(II.getArgOperand(1));
+    if !V {
         return null;
     }
-    let mut VecTy: *mut auto = cast(II.getType());
-    let mut NumElts: u32 = ();
-    let mut IsPD: bool = ()();
+    let mut VecTy: *mut FixedVectorType = cast(II.getType());
+    let mut NumElts: u32 = VecTy.getNumElements();
+    let mut IsPD: bool = VecTy.getScalarType().isDoubleTy();
     let mut NumLaneElts: u32 = if IsPD { 2 } else { 4 };
     assert!(NumElts == 16 || NumElts == 8 || NumElts == 4 || NumElts == 2);
     let mut Indexes: [16]i32 = zeroed();
     for let mut I: u32 = 0; I < NumElts; I += 1 {
-        let mut COp: *mut Constant = (I);
+        let mut COp: *mut Constant = V.getAggregateElement(I);
         if !COp || (!isa(COp) && !isa(COp)) {
             return null;
         }
@@ -1836,7 +1880,7 @@ fn simplifyX86vpermilvar(II: *IntrinsicInst, Builder: *mut BuilderTy) -> *mut Va
             Indexes[I] = -1;
             continue;
         }
-        let mut Index: APInt = cast(COp)();
+        let mut Index: APInt = cast(COp).getValue();
         Index = Index.zextOrTrunc(32).getLoBits(2);
         if IsPD {
             Index.lshrInPlace(1);
@@ -1845,20 +1889,20 @@ fn simplifyX86vpermilvar(II: *IntrinsicInst, Builder: *mut BuilderTy) -> *mut Va
         Indexes[I] = Index.getZExtValue();
     }
     let mut V1: *mut Value = II.getArgOperand(0);
-    return Builder()(V1, Indexes(NumElts));
+    return Builder.CreateShuffleVector(V1, ArrayRef<int> { Indexes, NumElts }, "");
 }
 
 fn simplifyX86vpermv(II: *IntrinsicInst, Builder: *mut BuilderTy) -> *mut Value {
-    let mut V: *mut auto = dyn_cast(II.getArgOperand(1));
-    if operator!() {
+    let mut V: *mut Constant = dyn_cast(II.getArgOperand(1));
+    if !V {
         return null;
     }
-    let mut VecTy: *mut auto = cast(II.getType());
-    let mut Size: u32 = ();
+    let mut VecTy: *mut FixedVectorType = cast(II.getType());
+    let mut Size: u32 = VecTy.getNumElements();
     assert!((Size == 4 || Size == 8 || Size == 16 || Size == 32 || Size == 64), "Unexpected shuffle mask size");
     let mut Indexes: [64]i32 = zeroed();
     for let mut I: u32 = 0; I < Size; I += 1 {
-        let mut COp: *mut Constant = (I);
+        let mut COp: *mut Constant = V.getAggregateElement(I);
         if !COp || (!isa(COp) && !isa(COp)) {
             return null;
         }
@@ -1866,25 +1910,25 @@ fn simplifyX86vpermv(II: *IntrinsicInst, Builder: *mut BuilderTy) -> *mut Value 
             Indexes[I] = -1;
             continue;
         }
-        let mut Index: u32 = cast(COp)();
+        let mut Index: u32 = cast(COp).getZExtValue();
         Index &= Size - 1;
         Indexes[I] = Index;
     }
     let mut V1: *mut Value = II.getArgOperand(0);
-    return Builder()(V1, Indexes(Size));
+    return Builder.CreateShuffleVector(V1, ArrayRef<int> { Indexes, Size }, "");
 }
 
 fn simplifyX86vpermv3(II: *IntrinsicInst, Builder: *mut BuilderTy) -> *mut Value {
-    let mut V: *mut auto = dyn_cast(II.getArgOperand(1));
-    if operator!() {
+    let mut V: *mut Constant = dyn_cast(II.getArgOperand(1));
+    if !V {
         return null;
     }
-    let mut VecTy: *mut auto = cast(II.getType());
-    let mut Size: u32 = ();
+    let mut VecTy: *mut FixedVectorType = cast(II.getType());
+    let mut Size: u32 = VecTy.getNumElements();
     assert!((Size == 2 || Size == 4 || Size == 8 || Size == 16 || Size == 32 || Size == 64), "Unexpected shuffle mask size");
     let mut Indexes: [64]i32 = zeroed();
     for let mut I: u32 = 0; I < Size; I += 1 {
-        let mut COp: *mut Constant = (I);
+        let mut COp: *mut Constant = V.getAggregateElement(I);
         if !COp || (!isa(COp) && !isa(COp)) {
             return null;
         }
@@ -1892,35 +1936,244 @@ fn simplifyX86vpermv3(II: *IntrinsicInst, Builder: *mut BuilderTy) -> *mut Value
             Indexes[I] = -1;
             continue;
         }
-        let mut Index: u32 = cast(COp)();
+        let mut Index: u32 = cast(COp).getZExtValue();
         Index &= (2 * Size) - 1;
         Indexes[I] = Index;
     }
     let mut V1: *mut Value = II.getArgOperand(0);
     let mut V2: *mut Value = II.getArgOperand(2);
-    return Builder()(V1, V2, Indexes(Size));
+    return Builder.CreateShuffleVector(V1, V2, ArrayRef<int> { Indexes, Size }, "");
 }
 
 fn simplifyX86VPERMMask(II: *mut Instruction, IsBinary: bool, IC: *mut InstCombiner) -> bool {
-    let mut VecTy: *mut auto = cast(II.getType());
-    let mut EltSizeInBits: u32 = ();
-    let mut NumElts: u32 = ();
+    let mut VecTy: *mut FixedVectorType = cast(II.getType());
+    let mut EltSizeInBits: u32 = VecTy.getScalarSizeInBits();
+    let mut NumElts: u32 = VecTy.getNumElements();
     assert!(isPowerOf2_32(NumElts) && isPowerOf2_32(EltSizeInBits), "Unexpected shuffle mask size");
     let mut IdxSizeInBits: u32 = Log2_32(if IsBinary { (2 * NumElts) } else { NumElts });
     let mut DemandedMask: APInt = getLowBitsSet(EltSizeInBits, IdxSizeInBits);
-    let mut KnownMask: KnownBits = KnownBits { EltSizeInBits };
+    let mut KnownMask: KnownBits = EltSizeInBits;
     return IC.SimplifyDemandedBits(II, 1, DemandedMask, KnownMask);
 }
 
 fn X86TTIImpl::instCombineIntrinsic(self: *X86TTIImpl, IC: *mut InstCombiner, II: *mut IntrinsicInst) -> optional<Instruction *> {
-    let mut SimplifyDemandedVectorEltsLow: Closure_10 = Closure_10 { IC: &mut IC };
+    let mut SimplifyDemandedVectorEltsLow: Closure_14 = Closure_14 { IC: &mut IC };
     let mut IID: ID = II.getIntrinsicID();
     match IID {
+        x86_bmi_bextr_32 => {
+            x86_bmi_bextr_64;
+        },
+        x86_bmi_bzhi_32 => {
+            x86_bmi_bzhi_64;
+        },
+        x86_sse_cvtss2si => {
+            x86_sse_cvtss2si64;
+        },
+        x86_mmx_pmovmskb => {
+            x86_sse_movmsk_ps;
+        },
+        x86_sse_comieq_ss => {
+            x86_sse_comige_ss;
+        },
+        x86_avx512_add_ps_512 => {
+            x86_avx512_div_ps_512;
+        },
+        x86_avx512_mask_add_ss_round => {
+            x86_avx512_mask_div_ss_round;
+        },
+        x86_sse_max_ps => {
+            x86_sse2_max_pd;
+        },
+        x86_sse_max_ss => {
+            x86_sse2_max_sd;
+        },
+        x86_sse_min_ps => {
+            x86_sse2_min_pd;
+        },
+        x86_sse_min_ss => {
+            x86_sse2_min_sd;
+        },
+        x86_sse2_psrai_d => {
+            x86_sse2_psrai_w;
+        },
+        x86_sse2_psra_d => {
+            x86_sse2_psra_w;
+        },
+        x86_avx2_psllv_d => {
+            x86_avx2_psllv_d_256;
+        },
+        x86_sse2_packssdw_128 => {
+            x86_sse2_packsswb_128;
+        },
+        x86_sse2_packuswb_128 => {
+            x86_sse41_packusdw;
+        },
+        x86_ssse3_pmul_hr_sw_128 => {
+            x86_avx2_pmul_hr_sw;
+        },
+        x86_sse2_pmadd_wd => {
+            x86_avx2_pmadd_wd;
+        },
+        x86_ssse3_pmadd_ub_sw_128 => {
+            x86_avx2_pmadd_ub_sw;
+        },
+        x86_pclmulqdq => {
+            x86_pclmulqdq_256;
+        },
+        x86_sse41_insertps => {
+            if simplifyX86insertps(II, IC.Builder) {
+                V;
+            } else {
+                return IC.replaceInstUsesWith(II, V);
+            }
+        },
+        x86_sse4a_extrq => {
+            let mut Op0: *mut Value = II.getArgOperand(0);
+            let mut Op1: *mut Value = II.getArgOperand(1);
+            let mut VWidth0: u32 = cast(Op0.getType()).getNumElements();
+            let mut VWidth1: u32 = cast(Op1.getType()).getNumElements();
+            assert!(Op0.getType().getPrimitiveSizeInBits().operator unsigned long long() == 128 && Op1.getType().getPrimitiveSizeInBits().operator unsigned long long() == 128 && VWidth0 == 2 && VWidth1 == 16, "Unexpected operand sizes");
+            let mut C1: *mut Constant = dyn_cast(Op1);
+            let mut CILength: *mut ConstantInt = if C1 { dyn_cast_or_null(C1.getAggregateElement(0 as u32)) } else { null };
+            let mut CIIndex: *mut ConstantInt = if C1 { dyn_cast_or_null(C1.getAggregateElement(1 as u32)) } else { null };
+            if simplifyX86extrq(II, Op0, CILength, CIIndex, IC.Builder) {
+                V;
+            } else {
+                return IC.replaceInstUsesWith(II, V);
+            }
+            let mut MadeChange: bool = false;
+            if SimplifyDemandedVectorEltsLow.call(Op0, VWidth0, 1) {
+                V;
+            } else {
+                IC.replaceOperand(II, 0, V);
+                MadeChange = true;
+            }
+            if SimplifyDemandedVectorEltsLow.call(Op1, VWidth1, 2) {
+                V;
+            } else {
+                IC.replaceOperand(II, 1, V);
+                MadeChange = true;
+            }
+            if MadeChange {
+                return &mut II;
+            }
+            break;
+        },
+        x86_sse4a_extrqi => {
+            let mut Op0: *mut Value = II.getArgOperand(0);
+            let mut VWidth: u32 = cast(Op0.getType()).getNumElements();
+            assert!(Op0.getType().getPrimitiveSizeInBits().operator unsigned long long() == 128 && VWidth == 2, "Unexpected operand size");
+            let mut CILength: *mut ConstantInt = dyn_cast(II.getArgOperand(1));
+            let mut CIIndex: *mut ConstantInt = dyn_cast(II.getArgOperand(2));
+            if simplifyX86extrq(II, Op0, CILength, CIIndex, IC.Builder) {
+                V;
+            } else {
+                return IC.replaceInstUsesWith(II, V);
+            }
+            if SimplifyDemandedVectorEltsLow.call(Op0, VWidth, 1) {
+                V;
+            } else {
+                return IC.replaceOperand(II, 0, V);
+            }
+            break;
+        },
+        x86_sse4a_insertq => {
+            let mut Op0: *mut Value = II.getArgOperand(0);
+            let mut Op1: *mut Value = II.getArgOperand(1);
+            let mut VWidth: u32 = cast(Op0.getType()).getNumElements();
+            assert!(Op0.getType().getPrimitiveSizeInBits().operator unsigned long long() == 128 && Op1.getType().getPrimitiveSizeInBits().operator unsigned long long() == 128 && VWidth == 2 && cast(Op1.getType()).getNumElements() == 2, "Unexpected operand size");
+            let mut C1: *mut Constant = dyn_cast(Op1);
+            let mut CI11: *mut ConstantInt = if C1 { dyn_cast_or_null(C1.getAggregateElement(1 as u32)) } else { null };
+            if CI11 {
+                let mut V11: *APInt = CI11.getValue();
+                let mut Len: APInt = V11.zextOrTrunc(6);
+                let mut Idx: APInt = V11.lshr(8).zextOrTrunc(6);
+                if simplifyX86insertq(II, Op0, Op1, Len, Idx, IC.Builder) {
+                    V;
+                } else {
+                    return IC.replaceInstUsesWith(II, V);
+                }
+            }
+            if SimplifyDemandedVectorEltsLow.call(Op0, VWidth, 1) {
+                V;
+            } else {
+                return IC.replaceOperand(II, 0, V);
+            }
+            break;
+        },
+        x86_sse4a_insertqi => {
+            let mut Op0: *mut Value = II.getArgOperand(0);
+            let mut Op1: *mut Value = II.getArgOperand(1);
+            let mut VWidth0: u32 = cast(Op0.getType()).getNumElements();
+            let mut VWidth1: u32 = cast(Op1.getType()).getNumElements();
+            assert!(Op0.getType().getPrimitiveSizeInBits().operator unsigned long long() == 128 && Op1.getType().getPrimitiveSizeInBits().operator unsigned long long() == 128 && VWidth0 == 2 && VWidth1 == 2, "Unexpected operand sizes");
+            let mut CILength: *mut ConstantInt = dyn_cast(II.getArgOperand(2));
+            let mut CIIndex: *mut ConstantInt = dyn_cast(II.getArgOperand(3));
+            if CILength && CIIndex {
+                let mut Len: APInt = CILength.getValue().zextOrTrunc(6);
+                let mut Idx: APInt = CIIndex.getValue().zextOrTrunc(6);
+                if simplifyX86insertq(II, Op0, Op1, Len, Idx, IC.Builder) {
+                    V;
+                } else {
+                    return IC.replaceInstUsesWith(II, V);
+                }
+            }
+            let mut MadeChange: bool = false;
+            if SimplifyDemandedVectorEltsLow.call(Op0, VWidth0, 1) {
+                V;
+            } else {
+                IC.replaceOperand(II, 0, V);
+                MadeChange = true;
+            }
+            if SimplifyDemandedVectorEltsLow.call(Op1, VWidth1, 1) {
+                V;
+            } else {
+                IC.replaceOperand(II, 1, V);
+                MadeChange = true;
+            }
+            if MadeChange {
+                return &mut II;
+            }
+            break;
+        },
+        x86_sse41_pblendvb => {
+            x86_sse41_blendvps;
+        },
+        x86_ssse3_pshuf_b_128 => {
+            x86_avx2_pshuf_b;
+        },
+        x86_avx_vpermilvar_ps => {
+            x86_avx_vpermilvar_ps_256;
+        },
+        x86_avx_vpermilvar_pd => {
+            x86_avx_vpermilvar_pd_256;
+        },
+        x86_avx2_permd => {
+            x86_avx2_permps;
+        },
+        x86_avx512_vpermi2var_d_128 => {
+            x86_avx512_vpermi2var_d_256;
+        },
+        x86_avx_maskload_ps => {
+            x86_avx_maskload_pd;
+        },
+        x86_sse2_maskmov_dqu => {
+            x86_avx_maskstore_ps;
+        },
+        x86_addcarry_32 => {
+            x86_addcarry_64;
+        },
+        x86_avx512_pternlog_d_128 => {
+            x86_avx512_pternlog_d_256;
+        },
+        x86_avx512_vpmadd52h_uq_128 => {
+            x86_avx512_vpmadd52l_uq_128;
+        },
         _ => {
             break;
         },
     }
-    return nullopt();
+    return nullopt;
 }
 
 fn X86TTIImpl::simplifyDemandedUseBitsIntrinsic(self: *X86TTIImpl, IC: *mut InstCombiner, II: *mut IntrinsicInst, DemandedMask: APInt, Known: *mut KnownBits, KnownBitsComputed: *mut bool) -> optional<Value *> {
@@ -1928,48 +2181,81 @@ fn X86TTIImpl::simplifyDemandedUseBitsIntrinsic(self: *X86TTIImpl, IC: *mut Inst
         _ => {
             break;
         },
+        x86_mmx_pmovmskb => {
+            x86_sse_movmsk_ps;
+        },
     }
-    return nullopt();
+    return nullopt;
 }
 
 fn X86TTIImpl::simplifyDemandedVectorEltsIntrinsic(self: *X86TTIImpl, IC: *mut InstCombiner, II: *mut IntrinsicInst, DemandedElts: APInt, UndefElts: *mut APInt, UndefElts2: *mut APInt, UndefElts3: *mut APInt, simplifyAndSetOp: function<void (Instruction *, unsigned int, APInt, APInt &)>) -> optional<Value *> {
-    let mut VWidth: u32 = cast(II.getType())();
+    let mut VWidth: u32 = cast(II.getType()).getNumElements();
     match II.getIntrinsicID() {
         _ => {
             break;
         },
+        x86_xop_vfrcz_ss => {
+            x86_xop_vfrcz_sd;
+        },
+        x86_sse_rcp_ss => {
+            x86_sse_rsqrt_ss;
+        },
+        x86_sse_min_ss => {
+            x86_sse_max_ss;
+        },
+        x86_sse41_round_ss => {
+            x86_sse41_round_sd;
+        },
+        x86_avx512_mask_add_ss_round => {
+            x86_avx512_mask_div_ss_round;
+        },
+        x86_sse3_addsub_pd => {
+            x86_sse3_addsub_ps;
+        },
+        x86_avx2_psllv_d => {
+            x86_avx2_psllv_d_256;
+        },
+        x86_ssse3_pmul_hr_sw_128 => {
+            x86_avx2_pmul_hr_sw;
+        },
+        x86_sse2_packssdw_128 => {
+            x86_sse2_packsswb_128;
+        },
+        x86_sse2_pmadd_wd => {
+            x86_avx2_pmadd_wd;
+        },
+        x86_ssse3_pshuf_b_128 => {
+            x86_avx2_pshuf_b;
+        },
+        x86_sse4a_extrq => {
+            x86_sse4a_extrqi;
+        },
     }
-    return nullopt();
+    return nullopt;
 }
 
 struct Closure_1 {
     BitWidth: *mut i32,
 }
 
-unsafe fn Closure_1::call(self: *mut Closure_1, Idx: i32) -> auto {}
-
-struct Closure_2 {
-    Builder: *mut BuilderTy,
-}
-
-unsafe fn Closure_2::call(self: *mut Closure_2) {
-        return void { (*self.Builder)()(Lhs, Rhs), Lhs | Rhs };
+unsafe fn Closure_1::call(self: *mut Closure_1, Idx: i32) -> bool {
+        return (Idx < 0) || ((*self.BitWidth) <= Idx);
     }
 
-struct Closure_3 {
-    Builder: *mut BuilderTy,
-}
+struct Closure_2 {}
 
-unsafe fn Closure_3::call(self: *mut Closure_3) {
-        return void { (*self.Builder)()(Lhs, Rhs), Lhs ^ Rhs };
-    }
+fn Closure_2::call(self: *Closure_2, arg: *mut CallInst) {}
+
+struct Closure_3 {}
+
+fn Closure_3::call(self: *Closure_3, arg: *mut CallInst) {}
 
 struct Closure_4 {
     Builder: *mut BuilderTy,
 }
 
 unsafe fn Closure_4::call(self: *mut Closure_4) {
-        return void { (*self.Builder)()(Lhs, Rhs), Lhs & Rhs };
+        return void { (*self.Builder)(Lhs.first, Rhs.first), Lhs.second | Rhs.second };
     }
 
 struct Closure_5 {
@@ -1977,50 +2263,75 @@ struct Closure_5 {
 }
 
 unsafe fn Closure_5::call(self: *mut Closure_5) {
-        return void { (*self.Builder)()(V), operator~(V) };
+        return void { (*self.Builder)(Lhs.first, Rhs.first), Lhs.second ^ Rhs.second };
     }
 
 struct Closure_6 {
-    Not: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86InstCombineIntrinsic.cpp:671:14),
-    Or: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86InstCombineIntrinsic.cpp:662:13),
+    Builder: *mut BuilderTy,
 }
 
 unsafe fn Closure_6::call(self: *mut Closure_6) {
-        return (*self.Not)((*self.Or)(Lhs, Rhs));
+        return void { (*self.Builder)(Lhs.first, Rhs.first), Lhs.second & Rhs.second };
     }
 
 struct Closure_7 {
-    Not: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86InstCombineIntrinsic.cpp:671:14),
-    Xor: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86InstCombineIntrinsic.cpp:665:14),
+    Builder: *mut BuilderTy,
 }
 
 unsafe fn Closure_7::call(self: *mut Closure_7) {
-        return (*self.Not)((*self.Xor)(Lhs, Rhs));
+        return void { (*self.Builder).CreateNot(V.first), operator~(V.second) };
     }
 
 struct Closure_8 {
     Not: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86InstCombineIntrinsic.cpp:671:14),
-    And: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86InstCombineIntrinsic.cpp:668:14),
+    Or: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86InstCombineIntrinsic.cpp:662:13),
 }
 
 unsafe fn Closure_8::call(self: *mut Closure_8) {
-        return (*self.Not)((*self.And)(Lhs, Rhs));
+        return (*self.Not)((*self.Or)(Lhs, Rhs));
     }
 
 struct Closure_9 {
-    II: *mut IntrinsicInst,
+    Not: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86InstCombineIntrinsic.cpp:671:14),
+    Xor: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86InstCombineIntrinsic.cpp:665:14),
 }
 
-unsafe fn Closure_9::call(self: *mut Closure_9, Val: u64) -> auto {
-        let mut IntTy64: *mut Type = getInt64Ty((*self.II).getContext());
-        let mut Args: [2]*mut Constant = [get(IntTy64, Val, false, false), get(IntTy64)];
+unsafe fn Closure_9::call(self: *mut Closure_9) {
+        return (*self.Not)((*self.Xor)(Lhs, Rhs));
     }
 
 struct Closure_10 {
+    Not: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86InstCombineIntrinsic.cpp:671:14),
+    And: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86InstCombineIntrinsic.cpp:668:14),
+}
+
+unsafe fn Closure_10::call(self: *mut Closure_10) {
+        return (*self.Not)((*self.And)(Lhs, Rhs));
+    }
+
+struct Closure_11 {
+    II: *mut IntrinsicInst,
+}
+
+unsafe fn Closure_11::call(self: *mut Closure_11, Val: u64) -> *mut Constant {
+        let mut IntTy64: *mut Type = getInt64Ty((*self.II).getContext());
+        let mut Args: [2]*mut Constant = [get(IntTy64, Val, false, false), get(IntTy64)];
+        return get(Args);
+    }
+
+struct Closure_12 {}
+
+fn Closure_12::call(self: *Closure_12, arg: *mut CallInst) {}
+
+struct Closure_13 {}
+
+fn Closure_13::call(self: *Closure_13, arg: *mut CallInst) {}
+
+struct Closure_14 {
     IC: *mut InstCombiner,
 }
 
-unsafe fn Closure_10::call(self: *mut Closure_10, Op: *mut Value, Width: u32, DemandedWidth: u32) -> *mut Value {
+unsafe fn Closure_14::call(self: *mut Closure_14, Op: *mut Value, Width: u32, DemandedWidth: u32) -> *mut Value {
         let mut UndefElts: APInt = APInt { Width, 0, false, false };
         let mut DemandedElts: APInt = getLowBitsSet(Width, DemandedWidth);
         return (*self.IC).SimplifyDemandedVectorElts(Op, DemandedElts, UndefElts, 0, false);

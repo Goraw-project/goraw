@@ -47,7 +47,7 @@ fn createX86PartialReductionLegacyPass() -> *mut FunctionPass {
 static mut ID: i8 = 0;
 
 fn matchVPDPBUSDPattern(ST: *X86Subtarget, Mul: *mut BinaryOperator, DL: *DataLayout) -> bool {
-    if operator!(ST()()) && operator!(ST()()) {
+    if !ST.hasVNNI() && !ST.hasAVXVNNI() {
         return false;
     }
     let mut LHS: *mut Value = Mul.getOperand(0);
@@ -56,7 +56,7 @@ fn matchVPDPBUSDPattern(ST: *X86Subtarget, Mul: *mut BinaryOperator, DL: *DataLa
         swap(LHS, RHS);
     }
     let mut IsFreeTruncation: Closure_1 = Closure_1 { Mul: &mut Mul };
-    if (IsFreeTruncation(LHS) && computeKnownBits(LHS, *DL, null, null, null, true, 0).countMaxActiveBits() <= 8) && (IsFreeTruncation(RHS) && ComputeMaxSignificantBits(RHS, *DL, null, null, null, 0) <= 8) {
+    if (IsFreeTruncation.call(LHS) && computeKnownBits(LHS, *DL, null, null, null, true, 0).countMaxActiveBits() <= 8) && (IsFreeTruncation.call(RHS) && ComputeMaxSignificantBits(RHS, *DL, null, null, null, 0) <= 8) {
         return true;
     }
     return false;
@@ -66,19 +66,19 @@ fn X86PartialReduction::tryMAddReplacement(self, Op: *mut Instruction, ReduceInO
     if !self.ST.hasSSE2() {
         return false;
     }
-    if cast(Op.getType())() < 8 {
+    if cast(Op.getType()).getNumElements() < 8 {
         return false;
     }
-    if operator!(cast(Op.getType())()(32)) {
+    if !cast(Op.getType()).getElementType().isIntegerTy(32) {
         return false;
     }
-    let mut Mul: *mut auto = dyn_cast(Op);
-    if operator!() || () != Mul {
+    let mut Mul: *mut BinaryOperator = dyn_cast(Op);
+    if !Mul || Mul.getOpcode() != Mul {
         return false;
     }
-    let mut LHS: *mut Value = (0);
-    let mut RHS: *mut Value = (1);
-    if ReduceInOneBB && matchVPDPBUSDPattern(self.ST, self.DL) {
+    let mut LHS: *mut Value = Mul.getOperand(0);
+    let mut RHS: *mut Value = Mul.getOperand(1);
+    if ReduceInOneBB && matchVPDPBUSDPattern(self.ST, Mul, self.DL) {
         return false;
     }
     if self.ST.hasSSE41() {
@@ -95,30 +95,30 @@ fn X86PartialReduction::tryMAddReplacement(self, Op: *mut Instruction, ReduceInO
             }
         }
     }
-    let mut CanShrinkOp: Closure_2 = Closure_2 { cap_0: self };
+    let mut CanShrinkOp: Closure_2 = Closure_2 { Mul: &mut Mul, cap_1: self };
     if !CanShrinkOp.call(LHS) && !CanShrinkOp.call(RHS) {
         return false;
     }
-    let mut Builder: i32 = Mul();
-    let mut MulTy: *mut auto = cast(Op.getType());
-    let mut NumElts: u32 = ();
-    let mut EvenMask: SmallVector<int, 16> = SmallVector<int, 16> { NumElts / 2 };
-    let mut OddMask: SmallVector<int, 16> = SmallVector<int, 16> { NumElts / 2 };
+    let mut Builder: IRBuilder<> = Mul;
+    let mut MulTy: *mut FixedVectorType = cast(Op.getType());
+    let mut NumElts: u32 = MulTy.getNumElements();
+    let mut EvenMask: SmallVector<int, 16> = NumElts / 2;
+    let mut OddMask: SmallVector<int, 16> = NumElts / 2;
     for let mut i: i32 = 0;
 let mut e: i32 = NumElts / 2; i != e; i += 1 {
         EvenMask[i] = i * 2;
         OddMask[i] = i * 2 + 1;
     }
-    let mut NewMul: *mut Value = ((0), (1));
-    let mut EvenElts: *mut Value = (NewMul, NewMul, EvenMask);
-    let mut OddElts: *mut Value = (NewMul, NewMul, OddMask);
-    let mut MAdd: *mut Value = (EvenElts, OddElts);
-    let mut ConcatMask: SmallVector<int, 32> = zeroed();
-    iota(0);
+    let mut NewMul: *mut Value = Builder.CreateMul(Mul.getOperand(0), Mul.getOperand(1), "", false, false);
+    let mut EvenElts: *mut Value = Builder.CreateShuffleVector(NewMul, NewMul, EvenMask, "");
+    let mut OddElts: *mut Value = Builder.CreateShuffleVector(NewMul, NewMul, OddMask, "");
+    let mut MAdd: *mut Value = Builder.CreateAdd(EvenElts, OddElts, "", false, false);
+    let mut ConcatMask: SmallVector<int, 32> = NumElts;
+    iota(ConcatMask.begin(), ConcatMask.end(), 0);
     let mut Zero: *mut Value = getNullValue(MAdd.getType());
-    let mut Concat: *mut Value = (MAdd, Zero);
-    Mul()(Concat);
-    Mul()();
+    let mut Concat: *mut Value = Builder.CreateShuffleVector(MAdd, Zero, ConcatMask, "");
+    Mul.replaceAllUsesWith(Concat);
+    Mul.eraseFromParent();
     return true;
 }
 
@@ -126,97 +126,100 @@ fn X86PartialReduction::trySADReplacement(self, Op: *mut Instruction) -> bool {
     if !self.ST.hasSSE2() {
         return false;
     }
-    if operator!(cast(Op.getType())()(32)) {
+    if !cast(Op.getType()).getElementType().isIntegerTy(32) {
         return false;
     }
     let mut LHS: *mut Value = null;
     if match(Op, m_Intrinsic()) {
         LHS = Op.getOperand(0);
     } else {
-        let mut SI: *mut auto = dyn_cast(Op);
-        if operator!() {
+        let mut SI: *mut SelectInst = dyn_cast(Op);
+        if !SI {
             return false;
         }
         let mut RHS: *mut Value = null;
-        let mut SPR: auto = matchSelectPattern(LHS, RHS);
-        if SPR() != SPF_ABS {
+        let mut SPR: SelectPatternResult = matchSelectPattern(SI, LHS, RHS, null, 0);
+        if SPR.Flavor != SPF_ABS {
             return false;
         }
     }
-    let mut Sub: *mut auto = dyn_cast(LHS);
-    if operator!() || () != Sub {
+    let mut Sub: *mut BinaryOperator = dyn_cast(LHS);
+    if !Sub || Sub.getOpcode() != Sub {
         return false;
     }
     let mut getZeroExtendedVal: Closure_4 = Closure_4 {};
-    let mut Op0: *mut Value = getZeroExtendedVal((0));
-    let mut Op1: *mut Value = getZeroExtendedVal((1));
+    let mut Op0: *mut Value = getZeroExtendedVal.call(Sub.getOperand(0));
+    let mut Op1: *mut Value = getZeroExtendedVal.call(Sub.getOperand(1));
     if !Op0 || !Op1 {
         return false;
     }
-    let mut Builder: i32 = Op;
-    let mut OpTy: *mut auto = cast(Op.getType());
-    let mut NumElts: u32 = ();
+    let mut Builder: IRBuilder<> = Op;
+    let mut OpTy: *mut FixedVectorType = cast(Op.getType());
+    let mut NumElts: u32 = OpTy.getNumElements();
     let mut IntrinsicNumElts: u32 = 0;
     let mut IID: ID = zeroed();
     if self.ST.useBWIRegs() && NumElts >= 64 {
+        IID = x86_avx512_psad_bw_512;
         IntrinsicNumElts = 64;
     } else if self.ST.hasAVX2() && NumElts >= 32 {
+        IID = x86_avx2_psad_bw;
         IntrinsicNumElts = 32;
     } else {
+        IID = x86_sse2_psad_bw;
         IntrinsicNumElts = 16;
     }
     let mut PSADBWFn: *mut Function = getOrInsertDeclaration(Op.getModule(), IID, ArrayRef<Type *> {});
     if NumElts < 16 {
-        let mut ConcatMask: SmallVector<int, 32> = zeroed();
+        let mut ConcatMask: SmallVector<int, 32> = 16;
         for let mut i: u32 = 0; i != NumElts; i += 1 {
-            ConcatMask()[i] = i;
+            ConcatMask[i] = i;
         }
         for let mut i: u32 = NumElts; i != 16; i += 1 {
-            ConcatMask()[i] = (i % NumElts) + NumElts;
+            ConcatMask[i] = (i % NumElts) + NumElts;
         }
         let mut Zero: *mut Value = getNullValue(Op0.getType());
-        Op0 = (Op0, Zero);
-        Op1 = (Op1, Zero);
+        Op0 = Builder.CreateShuffleVector(Op0, Zero, ConcatMask, "");
+        Op1 = Builder.CreateShuffleVector(Op1, Zero, ConcatMask, "");
         NumElts = 16;
     }
-    let mut I32Ty: *mut auto = get(IntrinsicNumElts / 4);
+    let mut I32Ty: *mut FixedVectorType = get(Builder.getInt32Ty(), IntrinsicNumElts / 4);
     assert!(NumElts % IntrinsicNumElts == 0, "Unexpected number of elements!");
     let mut NumSplits: u32 = NumElts / IntrinsicNumElts;
-    let mut Ops: SmallVector<Value *, 4> = zeroed();
+    let mut Ops: SmallVector<Value *, 4> = NumSplits;
     for let mut i: u32 = 0; i != NumSplits; i += 1 {
-        let mut ExtractMask: SmallVector<int, 64> = zeroed();
-        iota(i * IntrinsicNumElts);
-        let mut ExtractOp0: *mut Value = (Op0, Op0);
-        let mut ExtractOp1: *mut Value = (Op1, Op0);
-        Ops()[i] = (PSADBWFn, void { ExtractOp0, ExtractOp1 });
-        Ops()[i] = ([i]);
+        let mut ExtractMask: SmallVector<int, 64> = IntrinsicNumElts;
+        iota(ExtractMask.begin(), ExtractMask.end(), i * IntrinsicNumElts);
+        let mut ExtractOp0: *mut Value = Builder.CreateShuffleVector(Op0, Op0, ExtractMask, "");
+        let mut ExtractOp1: *mut Value = Builder.CreateShuffleVector(Op1, Op0, ExtractMask, "");
+        Ops[i] = Builder.CreateCall(PSADBWFn, [ExtractOp0, ExtractOp1], "", null);
+        Ops[i] = Builder.CreateBitCast(Ops[i], I32Ty, "");
     }
     assert!(isPowerOf2_32(NumSplits), "Expected power of 2 splits");
     let mut Stages: u32 = Log2_32(NumSplits);
     for let mut s: u32 = Stages; s > 0; s -= 1 {
-        let mut NumConcatElts: u32 = cast([0]())() * 2;
+        let mut NumConcatElts: u32 = cast(Ops[0].getType()).getNumElements() * 2;
         for let mut i: u32 = 0; i != 1 << (s - 1); i += 1 {
-            let mut ConcatMask: SmallVector<int, 64> = zeroed();
-            iota(0);
-            Ops()[i] = ([i * 2], [i * 2 + 1]);
+            let mut ConcatMask: SmallVector<int, 64> = NumConcatElts;
+            iota(ConcatMask.begin(), ConcatMask.end(), 0);
+            Ops[i] = Builder.CreateShuffleVector(Ops[i * 2], Ops[i * 2 + 1], ConcatMask, "");
         }
     }
-    NumElts = cast()();
+    NumElts = cast(OpTy).getNumElements();
     if NumElts == 2 {
-        Ops()[0] = ([0], [0], ArrayRef<int> { [0, 1] });
+        Ops[0] = Builder.CreateShuffleVector(Ops[0], Ops[0], ArrayRef<int> { [0, 1] }, "");
     } else if NumElts >= 8 {
-        let mut ConcatMask: SmallVector<int, 32> = zeroed();
-        let mut SubElts: u32 = cast([0]())();
+        let mut ConcatMask: SmallVector<int, 32> = NumElts;
+        let mut SubElts: u32 = cast(Ops[0].getType()).getNumElements();
         for let mut i: u32 = 0; i != SubElts; i += 1 {
-            ConcatMask()[i] = i;
+            ConcatMask[i] = i;
         }
         for let mut i: u32 = SubElts; i != NumElts; i += 1 {
-            ConcatMask()[i] = (i % SubElts) + SubElts;
+            ConcatMask[i] = (i % SubElts) + SubElts;
         }
-        let mut Zero: *mut Value = getNullValue([0]());
-        Ops()[0] = ([0], Zero);
+        let mut Zero: *mut Value = getNullValue(Ops[0].getType());
+        Ops[0] = Builder.CreateShuffleVector(Ops[0], Zero, ConcatMask, "");
     }
-    Op.replaceAllUsesWith([0]);
+    Op.replaceAllUsesWith(Ops[0]);
     Op.eraseFromParent();
     return true;
 }
@@ -225,125 +228,128 @@ fn X86PartialReduction::tryByteSumReplacement(self, Op: *mut Instruction) -> boo
     if !self.ST.hasSSE2() {
         return false;
     }
-    let mut OpTy: *mut auto = dyn_cast(Op.getType());
-    if operator!() {
+    let mut OpTy: *mut FixedVectorType = dyn_cast(Op.getType());
+    if !OpTy {
         return false;
     }
-    let mut ElemBits: u32 = ()();
+    let mut ElemBits: u32 = OpTy.getElementType().getScalarSizeInBits();
     if ElemBits != 32 && ElemBits != 64 {
         return false;
     }
-    let mut ZExt: *mut auto = dyn_cast(Op);
-    if operator!() {
+    let mut ZExt: *mut ZExtInst = dyn_cast(Op);
+    if !ZExt {
         return false;
     }
-    let mut SrcTy: *mut auto = dyn_cast((0)());
-    if operator!() || operator!(()(8)) {
+    let mut SrcTy: *mut FixedVectorType = dyn_cast(ZExt.getOperand(0).getType());
+    if !SrcTy || !SrcTy.getElementType().isIntegerTy(8) {
         return false;
     }
-    let mut NumElts: u32 = ();
+    let mut NumElts: u32 = OpTy.getNumElements();
     if NumElts < 16 {
         return false;
     }
     let mut IntrinsicNumElts: u32 = 0;
     let mut IID: ID = zeroed();
     if self.ST.useBWIRegs() && NumElts >= 64 {
+        IID = x86_avx512_psad_bw_512;
         IntrinsicNumElts = 64;
     } else if self.ST.hasAVX2() && NumElts >= 32 {
+        IID = x86_avx2_psad_bw;
         IntrinsicNumElts = 32;
     } else {
+        IID = x86_sse2_psad_bw;
         IntrinsicNumElts = 16;
     }
     if NumElts % IntrinsicNumElts != 0 || !isPowerOf2_32(NumElts / IntrinsicNumElts) {
         return false;
     }
     let mut NumSplits: u32 = NumElts / IntrinsicNumElts;
-    let mut Builder: i32 = Op;
-    Builder()(Op.getDebugLoc());
+    let mut Builder: IRBuilder<> = Op;
+    Builder.SetCurrentDebugLocation(Op.getDebugLoc());
     let mut PSADBWFn: *mut Function = getOrInsertDeclaration(Op.getModule(), IID, ArrayRef<Type *> {});
-    let mut I8VecTy: *mut auto = get(IntrinsicNumElts);
-    let mut Zeroes: *mut Value = getNullValue();
-    let mut I32PerSplitTy: *mut FixedVectorType = if ElemBits == 32 { get(IntrinsicNumElts / 4) } else { null };
-    let mut Src: *mut Value = (0);
-    let mut Ops: SmallVector<Value *, 4> = zeroed();
+    let mut I8VecTy: *mut FixedVectorType = get(Builder.getInt8Ty(), IntrinsicNumElts);
+    let mut Zeroes: *mut Value = getNullValue(I8VecTy);
+    let mut I32PerSplitTy: *mut FixedVectorType = if ElemBits == 32 { get(Builder.getInt32Ty(), IntrinsicNumElts / 4) } else { null };
+    let mut Src: *mut Value = ZExt.getOperand(0);
+    let mut Ops: SmallVector<Value *, 4> = NumSplits;
     for let mut i: u32 = 0; i != NumSplits; i += 1 {
-        let mut ExtractMask: SmallVector<int, 64> = zeroed();
-        iota(i * IntrinsicNumElts);
-        let mut ExtractSrc: *mut Value = (Src, Src);
-        Ops()[i] = (PSADBWFn, void { ExtractSrc, Zeroes });
+        let mut ExtractMask: SmallVector<int, 64> = IntrinsicNumElts;
+        iota(ExtractMask.begin(), ExtractMask.end(), i * IntrinsicNumElts);
+        let mut ExtractSrc: *mut Value = Builder.CreateShuffleVector(Src, Src, ExtractMask, "");
+        Ops[i] = Builder.CreateCall(PSADBWFn, [ExtractSrc, Zeroes], "", null);
         if I32PerSplitTy {
-            Ops()[i] = ([i], I32PerSplitTy);
+            Ops[i] = Builder.CreateBitCast(Ops[i], I32PerSplitTy, "");
         }
     }
     let mut Stages: u32 = Log2_32(NumSplits);
     for let mut S: u32 = Stages; S > 0; S -= 1 {
-        let mut NumConcatElts: u32 = cast([0]())() * 2;
+        let mut NumConcatElts: u32 = cast(Ops[0].getType()).getNumElements() * 2;
         for let mut i: u32 = 0; i != 1 << (S - 1); i += 1 {
-            let mut ConcatMask: SmallVector<int, 64> = zeroed();
-            iota(0);
-            Ops()[i] = ([i * 2], [i * 2 + 1]);
+            let mut ConcatMask: SmallVector<int, 64> = NumConcatElts;
+            iota(ConcatMask.begin(), ConcatMask.end(), 0);
+            Ops[i] = Builder.CreateShuffleVector(Ops[i * 2], Ops[i * 2 + 1], ConcatMask, "");
         }
     }
-    let mut ConcatMask: SmallVector<int, 32> = zeroed();
-    let mut SubElts: u32 = cast([0]())();
+    let mut ConcatMask: SmallVector<int, 32> = NumElts;
+    let mut SubElts: u32 = cast(Ops[0].getType()).getNumElements();
     for let mut i: u32 = 0; i != SubElts; i += 1 {
-        ConcatMask()[i] = i;
+        ConcatMask[i] = i;
     }
     for let mut i: u32 = SubElts; i != NumElts; i += 1 {
-        ConcatMask()[i] = (i % SubElts) + SubElts;
+        ConcatMask[i] = (i % SubElts) + SubElts;
     }
-    let mut Zero: *mut Value = getNullValue([0]());
-    Ops()[0] = ([0], Zero);
-    Op.replaceAllUsesWith([0]);
+    let mut Zero: *mut Value = getNullValue(Ops[0].getType());
+    Ops[0] = Builder.CreateShuffleVector(Ops[0], Zero, ConcatMask, "");
+    Op.replaceAllUsesWith(Ops[0]);
     Op.eraseFromParent();
     return true;
 }
 
 fn matchAddReduction(EE: *ExtractElementInst, ReduceInOneBB: *mut bool) -> *mut Value {
     ReduceInOneBB = true;
-    let mut Index: *mut auto = dyn_cast(EE.getIndexOperand());
-    if operator!() || operator!() {
+    let mut Index: *ConstantInt = dyn_cast(EE.getIndexOperand());
+    if !Index || !Index.isNullValue() {
         return null;
     }
-    let mut BO: *auto = dyn_cast(EE.getVectorOperand());
-    if operator!() || () != Add || operator!() {
+    let mut BO: *BinaryOperator const = dyn_cast(EE.getVectorOperand());
+    if !BO || BO.getOpcode() != Add || !BO.hasOneUse() {
         return null;
     }
-    if EE.getParent() != () {
+    if EE.getParent() != BO.getParent() {
         ReduceInOneBB = false;
     }
-    let mut NumElems: u32 = cast()();
+    let mut NumElems: u32 = cast(BO.getType()).getNumElements();
     if !isPowerOf2_32(NumElems) {
         return null;
     }
-    let mut Op: *Value = ;
+    let mut Op: *Value = BO;
     let mut Stages: u32 = Log2_32(NumElems);
     for let mut i: u32 = 0; i != Stages; i += 1 {
-        let mut BO: *auto = dyn_cast(Op);
-        if operator!() || () != Add {
+        let mut BO: *BinaryOperator const = dyn_cast(Op);
+        if !BO || BO.getOpcode() != Add {
             return null;
         }
-        if EE.getParent() != () {
+        if EE.getParent() != BO.getParent() {
             ReduceInOneBB = false;
         }
-        if i != 0 && operator!((2)) {
+        if i != 0 && !BO.hasNUses(2) {
             return null;
         }
-        let mut LHS: *mut Value = (0);
-        let mut RHS: *mut Value = (1);
-        let mut Shuffle: *mut auto = dyn_cast(LHS);
-        if Shuffle() {
+        let mut LHS: *mut Value = BO.getOperand(0);
+        let mut RHS: *mut Value = BO.getOperand(1);
+        let mut Shuffle: *mut ShuffleVectorInst = dyn_cast(LHS);
+        if Shuffle {
             Op = RHS;
         } else {
-            Shuffle() = dyn_cast(RHS);
+            Shuffle = dyn_cast(RHS);
             Op = LHS;
         }
-        if operator!() || (0) != Op {
+        if !Shuffle || Shuffle.getOperand(0) != Op {
             return null;
         }
         let mut MaskEnd: u32 = 1 << i;
         for let mut Index: u32 = 0; Index < MaskEnd; Index += 1 {
-            if Shuffle()(Index) != (MaskEnd + Index) as i32 {
+            if Shuffle.getMaskValue(Index) != (MaskEnd + Index) as i32 {
                 return null;
             }
         }
@@ -366,44 +372,57 @@ fn isReachableFromPHI(Phi: *mut PHINode, BO: *mut BinaryOperator) -> bool {
 }
 
 fn collectLeaves(Root: *mut Value, Leaves: *mut SmallVectorImpl<Instruction *>) {
-    let mut Visited: SmallPtrSet<Value *, 8> = zeroed();
-    let mut Worklist: SmallVector<Value *, 8> = zeroed();
-    Worklist()(Root);
-    while operator!() {
-        let mut V: *mut Value = ();
-        if operator!((V)) {
+    let mut Visited: SmallPtrSet<Value *, 8> = SmallPtrSet<Value *, 8> {};
+    let mut Worklist: SmallVector<Value *, 8> = SmallVector<Value *, 8> {};
+    Worklist.push(Root);
+    while !Worklist.is_empty() {
+        let mut V: *mut Value = Worklist.pop_back_val();
+        if !Visited.insert(V).second {
             continue;
         }
-        if  {
-            if operator!((if  == Root { 2 } else { 1 })) {
+        if dyn_cast(V) {
+            PN;
+        } else {
+            if !PN.hasNUses(if PN == Root { 2 } else { 1 }) {
                 break;
             }
-            append_range();
+            append_range(Worklist, PN.incoming_values());
             continue;
         }
-        if  {
-            if BO()() == Add {
-                if BO()(if  == Root { 2 } else { 1 }) {
-                    append_range();
+        if dyn_cast(V) {
+            BO;
+        } else {
+            if BO.getOpcode() == Add {
+                if BO.hasNUses(if BO == Root { 2 } else { 1 }) {
+                    append_range(Worklist, BO.operands());
                     continue;
                 }
-                if BO()(if  == Root { 3 } else { 2 }) {
+                if BO.hasNUses(if BO == Root { 3 } else { 2 }) {
                     let mut PN: *mut PHINode = null;
+                    for U in BO.users() {
+                        if dyn_cast(U) {
+                            P;
+                        } else if !Visited.count(P) {
+                            PN = P;
+                        }
+                    }
                     if !PN || PN.getNumIncomingValues() != 2 {
                         continue;
                     }
-                    if operator!(isReachableFromPHI(PN)) {
+                    if !isReachableFromPHI(PN, BO) {
                         continue;
                     }
-                    append_range();
+                    append_range(Worklist, BO.operands());
                 }
             }
         }
-        if  {
-            if operator!(V.hasNUses(if  == Root { 2 } else { 1 })) {
+        if dyn_cast(V) {
+            I;
+        } else {
+            if !V.hasNUses(if I == Root { 2 } else { 1 }) {
                 continue;
             }
-            Leaves()();
+            Leaves.push(I);
         }
     }
 }
@@ -414,17 +433,31 @@ fn X86PartialReduction::run(self, F: *mut Function) -> bool {
     let mut MadeChange: bool = false;
     for BB in F {
         for I in BB {
-            let mut EE: *mut auto = dyn_cast(&mut I);
-            if operator!() {
+            let mut EE: *mut ExtractElementInst = dyn_cast(&mut I);
+            if !EE {
                 continue;
             }
             let mut ReduceInOneBB: bool = false;
-            let mut Root: *mut Value = matchAddReduction(operator*(), ReduceInOneBB);
+            let mut Root: *mut Value = matchAddReduction(*EE, ReduceInOneBB);
             if !Root {
                 continue;
             }
-            let mut Leaves: SmallVector<Instruction *, 8> = zeroed();
-            collectLeaves(Root);
+            let mut Leaves: SmallVector<Instruction *, 8> = SmallVector<Instruction *, 8> {};
+            collectLeaves(Root, Leaves);
+            for I in Leaves {
+                if self.tryMAddReplacement(I, ReduceInOneBB) {
+                    MadeChange = true;
+                    continue;
+                }
+                if I != Root && self.trySADReplacement(I) {
+                    MadeChange = true;
+                    continue;
+                }
+                if I != Root && self.tryByteSumReplacement(I) {
+                    MadeChange = true;
+                    continue;
+                }
+            }
         }
     }
     return MadeChange;
@@ -434,20 +467,20 @@ fn X86PartialReductionLegacy::runOnFunction(self, F: *mut Function) -> bool {
     if self.skipFunction(F) {
         return false;
     }
-    let mut TPC: *mut auto = ;
-    if operator!() {
+    let mut TPC: *mut TargetPassConfig = self.getAnalysisIfAvailable();
+    if !TPC {
         return false;
     }
-    return operator&().run(F);
+    return &mut TPC.getTM().run(F);
 }
 
 fn X86PartialReductionPass::run(self, F: *mut Function, FAM: *mut FunctionAnalysisManager) -> PreservedAnalyses {
-    let mut Changed: bool = X86PartialReduction { self.TM }.run(F);
+    let mut Changed: bool = self.TM.run(F);
     if !Changed {
         return all();
     }
     let mut PA: PreservedAnalyses = none();
-    PA;
+    PA.preserveSet();
     return PA;
 }
 
@@ -456,34 +489,45 @@ struct Closure_1 {
 }
 
 unsafe fn Closure_1::call(self: *mut Closure_1, Op: *mut Value) -> bool {
-        if  {
-            if Cast()() == (*self.Mul).getParent() && (Cast()() == SExt || () == ZExt) && (0)()() <= 8 {
+        if dyn_cast(Op) {
+            Cast;
+        } else {
+            if Cast.getParent() == (*self.Mul).getParent() && (Cast.getOpcode() == SExt || Cast.getOpcode() == ZExt) && Cast.getOperand(0).getType().getScalarSizeInBits() <= 8 {
                 return true;
             }
         }
+        return isa(Op);
     }
 
-struct Closure_3 {}
+struct Closure_3 {
+    Mul: *mut *mut BinaryOperator,
+}
 
-fn Closure_3::call(self: *Closure_3, Op: *mut Value) -> bool {
-            if  {
-                if Cast()() == () && (Cast()() == SExt || () == ZExt) && (0)()() <= 16 {
+unsafe fn Closure_3::call(self: *mut Closure_3, Op: *mut Value) -> bool {
+            if dyn_cast(Op) {
+                Cast;
+            } else {
+                if Cast.getParent() == (*self.Mul).getParent() && (Cast.getOpcode() == SExt || Cast.getOpcode() == ZExt) && Cast.getOperand(0).getType().getScalarSizeInBits() <= 16 {
                     return true;
                 }
             }
+            return isa(Op);
         }
 
 struct Closure_2 {
-    cap_0: *mut X86PartialReduction,
+    Mul: *mut *mut BinaryOperator,
+    cap_1: *mut X86PartialReduction,
 }
 
-fn Closure_2::call(self: *Closure_2, Op: *mut Value) -> bool {
-        let mut IsFreeTruncation: Closure_3 = Closure_3 {};
-        if IsFreeTruncation(Op) && ComputeNumSignBits(Op, *self.DL, null) > 16 {
+unsafe fn Closure_2::call(self: *mut Closure_2, Op: *mut Value) -> bool {
+        let mut IsFreeTruncation: Closure_3 = Closure_3 { Mul: &mut (*self.Mul) };
+        if IsFreeTruncation.call(Op) && ComputeNumSignBits(Op, *self.DL, null, (*self.Mul), null, true, 0) > 16 {
             return true;
         }
-        if  {
-            if BO()() == () && IsFreeTruncation((0)) && IsFreeTruncation((1)) && ComputeNumSignBits(Op, *self.DL, null) > 16 {
+        if dyn_cast(Op) {
+            BO;
+        } else {
+            if BO.getParent() == (*self.Mul).getParent() && IsFreeTruncation.call(BO.getOperand(0)) && IsFreeTruncation.call(BO.getOperand(1)) && ComputeNumSignBits(Op, *self.DL, null, (*self.Mul), null, true, 0) > 16 {
                 return true;
             }
         }
@@ -493,10 +537,10 @@ fn Closure_2::call(self: *Closure_2, Op: *mut Value) -> bool {
 struct Closure_4 {}
 
 fn Closure_4::call(self: *mut Closure_4, Op: *mut Value) -> auto {
-        if  {
-            if cast((0)())()(8) {
-                return (0);
-            }
+        if dyn_cast(Op) {
+            ZExt;
+        } else if cast(ZExt.getOperand(0).getType()).getElementType().isIntegerTy(8) {
+            return ZExt.getOperand(0);
         }
         return null;
     }

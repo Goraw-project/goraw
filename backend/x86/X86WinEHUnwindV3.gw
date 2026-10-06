@@ -10,16 +10,33 @@ const MaxV3EpilogOps: u32 = 31;
 
 const EpilogDistanceThreshold: u32 = 32767;
 
-static mut ApproxBytesPerInstr: i32 = "x86-wineh-unwindv3-instr-avg-size";
+static mut ApproxBytesPerInstr: opt<unsigned int> = opt<unsigned int> { "x86-wineh-unwindv3-instr-avg-size", Hidden, "Average size of an instruction. This value is used in determining split points for chained unwinder info", init(7) };
 
 fn suppressWinCFI(MF: *mut MachineFunction) {
-    for MBB in MF {}
+    for MBB in MF {
+        for MI in make_early_inc_range(MBB) {
+            match MI.getOpcode() {
+                SEH_PushReg => {
+                    SEH_Push2Regs;
+                },
+                _ => {
+                    break;
+                },
+            }
+        }
+    }
     MF.setHasWinCFI(false);
 }
 
 struct EpilogSplitPoint {
     BeginEpilog: *mut MachineInstr,
     ApproxBytePos: u32,
+}
+
+fn EpilogSplitPoint::operator=(self, arg: *mut *mut EpilogSplitPoint) -> *mut EpilogSplitPoint {
+    self.BeginEpilog =  as EpilogSplitPoint.BeginEpilog;
+    self.ApproxBytePos =  as EpilogSplitPoint.ApproxBytePos;
+    return *self;
 }
 
 struct FuncletInfo {
@@ -101,14 +118,26 @@ fn X86WinEHUnwindV3::analyzeFunclet(self, MF: *mut MachineFunction, Iter: *mut i
         if MBB.getMaxBytesForAlignment() {
             MaxBytes;
         } else {
-            MaxPadding = min(MaxPadding, MaxBytes);
+            MaxPadding = if MaxPadding < MaxBytes { MaxPadding } else { MaxBytes };
         }
         ApproxBytePos += MaxPadding;
         for MI in MBB {
             if !MI.isPseudo(IgnoreBundle) && !MI.isMetaInstruction(IgnoreBundle) {
-                operator+=(ApproxBytePos);
+                ApproxBytePos += ApproxBytesPerInstr.operator unsigned int();
             }
             match MI.getOpcode() {
+                SEH_PushReg => {
+                    SEH_Push2Regs;
+                },
+                SEH_EndPrologue => {
+                    SeenProlog = true;
+                },
+                SEH_BeginEpilogue => {
+                    InEpilog = true;
+                },
+                SEH_EndEpilogue => {
+                    InEpilog = false;
+                },
                 _ => {
                     break;
                 },
@@ -119,7 +148,7 @@ fn X86WinEHUnwindV3::analyzeFunclet(self, MF: *mut MachineFunction, Iter: *mut i
     while true {
         {
         if DebugFlag && isCurrentDebugType("x86-wineh-unwindv3", 1) {
-            dbgs() << "  funclet has " << Info()() << " epilog(s); ends at approx byte position " << ApproxBytePos << "\n";
+            dbgs() << "  funclet has " << Info.Epilogs.len << " epilog(s); ends at approx byte position " << ApproxBytePos << "\n";
         }
     }
         if !(false) { break; }
@@ -149,19 +178,19 @@ fn X86WinEHUnwindV3::runOnMachineFunction(self, MF: *mut MachineFunction) -> boo
         if PerFunctionV3 {
             let mut TII: *TargetInstrInfo = MF.getSubtarget().getInstrInfo();
             let mut FuncletEntry: *mut MachineBasicBlock = operator(Iter);
-            BuildMI(FuncletEntry, FuncletEntry.begin(), FuncletEntry.findDebugLoc(FuncletEntry.begin()), TII.get)(3)(FrameSetup);
+            BuildMI(FuncletEntry, FuncletEntry.begin(), MIMetadata { DL: FuncletEntry.findDebugLoc(FuncletEntry.begin()), PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(SEH_UnwindVersion)).addImm(3).setMIFlag(FrameSetup);
             Changed = true;
         }
         let mut Info: FuncletInfo = analyzeFunclet(MF, Iter, ApproxBytePos);
         if Info.PrologOpCount > MaxV3PrologOps {
             Ctx.diagnose(DiagnosticInfoResourceLimit { F, "number of unwind v3 prolog operations required", Info.PrologOpCount, MaxV3PrologOps, DS_Error, DK_ResourceLimit });
-            Ctx.diagnose(DiagnosticInfoGenericWithLoc { "sub-fragment splitting for prolog overflow is not yet implemented", F, DiagnosticLocation { F.getSubprogram() }, DS_Note });
+            Ctx.diagnose(DiagnosticInfoGenericWithLoc { "sub-fragment splitting for prolog overflow is not yet implemented", F, F.getSubprogram(), DS_Note });
             suppressWinCFI(MF);
             return true;
         }
         if Info.MaxEpilogOpCount > MaxV3EpilogOps {
             Ctx.diagnose(DiagnosticInfoResourceLimit { F, "number of unwind v3 epilog operations required", Info.MaxEpilogOpCount, MaxV3EpilogOps, DS_Error, DK_ResourceLimit });
-            Ctx.diagnose(DiagnosticInfoGenericWithLoc { "sub-fragment splitting for epilog overflow is not yet implemented", F, DiagnosticLocation { F.getSubprogram() }, DS_Note });
+            Ctx.diagnose(DiagnosticInfoGenericWithLoc { "sub-fragment splitting for epilog overflow is not yet implemented", F, F.getSubprogram(), DS_Note });
             suppressWinCFI(MF);
             return true;
         }
@@ -170,8 +199,8 @@ fn X86WinEHUnwindV3::runOnMachineFunction(self, MF: *mut MachineFunction) -> boo
         let mut EpilogsInFragment: u32 = 0;
         let mut LastEpilog: *EpilogSplitPoint = null;
         let mut LastEpilogIdx: u32 = 0;
-        for let mut Idx: u32 = 0; Idx < Info()(); Idx += 1 {
-            let mut Epilog: *EpilogSplitPoint = Info()[Idx];
+        for let mut Idx: u32 = 0; Idx < Info.Epilogs.len; Idx += 1 {
+            let mut Epilog: *EpilogSplitPoint = Info.Epilogs[Idx];
             if EpilogsInFragment > 0 {
                 let mut ExceedsEpilogCount: bool = EpilogsInFragment >= MaxV3Epilogs;
                 let mut ExceedsDistance: bool = Epilog.ApproxBytePos - LastEpilog.ApproxBytePos >= EpilogDistanceThreshold;
@@ -224,7 +253,7 @@ struct Closure_1 {
 
 unsafe fn Closure_1::call(self: *mut Closure_1, Epilog: *EpilogSplitPoint) {
             let mut MBB: *mut MachineBasicBlock = Epilog.BeginEpilog.getParent();
-            BuildMI(*MBB, MBB.begin(), Epilog.BeginEpilog.getDebugLoc(), (*self.TII).get)(FrameDestroy);
+            BuildMI(*MBB, MBB.begin(), MIMetadata { DL: Epilog.BeginEpilog.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, (*self.TII).get(SEH_SplitChainedAtEndOfBlock)).setMIFlag(FrameDestroy);
             operator(SubFragmentSplits, 0);
             (*self.Changed) = true;
         }

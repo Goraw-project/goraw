@@ -22,7 +22,7 @@ fn AArch64SRLTDefineSuperRegsLegacy::getPassName(self: *AArch64SRLTDefineSuperRe
 
 fn AArch64SRLTDefineSuperRegsLegacy::getAnalysisUsage(self: *AArch64SRLTDefineSuperRegsLegacy, AU: *mut AnalysisUsage) {
     AU.setPreservesCFG();
-    self.getAnalysisUsage;
+    self.getAnalysisUsage(AU);
 }
 
 fn AArch64SRLTDefineSuperRegsLegacy::getPassKind(self: *AArch64SRLTDefineSuperRegsLegacy) -> PassKind {
@@ -61,26 +61,84 @@ fn AArch64SRLTDefineSuperRegsLegacy::getClearedProperties(self: *AArch64SRLTDefi
 
 fn AArch64SRLTDefineSuperRegsImpl::getWidestSuperReg(self, R: Register, RequiredBaseRegUnits: *BitVector, QHiRegUnits: *BitVector) -> Register {
     assert!(R.isPhysical(), "Expected to be run straight after virtregrewriter!");
-    let mut Units: BitVector = self.TRI();
+    let mut Units: BitVector = BitVector { Bits: self.TRI.getNumRegUnits(), Size: false };
+    for U in self.TRI.regunits(R.operator MCRegister()) {
+        Units.set(U as u32);
+    }
     let mut IsSuitableSuperReg: Closure_1 = Closure_1 { cap_0: self, QHiRegUnits: &mut QHiRegUnits, Units: &mut Units, RequiredBaseRegUnits: &mut RequiredBaseRegUnits };
     let mut LargestSuperReg: Register = 0;
+    for SR in self.TRI.superregs(R.operator MCRegister()) {
+        if IsSuitableSuperReg.call(SR) && (!LargestSuperReg.isValid() || self.TRI.isSuperRegister(LargestSuperReg.operator MCRegister(), SR.operator MCRegister())) {
+            LargestSuperReg = SR;
+        }
+    }
     return LargestSuperReg;
 }
 
 fn AArch64SRLTDefineSuperRegsImpl::run(self, MF: *mut MachineFunction) -> bool {
-    self.Subtarget = operator&(MF);
+    self.Subtarget = &mut MF.getSubtarget();
     self.TRI = self.Subtarget.getRegisterInfo();
     let mut MRI: *MachineRegisterInfo = &mut MF.getRegInfo();
     if !MRI.subRegLivenessEnabled() {
         return false;
     }
     assert!(!MRI.isSSA(), "Expected to be run after breaking down SSA form!");
-    let mut XRegs: auto = seq_inclusive();
-    let mut ZRegs: auto = seq_inclusive();
-    let mut FixedRegs: []u32 = zeroed();
-    let mut RequiredBaseRegUnits: BitVector = self.TRI();
-    let mut QHiRegUnits: BitVector = self.TRI();
+    let mut XRegs: iota_range<unsigned int> = seq_inclusive(X0, X28);
+    let mut ZRegs: iota_range<unsigned int> = seq_inclusive(Z0, Z31);
+    let mut FixedRegs: [3]u32 = [FP, LR, SP];
+    let mut RequiredBaseRegUnits: BitVector = BitVector { Bits: self.TRI.getNumRegUnits(), Size: false };
+    for R in concat(XRegs, ZRegs, FixedRegs)[..] {
+        for U in self.TRI.regunits(R.operator MCRegister()) {
+            RequiredBaseRegUnits.set(U as u32);
+        }
+    }
+    let mut QHiRegUnits: BitVector = BitVector { Bits: self.TRI.getNumRegUnits(), Size: false };
+    for R in seq_inclusive(Q0_HI, Q31_HI) {
+        for U in self.TRI.regunits(R.operator MCRegister()) {
+            QHiRegUnits.set(U as u32);
+        }
+    }
     let mut Changed: bool = false;
+    for MBB in MF {
+        for MI in MBB {
+            if MI.getOpcode() == PATCHPOINT {
+                continue;
+            }
+            let mut SuperRegs: SmallSet<Register, 8> = SmallSet<Register, 8> {};
+            for DefOp in MI.defs() {
+                let mut R: Register = self.getWidestSuperReg(DefOp.getReg(), RequiredBaseRegUnits, QHiRegUnits);
+                if R.isValid() {
+                    SuperRegs.insert(R);
+                }
+            }
+            if !SuperRegs.len {
+                continue;
+            }
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("aarch64-srlt-define-superregs", 1) {
+                    dbgs() << "Adding implicit-defs to: " << MI;
+                }
+            }
+                if !(false) { break; }
+            }
+            for R in SuperRegs {
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("aarch64-srlt-define-superregs", 1) {
+                        dbgs() << "  " << printReg(R, self.TRI, 0, null) << "\n";
+                    }
+                }
+                    if !(false) { break; }
+                }
+                let mut IsRenamable: bool = any_of(MI.defs(), Closure_2 { cap_0: self, R: &mut R });
+                let mut IsDead: bool = any_of(MI.defs(), Closure_3 { cap_0: self, R: &mut R });
+                let mut DefOp: MachineOperand = CreateReg(R, true, true, false, IsDead, false, false, 0, false, false, IsRenamable);
+                MI.addOperand(DefOp);
+            }
+            Changed = true;
+        }
+    }
     return Changed;
 }
 
@@ -94,7 +152,7 @@ fn AArch64SRLTDefineSuperRegsPass::run(self, MF: *mut MachineFunction, MFAM: *mu
         return all();
     }
     let mut PA: PreservedAnalyses = getMachineFunctionPassPreservedAnalyses();
-    PA;
+    PA.preserveSet();
     return PA;
 }
 
@@ -106,5 +164,31 @@ struct Closure_1 {
 }
 
 unsafe fn Closure_1::call(self: *mut Closure_1, SR: Register) -> bool {
+        for U in self.TRI.regunits(SR.operator MCRegister()) {
+            if (*self.QHiRegUnits).test(U as u32) && !self.Subtarget.isSVEorStreamingSVEAvailable() {
+                return false;
+            }
+            if !self.TRI.isArtificialRegUnit(U) && (!(*self.Units).test(U as u32) || !(*self.RequiredBaseRegUnits).test(U as u32)) {
+                return false;
+            }
+        }
         return true;
     }
+
+struct Closure_2 {
+    cap_0: *mut AArch64SRLTDefineSuperRegsImpl,
+    R: *mut Register,
+}
+
+unsafe fn Closure_2::call(self: *mut Closure_2, MO: *MachineOperand) -> bool {
+                    return MO.isRenamable() && self.TRI.regsOverlap(MO.getReg(), (*self.R));
+                }
+
+struct Closure_3 {
+    cap_0: *mut AArch64SRLTDefineSuperRegsImpl,
+    R: *mut Register,
+}
+
+unsafe fn Closure_3::call(self: *mut Closure_3, MO: *MachineOperand) -> bool {
+                    return MO.isDead() && self.TRI.regsOverlap(MO.getReg(), (*self.R));
+                }

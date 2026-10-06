@@ -9,9 +9,39 @@ fn canUseOrr(Chunk: u64, Encoding: *mut u64) -> bool {
 }
 
 fn tryToreplicateChunks(UImm: u64, Insn: *mut SmallVectorImpl<ImmInsnModel>) -> bool {
-    let mut Counts: i32 = 0;
+    let mut Counts: CountMap = CountMap {};
     for let mut Idx: u32 = 0; Idx < 4; Idx += 1 {
-        [getChunk(UImm, Idx)] += 1;
+        Counts[getChunk(UImm, Idx)] += 1;
+    }
+    for Chunk in Counts {
+        let mut ChunkVal: u64 = Chunk.first;
+        let mut Count: u32 = Chunk.second;
+        let mut Encoding: u64 = 0;
+        if (Count != 2 && Count != 3) || !canUseOrr(ChunkVal, Encoding) {
+            continue;
+        }
+        let mut CountThree: bool = Count == 3;
+        Insn.push(ImmInsnModel { Opcode: ORRXri, Op1: 0, Op2: Encoding });
+        let mut ShiftAmt: u32 = 0;
+        let mut Imm16: u64 = 0;
+        for ; ShiftAmt < 64; ShiftAmt += 16 {
+            Imm16 = (UImm >> ShiftAmt) & 65535;
+            if Imm16 != ChunkVal {
+                break;
+            }
+        }
+        Insn.push(ImmInsnModel { Opcode: MOVKXi, Op1: Imm16, Op2: getShifterImm(LSL, ShiftAmt) });
+        if CountThree {
+            return true;
+        }
+        for ShiftAmt += 16; ShiftAmt < 64; ShiftAmt += 16 {
+            Imm16 = (UImm >> ShiftAmt) & 65535;
+            if Imm16 != ChunkVal {
+                break;
+            }
+        }
+        Insn.push(ImmInsnModel { Opcode: MOVKXi, Op1: Imm16, Op2: getShifterImm(LSL, ShiftAmt) });
+        return true;
     }
     return false;
 }
@@ -87,13 +117,13 @@ fn trySequenceOfOnes(UImm: u64, Insn: *mut SmallVectorImpl<ImmInsnModel>) -> boo
     assert!(FirstMovkIdx != NotSet, "Constant materializable with single ORR!");
     let mut Encoding: u64 = 0;
     processLogicalImmediate(OrrImm, 64, Encoding);
-    Insn();
+    Insn.push(ImmInsnModel { Opcode: ORRXri, Op1: 0, Op2: Encoding });
     let mut SingleMovk: bool = SecondMovkIdx == NotSet;
-    Insn();
+    Insn.push(ImmInsnModel { Opcode: MOVKXi, Op1: getChunk(UImm, FirstMovkIdx), Op2: getShifterImm(LSL, FirstMovkIdx * 16) });
     if SingleMovk {
         return true;
     }
-    Insn();
+    Insn.push(ImmInsnModel { Opcode: MOVKXi, Op1: getChunk(UImm, SecondMovkIdx), Op2: getShifterImm(LSL, SecondMovkIdx * 16) });
     return true;
 }
 
@@ -105,11 +135,11 @@ fn tryCopyWithNegation(Imm: u64, AllowThreeSequence: bool, Insn: *mut SmallVecto
     let mut tryExpansion: Closure_1 = Closure_1 { AllowThreeSequence: &mut AllowThreeSequence, Insn: &mut Insn };
     for let mut N: u32 = 17; N < 48; N += 1 {
         let mut C: u64 = 18446744069414584320 | (Imm ^ (Imm << N));
-        if (C ^ (C << N)) == Imm && tryExpansion(C, N) {
+        if (C ^ (C << N)) == Imm && tryExpansion.call(EORXrs, C, N) {
             return true;
         }
         C = 18446744069414584320 | (Imm ^ ~(~Imm << N));
-        if (C ^ ~(C << N)) == Imm && tryExpansion(C, N) {
+        if (C ^ ~(C << N)) == Imm && tryExpansion.call(EONXrs, C, N) {
             return true;
         }
     }
@@ -149,7 +179,7 @@ fn maximalLogicalImmWithin(RemainingBits: u64, OriginalBits: u64) -> u64 {
 
 fn decomposeIntoOrrOfLogicalImmediates(UImm: u64) -> pair<uint64_t, uint64_t>> {
     if UImm == 0 || ~UImm == 0 {
-        return nullopt();
+        return nullopt;
     }
     let mut InitialTrailingOnes: u32 = countr_one(UImm);
     let mut RotatedBits: u64 = rotr(UImm, InitialTrailingOnes);
@@ -157,44 +187,44 @@ fn decomposeIntoOrrOfLogicalImmediates(UImm: u64) -> pair<uint64_t, uint64_t>> {
     let mut RemainingBits: u64 = RotatedBits & ~MaximalImm1;
     let mut MaximalImm2: u64 = maximalLogicalImmWithin(RemainingBits, RotatedBits);
     if RemainingBits & ~MaximalImm2 {
-        return nullopt();
+        return nullopt;
     }
     return make_pair(rotl(MaximalImm1, InitialTrailingOnes), rotl(MaximalImm2, InitialTrailingOnes));
 }
 
 fn tryOrrOfLogicalImmediates(UImm: u64, Insn: *mut SmallVectorImpl<ImmInsnModel>) -> bool {
-    let mut MaybeDecomposition: auto = zeroed();
-    if MaybeDecomposition() == nullopt {
+    let mut MaybeDecomposition: pair<uint64_t, uint64_t>> = decomposeIntoOrrOfLogicalImmediates(UImm);
+    if MaybeDecomposition == nullopt {
         return false;
     }
-    let mut Imm1: u64 = ;
-    let mut Imm2: u64 = ;
+    let mut Imm1: u64 = operator(MaybeDecomposition).first;
+    let mut Imm2: u64 = operator(MaybeDecomposition).second;
     let mut Encoding1: u64 = 0;
     let mut Encoding2: u64 = 0;
     let mut Imm1Success: bool = processLogicalImmediate(Imm1, 64, Encoding1);
     let mut Imm2Success: bool = processLogicalImmediate(Imm2, 64, Encoding2);
     if Imm1Success && Imm2Success {
-        Insn();
-        Insn();
+        Insn.push(ImmInsnModel { Opcode: ORRXri, Op1: 0, Op2: Encoding1 });
+        Insn.push(ImmInsnModel { Opcode: ORRXri, Op1: 1, Op2: Encoding2 });
         return true;
     }
     return false;
 }
 
 fn tryAndOfLogicalImmediates(UImm: u64, Insn: *mut SmallVectorImpl<ImmInsnModel>) -> bool {
-    let mut MaybeDecomposition: auto = zeroed();
-    if MaybeDecomposition() == nullopt {
+    let mut MaybeDecomposition: pair<uint64_t, uint64_t>> = decomposeIntoOrrOfLogicalImmediates(~UImm);
+    if MaybeDecomposition == nullopt {
         return false;
     }
-    let mut Imm1: u64 = ;
-    let mut Imm2: u64 = ;
+    let mut Imm1: u64 = operator(MaybeDecomposition).first;
+    let mut Imm2: u64 = operator(MaybeDecomposition).second;
     let mut Encoding1: u64 = 0;
     let mut Encoding2: u64 = 0;
     let mut Imm1Success: bool = processLogicalImmediate(~Imm1, 64, Encoding1);
     let mut Imm2Success: bool = processLogicalImmediate(~Imm2, 64, Encoding2);
     if Imm1Success && Imm2Success {
-        Insn();
-        Insn();
+        Insn.push(ImmInsnModel { Opcode: ORRXri, Op1: 0, Op2: Encoding1 });
+        Insn.push(ImmInsnModel { Opcode: ANDXri, Op1: 1, Op2: Encoding2 });
         return true;
     }
     return false;
@@ -214,7 +244,7 @@ fn tryEorOfLogicalImmediates(Imm: u64, Insn: *mut SmallVectorImpl<ImmInsnModel>)
         if !(BigSize > 2) { break; }
     }
     let mut BigMask: u64 = (-1 as u64) >> (64 - BigSize);
-    let mut RunStarts: u64 = Imm & operator~(rotl(Imm, 1));
+    let mut RunStarts: u64 = Imm & ~rotl(Imm, 1);
     let mut RunsPerBigChunk: i32 = popcount(RunStarts & BigMask);
     let mut BigToSmallSizeTable: [32]i8 = [-1, -1, 0, 1, 2, 2, -1, 3, 3, 3, -1, -1, -1, -1, -1, 4, 4, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 5];
     let mut BigToSmallShift: i32 = BigToSmallSizeTable[RunsPerBigChunk];
@@ -233,11 +263,11 @@ fn tryEorOfLogicalImmediates(Imm: u64, Insn: *mut SmallVectorImpl<ImmInsnModel>)
         let mut BigEncoding: u64 = 0;
         let mut SmallEncoding: u64 = 0;
         if processLogicalImmediate(BigImm, 64, BigEncoding) && processLogicalImmediate(SmallImm, 64, SmallEncoding) {
-            Insn();
-            Insn();
+            Insn.push(ImmInsnModel { Opcode: ORRXri, Op1: 0, Op2: SmallEncoding });
+            Insn.push(ImmInsnModel { Opcode: EORXri, Op1: 1, Op2: BigEncoding });
             return true;
         }
-        operator+=(Rotation, countr_zero(rotr(RunStarts, Rotation) & ~1));
+        Rotation += countr_zero(rotr(RunStarts, Rotation) & ~1);
         RotatedImm = rotr(Imm, Rotation);
     }
     return false;
@@ -253,7 +283,10 @@ fn expandMOVImmSimple(Imm: u64, BitSize: u32, OneChunks: u32, ZeroChunks: u32, I
     let mut FirstOpc: u32 = 0;
     if BitSize == 32 {
         Imm &= (1 << 32) - 1;
-    } else {}
+        FirstOpc = (if isNeg { MOVNWi } else { MOVZWi });
+    } else {
+        FirstOpc = (if isNeg { MOVNXi } else { MOVZXi });
+    }
     let mut Shift: u32 = 0;
     let mut LastShift: u32 = 0;
     if Imm != 0 {
@@ -263,27 +296,27 @@ fn expandMOVImmSimple(Imm: u64, BitSize: u32, OneChunks: u32, ZeroChunks: u32, I
         LastShift = ((63 - LZ) / 16) * 16;
     }
     let mut Imm16: u32 = (Imm >> Shift) & Mask;
-    Insn()(void { FirstOpc, Imm16, getShifterImm(LSL, Shift) });
+    Insn.push(ImmInsnModel { Opcode: FirstOpc, Op1: Imm16, Op2: getShifterImm(LSL, Shift) });
     if Shift == LastShift {
         return;
     }
     if isNeg {
         Imm = ~Imm;
     }
-    let mut Opc: u32 = 0;
+    let mut Opc: u32 = (if BitSize == 32 { MOVKWi } else { MOVKXi });
     while Shift < LastShift {
         Shift += 16;
         Imm16 = (Imm >> Shift) & Mask;
         if Imm16 == (if isNeg { Mask } else { 0 }) {
             continue;
         }
-        Insn()(void { Opc, Imm16, getShifterImm(LSL, Shift) });
+        Insn.push(ImmInsnModel { Opcode: Opc, Op1: Imm16, Op2: getShifterImm(LSL, Shift) });
     }
-    if Insn()() > 2 && (Imm >> 32) == (Imm & 4294967295) {
-        for let mut Size: i32 = Insn()(); Size > 2; Size -= 1 {
-            Insn()();
+    if Insn.len > 2 && (Imm >> 32) == (Imm & 4294967295) {
+        for let mut Size: i32 = Insn.len; Size > 2; Size -= 1 {
+            Insn.pop();
         }
-        Insn();
+        Insn.push(ImmInsnModel { Opcode: ORRXrs, Op1: 0, Op2: 32 });
     }
 }
 
@@ -301,14 +334,14 @@ fn expandMOVImm(Imm: u64, BitSize: u32, Insn: *mut SmallVectorImpl<ImmInsnModel>
     }
     if (BitSize / 16) - OneChunks <= 1 || (BitSize / 16) - ZeroChunks <= 1 {
         expandMOVImmSimple(Imm, BitSize, OneChunks, ZeroChunks, Insn);
-        (((operator!(operator!((Insn()() == 1 && "Move of immediate should have expanded to a single MOVZ/MOVN")))) || (_wassert(L"Insn.size() == 1 && \"Move of immediate should have expanded to a single MOVZ/MOVN\"", L"llvm\\lib\\Target\\AArch64\\AArch64ExpandImm.cpp", (618) as u32) , 0)) as void);
+        assert!(Insn.len == 1, "Move of immediate should have expanded to a single MOVZ/MOVN");
         return;
     }
     let mut UImm: u64 = Imm << (64 - BitSize) >> (64 - BitSize);
     let mut Encoding: u64 = 0;
     if processLogicalImmediate(UImm, BitSize, Encoding) {
-        let mut Opc: u32 = 0;
-        Insn()(void { Opc, 0, Encoding });
+        let mut Opc: u32 = (if BitSize == 32 { ORRWri } else { ORRXri });
+        Insn.push(ImmInsnModel { Opcode: Opc, Op1: 0, Op2: Encoding });
         return;
     }
     if OneChunks >= (BitSize / 16) - 2 || ZeroChunks >= (BitSize / 16) - 2 {
@@ -323,9 +356,9 @@ fn expandMOVImm(Imm: u64, BitSize: u32, Insn: *mut SmallVectorImpl<ImmInsnModel>
         let mut RotatedImm: u64 = rotl(UImm, 32);
         let mut ReplicateChunk: u64 = ZeroChunk | (RotatedImm & ShiftedMask);
         if processLogicalImmediate(ZeroChunk, BitSize, Encoding) || processLogicalImmediate(OneChunk, BitSize, Encoding) || processLogicalImmediate(ReplicateChunk, BitSize, Encoding) {
-            Insn();
+            Insn.push(ImmInsnModel { Opcode: ORRXri, Op1: 0, Op2: Encoding });
             let mut Imm16: u32 = getChunk(UImm, Shift / 16);
-            Insn();
+            Insn.push(ImmInsnModel { Opcode: MOVKXi, Op1: Imm16, Op2: getShifterImm(LSL, Shift) });
             return;
         }
     }
@@ -358,16 +391,16 @@ fn expandMOVImm(Imm: u64, BitSize: u32, Insn: *mut SmallVectorImpl<ImmInsnModel>
 }
 
 fn expandMOVAddr(Opcode: u32, TargetFlags: u32, IsTargetMachO: bool, Insn: *mut SmallVectorImpl<AddrInsnModel>) {
-    if  {
-        Insn();
-        Insn();
+    if Opcode == MOVaddrBA && IsTargetMachO {
+        Insn.push(ValueParamT { ADRP });
+        Insn.push(ValueParamT { LDRXui });
         return;
     }
-    Insn();
+    Insn.push(ValueParamT { ADRP });
     if TargetFlags & MO_TAGGED {
-        Insn();
+        Insn.push(ValueParamT { MOVKXi });
     }
-    Insn();
+    Insn.push(ValueParamT { ADDXri });
 }
 
 struct Closure_1 {
@@ -383,13 +416,13 @@ unsafe fn Closure_1::call(self: *mut Closure_1, Opc: u32, C: u64, N: u32) -> boo
             return false;
         }
         if Imm0 != Mask {
-            (*self.Insn)();
+            (*self.Insn).push(ImmInsnModel { Opcode: MOVNXi, Op1: Imm0 ^ Mask, Op2: 0 });
             if Imm16 != Mask {
-                (*self.Insn)();
+                (*self.Insn).push(ImmInsnModel { Opcode: MOVKXi, Op1: Imm16, Op2: 16 });
             }
         } else {
-            (*self.Insn)();
+            (*self.Insn).push(ImmInsnModel { Opcode: MOVNXi, Op1: Imm16 ^ Mask, Op2: 16 });
         }
-        (*self.Insn)()(void { Opc, nullopt, N });
+        (*self.Insn).push(ImmInsnModel { Opcode: Opc, Op1: nullopt, Op2: N });
         return true;
     }

@@ -387,7 +387,7 @@ impl Transpiler {
                 self.scan_expr(iter);
                 self.scan_block(body);
             }
-            Stmt::Unsafe(b, _) => self.scan_block(b),
+            Stmt::Unsafe(b, _) | Stmt::Block(b, _) => self.scan_block(b),
             Stmt::Match { scrut, arms, .. } => {
                 self.scan_expr(scrut);
                 for (p, b) in arms {
@@ -513,6 +513,10 @@ impl Transpiler {
                 if let Some(body) = &inner.body {
                     self.scan_block(body);
                 }
+            }
+            Expr::Assign { target, value, .. } => {
+                self.scan_expr(target);
+                self.scan_expr(value);
             }
             _ => {}
         }
@@ -1516,6 +1520,13 @@ impl Transpiler {
                 self.indent_level -= 1;
                 self.write_line("}");
             }
+            Stmt::Block(block, _) => {
+                self.write_line("{");
+                self.indent_level += 1;
+                self.transpile_block(block);
+                self.indent_level -= 1;
+                self.write_line("}");
+            }
             Stmt::Assert(expr, span) => {
                 let e_s = self.transpile_expr(expr);
                 let (file, local_line) = self.locate_loc(span.lo.line);
@@ -1881,6 +1892,11 @@ impl Transpiler {
                             else return __v; \
                         }}(__try_v); }})"
                 )
+            }
+            Expr::Assign { target, value, .. } => {
+                let t = self.transpile_expr(target);
+                let v = self.transpile_expr(value);
+                format!("({t} = {v})")
             }
         }
     }

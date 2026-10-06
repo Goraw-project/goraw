@@ -25,7 +25,7 @@ fn Token::isModuleContextualKeyword(self: *Token, AllowExport: bool) -> bool {
     if AllowExport && self.is(kw_export) {
         return true;
     }
-    if  {
+    if self.isOneOf(kw_import, kw_module) {
         return true;
     }
     if self.isNot(identifier) {
@@ -58,7 +58,7 @@ fn Lexer::InitLexer(self, BufStart: *u8, BufPtr: *u8, BufEnd: *u8) {
     assert!(BufEnd[0] == 0, "We assume that the input buffer has a null character at the end to simplify lexing!");
     if self.BufferStart == self.BufferPtr {
         let mut Buf: str = self.BufferStart[0..self.BufferEnd - self.BufferStart];
-        let mut BOMLength: u64 = 0;
+        let mut BOMLength: u64 = Buf.StartsWith("\357\273\277", 3).Default(0);
         self.BufferPtr += BOMLength;
     }
     self.Is_PragmaLexer = false;
@@ -67,6 +67,9 @@ fn Lexer::InitLexer(self, BufStart: *u8, BufPtr: *u8, BufEnd: *u8) {
     self.IsAtPhysicalStartOfLine = true;
     self.HasLeadingSpace = false;
     self.HasLeadingEmptyMacro = false;
+    self.ParsingPreprocessorDirective = false;
+    self.ParsingFilename = false;
+    self.LexingRawMode = false;
     self.ExtendedTokenMode = 0;
     self.NewLinePtr = null;
 }
@@ -78,29 +81,31 @@ fn Lexer::Lexer(self, FID: FileID, InputFile: *MemoryBufferRef, PP: *mut Preproc
 
 fn Lexer::Lexer(self, fileloc: SourceLocation, langOpts: *LangOptions, BufStart: *u8, BufPtr: *u8, BufEnd: *u8, IsFirstIncludeOfFile: bool) {
     self.InitLexer(BufStart, BufPtr, BufEnd);
+    self.LexingRawMode = true;
 }
 
 fn Lexer::resetExtendedTokenMode(self) {
+    assert!(self.PP, "Cannot reset token mode without a preprocessor");
     if self.LangOpts.TraditionalCPP {
         self.SetKeepWhitespaceMode(true);
     } else {
-        self.SetCommentRetentionState;
+        self.SetCommentRetentionState(self.PP.getCommentRetentionState());
     }
 }
 
-fn Lexer::Create_PragmaLexer(self, SpellingLoc: SourceLocation, ExpansionLocStart: SourceLocation, ExpansionLocEnd: SourceLocation, TokLen: u32, PP: *mut Preprocessor) -> i32 {
+fn Lexer::Create_PragmaLexer(self, SpellingLoc: SourceLocation, ExpansionLocStart: SourceLocation, ExpansionLocEnd: SourceLocation, TokLen: u32, PP: *mut Preprocessor) -> unique_ptr<Lexer> {
     let mut SM: *mut SourceManager = PP.getSourceManager();
     let mut SpellingFID: FileID = SM.getFileID(SpellingLoc);
     let mut InputFile: MemoryBufferRef = SM.getBufferOrFake(SpellingFID, SourceLocation {});
-    let mut L: auto = make_unique(SpellingFID, InputFile, PP);
+    let mut L: Lexer> = make_unique(SpellingFID, InputFile, PP);
     let mut StrData: *u8 = SM.getCharacterData(SpellingLoc, null);
-    L() = StrData;
-    L() = StrData + TokLen;
-    (((operator!(operator!((L()[0] == 0 && "Buffer is not nul terminated!")))) || (_wassert(L"L->BufferEnd[0] == 0 && \"Buffer is not nul terminated!\"", L"clang\\lib\\Lex\\Lexer.cpp", (271) as u32) , 0)) as void);
-    L() = SM.createExpansionLoc(SM.getLocForStartOfFile(SpellingFID), ExpansionLocStart, ExpansionLocEnd, TokLen, true, 0, 0);
-    L() = true;
-    L() = true;
-    return ;
+    operator(L).BufferPtr = StrData;
+    operator(L).BufferEnd = StrData + TokLen;
+    assert!(operator(L).BufferEnd[0] == 0, "Buffer is not nul terminated!");
+    operator(L).FileLoc = SM.createExpansionLoc(SM.getLocForStartOfFile(SpellingFID), ExpansionLocStart, ExpansionLocEnd, TokLen, true, 0, 0);
+    operator(L).ParsingPreprocessorDirective = true;
+    operator(L).Is_PragmaLexer = true;
+    return L;
 }
 
 fn Lexer::seek(self, Offset: u32, IsAtStartOfLine: bool) {
@@ -113,12 +118,12 @@ fn Lexer::seek(self, Offset: u32, IsAtStartOfLine: bool) {
 // ========================================================
 // [C++ Template - Неинстанциированный шаблон функции: StringifyImpl]
 // template <typename T>
-// fn StringifyImpl(Str: *mut T, Quote: i8) {
+// fn StringifyImpl(Str: *mut SmallVectorImpl<char>, Quote: i8) {
 //     let mut i: size_type = 0;
-//     let mut e: size_type = Str();
+//     let mut e: size_type = Str.len;
 //     while i < e {
 //         if Str[i] == '\' || Str[i] == Quote {
-//             Str(Str() + i, '\');
+//             Str.insert(Str.begin() + i, '\');
 //             i += 2;
 //             e += 1;
 //         } else if Str[i] == 10 || Str[i] == 13 {
@@ -127,7 +132,7 @@ fn Lexer::seek(self, Offset: u32, IsAtStartOfLine: bool) {
 //                 Str[i + 1] = 'n';
 //             } else {
 //                 Str[i] = '\';
-//                 Str(Str() + i + 1, 'n');
+//                 Str.insert(Str.begin() + i + 1, 'n');
 //                 e += 1;
 //             }
 //             i += 2;
@@ -139,8 +144,8 @@ fn Lexer::seek(self, Offset: u32, IsAtStartOfLine: bool) {
 // ========================================================
 
 fn Lexer::Stringify(self, Str: str, Charify: bool) -> str {
-    let mut Result: str = Str();
-    let mut Quote: i8 = if Charify { '\'' } else { '"' };
+    let mut Result: str = Str[0..allocator<char> {}];
+    let mut Quote: i8 = if Charify { ''' } else { '"' };
     StringifyImpl(Result, Quote);
     return Result;
 }
@@ -186,17 +191,17 @@ fn getSpellingSlow(Tok: *Token, BufPtr: *u8, LangOpts: *LangOptions, Spelling: *
 }
 
 fn Lexer::getSpelling(self, loc: SourceLocation, buffer: *mut SmallVectorImpl<char>, SM: *SourceManager, options: *LangOptions, invalid: *mut bool) -> str {
-    let mut locInfo: FileIDAndOffset = zeroed();
+    let mut locInfo: FileIDAndOffset = SM.getDecomposedLoc(loc);
     let mut invalidTemp: bool = false;
-    let mut file: str = SM.getBufferData(&mut invalidTemp);
+    let mut file: str = SM.getBufferData(locInfo.first, &mut invalidTemp);
     if invalidTemp {
         if invalid {
             *invalid = true;
         }
         return "";
     }
-    let mut tokenBegin: *u8 = file.ptr + ;
-    let mut lexer: Lexer = SM.getLocForStartOfFile();
+    let mut tokenBegin: *u8 = file.ptr + locInfo.second;
+    let mut lexer: Lexer = Lexer { SM.getLocForStartOfFile(locInfo.first), options, file.begin(), tokenBegin, file.end(), true };
     let mut token: Token = Token {};
     lexer.LexFromRawLexer(token);
     let mut length: u32 = token.getLength();
@@ -219,11 +224,11 @@ fn Lexer::getSpelling(self, Tok: *Token, SourceMgr: *SourceManager, LangOpts: *L
         return "";
     }
     if !Tok.needsCleaning() {
-        return TokStart(TokStart + Tok.getLength());
+        return TokStart + TokStart + Tok.getLength() + allocator<char> {};
     }
     let mut Result: str = "";
-    Result.resize;
-    Result.resize(getSpellingSlow(Tok, TokStart, LangOpts, operator&(Result.begin)));
+    Result.resize(Tok.getLength());
+    Result.resize(getSpellingSlow(Tok, TokStart, LangOpts, &mut operator(Result.begin())));
     return Result;
 }
 
@@ -271,17 +276,17 @@ fn Lexer::MeasureTokenLength(self, Loc: SourceLocation, SM: *SourceManager, Lang
 
 fn Lexer::findEndOfIdentifierContinuation(self, Loc: SourceLocation, SM: *SourceManager, LangOpts: *LangOptions) -> SourceLocation {
     Loc = SM.getExpansionLoc(Loc);
-    let mut LocInfo: FileIDAndOffset = zeroed();
+    let mut LocInfo: FileIDAndOffset = SM.getDecomposedLoc(Loc);
     let mut Invalid: bool = false;
-    let mut Buffer: str = SM.getBufferData(&mut Invalid);
+    let mut Buffer: str = SM.getBufferData(LocInfo.first, &mut Invalid);
     if Invalid {
         return Loc;
     }
-    let mut StrData: *u8 = Buffer.ptr + ;
+    let mut StrData: *u8 = Buffer.ptr + LocInfo.second;
     if StrData >= Buffer.end() {
         return Loc;
     }
-    let mut TheLexer: Lexer = SM.getLocForStartOfFile();
+    let mut TheLexer: Lexer = Lexer { SM.getLocForStartOfFile(LocInfo.first), LangOpts, Buffer.begin(), StrData, Buffer.end(), true };
     let mut Tok: Token = Token {};
     Tok.startToken();
     TheLexer.LexIdentifierContinue(Tok, StrData);
@@ -290,17 +295,17 @@ fn Lexer::findEndOfIdentifierContinuation(self, Loc: SourceLocation, SM: *Source
 
 fn Lexer::getRawToken(self, Loc: SourceLocation, Result: *mut Token, SM: *SourceManager, LangOpts: *LangOptions, IgnoreWhiteSpace: bool) -> bool {
     Loc = SM.getExpansionLoc(Loc);
-    let mut LocInfo: FileIDAndOffset = zeroed();
+    let mut LocInfo: FileIDAndOffset = SM.getDecomposedLoc(Loc);
     let mut Invalid: bool = false;
-    let mut Buffer: str = SM.getBufferData(&mut Invalid);
+    let mut Buffer: str = SM.getBufferData(LocInfo.first, &mut Invalid);
     if Invalid {
         return true;
     }
-    let mut StrData: *u8 = Buffer.ptr + ;
+    let mut StrData: *u8 = Buffer.ptr + LocInfo.second;
     if !IgnoreWhiteSpace && isWhitespace(SkipEscapedNewLines(StrData)[0]) {
         return true;
     }
-    let mut TheLexer: Lexer = SM.getLocForStartOfFile();
+    let mut TheLexer: Lexer = Lexer { SM.getLocForStartOfFile(LocInfo.first), LangOpts, Buffer.begin(), StrData, Buffer.end(), true };
     TheLexer.SetCommentRetentionState(true);
     TheLexer.LexFromRawLexer(Result);
     return false;
@@ -323,21 +328,21 @@ fn findBeginningOfLine(Buffer: str, Offset: u32) -> *u8 {
 
 fn getBeginningOfFileToken(Loc: SourceLocation, SM: *SourceManager, LangOpts: *LangOptions) -> SourceLocation {
     assert!(Loc.isFileID();
-    let mut LocInfo: FileIDAndOffset = zeroed();
-    if LocInfo()() {
+    let mut LocInfo: FileIDAndOffset = SM.getDecomposedLoc(Loc);
+    if LocInfo.first.isInvalid() {
         return Loc;
     }
     let mut Invalid: bool = false;
-    let mut Buffer: str = SM.getBufferData(&mut Invalid);
+    let mut Buffer: str = SM.getBufferData(LocInfo.first, &mut Invalid);
     if Invalid {
         return Loc;
     }
-    let mut StrData: *u8 = Buffer.ptr + ;
-    let mut LexStart: *u8 = findBeginningOfLine(Buffer);
+    let mut StrData: *u8 = Buffer.ptr + LocInfo.second;
+    let mut LexStart: *u8 = findBeginningOfLine(Buffer, LocInfo.second);
     if !LexStart || LexStart == StrData {
         return Loc;
     }
-    let mut LexerStartLoc: SourceLocation = Loc.getLocWithOffset(-);
+    let mut LexerStartLoc: SourceLocation = Loc.getLocWithOffset(-LocInfo.second);
     let mut TheLexer: Lexer = Lexer { LexerStartLoc, LangOpts, Buffer.ptr, LexStart, Buffer.end(), true };
     TheLexer.SetCommentRetentionState(true);
     let mut TheTok: Token = Token {};
@@ -365,10 +370,10 @@ fn Lexer::GetBeginningOfToken(self, Loc: SourceLocation, SM: *SourceManager, Lan
     }
     let mut FileLoc: SourceLocation = SM.getSpellingLoc(Loc);
     let mut BeginFileLoc: SourceLocation = getBeginningOfFileToken(FileLoc, SM, LangOpts);
-    let mut FileLocInfo: FileIDAndOffset = zeroed();
-    let mut BeginFileLocInfo: FileIDAndOffset = zeroed();
-    (((operator!(operator!((FileLocInfo() ==  &&  >= )))) || (_wassert(L"FileLocInfo.first == BeginFileLocInfo.first && FileLocInfo.second >= BeginFileLocInfo.second", L"clang\\lib\\Lex\\Lexer.cpp", (656) as u32) , 0)) as void);
-    return Loc.getLocWithOffset( - );
+    let mut FileLocInfo: FileIDAndOffset = SM.getDecomposedLoc(FileLoc);
+    let mut BeginFileLocInfo: FileIDAndOffset = SM.getDecomposedLoc(BeginFileLoc);
+    assert!(FileLocInfo.first == BeginFileLocInfo.first && FileLocInfo.second >= BeginFileLocInfo.second);
+    return Loc.getLocWithOffset(BeginFileLocInfo.second - FileLocInfo.second);
 }
 
 enum PreambleDirectiveKind {
@@ -432,7 +437,7 @@ fn Lexer::ComputePreamble(self, Buffer: str, LangOpts: *LangOptions, MaxLines: u
             TheLexer.LexFromRawLexer(TheTok);
             if TheTok.getKind() == raw_identifier && !TheTok.needsCleaning() {
                 let mut Keyword: str = TheTok.getRawIdentifier();
-                let mut PDK: PreambleDirectiveKind = zeroed();
+                let mut PDK: PreambleDirectiveKind = Keyword.Case("include", PDK_Skipped).Case("__include_macros", PDK_Skipped).Case("define", PDK_Skipped).Case("undef", PDK_Skipped).Case("line", PDK_Skipped).Case("error", PDK_Skipped).Case("pragma", PDK_Skipped).Case("import", PDK_Skipped).Case("include_next", PDK_Skipped).Case("warning", PDK_Skipped).Case("ident", PDK_Skipped).Case("sccs", PDK_Skipped).Case("assert", PDK_Skipped).Case("unassert", PDK_Skipped).Case("if", PDK_Skipped).Case("ifdef", PDK_Skipped).Case("ifndef", PDK_Skipped).Case("elif", PDK_Skipped).Case("elifdef", PDK_Skipped).Case("elifndef", PDK_Skipped).Case("else", PDK_Skipped).Case("endif", PDK_Skipped).Default(PDK_Unknown);
                 match PDK {
                     PDK_Skipped => {
                         continue;
@@ -571,11 +576,11 @@ fn makeRangeFromFileLocs(Range: CharSourceRange, SM: *SourceManager, LangOpts: *
             return CharSourceRange {};
         }
     }
-    if  {
+    if FID.isInvalid() {
         return CharSourceRange {};
     }
     let mut EndOffs: u32 = 0;
-    if operator!(SM.isInFileID(End, &mut EndOffs)) ||  > EndOffs {
+    if !SM.isInFileID(End, FID, &mut EndOffs) || BeginOffs > EndOffs {
         return CharSourceRange {};
     }
     return getCharRange(Begin, End);
@@ -651,22 +656,22 @@ fn Lexer::getSourceText(self, Range: CharSourceRange, SM: *SourceManager, LangOp
         }
         return "";
     }
-    let mut beginInfo: FileIDAndOffset = zeroed();
-    if beginInfo()() {
+    let mut beginInfo: FileIDAndOffset = SM.getDecomposedLoc(Range.getBegin());
+    if beginInfo.first.isInvalid() {
         if Invalid {
             *Invalid = true;
         }
         return "";
     }
     let mut EndOffs: u32 = 0;
-    if operator!(SM.isInFileID(Range.getEnd(), &mut EndOffs)) ||  > EndOffs {
+    if !SM.isInFileID(Range.getEnd(), beginInfo.first, &mut EndOffs) || beginInfo.second > EndOffs {
         if Invalid {
             *Invalid = true;
         }
         return "";
     }
     let mut invalidTemp: bool = false;
-    let mut file: str = SM.getBufferData(&mut invalidTemp);
+    let mut file: str = SM.getBufferData(beginInfo.first, &mut invalidTemp);
     if invalidTemp {
         if Invalid {
             *Invalid = true;
@@ -676,7 +681,7 @@ fn Lexer::getSourceText(self, Range: CharSourceRange, SM: *SourceManager, LangOp
     if Invalid {
         *Invalid = false;
     }
-    return file.substr(EndOffs - );
+    return file[beginInfo.second..beginInfo.second + EndOffs - beginInfo.second];
 }
 
 fn Lexer::getImmediateMacroName(self, Loc: SourceLocation, SM: *SourceManager, LangOpts: *LangOptions) -> str {
@@ -701,10 +706,10 @@ fn Lexer::getImmediateMacroName(self, Loc: SourceLocation, SM: *SourceManager, L
         Loc = SpellLoc;
     }
     Loc = SM.getSpellingLoc(Loc);
-    let mut ExpansionInfo: FileIDAndOffset = zeroed();
+    let mut ExpansionInfo: FileIDAndOffset = SM.getDecomposedLoc(Loc);
     let mut MacroTokenLength: u32 = MeasureTokenLength(Loc, SM, LangOpts);
-    let mut ExpansionBuffer: str = SM.getBufferData();
-    return ExpansionBuffer.substr(MacroTokenLength);
+    let mut ExpansionBuffer: str = SM.getBufferData(ExpansionInfo.first, null);
+    return ExpansionBuffer[ExpansionInfo.second..ExpansionInfo.second + MacroTokenLength];
 }
 
 fn Lexer::getImmediateMacroNameForDiagnostics(self, Loc: SourceLocation, SM: *SourceManager, LangOpts: *LangOptions) -> str {
@@ -717,10 +722,10 @@ fn Lexer::getImmediateMacroNameForDiagnostics(self, Loc: SourceLocation, SM: *So
         return "";
     }
     Loc = SM.getSpellingLoc(SM.getImmediateExpansionRange(Loc).getBegin());
-    let mut ExpansionInfo: FileIDAndOffset = zeroed();
+    let mut ExpansionInfo: FileIDAndOffset = SM.getDecomposedLoc(Loc);
     let mut MacroTokenLength: u32 = MeasureTokenLength(Loc, SM, LangOpts);
-    let mut ExpansionBuffer: str = SM.getBufferData();
-    return ExpansionBuffer.substr(MacroTokenLength);
+    let mut ExpansionBuffer: str = SM.getBufferData(ExpansionInfo.first, null);
+    return ExpansionBuffer[ExpansionInfo.second..ExpansionInfo.second + MacroTokenLength];
 }
 
 fn Lexer::isAsciiIdentifierContinueChar(self, c: i8, LangOpts: *LangOptions) -> bool {
@@ -749,16 +754,16 @@ fn Lexer::getIndentationForLine(self, Loc: SourceLocation, SM: *SourceManager) -
     if Loc.isInvalid() || Loc.isMacroID() {
         return "";
     }
-    let mut LocInfo: FileIDAndOffset = zeroed();
-    if LocInfo()() {
+    let mut LocInfo: FileIDAndOffset = SM.getDecomposedLoc(Loc);
+    if LocInfo.first.isInvalid() {
         return "";
     }
     let mut Invalid: bool = false;
-    let mut Buffer: str = SM.getBufferData(&mut Invalid);
+    let mut Buffer: str = SM.getBufferData(LocInfo.first, &mut Invalid);
     if Invalid {
         return "";
     }
-    let mut Line: *u8 = findBeginningOfLine(Buffer);
+    let mut Line: *u8 = findBeginningOfLine(Buffer, LocInfo.second);
     if !Line {
         return "";
     }
@@ -782,10 +787,13 @@ fn Lexer::getSourceLocation(self: *Lexer, Loc: *u8, TokLen: u32) -> SourceLocati
     if self.FileLoc.isFileID() {
         return self.FileLoc.getLocWithOffset(CharNo);
     }
-    return GetMappedTokenLoc(self.FileLoc, CharNo, TokLen);
+    assert!(self.PP, "This doesn't work on raw lexers");
+    return GetMappedTokenLoc(*self.PP, self.FileLoc, CharNo, TokLen);
 }
 
-fn Lexer::Diag(self: *Lexer, Loc: *u8, DiagID: u32) -> DiagnosticBuilder {}
+fn Lexer::Diag(self: *Lexer, Loc: *u8, DiagID: u32) -> DiagnosticBuilder {
+    return self.PP.Diag(self.getSourceLocation(Loc, 1), DiagID);
+}
 
 fn Lexer::DiagCompat(self: *Lexer, Loc: *u8, CompatDiagId: u32) -> DiagnosticBuilder {
     return self.Diag(Loc, getCompatDiagId(self.LangOpts, CompatDiagId));
@@ -808,7 +816,7 @@ fn GetTrigraphCharForLetter(Letter: i8) -> i8 {
         '!' => {
             return '|';
         },
-        '\'' => {
+        ''' => {
             return '^';
         },
         '>' => {
@@ -832,13 +840,13 @@ fn DecodeTrigraphChar(CP: *u8, L: *mut Lexer, Trigraphs: bool) -> i8 {
         return Res;
     }
     if !Trigraphs {
-        if L && operator!(L.isLexingRawMode) {
-            L.Diag;
+        if L && !L.isLexingRawMode() {
+            L.Diag(CP - 2, trigraph_ignored);
         }
         return 0;
     }
-    if L && operator!(L.isLexingRawMode) {
-        L.Diag << &mut Res[0..1];
+    if L && !L.isLexingRawMode() {
+        L.Diag(CP - 2, trigraph_converted) << &mut Res[0..1];
     }
     return Res;
 }
@@ -882,18 +890,18 @@ fn Lexer::SkipEscapedNewLines(self, P: *u8) -> *u8 {
 fn Lexer::findNextToken(self, Loc: SourceLocation, SM: *SourceManager, LangOpts: *LangOptions, IncludeComments: bool) -> optional<Token> {
     if Loc.isMacroID() {
         if !isAtEndOfMacroExpansion(Loc, SM, LangOpts, &mut Loc) {
-            return nullopt();
+            return nullopt;
         }
     }
     Loc = getLocForEndOfToken(Loc, 0, SM, LangOpts);
-    let mut LocInfo: FileIDAndOffset = zeroed();
+    let mut LocInfo: FileIDAndOffset = SM.getDecomposedLoc(Loc);
     let mut InvalidTemp: bool = false;
-    let mut File: str = SM.getBufferData(&mut InvalidTemp);
+    let mut File: str = SM.getBufferData(LocInfo.first, &mut InvalidTemp);
     if InvalidTemp {
-        return nullopt();
+        return nullopt;
     }
-    let mut TokenBegin: *u8 = File.ptr + ;
-    let mut lexer: Lexer = SM.getLocForStartOfFile();
+    let mut TokenBegin: *u8 = File.ptr + LocInfo.second;
+    let mut lexer: Lexer = Lexer { SM.getLocForStartOfFile(LocInfo.first), LangOpts, File.begin(), TokenBegin, File.end(), true };
     lexer.SetCommentRetentionState(IncludeComments);
     let mut Tok: Token = Token {};
     lexer.LexFromRawLexer(Tok);
@@ -905,7 +913,7 @@ fn Lexer::findPreviousToken(self, Loc: SourceLocation, SM: *SourceManager, LangO
     while Loc != StartOfFile {
         Loc = Loc.getLocWithOffset(-1);
         if Loc.isInvalid() {
-            return nullopt();
+            return nullopt;
         }
         Loc = GetBeginningOfToken(Loc, SM, LangOpts);
         let mut Tok: Token = Token {};
@@ -916,18 +924,18 @@ fn Lexer::findPreviousToken(self, Loc: SourceLocation, SM: *SourceManager, LangO
             return Tok;
         }
     }
-    return nullopt();
+    return nullopt;
 }
 
 fn Lexer::findLocationAfterToken(self, Loc: SourceLocation, TKind: TokenKind, SM: *SourceManager, LangOpts: *LangOptions, SkipTrailingWhitespaceAndNewLine: bool) -> SourceLocation {
-    let mut Tok: optional<Token> = zeroed();
-    if operator!() || (TKind) {
+    let mut Tok: optional<Token> = findNextToken(Loc, SM, LangOpts, false);
+    if !Tok || operator(Tok).isNot(TKind) {
         return SourceLocation {};
     }
-    let mut TokenLoc: SourceLocation = ();
+    let mut TokenLoc: SourceLocation = operator(Tok).getLocation();
     let mut NumWhitespaceChars: u32 = 0;
     if SkipTrailingWhitespaceAndNewLine {
-        let mut TokenEnd: *u8 = SM.getCharacterData(TokenLoc, null) + ();
+        let mut TokenEnd: *u8 = SM.getCharacterData(TokenLoc, null) + operator(Tok).getLength();
         let mut C: u8 = *TokenEnd;
         while isHorizontalWhitespace(C) {
             C = *(TokenEnd += 1);
@@ -942,7 +950,7 @@ fn Lexer::findLocationAfterToken(self, Loc: SourceLocation, TKind: TokenKind, SM
             }
         }
     }
-    return TokenLoc.getLocWithOffset(() + NumWhitespaceChars);
+    return TokenLoc.getLocWithOffset(operator(Tok).getLength() + NumWhitespaceChars);
 }
 
 fn Lexer::getCharAndSizeSlow(self, Ptr: *u8, Tok: *mut Token) -> SizedChar {
@@ -957,8 +965,8 @@ fn Lexer::getCharAndSizeSlow(self, Ptr: *u8, Tok: *mut Token) -> SizedChar {
             if Tok {
                 Tok.setFlag(NeedsCleaning);
             }
-            if Ptr[0] != 10 && Ptr[0] != 13 && Tok && operator!(self.isLexingRawMode) {
-                self.Diag;
+            if Ptr[0] != 10 && Ptr[0] != 13 && Tok && !self.isLexingRawMode() {
+                self.Diag(Ptr, backslash_newline_space);
             }
             Size += EscapedNewLineSize;
             Ptr += EscapedNewLineSize;
@@ -1028,13 +1036,13 @@ fn Lexer::SetByteOffset(self, Offset: u32, StartOfLine: bool) {
 }
 
 fn isUnicodeWhitespace(Codepoint: u32) -> bool {
-    let mut UnicodeWhitespaceChars: UnicodeCharSet = UnicodeWhitespaceCharRanges();
+    let mut UnicodeWhitespaceChars: UnicodeCharSet = UnicodeWhitespaceCharRanges;
     return UnicodeWhitespaceChars.contains(Codepoint);
 }
 
 fn isMathematicalExtensionID(C: u32, LangOpts: *LangOptions, IsStart: bool, IsExtension: *mut bool) -> bool {
-    let mut MathStartChars: UnicodeCharSet = MathematicalNotationProfileIDStartRanges();
-    let mut MathContinueChars: UnicodeCharSet = MathematicalNotationProfileIDContinueRanges();
+    let mut MathStartChars: UnicodeCharSet = MathematicalNotationProfileIDStartRanges;
+    let mut MathContinueChars: UnicodeCharSet = MathematicalNotationProfileIDContinueRanges;
     if MathStartChars.contains(C) || (!IsStart && MathContinueChars.contains(C)) {
         IsExtension = true;
         return true;
@@ -1048,17 +1056,17 @@ fn isAllowedIDChar(C: u32, LangOpts: *LangOptions, IsExtension: *mut bool) -> bo
     } else if LangOpts.DollarIdents && '$' == C {
         return true;
     } else if LangOpts.CPlusPlus || LangOpts.C23 {
-        let mut XIDStartChars: UnicodeCharSet = XIDStartRanges();
-        let mut XIDContinueChars: UnicodeCharSet = XIDContinueRanges();
+        let mut XIDStartChars: UnicodeCharSet = XIDStartRanges;
+        let mut XIDContinueChars: UnicodeCharSet = XIDContinueRanges;
         if C == '_' || XIDStartChars.contains(C) || XIDContinueChars.contains(C) {
             return true;
         }
         return isMathematicalExtensionID(C, LangOpts, false, IsExtension);
     } else if LangOpts.C11 {
-        let mut C11AllowedIDChars: UnicodeCharSet = C11AllowedIDCharRanges();
+        let mut C11AllowedIDChars: UnicodeCharSet = C11AllowedIDCharRanges;
         return C11AllowedIDChars.contains(C);
     } else {
-        let mut C99AllowedIDChars: UnicodeCharSet = C99AllowedIDCharRanges();
+        let mut C99AllowedIDChars: UnicodeCharSet = C99AllowedIDCharRanges;
         return C99AllowedIDChars.contains(C);
     }
 }
@@ -1070,7 +1078,7 @@ fn isAllowedInitiallyIDChar(C: u32, LangOpts: *LangOptions, IsExtension: *mut bo
         return false;
     }
     if LangOpts.CPlusPlus || LangOpts.C23 {
-        let mut XIDStartChars: UnicodeCharSet = XIDStartRanges();
+        let mut XIDStartChars: UnicodeCharSet = XIDStartRanges;
         if XIDStartChars.contains(C) {
             return true;
         }
@@ -1080,20 +1088,20 @@ fn isAllowedInitiallyIDChar(C: u32, LangOpts: *LangOptions, IsExtension: *mut bo
         return false;
     }
     if LangOpts.C11 {
-        let mut C11DisallowedInitialIDChars: UnicodeCharSet = C11DisallowedInitialIDCharRanges();
+        let mut C11DisallowedInitialIDChars: UnicodeCharSet = C11DisallowedInitialIDCharRanges;
         return !C11DisallowedInitialIDChars.contains(C);
     }
-    let mut C99DisallowedInitialIDChars: UnicodeCharSet = C99DisallowedInitialIDCharRanges();
+    let mut C99DisallowedInitialIDChars: UnicodeCharSet = C99DisallowedInitialIDCharRanges;
     return !C99DisallowedInitialIDChars.contains(C);
 }
 
 fn diagnoseMathematicalNotationInIdentifier(Diags: *mut DiagnosticsEngine, LangOpts: *LangOptions, C: u32, Range: CharSourceRange) {
-    let mut MathStartChars: UnicodeCharSet = MathematicalNotationProfileIDStartRanges();
-    let mut MathContinueChars: UnicodeCharSet = MathematicalNotationProfileIDContinueRanges();
+    let mut MathStartChars: UnicodeCharSet = MathematicalNotationProfileIDStartRanges;
+    let mut MathContinueChars: UnicodeCharSet = MathematicalNotationProfileIDContinueRanges;
     MathStartChars as void;
     MathContinueChars as void;
     assert!((MathStartChars.contains(C) || MathContinueChars.contains(C)), "Unexpected mathematical notation codepoint");
-    let mut DiagID: u32 = 0;
+    let mut DiagID: u32 = if LangOpts.CPlusPlus { getCompatDiagId(LangOpts, mathematical_notation) } else { ext_mathematical_notation };
     Diags.Report(Range.getBegin(), DiagID) << EscapeSingleCodepointForDiagnostic(C) << Range;
 }
 
@@ -1102,26 +1110,26 @@ fn makeCharRange(L: *mut Lexer, Begin: *u8, End: *u8) -> CharSourceRange {
 }
 
 fn maybeDiagnoseIDCharCompat(Diags: *mut DiagnosticsEngine, C: u32, Range: CharSourceRange, IsFirst: bool) {
-    if operator!(Diags.isIgnored) {
-        let mut C99AllowedIDChars: UnicodeCharSet = C99AllowedIDCharRanges();
-        let mut C99DisallowedInitialIDChars: UnicodeCharSet = C99DisallowedInitialIDCharRanges();
+    if !Diags.isIgnored(warn_c99_compat_unicode_id, Range.getBegin()) {
+        let mut C99AllowedIDChars: UnicodeCharSet = C99AllowedIDCharRanges;
+        let mut C99DisallowedInitialIDChars: UnicodeCharSet = C99DisallowedInitialIDCharRanges;
         if !C99AllowedIDChars.contains(C) {
-            Diags << Range << CannotAppearInIdentifier;
+            Diags.Report(Range.getBegin(), warn_c99_compat_unicode_id) << Range << CannotAppearInIdentifier;
         } else if IsFirst && C99DisallowedInitialIDChars.contains(C) {
-            Diags << Range << CannotStartIdentifier;
+            Diags.Report(Range.getBegin(), warn_c99_compat_unicode_id) << Range << CannotStartIdentifier;
         }
     }
 }
 
 fn maybeDiagnoseUTF8Homoglyph(Diags: *mut DiagnosticsEngine, C: u32, Range: CharSourceRange) {
     let mut SortedHomoglyphs: [50]HomoglyphPair = [HomoglyphPair { 173, 0 }, HomoglyphPair { 451, '!' }, HomoglyphPair { 894, ';' }, HomoglyphPair { 8203, 0 }, HomoglyphPair { 8204, 0 }, HomoglyphPair { 8205, 0 }, HomoglyphPair { 8288, 0 }, HomoglyphPair { 8289, 0 }, HomoglyphPair { 8290, 0 }, HomoglyphPair { 8291, 0 }, HomoglyphPair { 8292, 0 }, HomoglyphPair { 8722, '-' }, HomoglyphPair { 8725, '/' }, HomoglyphPair { 8726, '\' }, HomoglyphPair { 8727, '*' }, HomoglyphPair { 8739, '|' }, HomoglyphPair { 8743, '^' }, HomoglyphPair { 8758, ':' }, HomoglyphPair { 8764, '~' }, HomoglyphPair { 42889, ':' }, HomoglyphPair { 65279, 0 }, HomoglyphPair { 65281, '!' }, HomoglyphPair { 65283, '#' }, HomoglyphPair { 65284, '$' }, HomoglyphPair { 65285, '%' }, HomoglyphPair { 65286, '&' }, HomoglyphPair { 65288, '(' }, HomoglyphPair { 65289, ')' }, HomoglyphPair { 65290, '*' }, HomoglyphPair { 65291, '+' }, HomoglyphPair { 65292, ',' }, HomoglyphPair { 65293, '-' }, HomoglyphPair { 65294, '.' }, HomoglyphPair { 65295, '/' }, HomoglyphPair { 65306, ':' }, HomoglyphPair { 65307, ';' }, HomoglyphPair { 65308, '<' }, HomoglyphPair { 65309, '=' }, HomoglyphPair { 65310, '>' }, HomoglyphPair { 65311, '?' }, HomoglyphPair { 65312, '@' }, HomoglyphPair { 65339, '[' }, HomoglyphPair { 65340, '\' }, HomoglyphPair { 65341, ']' }, HomoglyphPair { 65342, '^' }, HomoglyphPair { 65371, '{' }, HomoglyphPair { 65372, '|' }, HomoglyphPair { 65373, '}' }, HomoglyphPair { 65374, '~' }, HomoglyphPair { 0, 0 }];
-    let mut Homoglyph: auto = lower_bound(begin(SortedHomoglyphs), end(SortedHomoglyphs) - 1, HomoglyphPair { C, 0 });
-    if Homoglyph() == C {
-        if Homoglyph() {
-            let mut LooksLikeStr: []i8 = void { , 0 };
-            Diags << Range << EscapeSingleCodepointForDiagnostic(C) << LooksLikeStr;
+    let mut Homoglyph: *HomoglyphPair = lower_bound(begin(SortedHomoglyphs), end(SortedHomoglyphs) - 1, HomoglyphPair { C, 0 });
+    if Homoglyph.Character == C {
+        if Homoglyph.LooksLike {
+            let mut LooksLikeStr: [2]i8 = [Homoglyph.LooksLike, 0];
+            Diags.Report(Range.getBegin(), warn_utf8_symbol_homoglyph) << Range << EscapeSingleCodepointForDiagnostic(C) << LooksLikeStr;
         } else {
-            Diags << Range << EscapeSingleCodepointForDiagnostic(C);
+            Diags.Report(Range.getBegin(), warn_utf8_symbol_zero_width) << Range << EscapeSingleCodepointForDiagnostic(C);
         }
     }
 }
@@ -1141,9 +1149,9 @@ fn CheckCodepointValidInIdentifier(PP: *Preprocessor, LangOpts: *LangOptions, Co
     }
     let mut InvalidOnlyAtStart: bool = IsFirst && !IsIDStart && IsIDContinue;
     if !IsFirst || InvalidOnlyAtStart {
-        PP << Range << EscapeSingleCodepointForDiagnostic(CodePoint) << InvalidOnlyAtStart << CreateRemoval(Range);
+        PP.Diag(Range.getBegin(), err_character_not_allowed_identifier) << Range << EscapeSingleCodepointForDiagnostic(CodePoint) << InvalidOnlyAtStart << CreateRemoval(Range);
     } else {
-        PP << Range << EscapeSingleCodepointForDiagnostic(CodePoint) << CreateRemoval(Range);
+        PP.Diag(Range.getBegin(), err_character_not_allowed) << Range << EscapeSingleCodepointForDiagnostic(CodePoint) << CreateRemoval(Range);
     }
     return false;
 }
@@ -1159,15 +1167,15 @@ fn Lexer::tryConsumeIdentifierUCN(self, CurPtr: **mut u8, Size: u32, Result: *mu
         if isASCII(CodePoint) || isUnicodeWhitespace(CodePoint) {
             return false;
         }
-        let mut DiagnoseAndContinue: bool = false;
-        if operator!(CheckCodepointValidInIdentifier(self.LangOpts, CodePoint, makeCharRange(*self, CurPtr, UCNPtr), false, DiagnoseAndContinue)) && !DiagnoseAndContinue {
+        let mut DiagnoseAndContinue: bool = !self.isLexingRawMode() && !self.ParsingPreprocessorDirective && !self.PP.isPreprocessedOutput();
+        if !CheckCodepointValidInIdentifier(self.PP, self.LangOpts, CodePoint, makeCharRange(*self, CurPtr, UCNPtr), false, DiagnoseAndContinue) && !DiagnoseAndContinue {
             return false;
         }
-    } else if operator!(self.isLexingRawMode) {
+    } else if !self.isLexingRawMode() {
         if IsExtension {
-            diagnoseMathematicalNotationInIdentifier(self.LangOpts, CodePoint, makeCharRange(*self, CurPtr, UCNPtr));
+            diagnoseMathematicalNotationInIdentifier(self.PP.getDiagnostics(), self.LangOpts, CodePoint, makeCharRange(*self, CurPtr, UCNPtr));
         }
-        maybeDiagnoseIDCharCompat(CodePoint, makeCharRange(*self, CurPtr, UCNPtr), false);
+        maybeDiagnoseIDCharCompat(self.PP.getDiagnostics(), CodePoint, makeCharRange(*self, CurPtr, UCNPtr), false);
     }
     Result.setFlag(HasUCN);
     if (UCNPtr - CurPtr == 6 && CurPtr[1] == 'u') || (UCNPtr - CurPtr == 10 && CurPtr[1] == 'U') {
@@ -1195,16 +1203,16 @@ fn Lexer::tryConsumeIdentifierUTF8Char(self, CurPtr: **mut u8, Result: *mut Toke
         if isASCII(CodePoint) || isUnicodeWhitespace(CodePoint) {
             return false;
         }
-        let mut DiagnoseAndContinue: bool = false;
-        if operator!(CheckCodepointValidInIdentifier(self.LangOpts, CodePoint, makeCharRange(*self, CharStart, UnicodePtr), false, DiagnoseAndContinue)) && !DiagnoseAndContinue {
+        let mut DiagnoseAndContinue: bool = !self.isLexingRawMode() && !self.ParsingPreprocessorDirective && !self.PP.isPreprocessedOutput();
+        if !CheckCodepointValidInIdentifier(self.PP, self.LangOpts, CodePoint, makeCharRange(*self, CharStart, UnicodePtr), false, DiagnoseAndContinue) && !DiagnoseAndContinue {
             return false;
         }
-    } else if operator!(self.isLexingRawMode) {
+    } else if !self.isLexingRawMode() {
         if IsExtension {
-            diagnoseMathematicalNotationInIdentifier(self.LangOpts, CodePoint, makeCharRange(*self, CharStart, UnicodePtr));
+            diagnoseMathematicalNotationInIdentifier(self.PP.getDiagnostics(), self.LangOpts, CodePoint, makeCharRange(*self, CharStart, UnicodePtr));
         }
-        maybeDiagnoseIDCharCompat(CodePoint, makeCharRange(*self, CharStart, UnicodePtr), false);
-        maybeDiagnoseUTF8Homoglyph(CodePoint, makeCharRange(*self, CharStart, UnicodePtr));
+        maybeDiagnoseIDCharCompat(self.PP.getDiagnostics(), CodePoint, makeCharRange(*self, CharStart, UnicodePtr), false);
+        maybeDiagnoseUTF8Homoglyph(self.PP.getDiagnostics(), CodePoint, makeCharRange(*self, CharStart, UnicodePtr));
     }
     self.ConsumeChar(CurPtr, FirstCodeUnitSize, Result);
     CurPtr = UnicodePtr;
@@ -1214,20 +1222,22 @@ fn Lexer::tryConsumeIdentifierUTF8Char(self, CurPtr: **mut u8, Result: *mut Toke
 fn Lexer::LexUnicodeIdentifierStart(self, Result: *mut Token, C: u32, CurPtr: *u8) -> bool {
     let mut IsExtension: bool = false;
     if isAllowedInitiallyIDChar(C, self.LangOpts, IsExtension) {
-        if  {
+        if !self.isLexingRawMode() && !self.ParsingPreprocessorDirective && !self.PP.isPreprocessedOutput() {
             if IsExtension {
-                diagnoseMathematicalNotationInIdentifier(self.LangOpts, C, makeCharRange(*self, self.BufferPtr, CurPtr));
+                diagnoseMathematicalNotationInIdentifier(self.PP.getDiagnostics(), self.LangOpts, C, makeCharRange(*self, self.BufferPtr, CurPtr));
             }
-            maybeDiagnoseIDCharCompat(C, makeCharRange(*self, self.BufferPtr, CurPtr), true);
-            maybeDiagnoseUTF8Homoglyph(C, makeCharRange(*self, self.BufferPtr, CurPtr));
+            maybeDiagnoseIDCharCompat(self.PP.getDiagnostics(), C, makeCharRange(*self, self.BufferPtr, CurPtr), true);
+            maybeDiagnoseUTF8Homoglyph(self.PP.getDiagnostics(), C, makeCharRange(*self, self.BufferPtr, CurPtr));
         }
+        self.MIOpt.ReadToken();
         return self.LexIdentifierContinue(Result, CurPtr);
     }
-    if  {
-        CheckCodepointValidInIdentifier(self.LangOpts, C, makeCharRange(*self, self.BufferPtr, CurPtr), true, true);
+    if !self.isLexingRawMode() && !self.ParsingPreprocessorDirective && !self.PP.isPreprocessedOutput() && !isASCII(*self.BufferPtr) && !isUnicodeWhitespace(C) {
+        CheckCodepointValidInIdentifier(self.PP, self.LangOpts, C, makeCharRange(*self, self.BufferPtr, CurPtr), true, true);
         self.BufferPtr = CurPtr;
         return false;
     }
+    self.MIOpt.ReadToken();
     self.FormTokenWithChars(Result, CurPtr, unknown);
     return true;
 }
@@ -1276,8 +1286,8 @@ fn Lexer::LexIdentifierContinue(self, Result: *mut Token, CurPtr: *u8) -> bool {
             if !self.LangOpts.DollarIdents {
                 break;
             }
-            if operator!(self.isLexingRawMode) {
-                self.Diag;
+            if !self.isLexingRawMode() {
+                self.Diag(CurPtr, ext_dollar_in_identifier);
             }
             CurPtr = self.ConsumeChar(CurPtr, Size, Result);
             continue;
@@ -1293,10 +1303,10 @@ fn Lexer::LexIdentifierContinue(self, Result: *mut Token, CurPtr: *u8) -> bool {
     let mut IdStart: *u8 = self.BufferPtr;
     self.FormTokenWithChars(Result, CurPtr, raw_identifier);
     Result.setRawIdentifierData(IdStart);
-    if  {
+    if self.LexingRawMode {
         return true;
     }
-    let mut II: *IdentifierInfo = null;
+    let mut II: *IdentifierInfo = self.PP.LookUpIdentifierInfo(Result);
     if self.isCodeCompletionPoint(CurPtr) {
         Result.setKind(code_completion);
         assert!(*CurPtr == 0, "Completion character must be 0");
@@ -1308,6 +1318,9 @@ fn Lexer::LexIdentifierContinue(self, Result: *mut Token, CurPtr: *u8) -> bool {
         }
         self.BufferPtr = CurPtr;
         return true;
+    }
+    if II.isHandleIdentifierCase() || II.isModuleKeyword() || II.isImportKeyword() || II.getTokenID() == kw_export {
+        return self.PP.HandleIdentifier(Result);
     }
     return true;
 }
@@ -1354,10 +1367,10 @@ fn Lexer::LexNumericConstant(self, Result: *mut Token, CurPtr: *u8) -> bool {
             return self.LexNumericConstant(Result, self.ConsumeChar(CurPtr, Size, Result));
         }
     }
-    if C == '\'' && self.LangOpts.AllowLiteralDigitSeparator {
+    if C == ''' && self.LangOpts.AllowLiteralDigitSeparator {
         if isAsciiIdentifierContinue(Next) {
-            if operator!(self.isLexingRawMode) {
-                self.Diag;
+            if !self.isLexingRawMode() {
+                self.Diag(CurPtr, if self.LangOpts.CPlusPlus { warn_cxx11_compat_digit_separator } else { warn_c23_compat_digit_separator });
             }
             CurPtr = self.ConsumeChar(CurPtr, Size, Result);
             CurPtr = self.ConsumeChar(CurPtr, NextSize, Result);
@@ -1395,8 +1408,8 @@ fn Lexer::LexUDSuffix(self, Result: *mut Token, CurPtr: *u8, IsStringLiteral: bo
         }
     }
     if !self.LangOpts.CPlusPlus11 {
-        if operator!(self.isLexingRawMode) {
-            self.Diag << CreateInsertion(self.getSourceLocation(CurPtr, 1), " ", false);
+        if !self.isLexingRawMode() {
+            self.Diag(CurPtr, if C == '_' { warn_cxx11_compat_user_defined_literal } else { warn_cxx11_compat_reserved_user_defined_literal }) << CreateInsertion(self.getSourceLocation(CurPtr, 1), " ", false);
         }
         return CurPtr;
     }
@@ -1423,8 +1436,8 @@ fn Lexer::LexUDSuffix(self, Result: *mut Token, CurPtr: *u8, IsStringLiteral: bo
             }
         }
         if !IsUDSuffix {
-            if operator!(self.isLexingRawMode) {
-                self.Diag << CreateInsertion(self.getSourceLocation(CurPtr, 1), " ", false);
+            if !self.isLexingRawMode() {
+                self.Diag(CurPtr, if self.LangOpts.MSVCCompat { ext_ms_reserved_user_defined_literal } else { ext_reserved_user_defined_literal }) << CreateInsertion(self.getSourceLocation(CurPtr, 1), " ", false);
             }
             return CurPtr;
         }
@@ -1445,31 +1458,31 @@ fn Lexer::LexUDSuffix(self, Result: *mut Token, CurPtr: *u8, IsStringLiteral: bo
 fn Lexer::LexStringLiteral(self, Result: *mut Token, CurPtr: *u8, Kind: TokenKind) -> bool {
     let mut AfterQuote: *u8 = CurPtr;
     let mut NulCharacter: *u8 = null;
-    if operator!(self.isLexingRawMode) && (Kind == utf8_string_literal || Kind == utf16_string_literal || Kind == utf32_string_literal) {
-        self.Diag;
+    if !self.isLexingRawMode() && (Kind == utf8_string_literal || Kind == utf16_string_literal || Kind == utf32_string_literal) {
+        self.Diag(self.BufferPtr, if self.LangOpts.CPlusPlus { warn_cxx98_compat_unicode_literal } else { warn_c99_compat_unicode_literal });
     }
     let mut C: i8 = self.getAndAdvanceChar(CurPtr, Result);
     while C != '"' {
         if C == '\' {
             let mut SavedCurPtr: *u8 = CurPtr;
             C = self.getAndAdvanceChar(CurPtr, Result);
-            if  {
+            if self.ParsingFilename && C == '"' {
                 CurPtr = SavedCurPtr;
             }
         }
         if C == 10 || C == 13 || (C == 0 && CurPtr - 1 == self.BufferEnd) {
-            if operator!(self.isLexingRawMode) && !self.LangOpts.AsmPreprocessor {
-                self.Diag << 1;
+            if !self.isLexingRawMode() && !self.LangOpts.AsmPreprocessor {
+                self.Diag(self.BufferPtr, ext_unterminated_char_or_string) << 1;
             }
             self.FormTokenWithChars(Result, CurPtr - 1, unknown);
             return true;
         }
         if C == 0 {
             if self.isCodeCompletionPoint(CurPtr - 1) {
-                if  {
+                if self.ParsingFilename {
                     self.codeCompleteIncludedFile(AfterQuote, CurPtr - 1, false);
                 } else {
-                    
+                    self.PP.CodeCompleteNaturalLanguage();
                 }
                 self.FormTokenWithChars(Result, CurPtr - 1, unknown);
                 self.cutOffLexing();
@@ -1482,8 +1495,8 @@ fn Lexer::LexStringLiteral(self, Result: *mut Token, CurPtr: *u8, Kind: TokenKin
     if self.LangOpts.CPlusPlus {
         CurPtr = self.LexUDSuffix(Result, CurPtr, true);
     }
-    if NulCharacter && operator!(self.isLexingRawMode) {
-        self.Diag << 1;
+    if NulCharacter && !self.isLexingRawMode() {
+        self.Diag(NulCharacter, null_in_char_or_string) << 1;
     }
     let mut TokStart: *u8 = self.BufferPtr;
     self.FormTokenWithChars(Result, CurPtr, Kind);
@@ -1492,26 +1505,26 @@ fn Lexer::LexStringLiteral(self, Result: *mut Token, CurPtr: *u8, Kind: TokenKin
 }
 
 fn Lexer::LexRawStringLiteral(self, Result: *mut Token, CurPtr: *u8, Kind: TokenKind) -> bool {
-    if operator!(self.isLexingRawMode) {
-        self.Diag;
+    if !self.isLexingRawMode() {
+        self.Diag(self.BufferPtr, warn_cxx98_compat_raw_string_literal);
     }
     let mut PrefixLen: u32 = 0;
     while PrefixLen != 16 && isRawStringDelimBody(CurPtr[PrefixLen]) {
-        if operator!(self.isLexingRawMode) && is_contained(void { '$', '@', '`' }, CurPtr[PrefixLen]) {
+        if !self.isLexingRawMode() && is_contained(['$', '@', '`'], CurPtr[PrefixLen]) {
             let mut Pos: *u8 = &mut CurPtr[PrefixLen];
-            self.DiagCompat << Pos[0..1];
+            self.DiagCompat(Pos, raw_string_literal_character_set) << Pos[0..1];
         }
         PrefixLen += 1;
     }
     if CurPtr[PrefixLen] != '(' {
-        if operator!(self.isLexingRawMode) {
+        if !self.isLexingRawMode() {
             let mut PrefixEnd: *u8 = &mut CurPtr[PrefixLen];
             if PrefixLen == 16 {
-                self.Diag;
+                self.Diag(PrefixEnd, err_raw_delim_too_long);
             } else if *PrefixEnd == 10 {
-                self.Diag;
+                self.Diag(PrefixEnd, err_invalid_newline_raw_delim);
             } else {
-                self.Diag << PrefixEnd[0..1];
+                self.Diag(PrefixEnd, err_invalid_char_raw_delim) << PrefixEnd[0..1];
             }
         }
         while true {
@@ -1537,8 +1550,8 @@ fn Lexer::LexRawStringLiteral(self, Result: *mut Token, CurPtr: *u8, Kind: Token
                 break;
             }
         } else if C == 0 && CurPtr - 1 == self.BufferEnd {
-            if operator!(self.isLexingRawMode) {
-                self.Diag << Prefix[0..PrefixLen];
+            if !self.isLexingRawMode() {
+                self.Diag(self.BufferPtr, err_unterminated_raw_string) << Prefix[0..PrefixLen];
             }
             self.FormTokenWithChars(Result, CurPtr - 1, unknown);
             return true;
@@ -1575,8 +1588,8 @@ fn Lexer::LexAngledStringLiteral(self, Result: *mut Token, CurPtr: *u8) -> bool 
         }
         C = self.getAndAdvanceChar(CurPtr, Result);
     }
-    if NulCharacter && operator!(self.isLexingRawMode) {
-        self.Diag << 1;
+    if NulCharacter && !self.isLexingRawMode() {
+        self.Diag(NulCharacter, null_in_char_or_string) << 1;
     }
     let mut TokStart: *u8 = self.BufferPtr;
     self.FormTokenWithChars(Result, CurPtr, header_name);
@@ -1590,6 +1603,7 @@ fn Lexer::codeCompleteIncludedFile(self, PathStart: *u8, CompletionPoint: *u8, I
     let mut Slash: u64 = PartialPath.find_last_of(SlashChars, npos);
     let mut Dir: str = if (Slash == npos) { "" } else { PartialPath.take_front(Slash) };
     let mut StartOfFilename: *u8 = if (Slash == npos) { PathStart } else { PathStart + Slash + 1 };
+    self.PP.setCodeCompletionIdentifierInfo(&mut self.PP.getIdentifierTable().get(StartOfFilename[0..CompletionPoint - StartOfFilename]));
     while CompletionPoint < self.BufferEnd {
         let mut Next: i8 = *(CompletionPoint + 1);
         if Next == 0 || Next == 13 || Next == 10 {
@@ -1603,38 +1617,41 @@ fn Lexer::codeCompleteIncludedFile(self, PathStart: *u8, CompletionPoint: *u8, I
             break;
         }
     }
+    self.PP.setCodeCompletionTokenRange(self.FileLoc.getLocWithOffset(StartOfFilename - self.BufferStart), self.FileLoc.getLocWithOffset(CompletionPoint - self.BufferStart));
+    self.PP.CodeCompleteIncludedFile(Dir, IsAngled);
 }
 
 fn Lexer::LexCharConstant(self, Result: *mut Token, CurPtr: *u8, Kind: TokenKind) -> bool {
     let mut NulCharacter: *u8 = null;
-    if operator!(self.isLexingRawMode) {
+    if !self.isLexingRawMode() {
         if Kind == utf16_char_constant || Kind == utf32_char_constant {
-            self.Diag;
+            self.Diag(self.BufferPtr, if self.LangOpts.CPlusPlus { warn_cxx98_compat_unicode_literal } else { warn_c99_compat_unicode_literal });
         } else if Kind == utf8_char_constant {
-            self.Diag;
+            self.Diag(self.BufferPtr, if self.LangOpts.CPlusPlus { warn_cxx14_compat_u8_character_literal } else { warn_c17_compat_u8_character_literal });
         }
     }
     let mut C: i8 = self.getAndAdvanceChar(CurPtr, Result);
-    if C == '\'' {
-        if operator!(self.isLexingRawMode) && !self.LangOpts.AsmPreprocessor {
-            self.Diag;
+    if C == ''' {
+        if !self.isLexingRawMode() && !self.LangOpts.AsmPreprocessor {
+            self.Diag(self.BufferPtr, ext_empty_character);
         }
         self.FormTokenWithChars(Result, CurPtr, unknown);
         return true;
     }
-    while C != '\'' {
+    while C != ''' {
         if C == '\' {
             C = self.getAndAdvanceChar(CurPtr, Result);
         }
         if C == 10 || C == 13 || (C == 0 && CurPtr - 1 == self.BufferEnd) {
-            if operator!(self.isLexingRawMode) && !self.LangOpts.AsmPreprocessor {
-                self.Diag << 0;
+            if !self.isLexingRawMode() && !self.LangOpts.AsmPreprocessor {
+                self.Diag(self.BufferPtr, ext_unterminated_char_or_string) << 0;
             }
             self.FormTokenWithChars(Result, CurPtr - 1, unknown);
             return true;
         }
         if C == 0 {
             if self.isCodeCompletionPoint(CurPtr - 1) {
+                self.PP.CodeCompleteNaturalLanguage();
                 self.FormTokenWithChars(Result, CurPtr - 1, unknown);
                 self.cutOffLexing();
                 return true;
@@ -1646,8 +1663,8 @@ fn Lexer::LexCharConstant(self, Result: *mut Token, CurPtr: *u8, Kind: TokenKind
     if self.LangOpts.CPlusPlus {
         CurPtr = self.LexUDSuffix(Result, CurPtr, false);
     }
-    if NulCharacter && operator!(self.isLexingRawMode) {
-        self.Diag << 0;
+    if NulCharacter && !self.isLexingRawMode() {
+        self.Diag(NulCharacter, null_in_char_or_string) << 0;
     }
     let mut TokStart: *u8 = self.BufferPtr;
     self.FormTokenWithChars(Result, CurPtr, Kind);
@@ -1670,7 +1687,7 @@ fn Lexer::SkipWhitespace(self, Result: *mut Token, CurPtr: *u8) -> bool {
         if !isVerticalWhitespace(Char) {
             break;
         }
-        if  {
+        if self.ParsingPreprocessorDirective {
             self.BufferPtr = CurPtr;
             return false;
         }
@@ -1694,9 +1711,11 @@ fn Lexer::SkipWhitespace(self, Result: *mut Token, CurPtr: *u8) -> bool {
     if SawNewline {
         Result.setFlag(StartOfLine);
         Result.setFlag(PhysicalStartOfLine);
-        if  {
-            if  {
-                Handler()(SourceRange { B: self.getSourceLocation(self.NewLinePtr + 1, 1), E: self.getSourceLocation(lastNewLine, 1) });
+        if self.NewLinePtr && lastNewLine && self.NewLinePtr != lastNewLine && self.PP {
+            if self.PP.getEmptylineHandler() {
+                Handler;
+            } else {
+                Handler.HandleEmptyline(SourceRange { B: self.getSourceLocation(self.NewLinePtr + 1, 1), E: self.getSourceLocation(lastNewLine, 1) });
             }
         }
     }
@@ -1706,8 +1725,8 @@ fn Lexer::SkipWhitespace(self, Result: *mut Token, CurPtr: *u8) -> bool {
 
 fn Lexer::SkipLineComment(self, Result: *mut Token, CurPtr: *u8) -> bool {
     if !self.LineComment {
-        if operator!(self.isLexingRawMode) {
-            self.Diag;
+        if !self.isLexingRawMode() {
+            self.Diag(self.BufferPtr, ext_line_comment);
         }
         self.LineComment = true;
     }
@@ -1722,8 +1741,8 @@ fn Lexer::SkipLineComment(self, Result: *mut Token, CurPtr: *u8) -> bool {
         if !isASCII(C) {
             let mut Length: u32 = getUTF8SequenceSize(CurPtr as *UTF8, self.BufferEnd as *UTF8);
             if Length == 0 {
-                if !UnicodeDecodingAlreadyDiagnosed && operator!(self.isLexingRawMode) {
-                    self.Diag;
+                if !UnicodeDecodingAlreadyDiagnosed && !self.isLexingRawMode() {
+                    self.Diag(CurPtr, warn_invalid_utf8_in_comment);
                 }
                 UnicodeDecodingAlreadyDiagnosed = true;
                 CurPtr += 1;
@@ -1748,13 +1767,15 @@ fn Lexer::SkipLineComment(self, Result: *mut Token, CurPtr: *u8) -> bool {
             } else {
                 break;
             }
-            if HasSpace && operator!(self.isLexingRawMode) {
-                self.Diag;
+            if HasSpace && !self.isLexingRawMode() {
+                self.Diag(EscapePtr, backslash_newline_space);
             }
         }
         let mut OldPtr: *u8 = CurPtr;
-        let mut OldRawMode: bool = self.isLexingRawMode;
+        let mut OldRawMode: bool = self.isLexingRawMode();
+        self.LexingRawMode = true;
         C = self.getAndAdvanceChar(CurPtr, Result);
+        self.LexingRawMode = OldRawMode;
         if C != 0 && CurPtr == OldPtr + 1 {
             CurPtr = NextLine;
             break;
@@ -1771,8 +1792,8 @@ fn Lexer::SkipLineComment(self, Result: *mut Token, CurPtr: *u8) -> bool {
                             break;
                         }
                     }
-                    if operator!(self.isLexingRawMode) {
-                        self.Diag;
+                    if !self.isLexingRawMode() {
+                        self.Diag(OldPtr - 1, ext_multi_line_line_comment);
                     }
                     break;
                 }
@@ -1783,18 +1804,19 @@ fn Lexer::SkipLineComment(self, Result: *mut Token, CurPtr: *u8) -> bool {
             break;
         }
         if C == 0 && self.isCodeCompletionPoint(CurPtr - 1) {
+            self.PP.CodeCompleteNaturalLanguage();
             self.cutOffLexing();
             return false;
         }
     }
-    if  {
+    if self.PP && !self.isLexingRawMode() && self.PP.HandleComment(Result, SourceRange { B: self.getSourceLocation(self.BufferPtr, 1), E: self.getSourceLocation(CurPtr, 1) }) {
         self.BufferPtr = CurPtr;
         return true;
     }
     if self.inKeepCommentMode() {
         return self.SaveLineComment(Result, CurPtr);
     }
-    if  {
+    if self.ParsingPreprocessorDirective || CurPtr == self.BufferEnd {
         self.BufferPtr = CurPtr;
         return false;
     }
@@ -1808,11 +1830,11 @@ fn Lexer::SkipLineComment(self, Result: *mut Token, CurPtr: *u8) -> bool {
 
 fn Lexer::SaveLineComment(self, Result: *mut Token, CurPtr: *u8) -> bool {
     self.FormTokenWithChars(Result, CurPtr, comment);
-    if  {
+    if !self.ParsingPreprocessorDirective || self.LexingRawMode {
         return true;
     }
     let mut Invalid: bool = false;
-    let mut Spelling: str = zeroed();
+    let mut Spelling: str = self.PP.getSpelling(Result, &mut Invalid);
     if Invalid {
         return true;
     }
@@ -1820,6 +1842,7 @@ fn Lexer::SaveLineComment(self, Result: *mut Token, CurPtr: *u8) -> bool {
     Spelling[1] = '*';
     operator(Spelling, "*/");
     Result.setKind(comment);
+    self.PP.CreateString(Spelling, Result, Result.getLocation(), Result.getLocation());
     return true;
 }
 
@@ -1856,20 +1879,20 @@ fn isEndOfBlockCommentWithEscapedNewLine(CurPtr: *u8, L: *mut Lexer, Trigraphs: 
     }
     if TrigraphPos {
         if !Trigraphs {
-            if operator!(L.isLexingRawMode) {
-                L.Diag;
+            if !L.isLexingRawMode() {
+                L.Diag(TrigraphPos, trigraph_ignored_block_comment);
             }
             return false;
         }
-        if operator!(L.isLexingRawMode) {
-            L.Diag;
+        if !L.isLexingRawMode() {
+            L.Diag(TrigraphPos, trigraph_ends_block_comment);
         }
     }
-    if operator!(L.isLexingRawMode) {
-        L.Diag;
+    if !L.isLexingRawMode() {
+        L.Diag(CurPtr + 1, escaped_newline_block_comment_end);
     }
-    if SpacePos && operator!(L.isLexingRawMode) {
-        L.Diag;
+    if SpacePos && !L.isLexingRawMode() {
+        L.Diag(SpacePos, backslash_newline_space);
     }
     return true;
 }
@@ -1879,8 +1902,8 @@ fn Lexer::SkipBlockComment(self, Result: *mut Token, CurPtr: *u8) -> bool {
     let mut C: u8 = self.getCharAndSize(CurPtr, CharSize);
     CurPtr += CharSize;
     if C == 0 && CurPtr == self.BufferEnd + 1 {
-        if operator!(self.isLexingRawMode) {
-            self.Diag;
+        if !self.isLexingRawMode() {
+            self.Diag(self.BufferPtr, err_unterminated_block_comment);
         }
         CurPtr -= 1;
         if self.isKeepWhitespaceMode() {
@@ -1895,7 +1918,7 @@ fn Lexer::SkipBlockComment(self, Result: *mut Token, CurPtr: *u8) -> bool {
     }
     let mut UnicodeDecodingAlreadyDiagnosed: bool = false;
     while true {
-        if  {
+        if CurPtr + 24 < self.BufferEnd && !(self.PP && self.PP.getCodeCompletionFileLoc() == self.FileLoc) {
             while C != '/' && CurPtr as i64 % 16 != 0 {
                 if !isASCII(C) {
                     
@@ -1925,8 +1948,8 @@ fn Lexer::SkipBlockComment(self, Result: *mut Token, CurPtr: *u8) -> bool {
             }
             getUTF8SequenceSize(CurPtr as *UTF8 - 1, self.BufferEnd as *UTF8);
             if Length == 0 {
-                if !UnicodeDecodingAlreadyDiagnosed && operator!(self.isLexingRawMode) {
-                    self.Diag;
+                if !UnicodeDecodingAlreadyDiagnosed && !self.isLexingRawMode() {
+                    self.Diag(CurPtr - 1, warn_invalid_utf8_in_comment);
                 }
                 UnicodeDecodingAlreadyDiagnosed = true;
             } else {
@@ -1943,13 +1966,13 @@ fn Lexer::SkipBlockComment(self, Result: *mut Token, CurPtr: *u8) -> bool {
                 }
             }
             if CurPtr[0] == '*' && CurPtr[1] != '/' {
-                if operator!(self.isLexingRawMode) {
-                    self.Diag;
+                if !self.isLexingRawMode() {
+                    self.Diag(CurPtr - 1, warn_nested_block_comment);
                 }
             }
         } else if C == 0 && CurPtr == self.BufferEnd + 1 {
-            if operator!(self.isLexingRawMode) {
-                self.Diag;
+            if !self.isLexingRawMode() {
+                self.Diag(self.BufferPtr, err_unterminated_block_comment);
             }
             CurPtr -= 1;
             if self.isKeepWhitespaceMode() {
@@ -1959,12 +1982,13 @@ fn Lexer::SkipBlockComment(self, Result: *mut Token, CurPtr: *u8) -> bool {
             self.BufferPtr = CurPtr;
             return false;
         } else if C == 0 && self.isCodeCompletionPoint(CurPtr - 1) {
+            self.PP.CodeCompleteNaturalLanguage();
             self.cutOffLexing();
             return false;
         }
         C = *CurPtr += 1;
     }
-    if  {
+    if self.PP && !self.isLexingRawMode() && self.PP.HandleComment(Result, SourceRange { B: self.getSourceLocation(self.BufferPtr, 1), E: self.getSourceLocation(CurPtr, 1) }) {
         self.BufferPtr = CurPtr;
         return true;
     }
@@ -1983,6 +2007,7 @@ fn Lexer::SkipBlockComment(self, Result: *mut Token, CurPtr: *u8) -> bool {
 }
 
 fn Lexer::ReadToEndOfLine(self, Result: *mut SmallVectorImpl<char>) {
+    assert!(self.ParsingPreprocessorDirective && self.ParsingFilename == false, "Must be in a preprocessing directive!");
     let mut Tmp: Token = Token {};
     Tmp.startToken();
     let mut CurPtr: *u8 = self.BufferPtr;
@@ -1997,6 +2022,7 @@ fn Lexer::ReadToEndOfLine(self, Result: *mut SmallVectorImpl<char>) {
             0 => {
                 if CurPtr - 1 != self.BufferEnd {
                     if self.isCodeCompletionPoint(CurPtr - 1) {
+                        self.PP.CodeCompleteNaturalLanguage();
                         self.cutOffLexing();
                         return;
                     }
@@ -2014,50 +2040,68 @@ fn Lexer::ReadToEndOfLine(self, Result: *mut SmallVectorImpl<char>) {
 }
 
 fn Lexer::LexEndOfFile(self, Result: *mut Token, CurPtr: *u8) -> bool {
-    if  {
+    if self.ParsingPreprocessorDirective {
+        self.ParsingPreprocessorDirective = false;
         self.FormTokenWithChars(Result, CurPtr, eod);
-        if  {
+        if self.PP {
             self.resetExtendedTokenMode();
         }
         return true;
     }
-    if self.isLexingRawMode {
+    if self.isLexingRawMode() {
         Result.startToken();
         self.BufferPtr = self.BufferEnd;
         self.FormTokenWithChars(Result, self.BufferEnd, eof);
         return true;
     }
-    if  {}
-    while  {}
+    if self.PP.isRecordingPreamble() && self.PP.isInPrimaryFile() {
+        self.PP.setRecordedPreambleConditionalStack(self.ConditionalStack);
+        if !self.ConditionalStack.is_empty() {
+            self.MIOpt.ExitTopLevelConditional();
+        }
+        self.ConditionalStack.clear();
+    }
+    while !self.ConditionalStack.is_empty() {
+        if self.PP.getCodeCompletionFileLoc() != self.FileLoc {
+            self.PP.Diag(self.ConditionalStack.back().IfLoc, err_pp_unterminated_conditional);
+        }
+        self.ConditionalStack.pop();
+    }
     if CurPtr != self.BufferStart && (CurPtr[-1] != 10 && CurPtr[-1] != 13) {
-        self.Diag << CreateInsertion(self.getSourceLocation(self.BufferEnd, 1), "\n", false);
+        self.Diag(self.BufferEnd, warn_no_newline_eof) << CreateInsertion(self.getSourceLocation(self.BufferEnd, 1), "\n", false);
     }
     self.BufferPtr = CurPtr;
+    return self.PP.HandleEndOfFile(Result, self.isPragmaLexer());
 }
 
 fn Lexer::peekNextPPToken(self) -> optional<Token> {
+    assert!(!self.LexingRawMode, "How can we expand a macro from a skipping buffer?");
     if self.isDependencyDirectivesLexer() {
-        if  {
-            return nullopt();
+        if self.NextDepDirectiveTokenIndex == self.DepDirectives.front().Tokens.len {
+            return nullopt;
         }
         let mut Result: Token = Token {};
-        self.convertDependencyDirectiveToken as void;
+        self.convertDependencyDirectiveToken(self.DepDirectives.front().Tokens[self.NextDepDirectiveTokenIndex], Result) as void;
         return Result;
     }
+    self.LexingRawMode = true;
     let mut TmpBufferPtr: *u8 = self.BufferPtr;
-    let mut inPPDirectiveMode: bool = false;
+    let mut inPPDirectiveMode: bool = self.ParsingPreprocessorDirective;
     let mut atStartOfLine: bool = self.IsAtStartOfLine;
     let mut atPhysicalStartOfLine: bool = self.IsAtPhysicalStartOfLine;
     let mut leadingSpace: bool = self.HasLeadingSpace;
-    let mut MIOptState: MultipleIncludeOpt = zeroed();
+    let mut MIOptState: MultipleIncludeOpt = self.MIOpt;
     let mut Tok: Token = Token {};
     self.Lex(Tok);
     self.BufferPtr = TmpBufferPtr;
+    self.ParsingPreprocessorDirective = inPPDirectiveMode;
     self.HasLeadingSpace = leadingSpace;
     self.IsAtStartOfLine = atStartOfLine;
     self.IsAtPhysicalStartOfLine = atPhysicalStartOfLine;
+    self.MIOpt = MIOptState;
+    self.LexingRawMode = false;
     if Tok.is(eof) {
-        return nullopt();
+        return nullopt;
     }
     return Tok;
 }
@@ -2085,12 +2129,12 @@ fn Lexer::IsStartOfConflictMarker(self, CurPtr: *u8) -> bool {
     if !CurPtr[0..self.BufferEnd - CurPtr].starts_with("<<<<<<<") && !CurPtr[0..self.BufferEnd - CurPtr].starts_with(">>>> ") {
         return false;
     }
-    if self.CurrentConflictMarkerState || self.isLexingRawMode {
+    if self.CurrentConflictMarkerState || self.isLexingRawMode() {
         return false;
     }
     let mut Kind: ConflictMarkerKind = if *CurPtr == '<' { CMK_Normal } else { CMK_Perforce };
     if FindConflictEnd(CurPtr, self.BufferEnd, Kind) {
-        self.Diag;
+        self.Diag(CurPtr, err_conflict_marker);
         self.CurrentConflictMarkerState = Kind;
         while *CurPtr != 13 && *CurPtr != 10 {
             assert!(CurPtr != self.BufferEnd, "Didn't find end of line");
@@ -2106,7 +2150,7 @@ fn Lexer::HandleEndOfConflictMarker(self, CurPtr: *u8) -> bool {
     if CurPtr != self.BufferStart && CurPtr[-1] != 10 && CurPtr[-1] != 13 {
         return false;
     }
-    if !self.CurrentConflictMarkerState || self.isLexingRawMode {
+    if !self.CurrentConflictMarkerState || self.isLexingRawMode() {
         return false;
     }
     for let mut i: u32 = 1; i != 4; i += 1 {
@@ -2143,7 +2187,7 @@ fn findPlaceholderEnd(CurPtr: *u8, BufferEnd: *u8) -> *u8 {
 
 fn Lexer::lexEditorPlaceholder(self, Result: *mut Token, CurPtr: *u8) -> bool {
     assert!(CurPtr[-1] == '<' && CurPtr[0] == '#', "Not a placeholder!");
-    if  {
+    if !self.PP || !self.PP.getPreprocessorOpts().LexEditorPlaceholders || self.LexingRawMode {
         return false;
     }
     let mut End: *u8 = findPlaceholderEnd(CurPtr + 1, self.BufferEnd);
@@ -2152,25 +2196,34 @@ fn Lexer::lexEditorPlaceholder(self, Result: *mut Token, CurPtr: *u8) -> bool {
     }
     let mut Start: *u8 = CurPtr - 1;
     if !self.LangOpts.AllowEditorPlaceholders {
-        self.Diag;
+        self.Diag(Start, err_placeholder_in_source);
     }
     Result.startToken();
     self.FormTokenWithChars(Result, End, raw_identifier);
     Result.setRawIdentifierData(Start);
+    self.PP.LookUpIdentifierInfo(Result);
     Result.setFlag(IsEditorPlaceholder);
     self.BufferPtr = End;
     return true;
 }
 
 fn Lexer::isCodeCompletionPoint(self: *Lexer, CurPtr: *u8) -> bool {
-    if  {
+    if self.PP && self.PP.isCodeCompletionEnabled() {
         let mut Loc: SourceLocation = self.FileLoc.getLocWithOffset(CurPtr - self.BufferStart);
+        return Loc == self.PP.getCodeCompletionLoc();
     }
     return false;
 }
 
 fn Lexer::DiagnoseDelimitedOrNamedEscapeSequence(self, Loc: SourceLocation, Named: bool, Opts: *LangOptions, Diags: *mut DiagnosticsEngine) {
     let mut DiagId: u32 = 0;
+    if Opts.CPlusPlus23 {
+        DiagId = warn_cxx23_delimited_escape_sequence;
+    } else if Opts.C2y && !Named {
+        DiagId = warn_c2y_delimited_escape_sequence;
+    } else {
+        DiagId = ext_delimited_escape_sequence;
+    }
     let mut Ext: u32 = 0;
     if !Opts.CPlusPlus {
         Ext = if Named { 2 } else { 1 };
@@ -2193,10 +2246,10 @@ fn Lexer::tryReadNumericUCN(self, StartPtr: **mut u8, SlashLoc: *u8, Result: *mu
     let mut Delimited: bool = false;
     let mut FoundEndDelimiter: bool = false;
     let mut Count: u32 = 0;
-    let mut Diagnose: bool = Result && operator!(self.isLexingRawMode);
+    let mut Diagnose: bool = Result && !self.isLexingRawMode();
     if !self.LangOpts.CPlusPlus && !self.LangOpts.C99 {
         if Diagnose {
-            self.Diag;
+            self.Diag(SlashLoc, warn_ucn_not_valid_in_c89);
         }
         return nullopt;
     }
@@ -2221,13 +2274,13 @@ fn Lexer::tryReadNumericUCN(self, StartPtr: **mut u8, SlashLoc: *u8, Result: *mu
                 break;
             }
             if Diagnose {
-                self.Diag << KindLoc[0..1];
+                self.Diag(SlashLoc, warn_delimited_ucn_incomplete) << KindLoc[0..1];
             }
             return nullopt;
         }
         if CodePoint & 4026531840 {
             if Diagnose {
-                self.Diag << 0;
+                self.Diag(KindLoc, err_escape_too_large) << 0;
             }
             return nullopt;
         }
@@ -2238,28 +2291,28 @@ fn Lexer::tryReadNumericUCN(self, StartPtr: **mut u8, SlashLoc: *u8, Result: *mu
     }
     if Count == 0 {
         if Diagnose {
-            self.Diag << KindLoc[0..1];
+            self.Diag(SlashLoc, if FoundEndDelimiter { warn_delimited_ucn_empty } else { warn_ucn_escape_no_digits }) << KindLoc[0..1];
         }
         return nullopt;
     }
     if Delimited && Kind == 'U' {
         if Diagnose {
-            self.Diag << KindLoc[0..1];
+            self.Diag(SlashLoc, err_hex_escape_no_digits) << KindLoc[0..1];
         }
         return nullopt;
     }
     if !Delimited && Count != NumHexDigits {
         if Diagnose {
-            self.Diag;
+            self.Diag(SlashLoc, warn_ucn_escape_incomplete);
             if Count == 4 && NumHexDigits == 8 {
                 let mut URange: CharSourceRange = makeCharRange(*self, KindLoc, KindLoc + 1);
-                self.Diag << CreateReplacement(URange, "u");
+                self.Diag(KindLoc, note_ucn_four_not_eight) << CreateReplacement(URange, "u");
             }
         }
         return nullopt;
     }
-    if  {
-        DiagnoseDelimitedOrNamedEscapeSequence(self.getSourceLocation(SlashLoc, 1), false);
+    if Delimited && self.PP {
+        DiagnoseDelimitedOrNamedEscapeSequence(self.getSourceLocation(SlashLoc, 1), false, self.PP.getLangOpts(), self.PP.getDiagnostics());
     }
     if Result {
         Result.setFlag(HasUCN);
@@ -2278,7 +2331,7 @@ fn Lexer::tryReadNumericUCN(self, StartPtr: **mut u8, SlashLoc: *u8, Result: *mu
 
 fn Lexer::tryReadNamedUCN(self, StartPtr: **mut u8, SlashLoc: *u8, Result: *mut Token) -> optional<uint32_t> {
     let mut CharSize: u32 = 0;
-    let mut Diagnose: bool = Result && operator!(self.isLexingRawMode);
+    let mut Diagnose: bool = Result && !self.isLexingRawMode();
     let mut C: i8 = self.getCharAndSize(StartPtr, CharSize);
     assert!(C == 'N', "expected \\N{...}");
     let mut CurPtr: *u8 = StartPtr + CharSize;
@@ -2286,14 +2339,14 @@ fn Lexer::tryReadNamedUCN(self, StartPtr: **mut u8, SlashLoc: *u8, Result: *mut 
     C = self.getCharAndSize(CurPtr, CharSize);
     if C != '{' {
         if Diagnose {
-            self.Diag;
+            self.Diag(SlashLoc, warn_ucn_escape_incomplete);
         }
         return nullopt;
     }
     CurPtr += CharSize;
     let mut StartName: *u8 = CurPtr;
     let mut FoundEndDelimiter: bool = false;
-    let mut Buffer: SmallVector<char, 30> = zeroed();
+    let mut Buffer: SmallVector<char, 30> = SmallVector<char, 30> {};
     while C {
         C = self.getCharAndSize(CurPtr, CharSize);
         CurPtr += CharSize;
@@ -2304,35 +2357,35 @@ fn Lexer::tryReadNamedUCN(self, StartPtr: **mut u8, SlashLoc: *u8, Result: *mut 
         if isVerticalWhitespace(C) {
             break;
         }
-        Buffer()(C);
+        Buffer.push(C);
     }
-    if !FoundEndDelimiter || () {
+    if !FoundEndDelimiter || Buffer.is_empty() {
         if Diagnose {
-            self.Diag << KindLoc[0..1];
+            self.Diag(SlashLoc, if FoundEndDelimiter { warn_delimited_ucn_empty } else { warn_delimited_ucn_incomplete }) << KindLoc[0..1];
         }
         return nullopt;
     }
-    let mut Name: str = Buffer()();
-    let mut Match: optional<char32_t> = zeroed();
-    let mut LooseMatch: LooseMatchingResult> = zeroed();
-    if operator!() {
-        LooseMatch() = nameToCodepointLooseMatching(Name);
+    let mut Name: str = Buffer.ptr[0..Buffer.len];
+    let mut Match: optional<char32_t> = nameToCodepointStrict(Name);
+    let mut LooseMatch: LooseMatchingResult> = LooseMatchingResult> {};
+    if !Match {
+        LooseMatch = nameToCodepointLooseMatching(Name);
         if Diagnose {
-            self.Diag << () << makeCharRange(*self, StartName, CurPtr - CharSize);
-            if LooseMatch() {
-                self.Diag << CreateReplacement(makeCharRange(*self, StartName, CurPtr - CharSize));
+            self.Diag(StartName, err_invalid_ucn_name) << Buffer.ptr[0..Buffer.len] << makeCharRange(*self, StartName, CurPtr - CharSize);
+            if LooseMatch {
+                self.Diag(StartName, note_invalid_ucn_name_loose_matching) << CreateReplacement(makeCharRange(*self, StartName, CurPtr - CharSize), operator(LooseMatch).Name.operator StringRef());
             }
         }
     }
-    if Diagnose &&  {
-        DiagnoseDelimitedOrNamedEscapeSequence(self.getSourceLocation(SlashLoc, 1), true);
+    if Diagnose && Match {
+        DiagnoseDelimitedOrNamedEscapeSequence(self.getSourceLocation(SlashLoc, 1), true, self.PP.getLangOpts(), self.PP.getDiagnostics());
     }
-    if LooseMatch() && Diagnose {
-        Match() = ;
+    if LooseMatch && Diagnose {
+        Match = operator(LooseMatch).CodePoint;
     }
     if Result {
         Result.setFlag(HasUCN);
-        if CurPtr - StartPtr == (Buffer()() + 3) as ptrdiff_t {
+        if CurPtr - StartPtr == (Buffer.len + 3) as ptrdiff_t {
             StartPtr = CurPtr;
         } else {
             while StartPtr != CurPtr {
@@ -2342,7 +2395,7 @@ fn Lexer::tryReadNamedUCN(self, StartPtr: **mut u8, SlashLoc: *u8, Result: *mut 
     } else {
         StartPtr = CurPtr;
     }
-    return if  { * } else { nullopt };
+    return if Match { operator(Match) } else { nullopt };
 }
 
 fn Lexer::tryReadUCN(self, StartPtr: **mut u8, SlashLoc: *u8, Result: *mut Token) -> u32 {
@@ -2362,21 +2415,21 @@ fn Lexer::tryReadUCN(self, StartPtr: **mut u8, SlashLoc: *u8, Result: *mut Token
         return CodePoint;
     }
     if CodePoint < 160 {
-        if  {
+        if Result && self.PP {
             if CodePoint < 32 || CodePoint >= 127 {
-                self.Diag;
+                self.Diag(self.BufferPtr, err_ucn_control_character);
             } else {
                 let mut C: i8 = CodePoint as i8;
-                self.Diag << &mut C[0..1];
+                self.Diag(self.BufferPtr, err_ucn_escape_basic_scs) << &mut C[0..1];
             }
         }
         return 0;
     } else if CodePoint >= 55296 && CodePoint <= 57343 {
-        if  {
+        if Result && self.PP {
             if self.LangOpts.CPlusPlus && !self.LangOpts.CPlusPlus11 {
-                self.Diag;
+                self.Diag(self.BufferPtr, warn_ucn_escape_surrogate);
             } else {
-                self.Diag;
+                self.Diag(self.BufferPtr, err_ucn_escape_invalid);
             }
         }
         return 0;
@@ -2385,8 +2438,8 @@ fn Lexer::tryReadUCN(self, StartPtr: **mut u8, SlashLoc: *u8, Result: *mut Token
 }
 
 fn Lexer::CheckUnicodeWhitespace(self, Result: *mut Token, C: u32, CurPtr: *u8) -> bool {
-    if  {
-        self.Diag << EscapeSingleCodepointForDiagnostic(C) << makeCharRange(*self, self.BufferPtr, CurPtr);
+    if !self.isLexingRawMode() && !self.PP.isPreprocessedOutput() && isUnicodeWhitespace(C) {
+        self.Diag(self.BufferPtr, ext_unicode_whitespace) << EscapeSingleCodepointForDiagnostic(C) << makeCharRange(*self, self.BufferPtr, CurPtr);
         Result.setFlag(LeadingSpace);
         return true;
     }
@@ -2418,7 +2471,7 @@ fn Lexer::Lex(self, Result: *mut Token) -> bool {
         Result.setFlag(LeadingEmptyMacro);
         self.HasLeadingEmptyMacro = false;
     }
-    let mut isRawLex: bool = self.isLexingRawMode;
+    let mut isRawLex: bool = self.isLexingRawMode();
     isRawLex as void;
     let mut returnedToken: bool = self.LexTokenInternal(Result);
     assert!((returnedToken || !isRawLex), "Raw lex must succeed");
@@ -2458,8 +2511,8 @@ fn Lexer::LexTokenInternal(self, Result: *mut Token) -> bool {
         },
         26 => {
             if self.LangOpts.MicrosoftExt {
-                if operator!(self.isLexingRawMode) {
-                    self.Diag;
+                if !self.isLexingRawMode() {
+                    self.Diag(CurPtr - 1, ext_ctrl_z_eof_microsoft);
                 }
                 return self.LexEndOfFile(Result, CurPtr - 1);
             }
@@ -2470,8 +2523,9 @@ fn Lexer::LexTokenInternal(self, Result: *mut Token) -> bool {
             }
         },
         10 => {
-            if  {
-                if  {
+            if self.ParsingPreprocessorDirective {
+                self.ParsingPreprocessorDirective = false;
+                if self.PP {
                     self.resetExtendedTokenMode();
                 }
                 self.IsAtStartOfLine = true;
@@ -2488,33 +2542,34 @@ fn Lexer::LexTokenInternal(self, Result: *mut Token) -> bool {
             '1';
         },
         'u' => {
-            
+            self.MIOpt.ReadToken();
         },
         'U' => {
-            
+            self.MIOpt.ReadToken();
         },
         'R' => {
-            
+            self.MIOpt.ReadToken();
         },
         'L' => {
-            
+            self.MIOpt.ReadToken();
         },
         'A' => {
             'B';
         },
         '$' => {
             if self.LangOpts.DollarIdents {
-                if operator!(self.isLexingRawMode) {
-                    self.Diag;
+                if !self.isLexingRawMode() {
+                    self.Diag(CurPtr - 1, ext_dollar_in_identifier);
                 }
+                self.MIOpt.ReadToken();
                 return self.LexIdentifierContinue(Result, CurPtr);
             }
         },
-        '\'' => {
-            
+        ''' => {
+            self.MIOpt.ReadToken();
         },
         '"' => {
-            
+            self.MIOpt.ReadToken();
         },
         '?' => {
             Kind = question;
@@ -2604,17 +2659,18 @@ fn Lexer::LexTokenInternal(self, Result: *mut Token) -> bool {
         '@' => {
             if CurPtr[-1] == '@' && self.LangOpts.ObjC {
                 self.FormTokenWithChars(Result, CurPtr, at);
-                if  {
+                if self.PP && Result.isAtPhysicalStartOfLine() && !self.LexingRawMode && !self.Is_PragmaLexer {
                     let mut NextPPTok: Token = Token {};
                     NextPPTok.startToken();
                     {
-                        let mut SavedParsingPreprocessorDirective: SaveAndRestore<bool> = zeroed();
-                        let mut NextTokOr: auto = zeroed();
-                        if NextTokOr()() {
-                            NextPPTok = *;
+                        let mut SavedParsingPreprocessorDirective: SaveAndRestore<bool> = SaveAndRestore<bool> { self.ParsingPreprocessorDirective, true };
+                        let mut NextTokOr: optional<Token> = self.peekNextPPToken();
+                        if NextTokOr.has_value() {
+                            NextPPTok = operator(NextTokOr);
                         }
                     }
                     if NextPPTok.is(raw_identifier) && NextPPTok.getRawIdentifier() == "import" {
+                        self.PP.HandleDirective(Result);
                         return false;
                     }
                 }
@@ -2653,19 +2709,21 @@ fn Lexer::LexTokenInternal(self, Result: *mut Token) -> bool {
                 }
                 return self.LexUnicodeIdentifierStart(Result, CodePoint, CurPtr);
             }
-            if  {
+            if self.isLexingRawMode() || self.ParsingPreprocessorDirective || self.PP.isPreprocessedOutput() {
                 CurPtr += 1;
                 Kind = unknown;
                 break;
             }
-            self.Diag;
+            self.Diag(CurPtr, err_invalid_utf8);
             self.BufferPtr = CurPtr + 1;
         },
     }
+    self.MIOpt.ReadToken();
     self.FormTokenWithChars(Result, CurPtr, Kind);
     return true;
     self.FormTokenWithChars(Result, CurPtr, hash);
-    if  {
+    self.PP.HandleDirective(Result);
+    if self.PP.hadModuleLoaderFatalFailure() {
         return true;
     }
     return false;
@@ -2693,16 +2751,22 @@ fn Lexer::LexDependencyDirectiveToken(self, Result: *mut Token) -> bool {
     if self.BufferPtr == self.BufferEnd {
         return self.LexEndOfFile(Result, self.BufferPtr);
     }
-    while  {
-        if  {
+    while self.NextDepDirectiveTokenIndex == self.DepDirectives.front().Tokens.len {
+        if self.DepDirectives.front().Kind == pp_eof {
             return self.LexEndOfFile(Result, self.BufferEnd);
         }
+        if self.DepDirectives.front().Kind == tokens_present_before_eof {
+            self.MIOpt.ReadToken();
+        }
         self.NextDepDirectiveTokenIndex = 0;
+        self.DepDirectives = self.DepDirectives.drop_front(1);
     }
-    let mut DDTok: *Token = null;
-    if self.NextDepDirectiveTokenIndex > 1 || DDTok.Kind != hash {}
+    let mut DDTok: *Token = self.DepDirectives.front().Tokens[self.NextDepDirectiveTokenIndex += 1];
+    if self.NextDepDirectiveTokenIndex > 1 || DDTok.Kind != hash {
+        self.MIOpt.ReadToken();
+    }
     let mut DDTokPtr: *u8 = self.BufferStart + DDTok.Offset;
-    if  {
+    if self.ParsingFilename && *DDTokPtr == '<' {
         Result.startToken();
         Result.setFlag(DDTok.Flags as TokenFlags);
         Result.clearFlag(NeedsCleaning);
@@ -2712,7 +2776,7 @@ fn Lexer::LexDependencyDirectiveToken(self, Result: *mut Token) -> bool {
             return true;
         }
         while true {
-            let mut NextTok: *Token = null;
+            let mut NextTok: *Token = self.DepDirectives.front().Tokens[self.NextDepDirectiveTokenIndex];
             if self.BufferStart + NextTok.Offset >= self.BufferPtr {
                 break;
             }
@@ -2722,15 +2786,17 @@ fn Lexer::LexDependencyDirectiveToken(self, Result: *mut Token) -> bool {
     }
     let mut TokPtr: *u8 = self.convertDependencyDirectiveToken(DDTok, Result);
     if Result.is(hash) && Result.isAtStartOfLine() {
-        if  {
+        self.PP.HandleDirective(Result);
+        if self.PP.hadModuleLoaderFatalFailure() {
             return true;
         }
         return false;
     }
     if Result.is(at) && Result.isAtStartOfLine() {
-        let mut NextTok: auto = zeroed();
-        if NextTok() && (raw_identifier) && () == "import" {
-            if  {
+        let mut NextTok: optional<Token> = self.peekNextPPToken();
+        if NextTok && operator(NextTok).is(raw_identifier) && operator(NextTok).getRawIdentifier() == "import" {
+            self.PP.HandleDirective(Result);
+            if self.PP.hadModuleLoaderFatalFailure() {
                 return true;
             }
             return false;
@@ -2738,10 +2804,14 @@ fn Lexer::LexDependencyDirectiveToken(self, Result: *mut Token) -> bool {
     }
     if Result.is(raw_identifier) {
         Result.setRawIdentifierData(TokPtr);
-        if operator!(self.isLexingRawMode) {
-            let mut II: *IdentifierInfo = null;
-            if  {
+        if !self.isLexingRawMode() {
+            let mut II: *IdentifierInfo = self.PP.LookUpIdentifierInfo(Result);
+            if self.LangOpts.CPlusPlusModules && Result.isModuleContextualKeyword(true) && self.PP.HandleModuleContextualKeyword(Result) {
+                self.PP.HandleDirective(Result);
                 return false;
+            }
+            if II.isHandleIdentifierCase() {
+                return self.PP.HandleIdentifier(Result);
             }
         }
         return true;
@@ -2751,10 +2821,14 @@ fn Lexer::LexDependencyDirectiveToken(self, Result: *mut Token) -> bool {
     }
     if Result.is(colon) {
         if *self.BufferPtr == ':' {
+            assert!(self.DepDirectives.front().Tokens[self.NextDepDirectiveTokenIndex].is(colon);
             self.NextDepDirectiveTokenIndex += 1;
             Result.setKind(coloncolon);
         }
         return true;
+    }
+    if Result.is(eod) {
+        self.ParsingPreprocessorDirective = false;
     }
     return true;
 }
@@ -2765,9 +2839,10 @@ fn Lexer::LexDependencyDirectiveTokenWhileSkipping(self, Result: *mut Token) -> 
     let mut NestedIfs: u32 = 0;
     while true {
         {
-        match  {
+        self.DepDirectives = self.DepDirectives.drop_front(1);
+        match self.DepDirectives.front().Kind {
             pp_none => {
-                llvm_unreachable_internal("unexpected 'pp_none'", "clang\\lib\\Lex\\Lexer.cpp", 4789);
+                llvm_unreachable_internal("unexpected 'pp_none'", "P:/Goraw/llvm-project/clang/lib/Lex/Lexer.cpp", 4789);
             },
             pp_include => {
                 pp___include_macros;
@@ -2792,7 +2867,7 @@ fn Lexer::LexDependencyDirectiveTokenWhileSkipping(self, Result: *mut Token) -> 
     }
         if !(!Stop) { break; }
     }
-    let mut DDTok: *Token = null;
+    let mut DDTok: *Token = self.DepDirectives.front().Tokens.front();
     assert!(DDTok.is(hash);
     self.NextDepDirectiveTokenIndex = 1;
     self.convertDependencyDirectiveToken(DDTok, Result);

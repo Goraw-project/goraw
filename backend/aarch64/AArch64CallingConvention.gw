@@ -1,20 +1,20 @@
-const XRegList: []MCPhysReg = zeroed();
+const XRegList: [8]MCPhysReg = [X0, X1, X2, X3, X4, X5, X6, X7];
 
-const HRegList: []MCPhysReg = zeroed();
+const HRegList: [8]MCPhysReg = [H0, H1, H2, H3, H4, H5, H6, H7];
 
-const SRegList: []MCPhysReg = zeroed();
+const SRegList: [8]MCPhysReg = [S0, S1, S2, S3, S4, S5, S6, S7];
 
-const DRegList: []MCPhysReg = zeroed();
+const DRegList: [8]MCPhysReg = [D0, D1, D2, D3, D4, D5, D6, D7];
 
-const QRegList: []MCPhysReg = zeroed();
+const QRegList: [8]MCPhysReg = [Q0, Q1, Q2, Q3, Q4, Q5, Q6, Q7];
 
-const ZRegList: []MCPhysReg = zeroed();
+const ZRegList: [8]MCPhysReg = [Z0, Z1, Z2, Z3, Z4, Z5, Z6, Z7];
 
-const PRegList: []MCPhysReg = zeroed();
+const PRegList: [4]MCPhysReg = [P0, P1, P2, P3];
 
 fn finishStackBlock(PendingMembers: *mut SmallVectorImpl<CCValAssign>, LocVT: MVT, ArgFlags: *mut ArgFlagsTy, State: *mut CCState, SlotAlign: Align) -> bool {
     if LocVT.isScalableVector() {
-        let mut Subtarget: *AArch64Subtarget = null;
+        let mut Subtarget: *AArch64Subtarget = State.getMachineFunction().getSubtarget() as AArch64Subtarget;
         let mut TLI: *AArch64TargetLowering = Subtarget.getTargetLowering();
         ArgFlags.setInConsecutiveRegs(false);
         ArgFlags.setInConsecutiveRegsLast(false);
@@ -32,7 +32,7 @@ fn finishStackBlock(PendingMembers: *mut SmallVectorImpl<CCValAssign>, LocVT: MV
         let mut AssignFn: *mut CCAssignFn = TLI.CCAssignFnForCall(State.getCallingConv(), false);
         let mut OrigTy: *mut Type = It.getValVT().getTypeForEVT(State.getContext());
         if AssignFn(It.getValNo(), It.getValVT(), It.getValVT(), Full, ArgFlags, OrigTy, State) {
-            llvm_unreachable_internal("Call operand has unhandled type", "llvm\\lib\\Target\\AArch64\\AArch64CallingConvention.cpp", 82);
+            llvm_unreachable_internal("Call operand has unhandled type", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64CallingConvention.cpp", 82);
         }
         ArgFlags.setInConsecutiveRegs(true);
         ArgFlags.setInConsecutiveRegsLast(true);
@@ -69,24 +69,24 @@ fn CC_AArch64_Custom_Stack_Block(ValNo: *mut u32, ValVT: *mut MVT, LocVT: *mut M
 }
 
 fn CC_AArch64_Custom_Block(ValNo: *mut u32, ValVT: *mut MVT, LocVT: *mut MVT, LocInfo: *mut LocInfo, ArgFlags: *mut ArgFlagsTy, State: *mut CCState) -> bool {
-    let mut Subtarget: *AArch64Subtarget = null;
+    let mut Subtarget: *AArch64Subtarget = State.getMachineFunction().getSubtarget() as AArch64Subtarget;
     let mut IsDarwinILP32: bool = Subtarget.isTargetILP32() && Subtarget.isTargetMachO();
     let mut RegList: ArrayRef<MCPhysReg> = ArrayRef<MCPhysReg> {};
     if LocVT.SimpleTy == i64 || (IsDarwinILP32 && LocVT.SimpleTy == i32) {
-        RegList(XRegList);
+        RegList = XRegList;
     } else if LocVT.SimpleTy == f16 || LocVT.SimpleTy == bf16 {
-        RegList(HRegList);
+        RegList = HRegList;
     } else if LocVT.SimpleTy == f32 || LocVT.is32BitVector() {
-        RegList(SRegList);
+        RegList = SRegList;
     } else if LocVT.SimpleTy == f64 || LocVT.is64BitVector() {
-        RegList(DRegList);
+        RegList = DRegList;
     } else if LocVT.SimpleTy == f128 || LocVT.is128BitVector() {
-        RegList(QRegList);
+        RegList = QRegList;
     } else if LocVT.isScalableVector() {
         if LocVT == nxv1i1 || LocVT == nxv2i1 || LocVT == nxv4i1 || LocVT == nxv8i1 || LocVT == nxv16i1 || LocVT == aarch64svcount {
-            RegList(PRegList);
+            RegList = PRegList;
         } else {
-            RegList(ZRegList);
+            RegList = ZRegList;
         }
     } else {
         return false;
@@ -99,6 +99,10 @@ fn CC_AArch64_Custom_Block(ValNo: *mut u32, ValVT: *mut MVT, LocVT: *mut MVT, Lo
     let mut EltsPerReg: u32 = if (IsDarwinILP32 && LocVT.SimpleTy == i32) { 2 } else { 1 };
     let mut RegResult: ArrayRef<MCPhysReg> = State.AllocateRegBlock(RegList, alignTo(PendingMembers.len, EltsPerReg) / EltsPerReg);
     if !RegResult.is_empty() && EltsPerReg == 1 {
+        for x in zip(PendingMembers, RegResult) {
+            It.convertToReg(Reg);
+            State.addLoc(It);
+        }
         PendingMembers.clear();
         return true;
     } else if !RegResult.is_empty() {
@@ -125,9 +129,9 @@ fn CC_AArch64_Custom_Block(ValNo: *mut u32, ValVT: *mut MVT, LocVT: *mut MVT, Lo
     let mut StackAlign: MaybeAlign = State.getMachineFunction().getDataLayout().getStackAlignment();
     assert!(StackAlign, "data layout string is missing stack alignment");
     let mut MemAlign: Align = ArgFlags.getNonZeroMemAlign();
-    let mut SlotAlign: Align = min(MemAlign, operator(StackAlign));
+    let mut SlotAlign: Align = if MemAlign < operator(StackAlign) { MemAlign } else { operator(StackAlign) };
     if !Subtarget.isTargetDarwin() {
-        SlotAlign = max(SlotAlign, 8);
+        SlotAlign = if SlotAlign > 8 { SlotAlign } else { 8 };
     }
     return finishStackBlock(PendingMembers, LocVT, ArgFlags, State, SlotAlign);
 }

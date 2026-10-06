@@ -7,7 +7,7 @@ fn Parser::MayBeDesignationStart(self) -> bool {
             return true;
         },
         l_square => {
-            if operator!(self.PP.getLangOpts()) {
+            if !self.PP.getLangOpts().CPlusPlus {
                 return true;
             }
             match self.PP.LookAhead(0).getKind() {
@@ -46,24 +46,25 @@ fn Parser::MayBeDesignationStart(self) -> bool {
 
 fn CheckArrayDesignatorSyntax(P: *mut Parser, Loc: SourceLocation, Desig: *mut Designation) {
     if Desig.getNumDesignators() == 1 && (Desig.getDesignator(0).isArrayDesignator() || Desig.getDesignator(0).isArrayRangeDesignator()) {
-        P;
+        P.Diag(Loc, ext_gnu_missing_equal_designator);
     } else if Desig.getNumDesignators() > 0 {
-        P;
+        P.Diag(Loc, err_expected_equal_designator);
     }
 }
 
-fn Parser::ParseInitializerWithPotentialDesignator(self, DesignatorCompletion: DesignatorCompletionInfo) -> i32 {
+fn Parser::ParseInitializerWithPotentialDesignator(self, DesignatorCompletion: DesignatorCompletionInfo) -> ExprResult {
     if self.Tok.is(identifier) {
         let mut FieldName: *IdentifierInfo = self.Tok.getIdentifierInfo();
-        let mut NewSyntax: str = zeroed();
-         << '.' << FieldName.getName() << " = ";
+        let mut NewSyntax: str = "";
+        NewSyntax << '.' << FieldName.getName() << " = ";
         let mut NameLoc: SourceLocation = self.ConsumeToken();
         assert!(self.Tok.is(colon), "MayBeDesignationStart not working properly!");
         let mut ColonLoc: SourceLocation = self.ConsumeToken();
-         << CreateReplacement(SourceRange { B: NameLoc, E: ColonLoc });
+        self.Diag(NameLoc, ext_gnu_old_style_field_designator) << CreateReplacement(SourceRange { B: NameLoc, E: ColonLoc }, NewSyntax.operator StringRef());
         let mut D: Designation = Designation {};
         D.AddDesignator(CreateFieldDesignator(FieldName, SourceLocation {}, NameLoc));
-        return self.Actions;
+        self.PreferredType.enterDesignatedInitializer(self.Tok.getLocation(), DesignatorCompletion.PreferredBaseType, D);
+        return self.Actions.ActOnDesignatedInitializer(D, ColonLoc, true, self.ParseInitializer(null));
     }
     let mut Desig: Designation = Designation {};
     while self.Tok.is(period) || self.Tok.is(l_square) {
@@ -71,9 +72,13 @@ fn Parser::ParseInitializerWithPotentialDesignator(self, DesignatorCompletion: D
             let mut DotLoc: SourceLocation = self.ConsumeToken();
             if self.Tok.is(code_completion) {
                 self.cutOffParsing();
-                self.Actions.CodeCompletion().CodeCompleteDesignator(DesignatorCompletion(), DesignatorCompletion.InitExprs, Desig);
+                self.Actions.CodeCompletion().CodeCompleteDesignator(DesignatorCompletion.PreferredBaseType, DesignatorCompletion.InitExprs, Desig);
+                return ExprError();
             }
-            if self.Tok.isNot(identifier) {}
+            if self.Tok.isNot(identifier) {
+                self.Diag(self.Tok.getLocation(), err_expected_field_designator);
+                return ExprError();
+            }
             Desig.AddDesignator(CreateFieldDesignator(self.Tok.getIdentifierInfo(), DotLoc, self.Tok.getLocation()));
             self.ConsumeToken();
             continue;
@@ -83,25 +88,28 @@ fn Parser::ParseInitializerWithPotentialDesignator(self, DesignatorCompletion: D
         let mut T: BalancedDelimiterTracker = BalancedDelimiterTracker { *self, l_square, semi };
         T.consumeOpen();
         let mut StartLoc: SourceLocation = T.getOpenLocation();
-        let mut Idx: i32 = 0;
-        if self.getLangOpts() && self.getLangOpts() {
+        let mut Idx: ExprResult = false;
+        if self.getLangOpts().ObjC && self.getLangOpts().CPlusPlus {
             if self.Tok.is(identifier) && self.Tok.getIdentifierInfo() == self.Ident_super && self.NextToken().isNot(period) && self.getCurScope().isInObjcMethodScope() {
                 CheckArrayDesignatorSyntax(*self, StartLoc, Desig);
+                return self.ParseAssignmentExprWithObjCMessageExprStart(StartLoc, self.ConsumeToken(), null, null);
             }
             let mut IsExpr: bool = false;
             let mut TypeOrExpr: *mut void = null;
             if self.ParseObjCXXMessageReceiver(IsExpr, TypeOrExpr) {
                 self.SkipUntil(r_square, StopAtSemi);
+                return ExprError();
             }
             if !IsExpr {
                 CheckArrayDesignatorSyntax(*self, StartLoc, Desig);
+                return self.ParseAssignmentExprWithObjCMessageExprStart(StartLoc, SourceLocation {}, getFromOpaquePtr(TypeOrExpr), null);
             }
-            Idx() = ExprResult(TypeOrExpr as *mut Expr);
-        } else if self.getLangOpts() && self.Tok.is(identifier) {
+            Idx = TypeOrExpr as *mut Expr;
+        } else if self.getLangOpts().ObjC && self.Tok.is(identifier) {
             let mut II: *mut IdentifierInfo = self.Tok.getIdentifierInfo();
             let mut IILoc: SourceLocation = self.Tok.getLocation();
-            let mut ReceiverType: ParsedType = zeroed();
-            match self.Actions.ObjC().getObjCMessageKind(self.getCurScope(), II, IILoc, II == self.Ident_super, self.NextToken().is(period)) {
+            let mut ReceiverType: ParsedType = null;
+            match self.Actions.ObjC().getObjCMessageKind(self.getCurScope(), II, IILoc, II == self.Ident_super, self.NextToken().is(period), ReceiverType) {
                 ObjCSuperMessage => {
                     CheckArrayDesignatorSyntax(*self, StartLoc, Desig);
                 },
@@ -113,25 +121,28 @@ fn Parser::ParseInitializerWithPotentialDesignator(self, DesignatorCompletion: D
                 },
             }
         }
-        if operator!() {
-            if Idx()() {
+        if !Idx.get() {
+            Idx = self.ParseAssignmentExpression(AllowNonTypes);
+            if Idx.isInvalid() {
                 self.SkipUntil(r_square, StopAtSemi);
-                return ;
+                return Idx;
             }
         }
-        if self.getLangOpts() && self.Tok.isNot(ellipsis) && self.Tok.isNot(r_square) {
+        if self.getLangOpts().ObjC && self.Tok.isNot(ellipsis) && self.Tok.isNot(r_square) {
             CheckArrayDesignatorSyntax(*self, self.Tok.getLocation(), Desig);
+            return self.ParseAssignmentExprWithObjCMessageExprStart(StartLoc, SourceLocation {}, null, Idx.get());
         }
         if self.Tok.isNot(ellipsis) {
-            Desig.AddDesignator(CreateArrayDesignator(StartLoc));
+            Desig.AddDesignator(CreateArrayDesignator(Idx.get(), StartLoc));
         } else {
+            self.Diag(self.Tok, ext_gnu_array_range);
             let mut EllipsisLoc: SourceLocation = self.ConsumeToken();
-            let mut RHS: i32 = 0;
-            if RHS()() {
+            let mut RHS: ExprResult = self.ParseConstantExpression();
+            if RHS.isInvalid() {
                 self.SkipUntil(r_square, StopAtSemi);
-                return ;
+                return RHS;
             }
-            Desig.AddDesignator(CreateArrayRangeDesignator(StartLoc, EllipsisLoc));
+            Desig.AddDesignator(CreateArrayRangeDesignator(Idx.get(), RHS.get(), StartLoc, EllipsisLoc));
         }
         T.consumeClose();
         Desig.getDesignator(Desig.getNumDesignators() - 1).setRBracketLoc(T.getCloseLocation());
@@ -139,52 +150,59 @@ fn Parser::ParseInitializerWithPotentialDesignator(self, DesignatorCompletion: D
     assert!(!Desig.is_empty(), "Designator is empty?");
     if self.Tok.is(equal) {
         let mut EqualLoc: SourceLocation = self.ConsumeToken();
-        return self.Actions;
+        self.PreferredType.enterDesignatedInitializer(self.Tok.getLocation(), DesignatorCompletion.PreferredBaseType, Desig);
+        return self.Actions.ActOnDesignatedInitializer(Desig, EqualLoc, false, self.ParseInitializer(null));
     }
-    if self.Tok.is(l_brace) && self.getLangOpts() {
-        return self.Actions;
+    if self.Tok.is(l_brace) && self.getLangOpts().CPlusPlus11 {
+        self.PreferredType.enterDesignatedInitializer(self.Tok.getLocation(), DesignatorCompletion.PreferredBaseType, Desig);
+        return self.Actions.ActOnDesignatedInitializer(Desig, SourceLocation {}, false, self.ParseBraceInitializer());
     }
     if Desig.getNumDesignators() == 1 && (Desig.getDesignator(0).isArrayDesignator() || Desig.getDesignator(0).isArrayRangeDesignator()) {
-         << CreateInsertion(self.Tok.getLocation(), "= ", false);
-        return self.Actions;
+        self.Diag(self.Tok, ext_gnu_missing_equal_designator) << CreateInsertion(self.Tok.getLocation(), "= ", false);
+        return self.Actions.ActOnDesignatedInitializer(Desig, self.Tok.getLocation(), true, self.ParseInitializer(null));
     }
+    self.Diag(self.Tok, err_expected_equal_designator);
+    return ExprError();
 }
 
-fn Parser::createEmbedExpr(self) -> i32 {
+fn Parser::createEmbedExpr(self) -> ExprResult {
     assert!(self.Tok.getKind() == annot_embed);
     let mut Data: *mut EmbedAnnotationData = self.Tok.getAnnotationValue() as *mut EmbedAnnotationData;
-    let mut Res: i32 = 0;
+    let mut Res: ExprResult = false;
     let mut Context: *mut ASTContext = self.Actions.getASTContext();
     let mut StartLoc: SourceLocation = self.ConsumeAnnotationToken();
     if Data.BinaryData.len == 1 {
-        Res() = Create(Context, APInt { 8, Data.BinaryData.back() as u8, false, false }, Context(), StartLoc);
+        Res = Create(Context, APInt { 8, Data.BinaryData.back() as u8, false, false }, Context.UnsignedCharTy.operator QualType(), StartLoc);
     } else {
         let mut CreateStringLiteralFromStringRef: Closure_1 = Closure_1 { Context: &mut Context, StartLoc: &mut StartLoc };
-        let mut BinaryDataArg: *mut StringLiteral = CreateStringLiteralFromStringRef(Data.BinaryData, Context());
-        Res() = self.Actions(StartLoc, BinaryDataArg, Data.FileName);
+        let mut BinaryDataArg: *mut StringLiteral = CreateStringLiteralFromStringRef.call(Data.BinaryData, Context.UnsignedCharTy.operator QualType());
+        Res = self.Actions.ActOnEmbedExpr(StartLoc, BinaryDataArg, Data.FileName);
     }
-    return ;
+    return Res;
 }
 
-fn Parser::ParseBraceInitializer(self) -> i32 {
+fn Parser::ParseBraceInitializer(self) -> ExprResult {
     let mut InMessage: InMessageExpressionRAIIObject = InMessageExpressionRAIIObject { InMessageExpression: *self, OldValue: false };
     let mut T: BalancedDelimiterTracker = BalancedDelimiterTracker { *self, l_brace, semi };
     T.consumeOpen();
     let mut LBraceLoc: SourceLocation = T.getOpenLocation();
-    let mut InitExprs: ExprVector = ;
+    let mut InitExprs: ExprVector = ExprVector {};
     if self.Tok.is(r_brace) {
-        if operator!(self.getLangOpts()) {}
-        return self.Actions(LBraceLoc, void {}, self.ConsumeBrace());
+        if !self.getLangOpts().CPlusPlus {
+            self.Diag(LBraceLoc, if self.getLangOpts().C23 { warn_c23_compat_empty_initializer } else { ext_c_empty_initializer });
+        }
+        return self.Actions.ActOnInitList(LBraceLoc, MultiExprArg {}, self.ConsumeBrace());
     }
     let mut EnterContext: EnterExpressionEvaluationContext = EnterExpressionEvaluationContext { self.Actions, InitList, true };
     let mut InitExprsOk: bool = true;
-    let mut LikelyType: QualType = zeroed();
-    let mut DesignatorCompletion: DesignatorCompletionInfo = void { , LikelyType };
+    let mut LikelyType: QualType = self.PreferredType.get(T.getOpenLocation());
+    let mut DesignatorCompletion: DesignatorCompletionInfo = DesignatorCompletionInfo { InitExprs, LikelyType };
     let mut CalledSignatureHelp: bool = false;
-    let mut RunSignatureHelp: Closure_2 = Closure_2 { LikelyType: &mut LikelyType, cap_1: self, T: &mut T, CalledSignatureHelp: &mut CalledSignatureHelp };
+    let mut RunSignatureHelp: Closure_2 = Closure_2 { LikelyType: &mut LikelyType, cap_1: self, T: &mut T, InitExprs: &mut InitExprs, CalledSignatureHelp: &mut CalledSignatureHelp };
     while true {
-        if self.getLangOpts() && (self.Tok.is(kw___if_exists) || self.Tok.is(kw___if_not_exists)) {
-            if self.ParseMicrosoftIfExistsBraceInitializer(InitExprsOk) {
+        self.PreferredType.enterFunctionArgument(self.Tok.getLocation(), function_ref<QualType ()> { RunSignatureHelp, null, null });
+        if self.getLangOpts().MicrosoftExt && (self.Tok.is(kw___if_exists) || self.Tok.is(kw___if_not_exists)) {
+            if self.ParseMicrosoftIfExistsBraceInitializer(InitExprs, InitExprsOk) {
                 if self.Tok.isNot(comma) {
                     break;
                 }
@@ -195,12 +213,19 @@ fn Parser::ParseBraceInitializer(self) -> i32 {
             }
             continue;
         }
-        let mut SubElt: i32 = 0;
-        if self.Tok.is(ellipsis) {
-            SubElt() = self.Actions.ActOnPackExpansion(self.ConsumeToken());
+        let mut SubElt: ExprResult = false;
+        if self.MayBeDesignationStart() {
+            SubElt = self.ParseInitializerWithPotentialDesignator(DesignatorCompletion);
+        } else if self.Tok.getKind() == annot_embed {
+            SubElt = self.createEmbedExpr();
+        } else {
+            SubElt = self.ParseInitializer(null);
         }
-        if SubElt()() {
-            InitExprs()();
+        if self.Tok.is(ellipsis) {
+            SubElt = self.Actions.ActOnPackExpansion(SubElt.get(), self.ConsumeToken());
+        }
+        if SubElt.isUsable() {
+            InitExprs.push(SubElt.get());
         } else {
             InitExprsOk = false;
             if self.Tok.isNot(comma) {
@@ -218,19 +243,21 @@ fn Parser::ParseBraceInitializer(self) -> i32 {
     }
     let mut closed: bool = !T.consumeClose();
     if InitExprsOk && closed {
-        return self.Actions(LBraceLoc, T.getCloseLocation());
+        return self.Actions.ActOnInitList(LBraceLoc, InitExprs, T.getCloseLocation());
     }
+    return ExprError();
 }
 
-fn Parser::ParseExpansionInitList(self) -> i32 {
+fn Parser::ParseExpansionInitList(self) -> ExprResult {
     let mut T: BalancedDelimiterTracker = BalancedDelimiterTracker { *self, l_brace, semi };
     T.consumeOpen();
-    let mut InitExprs: ExprVector = zeroed();
-    if !self.Tok.is(r_brace) && self.ParseExpressionList(void {}, false, true) {
+    let mut InitExprs: ExprVector = ExprVector {};
+    if !self.Tok.is(r_brace) && self.ParseExpressionList(InitExprs, function_ref<void ()> {}, false, true) {
         T.consumeClose();
+        return ExprError();
     }
     T.consumeClose();
-    return self.Actions(T.getOpenLocation(), T.getCloseLocation());
+    return self.Actions.ActOnCXXExpansionInitList(InitExprs, T.getOpenLocation(), T.getCloseLocation());
 }
 
 fn Parser::ParseMicrosoftIfExistsBraceInitializer(self, InitExprs: *mut ExprVector, InitExprsOk: *mut bool) -> bool {
@@ -241,7 +268,7 @@ fn Parser::ParseMicrosoftIfExistsBraceInitializer(self, InitExprs: *mut ExprVect
     }
     let mut Braces: BalancedDelimiterTracker = BalancedDelimiterTracker { *self, l_brace, semi };
     if Braces.consumeOpen() {
-         << l_brace;
+        self.Diag(self.Tok, err_expected) << l_brace;
         return false;
     }
     match Result.Behavior {
@@ -249,21 +276,26 @@ fn Parser::ParseMicrosoftIfExistsBraceInitializer(self, InitExprs: *mut ExprVect
             break;
         },
         Dependent => {
-            << Result.IsIfExists;
+            self.Diag(Result.KeywordLoc, warn_microsoft_dependent_exists) << Result.IsIfExists;
         },
         Skip => {
             Braces.skipToEnd();
         },
     }
-    let mut DesignatorCompletion: DesignatorCompletionInfo = zeroed();
+    let mut DesignatorCompletion: DesignatorCompletionInfo = DesignatorCompletionInfo { InitExprs, self.PreferredType.get(Braces.getOpenLocation()) };
     while !self.isEofOrEom() {
         trailingComma = false;
-        let mut SubElt: i32 = 0;
-        if self.Tok.is(ellipsis) {
-            SubElt() = self.Actions.ActOnPackExpansion(self.ConsumeToken());
+        let mut SubElt: ExprResult = false;
+        if self.MayBeDesignationStart() {
+            SubElt = self.ParseInitializerWithPotentialDesignator(DesignatorCompletion);
+        } else {
+            SubElt = self.ParseInitializer(null);
         }
-        if operator!() {
-            InitExprs()();
+        if self.Tok.is(ellipsis) {
+            SubElt = self.Actions.ActOnPackExpansion(SubElt.get(), self.ConsumeToken());
+        }
+        if !SubElt.isInvalid() {
+            InitExprs.push(SubElt.get());
         } else {
             InitExprsOk = false;
         }
@@ -279,16 +311,20 @@ fn Parser::ParseMicrosoftIfExistsBraceInitializer(self, InitExprs: *mut ExprVect
     return !trailingComma;
 }
 
-fn Parser::ParseInitializer(self, DeclForInitializer: *mut Decl) -> i32 {
-    if DeclForInitializer && operator!(self.Actions()) {
-        let mut VD: *mut auto = dyn_cast(DeclForInitializer);
-        if VD() && () && (operator!(()()) || ()) {
-            self.Actions() = ;
+fn Parser::ParseInitializer(self, DeclForInitializer: *mut Decl) -> ExprResult {
+    if DeclForInitializer && !self.Actions.ExprEvalContexts.is_empty() {
+        let mut VD: *mut VarDecl = dyn_cast(DeclForInitializer);
+        if VD && VD.isFileVarDecl() && (!operator(VD.getType()).isReferenceType() || VD.isConstexpr()) {
+            self.Actions.ExprEvalContexts.back().DeclForInitializer = VD;
         }
     }
-    let mut init: i32 = 0;
-    if self.Tok.isNot(l_brace) {} else {}
-    return ;
+    let mut init: ExprResult = false;
+    if self.Tok.isNot(l_brace) {
+        init = self.ParseAssignmentExpression(AllowNonTypes);
+    } else {
+        init = self.ParseBraceInitializer();
+    }
+    return init;
 }
 
 struct Closure_1 {
@@ -296,22 +332,24 @@ struct Closure_1 {
     StartLoc: *mut SourceLocation,
 }
 
-unsafe fn Closure_1::call(self: *mut Closure_1, Str: str, Ty: QualType) -> auto {
+unsafe fn Closure_1::call(self: *mut Closure_1, Str: str, Ty: QualType) -> *mut StringLiteral {
             let mut ArraySize: APSInt = (*self.Context).MakeIntValue(Str.len, (*self.Context).getSizeType());
             let mut ArrayTy: QualType = (*self.Context).getConstantArrayType(Ty, ArraySize, null, Normal, 0);
+            return Create((*self.Context), Str, Binary, false, ArrayTy, (*self.StartLoc));
         }
 
 struct Closure_2 {
     LikelyType: *mut QualType,
     cap_1: *mut Parser,
     T: *mut BalancedDelimiterTracker,
+    InitExprs: *mut ExprVector,
     CalledSignatureHelp: *mut bool,
 }
 
 unsafe fn Closure_2::call(self: *mut Closure_2) -> auto {
         let mut PreferredType: QualType = QualType {};
         if !(*self.LikelyType).isNull() {
-            PreferredType = self.Actions.CodeCompletion().ProduceConstructorSignatureHelp(operator((*self.LikelyType)).getCanonicalTypeInternal(), (*self.T).getOpenLocation(), (*self.T).getOpenLocation(), true);
+            PreferredType = self.Actions.CodeCompletion().ProduceConstructorSignatureHelp(operator((*self.LikelyType)).getCanonicalTypeInternal(), (*self.T).getOpenLocation(), (*self.InitExprs), (*self.T).getOpenLocation(), true);
         }
         (*self.CalledSignatureHelp) = true;
         return PreferredType;

@@ -3,37 +3,37 @@ fn PragmaHandler::~PragmaHandler(self) {}
 fn EmptyPragmaHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer: PragmaIntroducer, FirstToken: *mut Token) {}
 
 fn PragmaNamespace::FindHandler(self: *PragmaNamespace, Name: str, IgnoreNull: bool) -> *mut PragmaHandler {
-    let mut I: auto = self.Handlers.find;
-    if I() != self.Handlers.end {
-        return ()();
+    let mut I: const_iterator = self.Handlers.find(Name);
+    if I != self.Handlers.end() {
+        return operator(I).getValue().get();
     }
     if IgnoreNull {
         return null;
     }
-    I() = self.Handlers.find;
-    if I() != self.Handlers.end {
-        return ()();
+    I = self.Handlers.find("");
+    if I != self.Handlers.end() {
+        return operator(I).getValue().get();
     }
     return null;
 }
 
 fn PragmaNamespace::AddPragma(self, Handler: *mut PragmaHandler) {
     assert!(!self.Handlers.count(Handler.getName()), "A handler with this name is already registered in this namespace");
-    self.Handlers[Handler.getName()](Handler);
+    self.Handlers[Handler.getName()].reset(Handler);
 }
 
 fn PragmaNamespace::RemovePragmaHandler(self, Handler: *mut PragmaHandler) {
-    let mut I: auto = self.Handlers.find;
-    (((operator!(operator!((I() != self.Handlers.end && "Handler not registered in this namespace")))) || (_wassert(L"I != Handlers.end() && \"Handler not registered in this namespace\"", L"clang\\lib\\Lex\\Pragma.cpp", (98) as u32) , 0)) as void);
-    I()()();
-    self.Handlers();
+    let mut I: iterator = self.Handlers.find(Handler.getName());
+    assert!(I != self.Handlers.end(), "Handler not registered in this namespace");
+    operator(I).getValue().release();
+    self.Handlers.erase(I);
 }
 
 fn PragmaNamespace::HandlePragma(self, PP: *mut Preprocessor, Introducer: PragmaIntroducer, Tok: *mut Token) {
     PP.LexUnexpandedToken(Tok);
     let mut Handler: *mut PragmaHandler = self.FindHandler(if Tok.getIdentifierInfo() { Tok.getIdentifierInfo().getName() } else { "" }, false);
     if !Handler {
-        PP;
+        PP.Diag(Tok, warn_pragma_ignored);
         return;
     }
     Handler.HandlePragma(PP, Introducer, Tok);
@@ -47,36 +47,48 @@ struct TokenCollector {
 }
 
 fn TokenCollector::lex(self) {
+    if self.Collect {
+        self.Tokens.push(self.Tok);
+    }
     self.Self.Lex(self.Tok);
 }
 
 fn TokenCollector::revert(self) {
     assert!(self.Collect, "did not collect tokens");
-    let mut Toks: auto = make_unique();
-    copy();
-    self.Self;
+    assert!(!self.Tokens.is_empty(), "collected unexpected number of tokens");
+    let mut Toks: []Token = make_unique(self.Tokens.len);
+    copy(self.Tokens.begin() + 1, self.Tokens.end(), Toks.get());
+    Toks[self.Tokens.len - 1] = self.Tok;
+    self.Self.EnterTokenStream(move(Toks), self.Tokens.len, true, true);
+    self.Tok = *self.Tokens.begin();
 }
 
 fn Preprocessor::HandlePragmaDirective(self, Introducer: PragmaIntroducer) {
+    if self.Callbacks {
+        operator(self.Callbacks).PragmaDirective(Introducer.Loc, Introducer.Kind);
+    }
     if !self.PragmasEnabled {
         return;
     }
     self.NumPragma += 1;
     let mut Tok: Token = Token {};
-    if  {
+    operator(self.PragmaHandlers).HandlePragma(*self, Introducer, Tok);
+    if (self.CurTokenLexer && operator(self.CurTokenLexer).isParsingPreprocessorDirective()) || (self.CurPPLexer && self.CurPPLexer.ParsingPreprocessorDirective) {
         self.DiscardUntilEndOfDirective(null);
     }
 }
 
 fn Preprocessor::Handle_Pragma(self, Tok: *mut Token) {
-    let mut Toks: TokenCollector = TokenCollector { Self: *self, Collect: self.InMacroArgPreExpansion, Tokens: void {}, Tok: Tok };
+    let mut Toks: TokenCollector = TokenCollector { Self: *self, Collect: self.InMacroArgPreExpansion, Tokens: SmallVector<Token, 3> {}, Tok: Tok };
     let mut PragmaLoc: SourceLocation = Tok.getLocation();
     Toks.lex();
     if Tok.isNot(l_paren) {
+        self.Diag(PragmaLoc, err__Pragma_malformed);
         return;
     }
     Toks.lex();
     if !isStringLiteral(Tok.getKind()) {
+        self.Diag(PragmaLoc, err__Pragma_malformed);
         if Tok.isNot(r_paren) && Tok.isNot(eof) && Tok.isNot(eod) {
             self.Lex(Tok);
         }
@@ -89,6 +101,7 @@ fn Preprocessor::Handle_Pragma(self, Tok: *mut Token) {
         return;
     }
     if Tok.hasUDSuffix() {
+        self.Diag(Tok, err_invalid_string_udl);
         self.Lex(Tok);
         if Tok.is(r_paren) {
             self.Lex(Tok);
@@ -98,6 +111,7 @@ fn Preprocessor::Handle_Pragma(self, Tok: *mut Token) {
     let mut StrTok: Token = Tok;
     Toks.lex();
     if Tok.isNot(r_paren) {
+        self.Diag(PragmaLoc, err__Pragma_malformed);
         return;
     }
     if self.InMacroArgPreExpansion {
@@ -106,68 +120,75 @@ fn Preprocessor::Handle_Pragma(self, Tok: *mut Token) {
     }
     let mut RParenLoc: SourceLocation = Tok.getLocation();
     let mut Invalid: bool = false;
-    let mut StrVal: str = zeroed();
-    StrVal()(StrTok.getLength());
-    let mut StrValRef: str = (StrTok, &mut Invalid);
+    let mut StrVal: str = "";
+    StrVal.resize(StrTok.getLength());
+    let mut StrValRef: str = self.getSpelling(StrTok, StrVal, &mut Invalid);
     if Invalid {
+        self.Diag(PragmaLoc, err__Pragma_malformed);
         return;
     }
-    (((operator!(operator!((StrValRef.len <= ())))) || (_wassert(L"StrValRef.size() <= StrVal.size()", L"clang\\lib\\Lex\\Pragma.cpp", (270) as u32) , 0)) as void);
-    if StrValRef.begin() != () {
-        StrVal()(StrValRef);
-    } else if StrValRef.len != () {
-        StrVal()(StrValRef.len);
+    assert!(StrValRef.len <= StrVal.len);
+    if StrValRef.begin() != StrVal.begin() {
+        StrVal.assign(StrValRef);
+    } else if StrValRef.len != StrVal.len {
+        StrVal.resize(StrValRef.len);
     }
-    prepare_PragmaString();
+    prepare_PragmaString(StrVal);
     let mut TmpTok: Token = Token {};
     TmpTok.startToken();
-    self.CreateString(TmpTok);
+    self.CreateString(StrVal.operator StringRef(), TmpTok, SourceLocation {}, SourceLocation {});
     let mut TokLoc: SourceLocation = TmpTok.getLocation();
-    let mut TL: i32 = (TokLoc, PragmaLoc, RParenLoc, *self);
+    let mut TL: unique_ptr<Lexer> = Create_PragmaLexer(TokLoc, PragmaLoc, RParenLoc, StrVal.len, *self);
+    self.EnterSourceFileWithLexer(move(TL), null);
     self.HandlePragmaDirective(PragmaIntroducer { Kind: PIK__Pragma, Loc: PragmaLoc });
     return self.Lex(Tok);
 }
 
 fn prepare_PragmaString(StrVal: *mut SmallVectorImpl<char>) {
-    if  {
-        StrVal()(StrVal()());
-    } else if  {
-        StrVal()(StrVal()(), StrVal()() + 2);
+    if StrVal[0] == 'L' || StrVal[0] == 'U' || (StrVal[0] == 'u' && StrVal[1] != '8') {
+        StrVal.erase(StrVal.begin());
+    } else if StrVal[0] == 'u' {
+        StrVal.erase(StrVal.begin(), StrVal.begin() + 2);
     }
-    if  {
+    if StrVal[0] == 'R' {
+        assert!(StrVal[1] == '"' && StrVal[StrVal.len - 1] == '"', "Invalid raw string token!");
         let mut NumDChars: u32 = 0;
-        while  {
-            (((operator!(operator!((NumDChars < (StrVal()() - 5) / 2 && "Invalid raw string token!")))) || (_wassert(L"NumDChars < (StrVal.size() - 5) / 2 && \"Invalid raw string token!\"", L"clang\\lib\\Lex\\Pragma.cpp", (320) as u32) , 0)) as void);
+        while StrVal[2 + NumDChars] != '(' {
+            assert!(NumDChars < (StrVal.len - 5) / 2, "Invalid raw string token!");
             NumDChars += 1;
         }
-        (((operator!(operator!((StrVal[StrVal()() - 2 - NumDChars] == ')')))) || (_wassert(L"StrVal[StrVal.size() - 2 - NumDChars] == ')'", L"clang\\lib\\Lex\\Pragma.cpp", (323) as u32) , 0)) as void);
-        StrVal()(StrVal()(), StrVal()() + 2 + NumDChars);
-        StrVal()(StrVal()() - 1 - NumDChars, StrVal()());
+        assert!(StrVal[StrVal.len - 2 - NumDChars] == ')');
+        StrVal.erase(StrVal.begin(), StrVal.begin() + 2 + NumDChars);
+        StrVal.erase(StrVal.end() - 1 - NumDChars, StrVal.end());
     } else {
+        assert!(StrVal[0] == '"' && StrVal[StrVal.len - 1] == '"', "Invalid string token!");
         let mut ResultPos: u32 = 1;
         for let mut i: u64 = 1;
-let mut e: u64 = StrVal()() - 1; i != e; i += 1 {
-            if  {
+let mut e: u64 = StrVal.len - 1; i != e; i += 1 {
+            if StrVal[i] == '\' && i + 1 < e && (StrVal[i + 1] == '\' || StrVal[i + 1] == '"') {
                 i += 1;
             }
+            StrVal[ResultPos += 1] = StrVal[i];
         }
-        StrVal()(StrVal()() + ResultPos, StrVal()() - 1);
+        StrVal.erase(StrVal.begin() + ResultPos, StrVal.end() - 1);
     }
-    StrVal[StrVal()() - 1] = 10;
+    StrVal[0] = ' ';
+    StrVal[StrVal.len - 1] = 10;
 }
 
 fn Preprocessor::HandleMicrosoft__pragma(self, Tok: *mut Token) {
-    let mut Toks: TokenCollector = TokenCollector { Self: *self, Collect: self.InMacroArgPreExpansion, Tokens: void {}, Tok: Tok };
+    let mut Toks: TokenCollector = TokenCollector { Self: *self, Collect: self.InMacroArgPreExpansion, Tokens: SmallVector<Token, 3> {}, Tok: Tok };
     let mut PragmaLoc: SourceLocation = Tok.getLocation();
     Toks.lex();
     if Tok.isNot(l_paren) {
+        self.Diag(PragmaLoc, err__Pragma_malformed);
         return;
     }
-    let mut PragmaToks: SmallVector<Token, 32> = zeroed();
+    let mut PragmaToks: SmallVector<Token, 32> = SmallVector<Token, 32> {};
     let mut NumParens: i32 = 0;
     Toks.lex();
     while Tok.isNot(eof) {
-        PragmaToks()(Tok);
+        PragmaToks.push(Tok);
         if Tok.is(l_paren) {
             NumParens += 1;
         } else if Tok.is(r_paren) && NumParens -= 1 == 0 {
@@ -176,23 +197,25 @@ fn Preprocessor::HandleMicrosoft__pragma(self, Tok: *mut Token) {
         Toks.lex();
     }
     if Tok.is(eof) {
+        self.Diag(PragmaLoc, err_unterminated___pragma);
         return;
     }
     if self.InMacroArgPreExpansion {
         Toks.revert();
         return;
     }
-    PragmaToks()()(LeadingSpace);
-    PragmaToks()()(eod);
-    let mut TokArray: *mut Token = ();
-    copy(TokArray);
-    (TokArray, true, true, false);
+    PragmaToks.front().setFlag(LeadingSpace);
+    PragmaToks.back().setKind(eod);
+    let mut TokArray: *mut Token = PragmaToks.len;
+    copy(PragmaToks.begin(), PragmaToks.end(), TokArray);
+    self.EnterTokenStream(TokArray, PragmaToks.len, true, true, false);
     self.HandlePragmaDirective(PragmaIntroducer { Kind: PIK___pragma, Loc: PragmaLoc });
     return self.Lex(Tok);
 }
 
 fn Preprocessor::HandlePragmaOnce(self, OnceTok: *mut Token) {
     if self.isInPrimaryFile() && self.TUKind != TU_Prefix && !self.getLangOpts().IsHeaderFile {
+        self.Diag(OnceTok, pp_pragma_once_in_main_file);
         return;
     }
     self.HeaderInfo.MarkFileIncludeOnce(operator(self.getCurrentFileLexer().getFileEntry()));
@@ -200,7 +223,11 @@ fn Preprocessor::HandlePragmaOnce(self, OnceTok: *mut Token) {
 
 fn Preprocessor::HandlePragmaMark(self, MarkTok: *mut Token) {
     assert!(self.CurPPLexer, "No current lexer?");
-    let mut Buffer: str = zeroed();
+    let mut Buffer: str = "";
+    operator(self.CurLexer).ReadToEndOfLine(&mut Buffer);
+    if self.Callbacks {
+        operator(self.Callbacks).PragmaMark(MarkTok.getLocation(), Buffer.operator StringRef());
+    }
 }
 
 fn Preprocessor::HandlePragmaPoison(self) {
@@ -217,6 +244,7 @@ fn Preprocessor::HandlePragmaPoison(self) {
             return;
         }
         if Tok.isNot(raw_identifier) {
+            self.Diag(Tok, err_pp_invalid_poison);
             return;
         }
         let mut II: *mut IdentifierInfo = self.LookUpIdentifierInfo(Tok);
@@ -224,7 +252,7 @@ fn Preprocessor::HandlePragmaPoison(self) {
             continue;
         }
         if self.isMacroDefined(II) {
-            
+            self.Diag(Tok, pp_poisoning_existing_macro);
         }
         II.setIsPoisoned(true);
         if II.isFromAST() {
@@ -235,6 +263,7 @@ fn Preprocessor::HandlePragmaPoison(self) {
 
 fn Preprocessor::HandlePragmaSystemHeader(self, SysHeaderTok: *mut Token) {
     if self.isInPrimaryFile() {
+        self.Diag(SysHeaderTok, pp_pragma_sysheader_in_main_file);
         return;
     }
     let mut TheLexer: *mut PreprocessorLexer = self.getCurrentFileLexer();
@@ -244,6 +273,9 @@ fn Preprocessor::HandlePragmaSystemHeader(self, SysHeaderTok: *mut Token) {
         return;
     }
     let mut FilenameID: u32 = self.SourceMgr.getLineTableFilenameID(PLoc.getFilename());
+    if self.Callbacks {
+        operator(self.Callbacks).FileChanged(SysHeaderTok.getLocation(), SystemHeaderPragma, C_System, FileID {});
+    }
     self.SourceMgr.AddLineNote(SysHeaderTok.getLocation(), PLoc.getLine() + 1, FilenameID, false, false, C_System);
 }
 
@@ -253,11 +285,12 @@ fn Preprocessor::HandlePragmaDependency(self, DependencyTok: *mut Token) {
         return;
     }
     if FilenameTok.isNot(header_name) {
+        self.Diag(FilenameTok.getLocation(), err_pp_expects_filename);
         return;
     }
-    let mut FilenameBuffer: str = zeroed();
+    let mut FilenameBuffer: str = "";
     let mut Invalid: bool = false;
-    let mut Filename: str = (FilenameTok, &mut Invalid);
+    let mut Filename: str = self.getSpelling(FilenameTok, FilenameBuffer, &mut Invalid);
     if Invalid {
         return;
     }
@@ -265,10 +298,10 @@ fn Preprocessor::HandlePragmaDependency(self, DependencyTok: *mut Token) {
     if Filename.is_empty() {
         return;
     }
-    let mut File: OptionalFileEntryRef = self.LookupFile;
+    let mut File: OptionalFileEntryRef = self.LookupFile(FilenameTok.getLocation(), Filename, isAngled, null, null, null, null, null, null, null, null, false, true, true);
     if !File {
         if !self.SuppressIncludeNotFoundError {
-            << Filename;
+            self.Diag(FilenameTok, err_pp_file_not_found) << Filename;
         }
         return;
     }
@@ -277,13 +310,13 @@ fn Preprocessor::HandlePragmaDependency(self, DependencyTok: *mut Token) {
         let mut Message: str = "";
         self.Lex(DependencyTok);
         while DependencyTok.isNot(eod) {
-            Message += self.getSpelling(DependencyTok, null);
+            operator(Message, self.getSpelling(DependencyTok, null) + " ");
             self.Lex(DependencyTok);
         }
         if !Message.is_empty() {
-            Message(Message.end);
+            Message.erase(Message.end() - 1);
         }
-         << Message;
+        self.Diag(FilenameTok, pp_out_of_date_dependency) << Message;
     }
 }
 
@@ -291,27 +324,28 @@ fn Preprocessor::ParsePragmaPushOrPopMacro(self, Tok: *mut Token) -> *mut Identi
     let mut PragmaTok: Token = Tok;
     self.Lex(Tok);
     if Tok.isNot(l_paren) {
-         << self.getSpelling(PragmaTok, null);
+        self.Diag(PragmaTok.getLocation(), err_pragma_push_pop_macro_malformed) << self.getSpelling(PragmaTok, null);
         return null;
     }
     self.Lex(Tok);
     if Tok.isNot(string_literal) {
-         << self.getSpelling(PragmaTok, null);
+        self.Diag(PragmaTok.getLocation(), err_pragma_push_pop_macro_malformed) << self.getSpelling(PragmaTok, null);
         return null;
     }
     if Tok.hasUDSuffix() {
+        self.Diag(Tok, err_invalid_string_udl);
         return null;
     }
     let mut StrTok: Token = Tok;
     let mut StrVal: str = self.getSpelling(StrTok, null);
     self.Lex(Tok);
     if Tok.isNot(r_paren) {
-         << self.getSpelling(PragmaTok, null);
+        self.Diag(PragmaTok.getLocation(), err_pragma_push_pop_macro_malformed) << self.getSpelling(PragmaTok, null);
         return null;
     }
     assert!(StrVal[0] == '"' && StrVal[StrVal.len - 1] == '"', "Invalid string token!");
     if StrVal.len <= 2 {
-         << SourceRange { B: StrTok.getLocation(), E: StrTok.getLocation().getLocWithOffset(StrTok.getLength()) } << PragmaTok.getIdentifierInfo().isStr("pop_macro");
+        self.Diag(StrTok.getLocation(), warn_pargma_push_pop_macro_empty_string) << SourceRange { B: StrTok.getLocation(), E: StrTok.getLocation().getLocWithOffset(StrTok.getLength()) } << PragmaTok.getIdentifierInfo().isStr("pop_macro");
         return null;
     }
     let mut MacroTok: Token = Token {};
@@ -330,6 +364,7 @@ fn Preprocessor::HandlePragmaPushMacro(self, PushMacroTok: *mut Token) {
     if MI {
         MI.setIsAllowRedefinitionsWithoutWarning(true);
     }
+    self.PragmaPushMacroInfo[IdentInfo].push(MI);
 }
 
 fn Preprocessor::HandlePragmaPopMacro(self, PopMacroTok: *mut Token) {
@@ -338,27 +373,33 @@ fn Preprocessor::HandlePragmaPopMacro(self, PopMacroTok: *mut Token) {
     if !IdentInfo {
         return;
     }
-    let mut iter: i32 = 0;
-    if  {
+    let mut iter: iterator = self.PragmaPushMacroInfo.find(IdentInfo);
+    if iter != self.PragmaPushMacroInfo.end() {
         if self.getMacroInfo(IdentInfo) {
             MI;
         } else {
+            if MI.isWarnIfUnused() {
+                self.WarnUnusedMacroLocs.erase(MI.getDefinitionLoc());
+            }
             self.appendMacroDirective(IdentInfo, self.AllocateUndefMacroDirective(MessageLoc));
         }
-        let mut MacroToReInstall: *mut MacroInfo = ();
+        let mut MacroToReInstall: *mut MacroInfo = operator(iter).second.back();
         if MacroToReInstall {
             self.appendDefMacroDirective(IdentInfo, MacroToReInstall, MessageLoc);
         }
-        iter()();
+        operator(iter).second.pop();
+        if operator(iter).second.is_empty() {
+            self.PragmaPushMacroInfo.erase(iter);
+        }
     } else {
-         << IdentInfo.getName();
+        self.Diag(MessageLoc, warn_pragma_pop_macro_no_push) << IdentInfo.getName();
     }
 }
 
 fn Preprocessor::HandlePragmaIncludeAlias(self, Tok: *mut Token) {
     self.Lex(Tok);
     if Tok.isNot(l_paren) {
-         << "(";
+        self.Diag(Tok, warn_pragma_include_alias_expected) << "(";
         return;
     }
     let mut SourceFilenameTok: Token = Token {};
@@ -366,16 +407,17 @@ fn Preprocessor::HandlePragmaIncludeAlias(self, Tok: *mut Token) {
         return;
     }
     let mut SourceFileName: str = "";
-    let mut FileNameBuffer: str = zeroed();
+    let mut FileNameBuffer: str = "";
     if SourceFilenameTok.is(header_name) {
-        SourceFileName = (SourceFilenameTok);
+        SourceFileName = self.getSpelling(SourceFilenameTok, FileNameBuffer, null);
     } else {
+        self.Diag(Tok, warn_pragma_include_alias_expected_filename);
         return;
     }
-    FileNameBuffer()();
+    FileNameBuffer.clear();
     self.Lex(Tok);
     if Tok.isNot(comma) {
-         << ",";
+        self.Diag(Tok, warn_pragma_include_alias_expected) << ",";
         return;
     }
     let mut ReplaceFilenameTok: Token = Token {};
@@ -384,13 +426,14 @@ fn Preprocessor::HandlePragmaIncludeAlias(self, Tok: *mut Token) {
     }
     let mut ReplaceFileName: str = "";
     if ReplaceFilenameTok.is(header_name) {
-        ReplaceFileName = (ReplaceFilenameTok);
+        ReplaceFileName = self.getSpelling(ReplaceFilenameTok, FileNameBuffer, null);
     } else {
+        self.Diag(Tok, warn_pragma_include_alias_expected_filename);
         return;
     }
     self.Lex(Tok);
     if Tok.isNot(r_paren) {
-         << ")";
+        self.Diag(Tok, warn_pragma_include_alias_expected) << ")";
         return;
     }
     let mut OriginalSource: str = SourceFileName;
@@ -398,6 +441,11 @@ fn Preprocessor::HandlePragmaIncludeAlias(self, Tok: *mut Token) {
     let mut ReplaceIsAngled: bool = self.GetIncludeFilenameSpelling(ReplaceFilenameTok.getLocation(), ReplaceFileName);
     if !SourceFileName.is_empty() && !ReplaceFileName.is_empty() && (SourceIsAngled != ReplaceIsAngled) {
         let mut DiagID: u32 = 0;
+        if SourceIsAngled {
+            DiagID = warn_pragma_include_alias_mismatch_angle;
+        } else {
+            DiagID = warn_pragma_include_alias_mismatch_quote;
+        }
         self.Diag(SourceFilenameTok.getLocation(), DiagID) << SourceFileName << ReplaceFileName;
         return;
     }
@@ -407,7 +455,7 @@ fn Preprocessor::HandlePragmaIncludeAlias(self, Tok: *mut Token) {
 fn LexModuleNameComponent(PP: *mut Preprocessor, Tok: *mut Token, ModuleNameComponent: *mut IdentifierLoc, First: bool) -> bool {
     PP.LexUnexpandedToken(Tok);
     if Tok.is(string_literal) && !Tok.hasUDSuffix() {
-        let mut Literal: StringLiteralParser = Tok(PP, Unevaluated);
+        let mut Literal: StringLiteralParser = StringLiteralParser { Tok, PP, Unevaluated, CA_NoConversion };
         if Literal.hadError {
             return true;
         }
@@ -415,7 +463,7 @@ fn LexModuleNameComponent(PP: *mut Preprocessor, Tok: *mut Token, ModuleNameComp
     } else if !Tok.isAnnotation() && Tok.getIdentifierInfo() {
         ModuleNameComponent = IdentifierLoc { Loc: Tok.getLocation(), II: Tok.getIdentifierInfo() };
     } else {
-        PP << First;
+        PP.Diag(Tok.getLocation(), err_pp_expected_module_name) << First;
         return true;
     }
     return false;
@@ -424,10 +472,10 @@ fn LexModuleNameComponent(PP: *mut Preprocessor, Tok: *mut Token, ModuleNameComp
 fn LexModuleName(PP: *mut Preprocessor, Tok: *mut Token, ModuleName: *mut SmallVectorImpl<IdentifierLoc>) -> bool {
     while true {
         let mut NameComponent: IdentifierLoc = IdentifierLoc {};
-        if LexModuleNameComponent(PP, Tok, NameComponent, ModuleName()()) {
+        if LexModuleNameComponent(PP, Tok, NameComponent, ModuleName.is_empty()) {
             return true;
         }
-        ModuleName()(NameComponent);
+        ModuleName.push(NameComponent);
         PP.LexUnexpandedToken(Tok);
         if Tok.isNot(period) {
             return false;
@@ -444,20 +492,26 @@ fn Preprocessor::HandlePragmaModuleBuild(self, Tok: *mut Token) {
     let mut ModuleName: *mut IdentifierInfo = ModuleNameLoc.getIdentifierInfo();
     self.LexUnexpandedToken(Tok);
     if Tok.isNot(eod) {
-         << "pragma";
+        self.Diag(Tok, ext_pp_extra_tokens_at_eol) << "pragma";
         self.DiscardUntilEndOfDirective(null);
     }
+    operator(self.CurLexer).LexingRawMode = true;
     let mut TryConsumeIdentifier: Closure_1 = Closure_1 { Tok: &mut Tok, cap_1: self };
-    let mut Start: *u8 = null;
+    let mut Start: *u8 = operator(self.CurLexer).getBufferLocation();
     let mut End: *u8 = null;
     let mut NestingLevel: u32 = 1;
     while true {
+        End = operator(self.CurLexer).getBufferLocation();
+        operator(self.CurLexer).Lex(Tok);
         if Tok.is(eof) {
+            self.Diag(Loc, err_pp_module_build_missing_end);
             break;
         }
         if Tok.isNot(hash) || !Tok.isAtStartOfLine() {
             continue;
         }
+        operator(self.CurLexer).ParsingPreprocessorDirective = true;
+        operator(self.CurLexer).Lex(Tok);
         if TryConsumeIdentifier.call("pragma") && TryConsumeIdentifier.call("clang") && TryConsumeIdentifier.call("module") {
             if TryConsumeIdentifier.call("build") {
                 NestingLevel += 1;
@@ -469,28 +523,34 @@ fn Preprocessor::HandlePragmaModuleBuild(self, Tok: *mut Token) {
             assert!(Tok.getKind() != eof, "missing EOD before EOF");
         }
     }
+    operator(self.CurLexer).LexingRawMode = false;
+    assert!(operator(self.CurLexer).getBuffer().begin() <= Start && Start <= operator(self.CurLexer).getBuffer().end() && operator(self.CurLexer).getBuffer().begin() <= End && End <= operator(self.CurLexer).getBuffer().end(), "module source range not contained within same file buffer");
     self.TheModuleLoader.createModuleFromSource(Loc, ModuleName.getName(), Start[0..End - Start]);
 }
 
 fn Preprocessor::HandlePragmaHdrstop(self, Tok: *mut Token) {
     self.Lex(Tok);
     if Tok.is(l_paren) {
+        self.Diag(Tok.getLocation(), warn_pp_hdrstop_filename_ignored);
         let mut FileName: str = "";
         if !self.LexStringLiteral(Tok, FileName, "pragma hdrstop", false) {
             return;
         }
         if Tok.isNot(r_paren) {
-             << r_paren;
+            self.Diag(Tok, err_expected) << r_paren;
             return;
         }
         self.Lex(Tok);
     }
     if Tok.isNot(eod) {
-        << "pragma hdrstop";
+        self.Diag(Tok.getLocation(), ext_pp_extra_tokens_at_eol) << "pragma hdrstop";
     }
     if self.creatingPCHWithPragmaHdrStop() && self.SourceMgr.isInMainFile(Tok.getLocation()) {
+        assert!(self.CurLexer, "no lexer for #pragma hdrstop processing");
         let mut Result: *mut Token = Tok;
         Result.startToken();
+        operator(self.CurLexer).FormTokenWithChars(Result, operator(self.CurLexer).BufferEnd, eof);
+        operator(self.CurLexer).cutOffLexing();
     }
     if self.usingPCHWithPragmaHdrStop() {
         self.SkippingUntilPragmaHdrStop = false;
@@ -504,30 +564,34 @@ fn Preprocessor::isPragmaSetPPStateMacro(self, MacroName: *mut IdentifierInfo) -
 fn Preprocessor::HandlePragmaSetPPState(self, Introducer: PragmaIntroducer, Tok: *mut Token) {
     self.LexUnexpandedToken(Tok);
     if !Tok.getIdentifierInfo() {
+        self.Diag(Tok.getLocation(), err_pp_pragma_set_pp_state_expected_name);
         return;
     }
     let mut MacroName: *mut IdentifierInfo = Tok.getIdentifierInfo();
     if !self.isPragmaSetPPStateMacro(MacroName) {
-         << MacroName;
+        self.Diag(Tok.getLocation(), err_pp_pragma_set_pp_state_invalid_arg) << MacroName;
         return;
     }
     self.Lex(Tok);
     let mut Value: uint64_t = zeroed();
     if !Tok.is(numeric_constant) || !self.parseSimpleIntegerLiteral(Tok, Value) {
-         << MacroName.getName();
+        self.Diag(Tok.getLocation(), err_pp_pragma_set_pp_state_expected_int_after) << MacroName.getName();
         return;
     }
     if MacroName.getName() == "__GLIBCXX__" {
         self.setStdLibCxxVersion(Value);
     } else {
-        llvm_unreachable_internal("forgot to handle a possible argument to __set_pp_state", "clang\\lib\\Lex\\Pragma.cpp", 951);
+        llvm_unreachable_internal("forgot to handle a possible argument to __set_pp_state", "P:/Goraw/llvm-project/clang/lib/Lex/Pragma.cpp", 951);
+    }
+    if self.Callbacks {
+        operator(self.Callbacks).PragmaSetPPState(Introducer.Loc, MacroName, Value);
     }
 }
 
 fn Preprocessor::AddPragmaHandler(self, Namespace: str, Handler: *mut PragmaHandler) {
-    let mut InsertNS: *mut PragmaNamespace = null;
+    let mut InsertNS: *mut PragmaNamespace = self.PragmaHandlers.get();
     if !Namespace.is_empty() {
-        if  {
+        if operator(self.PragmaHandlers).FindHandler(Namespace, true) {
             Existing;
         } else {
             InsertNS = Existing.getIfNamespace();
@@ -539,15 +603,16 @@ fn Preprocessor::AddPragmaHandler(self, Namespace: str, Handler: *mut PragmaHand
 }
 
 fn Preprocessor::RemovePragmaHandler(self, Namespace: str, Handler: *mut PragmaHandler) {
-    let mut NS: *mut PragmaNamespace = null;
+    let mut NS: *mut PragmaNamespace = self.PragmaHandlers.get();
     if !Namespace.is_empty() {
-        let mut Existing: *mut PragmaHandler = null;
+        let mut Existing: *mut PragmaHandler = operator(self.PragmaHandlers).FindHandler(Namespace, true);
         assert!(Existing, "Namespace containing handler does not exist!");
         NS = Existing.getIfNamespace();
         assert!(NS, "Invalid namespace, registered as a regular pragma handler!");
     }
     NS.RemovePragmaHandler(Handler);
-    if  {
+    if NS != self.PragmaHandlers.get() && NS.IsEmpty() {
+        operator(self.PragmaHandlers).RemovePragmaHandler(NS);
         NS;
     }
 }
@@ -556,6 +621,7 @@ fn Preprocessor::LexOnOffSwitch(self, Result: *mut OnOffSwitch) -> bool {
     let mut Tok: Token = Token {};
     self.LexUnexpandedToken(Tok);
     if Tok.isNot(identifier) {
+        self.Diag(Tok, ext_on_off_switch_syntax);
         return true;
     }
     let mut II: *mut IdentifierInfo = Tok.getIdentifierInfo();
@@ -566,11 +632,12 @@ fn Preprocessor::LexOnOffSwitch(self, Result: *mut OnOffSwitch) -> bool {
     } else if II.isStr("DEFAULT") {
         Result = OOS_DEFAULT;
     } else {
+        self.Diag(Tok, ext_on_off_switch_syntax);
         return true;
     }
     self.LexUnexpandedToken(Tok);
     if Tok.isNot(eod) {
-        
+        self.Diag(Tok, ext_pragma_syntax_eod);
     }
     return false;
 }
@@ -665,13 +732,13 @@ fn PragmaDebugHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer: Pra
     let mut Tok: Token = Token {};
     PP.LexUnexpandedToken(Tok);
     if Tok.isNot(identifier) {
-        PP;
+        PP.Diag(Tok, warn_pragma_debug_missing_command);
         return;
     }
     let mut II: *mut IdentifierInfo = Tok.getIdentifierInfo();
     if II.isStr("assert") {
         if !PP.getPreprocessorOpts().DisablePragmaDebugCrash {
-            llvm_unreachable_internal("This is an assertion!", "clang\\lib\\Lex\\Pragma.cpp", 1110);
+            llvm_unreachable_internal("This is an assertion!", "P:/Goraw/llvm-project/clang/lib/Lex/Pragma.cpp", 1110);
         }
     } else if II.isStr("crash") {
         let mut T: Timer = Timer { "crash", "pragma crash" };
@@ -701,13 +768,13 @@ fn PragmaDebugHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer: Pra
         if DiagName.is(eod) {
             PP.getDiagnostics().dump();
         } else if DiagName.is(string_literal) && !DiagName.hasUDSuffix() {
-            let mut Literal: StringLiteralParser = DiagName(PP, Unevaluated);
+            let mut Literal: StringLiteralParser = StringLiteralParser { DiagName, PP, Unevaluated, CA_NoConversion };
             if Literal.hadError {
                 return;
             }
             PP.getDiagnostics().dump(Literal.GetString());
         } else {
-            PP << II.getName();
+            PP.Diag(DiagName, warn_pragma_debug_missing_argument) << II.getName();
         }
     } else if II.isStr("llvm_fatal_error") {
         if !PP.getPreprocessorOpts().DisablePragmaDebugCrash {
@@ -715,7 +782,7 @@ fn PragmaDebugHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer: Pra
         }
     } else if II.isStr("llvm_unreachable") {
         if !PP.getPreprocessorOpts().DisablePragmaDebugCrash {
-            llvm_unreachable_internal("#pragma clang __debug llvm_unreachable", "clang\\lib\\Lex\\Pragma.cpp", 1152);
+            llvm_unreachable_internal("#pragma clang __debug llvm_unreachable", "P:/Goraw/llvm-project/clang/lib/Lex/Pragma.cpp", 1152);
         }
     } else if II.isStr("macro") {
         let mut MacroName: Token = Token {};
@@ -724,27 +791,34 @@ fn PragmaDebugHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer: Pra
         if MacroII {
             PP.dumpMacroInfo(MacroII);
         } else {
-            PP << II.getName();
+            PP.Diag(MacroName, warn_pragma_debug_missing_argument) << II.getName();
         }
     } else if II.isStr("module_map") {
-        let mut ModuleName: SmallVector<IdentifierLoc, 8> = zeroed();
-        if LexModuleName(PP, Tok) {
+        let mut ModuleName: SmallVector<IdentifierLoc, 8> = SmallVector<IdentifierLoc, 8> {};
+        if LexModuleName(PP, Tok, ModuleName) {
             return;
         }
         let mut MM: *mut ModuleMap = PP.getHeaderSearchInfo().getModuleMap();
         let mut M: *mut Module = null;
+        for IIAndLoc in ModuleName {
+            M = MM.lookupModuleQualified(IIAndLoc.getIdentifierInfo().getName(), M).operator clang::Module *();
+            if !M {
+                PP.Diag(IIAndLoc.getLoc(), warn_pragma_debug_unknown_module) << IIAndLoc.getIdentifierInfo().getName();
+                return;
+            }
+        }
         M.dump();
     } else if II.isStr("module_lookup") {
         let mut MName: Token = Token {};
         PP.LexUnexpandedToken(MName);
         let mut MNameII: *mut IdentifierInfo = MName.getIdentifierInfo();
         if !MNameII {
-            PP << II.getName();
+            PP.Diag(MName, warn_pragma_debug_missing_argument) << II.getName();
             return;
         }
         let mut M: *mut Module = PP.getHeaderSearchInfo().lookupModule(MNameII.getName(), SourceLocation {}, true, false);
         if !M {
-            PP << MNameII.getName();
+            PP.Diag(MName, warn_pragma_debug_unable_to_find_module) << MNameII.getName();
             return;
         }
         M.dump();
@@ -760,28 +834,41 @@ fn PragmaDebugHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer: Pra
         PP.LexUnexpandedToken(Kind);
         let mut DumpII: *mut IdentifierInfo = Kind.getIdentifierInfo();
         if !DumpII {
-            PP << II.getName();
+            PP.Diag(Kind, warn_pragma_debug_missing_argument) << II.getName();
         } else if DumpII.isStr("all") {
             Visitor.visitAll(false);
         } else if DumpII.isStr("visible") {
             Visitor.visitAll(true);
-        } else if DumpII.isStr("building") {} else {
-            PP << DumpII.getName();
+        } else if DumpII.isStr("building") {
+            for Building in PP.getBuildingSubmodules() {
+                errs() << "in " << Building.M.getFullModuleName(false);
+                if Building.ImportLoc.isValid() {
+                    errs() << " imported ";
+                    if Building.IsPragma {
+                        errs() << "via pragma ";
+                    }
+                    errs() << "at ";
+                    Building.ImportLoc.print(errs(), PP.getSourceManager());
+                    errs() << "\n";
+                }
+            }
+        } else {
+            PP.Diag(Tok, warn_pragma_debug_unexpected_command) << DumpII.getName();
         }
     } else if II.isStr("sloc_usage") {
-        let mut MaxNotes: optional<unsigned int> = zeroed();
+        let mut MaxNotes: optional<unsigned int> = optional<unsigned int> {};
         let mut ArgToken: Token = Token {};
         PP.Lex(ArgToken);
         let mut Value: u64 = 0;
         if ArgToken.is(numeric_constant) && PP.parseSimpleIntegerLiteral(ArgToken, Value) {
-            MaxNotes() = Value;
+            MaxNotes = Value;
         } else if ArgToken.isNot(eod) {
-            PP;
+            PP.Diag(ArgToken, warn_pragma_debug_unexpected_argument);
         }
-        PP;
-        PP.getSourceManager().noteSLocAddressSpaceUsage(PP.getDiagnostics());
+        PP.Diag(Tok, remark_sloc_usage);
+        PP.getSourceManager().noteSLocAddressSpaceUsage(PP.getDiagnostics(), MaxNotes);
     } else {
-        PP << II.getName();
+        PP.Diag(Tok, warn_pragma_debug_unexpected_command) << II.getName();
     }
     let mut Callbacks: *mut PPCallbacks = PP.getPPCallbacks();
     if Callbacks {
@@ -793,15 +880,15 @@ fn PragmaDebugHandler::HandleCaptured(self, PP: *mut Preprocessor) {
     let mut Tok: Token = Token {};
     PP.LexUnexpandedToken(Tok);
     if Tok.isNot(eod) {
-        PP << "pragma clang __debug captured";
+        PP.Diag(Tok, ext_pp_extra_tokens_at_eol) << "pragma clang __debug captured";
         return;
     }
     let mut NameLoc: SourceLocation = Tok.getLocation();
-    let mut Toks: MutableArrayRef<Token> = zeroed();
-    Toks()[0]();
-    Toks()[0](annot_pragma_captured);
-    Toks()[0](NameLoc);
-    PP(true, false);
+    let mut Toks: MutableArrayRef<Token> = MutableArrayRef<Token> { PP.getPreprocessorAllocator().Allocate(1), 1 };
+    Toks[0].startToken();
+    Toks[0].setKind(annot_pragma_captured);
+    Toks[0].setLocation(NameLoc);
+    PP.EnterTokenStream(Toks, true, false);
 }
 
 fn PragmaDebugHandler::DebugOverflowStack(self, P: void (*)()) {
@@ -825,21 +912,21 @@ fn PragmaUnsafeBufferUsageHandler::HandlePragma(self, PP: *mut Preprocessor, Int
     let mut Tok: Token = Token {};
     PP.LexUnexpandedToken(Tok);
     if Tok.isNot(identifier) {
-        PP;
+        PP.Diag(Tok, err_pp_pragma_unsafe_buffer_usage_syntax);
         return;
     }
     let mut II: *mut IdentifierInfo = Tok.getIdentifierInfo();
     let mut Loc: SourceLocation = Tok.getLocation();
     if II.isStr("begin") {
         if PP.enterOrExitSafeBufferOptOutRegion(true, Loc) {
-            PP;
+            PP.Diag(Loc, err_pp_double_begin_pragma_unsafe_buffer_usage);
         }
     } else if II.isStr("end") {
         if PP.enterOrExitSafeBufferOptOutRegion(false, Loc) {
-            PP;
+            PP.Diag(Loc, err_pp_unmatched_end_begin_pragma_unsafe_buffer_usage);
         }
     } else {
-        PP;
+        PP.Diag(Tok, err_pp_pragma_unsafe_buffer_usage_syntax);
     }
 }
 
@@ -861,7 +948,7 @@ fn PragmaDiagnosticHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer
     let mut Tok: Token = Token {};
     PP.LexUnexpandedToken(Tok);
     if Tok.isNot(identifier) {
-        PP;
+        PP.Diag(Tok, warn_pragma_diagnostic_invalid);
         return;
     }
     let mut II: *mut IdentifierInfo = Tok.getIdentifierInfo();
@@ -869,12 +956,12 @@ fn PragmaDiagnosticHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer
     PP.LexUnexpandedToken(Tok);
     if II.isStr("pop") {
         if !PP.getDiagnostics().popMappings(DiagLoc) {
-            PP;
+            PP.Diag(Tok, warn_pragma_diagnostic_cannot_pop);
         } else if Callbacks {
             Callbacks.PragmaDiagnosticPop(DiagLoc, self.Namespace);
         }
         if Tok.isNot(eod) {
-            PP;
+            PP.Diag(Tok.getLocation(), warn_pragma_diagnostic_invalid_token);
         }
         return;
     } else if II.isStr("push") {
@@ -883,13 +970,13 @@ fn PragmaDiagnosticHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer
             Callbacks.PragmaDiagnosticPush(DiagLoc, self.Namespace);
         }
         if Tok.isNot(eod) {
-            PP;
+            PP.Diag(Tok.getLocation(), warn_pragma_diagnostic_invalid_token);
         }
         return;
     }
-    let mut SV: Severity = zeroed();
+    let mut SV: Severity = II.getName().Case("ignored", Ignored).Case("warning", Warning).Case("error", Error).Case("fatal", Fatal).Default();
     if SV ==  {
-        PP;
+        PP.Diag(Tok, warn_pragma_diagnostic_invalid);
         return;
     }
     let mut StringLoc: SourceLocation = Tok.getLocation();
@@ -898,11 +985,11 @@ fn PragmaDiagnosticHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer
         return;
     }
     if Tok.isNot(eod) {
-        PP;
+        PP.Diag(Tok.getLocation(), warn_pragma_diagnostic_invalid_token);
         return;
     }
     if WarningName.len < 3 || WarningName[0] != '-' || (WarningName[1] != 'W' && WarningName[1] != 'R') {
-        PP;
+        PP.Diag(StringLoc, warn_pragma_diagnostic_invalid_option);
         return;
     }
     let mut Flavor: Flavor = if WarningName[1] == 'W' { WarningOrError } else { Remark };
@@ -914,7 +1001,7 @@ fn PragmaDiagnosticHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer
         unknownDiag = PP.getDiagnostics().setSeverityForGroup(Flavor, Group, SV, DiagLoc);
     }
     if unknownDiag {
-        PP << WarningName;
+        PP.Diag(StringLoc, warn_pragma_diagnostic_unknown_warning) << WarningName;
     } else if Callbacks {
         Callbacks.PragmaDiagnostic(DiagLoc, self.Namespace, SV, WarningName);
     }
@@ -953,7 +1040,7 @@ fn PragmaWarningHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer: P
     let mut Callbacks: *mut PPCallbacks = PP.getPPCallbacks();
     PP.Lex(Tok);
     if Tok.isNot(l_paren) {
-        PP << "(";
+        PP.Diag(Tok, warn_pragma_warning_expected) << "(";
         return;
     }
     PP.Lex(Tok);
@@ -968,7 +1055,7 @@ fn PragmaWarningHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer: P
                 Level = Value;
             }
             if Level < 0 || Level > 4 {
-                PP;
+                PP.Diag(Tok, warn_pragma_warning_push_level);
                 return;
             }
         }
@@ -979,7 +1066,7 @@ fn PragmaWarningHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer: P
     } else if II && II.isStr("pop") {
         PP.Lex(Tok);
         if !PP.getDiagnostics().popMappings(DiagLoc) {
-            PP;
+            PP.Diag(Tok, warn_pragma_diagnostic_cannot_pop);
         } else if Callbacks {
             Callbacks.PragmaWarningPop(DiagLoc);
         }
@@ -987,13 +1074,13 @@ fn PragmaWarningHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer: P
         while true {
             II = Tok.getIdentifierInfo();
             if !II && !Tok.is(numeric_constant) {
-                PP;
+                PP.Diag(Tok, warn_pragma_warning_spec_invalid);
                 return;
             }
             let mut SpecifierValid: bool = false;
             let mut Specifier: PragmaWarningSpecifier = zeroed();
             if II {
-                let mut SpecifierInt: i32 = 0;
+                let mut SpecifierInt: i32 = II.getName().Case("default", PWS_Default).Case("disable", PWS_Disable).Case("error", PWS_Error).Case("once", PWS_Once).Case("suppress", PWS_Suppress).Default(-1);
                 SpecifierValid = SpecifierInt != -1;
                 if SpecifierValid {
                     Specifier = SpecifierInt as PragmaWarningSpecifier;
@@ -1012,29 +1099,40 @@ fn PragmaWarningHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer: P
                 }
             }
             if !SpecifierValid {
-                PP;
+                PP.Diag(Tok, warn_pragma_warning_spec_invalid);
                 return;
             }
             if Tok.isNot(colon) {
-                PP << ":";
+                PP.Diag(Tok, warn_pragma_warning_expected) << ":";
                 return;
             }
-            let mut Ids: SmallVector<int, 4> = zeroed();
+            let mut Ids: SmallVector<int, 4> = SmallVector<int, 4> {};
             PP.Lex(Tok);
             while Tok.is(numeric_constant) {
                 let mut Value: u64 = 0;
                 if !PP.parseSimpleIntegerLiteral(Tok, Value) || Value == 0 || Value > 2147483647 {
-                    PP;
+                    PP.Diag(Tok, warn_pragma_warning_expected_number);
                     return;
                 }
-                Ids()(Value);
+                Ids.push(Value);
             }
             let mut SV: Severity = ;
             if Specifier == PWS_Disable {
                 SV = Ignored;
             }
+            if SV !=  {
+                for Id in Ids {
+                    if diagGroupFromCLWarningID(Id) {
+                        Group;
+                    } else {
+                        let mut unknownDiag: bool = PP.getDiagnostics().setSeverityForGroup(WarningOrError, operator(Group), SV, DiagLoc);
+                        assert!(!unknownDiag, "wd table should only contain known diags");
+                        unknownDiag as void;
+                    }
+                }
+            }
             if Callbacks {
-                Callbacks.PragmaWarning(DiagLoc, Specifier);
+                Callbacks.PragmaWarning(DiagLoc, Specifier, Ids);
             }
             if Tok.isNot(semi) {
                 break;
@@ -1043,12 +1141,12 @@ fn PragmaWarningHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer: P
         }
     }
     if Tok.isNot(r_paren) {
-        PP << ")";
+        PP.Diag(Tok, warn_pragma_warning_expected) << ")";
         return;
     }
     PP.Lex(Tok);
     if Tok.isNot(eod) {
-        PP << "pragma warning";
+        PP.Diag(Tok, ext_pp_extra_tokens_at_eol) << "pragma warning";
     }
 }
 
@@ -1069,7 +1167,7 @@ fn PragmaExecCharsetHandler::HandlePragma(self, PP: *mut Preprocessor, Introduce
     let mut Callbacks: *mut PPCallbacks = PP.getPPCallbacks();
     PP.Lex(Tok);
     if Tok.isNot(l_paren) {
-        PP << "(";
+        PP.Diag(Tok, warn_pragma_exec_charset_expected) << "(";
         return;
     }
     PP.Lex(Tok);
@@ -1082,8 +1180,8 @@ fn PragmaExecCharsetHandler::HandlePragma(self, PP: *mut Preprocessor, Introduce
             if !PP.FinishLexStringLiteral(Tok, ExecCharset, "pragma execution_character_set", false) {
                 return;
             }
-            if ExecCharset("UTF-8") && ExecCharset("utf-8") {
-                PP << ExecCharset;
+            if !ExecCharset == "UTF-8" && !ExecCharset == "utf-8" {
+                PP.Diag(Tok, warn_pragma_exec_charset_push_invalid) << ExecCharset;
                 return;
             }
         }
@@ -1096,16 +1194,16 @@ fn PragmaExecCharsetHandler::HandlePragma(self, PP: *mut Preprocessor, Introduce
             Callbacks.PragmaExecCharsetPop(DiagLoc);
         }
     } else {
-        PP;
+        PP.Diag(Tok, warn_pragma_exec_charset_spec_invalid);
         return;
     }
     if Tok.isNot(r_paren) {
-        PP << ")";
+        PP.Diag(Tok, warn_pragma_exec_charset_expected) << ")";
         return;
     }
     PP.Lex(Tok);
     if Tok.isNot(eod) {
-        PP << "pragma execution_character_set";
+        PP.Diag(Tok, ext_pp_extra_tokens_at_eol) << "pragma execution_character_set";
     }
 }
 
@@ -1151,7 +1249,7 @@ fn PragmaMessageHandler::PragmaKind(self, Kind: PragmaMessageKind, PragmaNameOnl
             return if PragmaNameOnly { "error" } else { "pragma error" };
         },
     }
-    llvm_unreachable_internal("Unknown PragmaMessageKind!", "clang\\lib\\Lex\\Pragma.cpp", 1691);
+    llvm_unreachable_internal("Unknown PragmaMessageKind!", "P:/Goraw/llvm-project/clang/lib/Lex/Pragma.cpp", 1691);
 }
 
 fn PragmaMessageHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer: PragmaIntroducer, Tok: *mut Token) {
@@ -1166,7 +1264,7 @@ fn PragmaMessageHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer: P
             break;
         },
         _ => {
-            PP << self.Kind;
+            PP.Diag(MessageLoc, err_pragma_message_malformed) << self.Kind;
         },
     }
     let mut MessageString: str = "";
@@ -1175,16 +1273,16 @@ fn PragmaMessageHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer: P
     }
     if ExpectClosingParen {
         if Tok.isNot(r_paren) {
-            PP << self.Kind;
+            PP.Diag(Tok.getLocation(), err_pragma_message_malformed) << self.Kind;
             return;
         }
         PP.Lex(Tok);
     }
     if Tok.isNot(eod) {
-        PP << self.Kind;
+        PP.Diag(Tok.getLocation(), err_pragma_message_malformed) << self.Kind;
         return;
     }
-    PP << MessageString;
+    PP.Diag(MessageLoc, if (self.Kind == PMK_Error) { err_pragma_message } else { warn_pragma_message }) << MessageString;
     if PP.getPPCallbacks() {
         Callbacks;
     } else {
@@ -1206,23 +1304,23 @@ struct PragmaModuleImportHandler {
 
 fn PragmaModuleImportHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer: PragmaIntroducer, Tok: *mut Token) {
     let mut ImportLoc: SourceLocation = Tok.getLocation();
-    let mut ModuleName: SmallVector<IdentifierLoc, 8> = zeroed();
-    if LexModuleName(PP, Tok) {
+    let mut ModuleName: SmallVector<IdentifierLoc, 8> = SmallVector<IdentifierLoc, 8> {};
+    if LexModuleName(PP, Tok, ModuleName) {
         return;
     }
     if Tok.isNot(eod) {
-        PP << "pragma";
+        PP.Diag(Tok, ext_pp_extra_tokens_at_eol) << "pragma";
     }
-    let mut Imported: *mut Module = PP.getModuleLoader().loadModule(ImportLoc, Hidden, false);
+    let mut Imported: *mut Module = PP.getModuleLoader().loadModule(ImportLoc, ModuleName, Hidden, false).operator clang::Module *();
     if !Imported {
         return;
     }
     PP.makeModuleVisible(Imported, ImportLoc, true);
-    PP.EnterAnnotationToken(ImportLoc, annot_module_include, Imported);
+    PP.EnterAnnotationToken(SourceRange { B: ImportLoc, E: ModuleName.back().getLoc() }, annot_module_include, Imported);
     if PP.getPPCallbacks() {
         CB;
     } else {
-        CB.moduleImport(ImportLoc, Imported);
+        CB.moduleImport(ImportLoc, ModuleName, Imported);
     }
 }
 
@@ -1240,39 +1338,39 @@ struct PragmaModuleBeginHandler {
 
 fn PragmaModuleBeginHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer: PragmaIntroducer, Tok: *mut Token) {
     let mut BeginLoc: SourceLocation = Tok.getLocation();
-    let mut ModuleName: SmallVector<IdentifierLoc, 8> = zeroed();
-    if LexModuleName(PP, Tok) {
+    let mut ModuleName: SmallVector<IdentifierLoc, 8> = SmallVector<IdentifierLoc, 8> {};
+    if LexModuleName(PP, Tok, ModuleName) {
         return;
     }
     if Tok.isNot(eod) {
-        PP << "pragma";
+        PP.Diag(Tok, ext_pp_extra_tokens_at_eol) << "pragma";
     }
     let mut Current: str = PP.getLangOpts().CurrentModule;
-    if ModuleName()()()() != Current {
-        PP << ()() << (ModuleName()() > 1) << Current.is_empty() << Current;
+    if ModuleName.front().getIdentifierInfo().getName() != Current {
+        PP.Diag(ModuleName.front().getLoc(), err_pp_module_begin_wrong_module) << ModuleName.front().getIdentifierInfo() << (ModuleName.len > 1) << Current.is_empty() << Current;
         return;
     }
     let mut HSI: *mut HeaderSearch = PP.getHeaderSearchInfo();
     let mut MM: *mut ModuleMap = HSI.getModuleMap();
-    let mut M: *mut Module = HSI(Current, ()());
+    let mut M: *mut Module = HSI.lookupModule(Current, ModuleName.front().getLoc(), true, false);
     if !M {
-        PP << Current;
+        PP.Diag(ModuleName.front().getLoc(), err_pp_module_begin_no_module_map) << Current;
         return;
     }
-    for let mut I: u32 = 1; I != (); I += 1 {
-        let mut NewM: *mut auto = MM.findOrInferSubmodule(M, [I]()());
-        if operator!() {
-            PP << M.getFullModuleName(false) << [I]();
+    for let mut I: u32 = 1; I != ModuleName.len; I += 1 {
+        let mut NewM: *mut Module = MM.findOrInferSubmodule(M, ModuleName[I].getIdentifierInfo().getName());
+        if !NewM {
+            PP.Diag(ModuleName[I].getLoc(), err_pp_module_begin_no_submodule) << M.getFullModuleName(false) << ModuleName[I].getIdentifierInfo();
             return;
         }
-        M = ;
+        M = NewM;
     }
     if checkModuleIsAvailable(PP.getLangOpts(), PP.getTargetInfo(), *M, PP.getDiagnostics()) {
-        PP << M.getTopLevelModuleName();
+        PP.Diag(BeginLoc, note_pp_module_begin_here) << M.getTopLevelModuleName();
         return;
     }
     PP.EnterSubmodule(M, BeginLoc, true);
-    PP.EnterAnnotationToken(BeginLoc, annot_module_begin, M);
+    PP.EnterAnnotationToken(SourceRange { B: BeginLoc, E: ModuleName.back().getLoc() }, annot_module_begin, M);
 }
 
 fn PragmaModuleBeginHandler::getName(self: *PragmaModuleBeginHandler) -> str {
@@ -1291,13 +1389,13 @@ fn PragmaModuleEndHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer:
     let mut Loc: SourceLocation = Tok.getLocation();
     PP.LexUnexpandedToken(Tok);
     if Tok.isNot(eod) {
-        PP << "pragma";
+        PP.Diag(Tok, ext_pp_extra_tokens_at_eol) << "pragma";
     }
     let mut M: *mut Module = PP.LeaveSubmodule(true);
     if M {
         PP.EnterAnnotationToken(Loc, annot_module_end, M);
     } else {
-        PP;
+        PP.Diag(Loc, err_pp_module_end_without_module_begin);
     }
 }
 
@@ -1331,14 +1429,14 @@ struct PragmaModuleLoadHandler {
 
 fn PragmaModuleLoadHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer: PragmaIntroducer, Tok: *mut Token) {
     let mut Loc: SourceLocation = Tok.getLocation();
-    let mut ModuleName: SmallVector<IdentifierLoc, 8> = zeroed();
-    if LexModuleName(PP, Tok) {
+    let mut ModuleName: SmallVector<IdentifierLoc, 8> = SmallVector<IdentifierLoc, 8> {};
+    if LexModuleName(PP, Tok, ModuleName) {
         return;
     }
     if Tok.isNot(eod) {
-        PP << "pragma";
+        PP.Diag(Tok, ext_pp_extra_tokens_at_eol) << "pragma";
     }
-    PP.getModuleLoader().loadModule(Loc, Hidden, false);
+    PP.getModuleLoader().loadModule(Loc, ModuleName, Hidden, false);
 }
 
 fn PragmaModuleLoadHandler::getName(self: *PragmaModuleLoadHandler) -> str {
@@ -1396,24 +1494,24 @@ fn PragmaARCCFCodeAuditedHandler::HandlePragma(self, PP: *mut Preprocessor, Intr
     } else if BeginEnd && BeginEnd.isStr("end") {
         IsBegin = false;
     } else {
-        PP;
+        PP.Diag(Tok.getLocation(), err_pp_arc_cf_code_audited_syntax);
         return;
     }
     PP.LexUnexpandedToken(Tok);
     if Tok.isNot(eod) {
-        PP << "pragma";
+        PP.Diag(Tok, ext_pp_extra_tokens_at_eol) << "pragma";
     }
     let mut BeginLoc: SourceLocation = PP.getPragmaARCCFCodeAuditedInfo().getLoc();
     let mut NewLoc: SourceLocation = SourceLocation {};
     if IsBegin {
         if BeginLoc.isValid() {
-            PP;
-            PP;
+            PP.Diag(Loc, err_pp_double_begin_of_arc_cf_code_audited);
+            PP.Diag(BeginLoc, note_pragma_entered_here);
         }
         NewLoc = Loc;
     } else {
         if !BeginLoc.isValid() {
-            PP;
+            PP.Diag(Loc, err_pp_unmatched_end_of_arc_cf_code_audited);
             return;
         }
         NewLoc = SourceLocation {};
@@ -1444,20 +1542,20 @@ fn PragmaAssumeNonNullHandler::HandlePragma(self, PP: *mut Preprocessor, Introdu
     } else if BeginEnd && BeginEnd.isStr("end") {
         IsBegin = false;
     } else {
-        PP;
+        PP.Diag(Tok.getLocation(), err_pp_assume_nonnull_syntax);
         return;
     }
     PP.LexUnexpandedToken(Tok);
     if Tok.isNot(eod) {
-        PP << "pragma";
+        PP.Diag(Tok, ext_pp_extra_tokens_at_eol) << "pragma";
     }
     let mut BeginLoc: SourceLocation = PP.getPragmaAssumeNonNullLoc();
     let mut NewLoc: SourceLocation = SourceLocation {};
     let mut Callbacks: *mut PPCallbacks = PP.getPPCallbacks();
     if IsBegin {
         if BeginLoc.isValid() {
-            PP;
-            PP;
+            PP.Diag(Loc, err_pp_double_begin_of_assume_nonnull);
+            PP.Diag(BeginLoc, note_pragma_entered_here);
         }
         NewLoc = Loc;
         if Callbacks {
@@ -1465,7 +1563,7 @@ fn PragmaAssumeNonNullHandler::HandlePragma(self, PP: *mut Preprocessor, Introdu
         }
     } else {
         if !BeginLoc.isValid() {
-            PP;
+            PP.Diag(Loc, err_pp_unmatched_end_of_assume_nonnull);
             return;
         }
         NewLoc = SourceLocation {};
@@ -1513,17 +1611,17 @@ fn PragmaManagedHandler::getIfNamespace(self) -> *mut PragmaNamespace {
 fn HandleMacroAnnotationPragma(PP: *mut Preprocessor, Tok: *mut Token, Pragma: *u8, MessageString: *mut str) -> *mut IdentifierInfo {
     PP.Lex(Tok);
     if Tok.isNot(l_paren) {
-        PP << "(";
+        PP.Diag(Tok, err_expected) << "(";
         return null;
     }
     PP.LexUnexpandedToken(Tok);
     if !Tok.is(identifier) {
-        PP << identifier;
+        PP.Diag(Tok, err_expected) << identifier;
         return null;
     }
     let mut II: *mut IdentifierInfo = Tok.getIdentifierInfo();
     if !II.hasMacroDefinition() {
-        PP << II;
+        PP.Diag(Tok, err_pp_visibility_non_macro) << II;
         return null;
     }
     PP.Lex(Tok);
@@ -1534,7 +1632,7 @@ fn HandleMacroAnnotationPragma(PP: *mut Preprocessor, Tok: *mut Token, Pragma: *
         }
     }
     if Tok.isNot(r_paren) {
-        PP << ")";
+        PP.Diag(Tok, err_expected) << ")";
         return null;
     }
     return II;
@@ -1591,22 +1689,22 @@ struct PragmaFinalHandler {
 fn PragmaFinalHandler::HandlePragma(self, PP: *mut Preprocessor, Introducer: PragmaIntroducer, Tok: *mut Token) {
     PP.Lex(Tok);
     if Tok.isNot(l_paren) {
-        PP << "(";
+        PP.Diag(Tok, err_expected) << "(";
         return;
     }
     PP.LexUnexpandedToken(Tok);
     if !Tok.is(identifier) {
-        PP << identifier;
+        PP.Diag(Tok, err_expected) << identifier;
         return;
     }
     let mut II: *mut IdentifierInfo = Tok.getIdentifierInfo();
     if !II.hasMacroDefinition() {
-        PP << II;
+        PP.Diag(Tok, err_pp_visibility_non_macro) << II;
         return;
     }
     PP.Lex(Tok);
     if Tok.isNot(r_paren) {
-        PP << ")";
+        PP.Diag(Tok, err_expected) << ")";
         return;
     }
     II.setIsFinal(true);
@@ -1670,7 +1768,7 @@ fn Preprocessor::RegisterBuiltinPragmas(self) {
     self.AddPragmaHandler("clang", PragmaUnsafeBufferUsageHandler {});
     self.AddPragmaHandler("region");
     self.AddPragmaHandler("endregion");
-    if self.LangOpts {
+    if self.LangOpts.MicrosoftExt {
         self.AddPragmaHandler(PragmaWarningHandler {});
         self.AddPragmaHandler(PragmaExecCharsetHandler {});
         self.AddPragmaHandler(PragmaIncludeAliasHandler {});
@@ -1678,6 +1776,9 @@ fn Preprocessor::RegisterBuiltinPragmas(self) {
         self.AddPragmaHandler(PragmaSystemHeaderHandler {});
         self.AddPragmaHandler("managed");
         self.AddPragmaHandler("unmanaged");
+    }
+    for handler in entries() {
+        self.AddPragmaHandler(handler.instantiate().release());
     }
 }
 
@@ -1696,5 +1797,6 @@ unsafe fn Closure_1::call(self: *mut Closure_1, Ident: str) -> auto {
         if (*self.Tok).getKind() != raw_identifier || (*self.Tok).getRawIdentifier() != Ident {
             return false;
         }
+        operator(self.CurLexer).Lex((*self.Tok));
         return true;
     }

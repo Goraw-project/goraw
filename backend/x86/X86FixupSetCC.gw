@@ -14,7 +14,7 @@ fn X86FixupSetCCLegacy::getPassName(self: *X86FixupSetCCLegacy) -> str {
 }
 
 fn X86FixupSetCCLegacy::getAnalysisUsage(self: *X86FixupSetCCLegacy, AU: *mut AnalysisUsage) {
-    AU;
+    AU.addPreserved();
     self.getAnalysisUsage(AU);
 }
 
@@ -61,31 +61,36 @@ fn createX86FixupSetCCLegacyPass() -> *mut FunctionPass {
 fn fixupSetCC(MF: *mut MachineFunction) -> bool {
     let mut Changed: bool = false;
     let mut MRI: *mut MachineRegisterInfo = &mut MF.getRegInfo();
-    let mut ST: *X86Subtarget = operator&(MF);
+    let mut ST: *X86Subtarget = &mut MF.getSubtarget();
     let mut TII: *X86InstrInfo = ST.getInstrInfo();
-    let mut ToErase: SmallVector<MachineInstr *, 4> = zeroed();
+    let mut ToErase: SmallVector<MachineInstr *, 4> = SmallVector<MachineInstr *, 4> {};
     for MBB in MF {
         let mut FlagsDefMI: *mut MachineInstr = null;
         for MI in MBB {
-            if MI.definesRegister {
+            if MI.definesRegister(EFLAGS, null) {
                 FlagsDefMI = &mut MI;
             }
-            if  {
+            if MI.getOpcode() != SETCCr && MI.getOpcode() != SETZUCCr {
                 continue;
             }
             let mut ZExt: *mut MachineInstr = null;
             let mut Reg0: Register = MI.getOperand(0).getReg();
+            for Use in MRI.use_instructions(Reg0) {
+                if Use.getOpcode() == MOVZX32rr8 {
+                    ZExt = &mut Use;
+                }
+            }
             if !ZExt {
                 continue;
             }
             if !FlagsDefMI {
                 continue;
             }
-            let mut UseSetZUCC: bool = ST()() && operator!(ST()());
-            if !UseSetZUCC && FlagsDefMI.readsRegister {
+            let mut UseSetZUCC: bool = ST.hasZU() && !ST.preferLegacySetCC();
+            if !UseSetZUCC && FlagsDefMI.readsRegister(EFLAGS, null) {
                 continue;
             }
-            let mut RC: *TargetRegisterClass = null;
+            let mut RC: *TargetRegisterClass = if ST.is64Bit() { &mut GR32RegClass } else { &mut GR32_ABCDRegClass };
             if !MRI.constrainRegClass(ZExt.getOperand(0).getReg(), RC, 0) {
                 continue;
             }
@@ -93,19 +98,22 @@ fn fixupSetCC(MF: *mut MachineFunction) -> bool {
             Changed = true;
             let mut ZeroReg: Register = MRI.createVirtualRegister(RC, "");
             if UseSetZUCC {
-                MI.setDesc(TII());
-                BuildMI(*ZExt.getParent(), ZExt, ZExt.getDebugLoc(), TII()(IMPLICIT_DEF), ZeroReg);
+                MI.setDesc(TII.get(SETZUCCr));
+                BuildMI(*ZExt.getParent(), ZExt, MIMetadata { DL: ZExt.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(IMPLICIT_DEF), ZeroReg);
             } else {
-                BuildMI(MBB, FlagsDefMI, MI.getDebugLoc(), TII(), ZeroReg)(1);
+                BuildMI(MBB, FlagsDefMI, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(MOV32r0), ZeroReg).setOperandDead(1);
             }
-            BuildMI(*ZExt.getParent(), ZExt, ZExt.getDebugLoc(), TII(), ZExt.getOperand(0).getReg())(ZeroReg)(Reg0);
+            BuildMI(*ZExt.getParent(), ZExt, MIMetadata { DL: ZExt.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(INSERT_SUBREG), ZExt.getOperand(0).getReg()).addReg(ZeroReg, RegState {}, 0).addReg(Reg0, RegState {}, 0).addImm(sub_8bit);
             if ZExt.peekDebugInstrNum() {
                 InstrNum;
             } else {
-                MF.makeDebugValueSubstitution;
+                MF.makeDebugValueSubstitution(DebugInstrOperandPair { InstrNum, 0 }, DebugInstrOperandPair { MI.getDebugInstrNum(), 0 }, 0);
             }
-            ToErase()(ZExt);
+            ToErase.push(ZExt);
         }
+    }
+    for I in ToErase {
+        I.eraseFromParent();
     }
     return Changed;
 }
@@ -115,5 +123,5 @@ fn X86FixupSetCCLegacy::runOnMachineFunction(self, MF: *mut MachineFunction) -> 
 }
 
 fn X86FixupSetCCPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
-    return if fixupSetCC(MF) { getMachineFunctionPassPreservedAnalyses() } else { all() };
+    return if fixupSetCC(MF) { getMachineFunctionPassPreservedAnalyses().preserveSet() } else { all() };
 }

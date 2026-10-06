@@ -29,15 +29,15 @@ fn TokenConcatenation::IsIdentifierStringPrefix(self: *TokenConcatenation, Tok: 
         }
         let mut SM: *mut SourceManager = self.PP.getSourceManager();
         let mut Ptr: *u8 = SM.getCharacterData(SM.getSpellingLoc(Tok.getLocation()), null);
-        return IsStringPrefix(Ptr[0..Tok.getLength()], LangOpts());
+        return IsStringPrefix(Ptr[0..Tok.getLength()], LangOpts.CPlusPlus11);
     }
     if Tok.getLength() < 256 {
         let mut Buffer: [256]i8 = zeroed();
         let mut TokPtr: *u8 = Buffer;
         let mut length: u32 = self.PP.getSpelling(Tok, TokPtr, null);
-        return IsStringPrefix(TokPtr[0..length], LangOpts());
+        return IsStringPrefix(TokPtr[0..length], LangOpts.CPlusPlus11);
     }
-    return IsStringPrefix(self.PP, LangOpts());
+    return IsStringPrefix(self.PP.getSpelling(Tok, null), LangOpts.CPlusPlus11);
 }
 
 fn TokenConcatenation::TokenConcatenation(self, pp: *Preprocessor) {
@@ -56,7 +56,7 @@ fn TokenConcatenation::TokenConcatenation(self, pp: *Preprocessor) {
     self.TokenInfo[colon] |= aci_custom_firstchar;
     self.TokenInfo[hash] |= aci_custom_firstchar;
     self.TokenInfo[arrow] |= aci_custom_firstchar;
-    if self.PP.getLangOpts() {
+    if self.PP.getLangOpts().CPlusPlus11 {
         self.TokenInfo[string_literal] |= aci_custom;
         self.TokenInfo[wide_string_literal] |= aci_custom;
         self.TokenInfo[utf8_string_literal] |= aci_custom;
@@ -67,10 +67,10 @@ fn TokenConcatenation::TokenConcatenation(self, pp: *Preprocessor) {
         self.TokenInfo[utf16_char_constant] |= aci_custom;
         self.TokenInfo[utf32_char_constant] |= aci_custom;
     }
-    if self.PP.getLangOpts() {
+    if self.PP.getLangOpts().CPlusPlus17 {
         self.TokenInfo[utf8_char_constant] |= aci_custom;
     }
-    if self.PP.getLangOpts() {
+    if self.PP.getLangOpts().CPlusPlus20 {
         self.TokenInfo[lessequal] |= aci_custom_firstchar;
     }
     self.TokenInfo[amp] |= aci_avoid_equal;
@@ -98,7 +98,7 @@ fn GetFirstChar(PP: *Preprocessor, Tok: *Token) -> i8 {
 }
 
 fn TokenConcatenation::AvoidConcat(self: *TokenConcatenation, PrevPrevTok: *Token, PrevTok: *Token, Tok: *Token) -> bool {
-    if PrevTok && Tok.is(semi) {
+    if PrevTok.isOneOf(annot_header_unit, annot_module_name) && Tok.is(semi) {
         return false;
     }
     if PrevTok.isAnnotation() {
@@ -119,15 +119,15 @@ fn TokenConcatenation::AvoidConcat(self: *TokenConcatenation, PrevPrevTok: *Toke
         return false;
     }
     if ConcatInfo & aci_avoid_equal {
-        if Tok {
+        if Tok.isOneOf(equal, equalequal) {
             return true;
         }
         ConcatInfo &= ~aci_avoid_equal;
     }
     if Tok.isAnnotation() {
-        assert!(Tok, "unexpected annotation in AvoidConcat");
+        assert!(Tok.isOneOf(annot_module_include, annot_module_begin, annot_module_end, annot_embed, annot_module_name), "unexpected annotation in AvoidConcat");
         ConcatInfo = 0;
-        if Tok {
+        if Tok.isOneOf(annot_embed, annot_module_name) {
             return true;
         }
     }
@@ -140,10 +140,10 @@ fn TokenConcatenation::AvoidConcat(self: *TokenConcatenation, PrevPrevTok: *Toke
     }
     match PrevKind {
         _ => {
-            llvm_unreachable_internal("InitAvoidConcatTokenInfo built wrong", "clang\\lib\\Lex\\TokenConcatenation.cpp", 225);
+            llvm_unreachable_internal("InitAvoidConcatTokenInfo built wrong", "P:/Goraw/llvm-project/clang/lib/Lex/TokenConcatenation.cpp", 225);
         },
         raw_identifier => {
-            llvm_unreachable_internal("tok::raw_identifier in non-raw lexing mode!", "clang\\lib\\Lex\\TokenConcatenation.cpp", 228);
+            llvm_unreachable_internal("tok::raw_identifier in non-raw lexing mode!", "P:/Goraw/llvm-project/clang/lib/Lex/TokenConcatenation.cpp", 228);
         },
         string_literal => {
             wide_string_literal;
@@ -154,10 +154,10 @@ fn TokenConcatenation::AvoidConcat(self: *TokenConcatenation, PrevPrevTok: *Toke
             }
         },
         numeric_constant => {
-            return isPreprocessingNumberBody(FirstChar) || FirstChar == '+' || FirstChar == '-' || (self.PP.getLangOpts() && FirstChar == '$');
+            return isPreprocessingNumberBody(FirstChar) || FirstChar == '+' || FirstChar == '-' || (self.PP.getLangOpts().DollarIdents && FirstChar == '$');
         },
         period => {
-            return (FirstChar == '.' && PrevPrevTok.is(period)) || isDigit(FirstChar) || (self.PP.getLangOpts() && FirstChar == '*');
+            return (FirstChar == '.' && PrevPrevTok.is(period)) || isDigit(FirstChar) || (self.PP.getLangOpts().CPlusPlus && FirstChar == '*');
         },
         amp => {
             return FirstChar == '&';
@@ -184,16 +184,16 @@ fn TokenConcatenation::AvoidConcat(self: *TokenConcatenation, PrevPrevTok: *Toke
             return FirstChar == '>' || FirstChar == ':';
         },
         colon => {
-            return FirstChar == '>' || (self.PP.getLangOpts() && FirstChar == ':');
+            return FirstChar == '>' || (self.PP.getLangOpts().CPlusPlus && FirstChar == ':');
         },
         hash => {
             return FirstChar == '#' || FirstChar == '@' || FirstChar == '%';
         },
         arrow => {
-            return self.PP.getLangOpts() && FirstChar == '*';
+            return self.PP.getLangOpts().CPlusPlus && FirstChar == '*';
         },
         lessequal => {
-            return self.PP.getLangOpts() && FirstChar == '>';
+            return self.PP.getLangOpts().CPlusPlus20 && FirstChar == '>';
         },
     }
 }

@@ -4,16 +4,16 @@ extern fn sqrt(x: f64) -> f64;
 
 fn ShrinkDemandedConstant(I: *mut Instruction, OpNo: u32, Demanded: *APInt) -> bool {
     assert!(I, "No instruction?");
-    (((operator!(operator!((OpNo < I.getNumOperands && "Operand index too large")))) || (_wassert(L"OpNo < I->getNumOperands() && \"Operand index too large\"", L"llvm\\lib\\Transforms\\InstCombine\\InstCombineSimplifyDemanded.cpp", (34) as u32) , 0)) as void);
-    let mut Op: *mut Value = I.getOperand;
+    assert!(OpNo < I.getNumOperands(), "Operand index too large");
+    let mut Op: *mut Value = I.getOperand(OpNo);
     let mut C: *APInt = null;
-    if operator!(match(Op)) {
+    if !match(Op, m_APInt(C)) {
         return false;
     }
     if C.isSubsetOf(Demanded) {
         return false;
     }
-    I.setOperand;
+    I.setOperand(OpNo, get(Op.getType(), *C & Demanded));
     return true;
 }
 
@@ -22,7 +22,7 @@ fn simplifyShiftSelectingPackedElement(I: *mut Instruction, DemandedMask: *APInt
     let mut ShlAmt: u64 = 0;
     let mut Upper: *mut Value = null;
     let mut Lower: *mut Value = null;
-    if operator!(match(I.getOperand, m_OneUse(m_c_DisjointOr(m_OneUse(m_Shl(m_Value(Upper), m_ConstantInt(ShlAmt))), m_Value(Lower))))) {
+    if !match(I.getOperand(0), m_OneUse(m_c_DisjointOr(m_OneUse(m_Shl(m_Value(Upper), m_ConstantInt(ShlAmt))), m_Value(Lower)))) {
         return null;
     }
     if !isPowerOf2_64(ShlAmt) {
@@ -35,20 +35,20 @@ fn simplifyShiftSelectingPackedElement(I: *mut Instruction, DemandedMask: *APInt
     if Upper.getType().getScalarSizeInBits() < ShlAmt + DemandedBitWidth {
         return null;
     }
-    let mut KnownLowerBits: KnownBits = IC;
+    let mut KnownLowerBits: KnownBits = IC.computeKnownBits(Lower, I, Depth);
     if !KnownLowerBits.getMaxValue().isIntN(ShlAmt) {
         return null;
     }
-    let mut ShrAmt: *mut Value = I.getOperand;
-    let mut KnownShrBits: KnownBits = IC;
+    let mut ShrAmt: *mut Value = I.getOperand(1);
+    let mut KnownShrBits: KnownBits = IC.computeKnownBits(ShrAmt, I, Depth);
     if operator(KnownShrBits.Zero) != ShlAmt {
         return null;
     }
-    let mut Guard: InsertPointGuard = IC();
-    IC()(I);
-    let mut ShrAmtZ: *mut Value = IC()(ShrAmt, getNullValue(ShrAmt.getType()), ShrAmt.getName() + ".z");
-    let mut Select: *mut Value = IC()(ShrAmtZ, Lower, Upper, "instcombine");
-    Select.takeName;
+    let mut Guard: InsertPointGuard = IC.Builder;
+    IC.Builder.SetInsertPoint(I);
+    let mut ShrAmtZ: *mut Value = IC.Builder.CreateICmpEQ(ShrAmt, getNullValue(ShrAmt.getType()), ShrAmt.getName() + ".z");
+    let mut Select: *mut Value = IC.Builder.CreateSelectWithUnknownProfile(ShrAmtZ, Lower, Upper, "instcombine", "");
+    Select.takeName(I);
     return Select;
 }
 
@@ -63,37 +63,37 @@ fn getBitWidth(Ty: *mut Type, DL: *DataLayout) -> u32 {
 
 fn InstCombinerImpl::SimplifyDemandedInstructionBits(self, Inst: *mut Instruction, Known: *mut KnownBits) -> bool {
     let mut DemandedMask: APInt = getAllOnes(Known.getBitWidth());
-    let mut V: *mut Value = self.SimplifyDemandedUseBits;
+    let mut V: *mut Value = self.SimplifyDemandedUseBits(&mut Inst, DemandedMask, Known, self.SQ.getWithInstruction(&mut Inst), 0);
     if !V {
         return false;
     }
-    if V(&mut Inst) {
+    if V == &mut Inst {
         return true;
     }
-    self.replaceInstUsesWith;
+    self.replaceInstUsesWith(Inst, V);
     return true;
 }
 
 fn InstCombinerImpl::SimplifyDemandedInstructionBits(self, Inst: *mut Instruction) -> bool {
-    let mut Known: KnownBits = getBitWidth(Inst.getType);
+    let mut Known: KnownBits = getBitWidth(Inst.getType(), self.DL);
     return self.SimplifyDemandedInstructionBits(Inst, Known);
 }
 
 fn InstCombinerImpl::SimplifyDemandedInstructionFPClass(self, Inst: *mut Instruction) -> bool {
-    let mut Known: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
-    let mut V: *mut Value = self.SimplifyDemandedUseFPClass;
+    let mut Known: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
+    let mut V: *mut Value = self.SimplifyDemandedUseFPClass(&mut Inst, fcAllFlags, Known, self.SQ.getWithInstruction(&mut Inst), 0);
     if !V {
         return false;
     }
-    if V(&mut Inst) {
+    if V == &mut Inst {
         return true;
     }
-    self.replaceInstUsesWith;
+    self.replaceInstUsesWith(Inst, V);
     return true;
 }
 
 fn InstCombinerImpl::SimplifyDemandedBits(self, I: *mut Instruction, OpNo: u32, DemandedMask: *APInt, Known: *mut KnownBits, Q: *SimplifyQuery, Depth: u32) -> bool {
-    let mut U: *mut Use = I;
+    let mut U: *mut Use = I.getOperandUse(OpNo);
     let mut V: *mut Value = U.get();
     if isa(V) {
         computeKnownBits(V, Known, Q, Depth);
@@ -101,7 +101,7 @@ fn InstCombinerImpl::SimplifyDemandedBits(self, I: *mut Instruction, OpNo: u32, 
     }
     Known.resetAll();
     if DemandedMask.isZero() {
-        self.replaceUse;
+        self.replaceUse(U, get(V.getType()));
         return true;
     }
     let mut VInst: *mut Instruction = dyn_cast(V);
@@ -113,7 +113,7 @@ fn InstCombinerImpl::SimplifyDemandedBits(self, I: *mut Instruction, OpNo: u32, 
         return false;
     }
     let mut NewVal: *mut Value = null;
-    if VInst.hasOneUse {
+    if VInst.hasOneUse() {
         NewVal = self.SimplifyDemandedUseBits(VInst, DemandedMask, Known, Q, Depth);
     } else {
         NewVal = self.SimplifyMultipleUseDemandedBits(VInst, DemandedMask, Known, Q, Depth);
@@ -126,7 +126,7 @@ fn InstCombinerImpl::SimplifyDemandedBits(self, I: *mut Instruction, OpNo: u32, 
     } else {
         salvageDebugInfo(*OpInst);
     }
-    self.replaceUse;
+    self.replaceUse(U, NewVal);
     return true;
 }
 
@@ -134,7 +134,7 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
     assert!(I != null, "Null pointer of Value???");
     assert!(Depth <= MaxAnalysisRecursionDepth, "Limit Search Depth");
     let mut BitWidth: u32 = DemandedMask.getBitWidth();
-    let mut VTy: *mut Type = I.getType;
+    let mut VTy: *mut Type = I.getType();
     assert!((!VTy.isIntOrIntVectorTy() || VTy.getScalarSizeInBits() == BitWidth) && Known.getBitWidth() == BitWidth, "Value *V, DemandedMask and Known must have same BitWidth");
     let mut LHSKnown: KnownBits = BitWidth;
     let mut RHSKnown: KnownBits = BitWidth;
@@ -153,10 +153,10 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
                 return getIntegerValue(VTy, Known.One);
             }
             if DemandedMask.isSubsetOf(LHSKnown.Zero | RHSKnown.One) {
-                return I.getOperand;
+                return I.getOperand(0);
             }
             if DemandedMask.isSubsetOf(RHSKnown.Zero | LHSKnown.One) {
-                return I.getOperand;
+                return I.getOperand(1);
             }
             if ShrinkDemandedConstant(I, 1, DemandedMask & operator(LHSKnown.Zero)) {
                 return I;
@@ -173,19 +173,19 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
                 return getIntegerValue(VTy, Known.One);
             }
             if DemandedMask.isSubsetOf(LHSKnown.One | RHSKnown.Zero) {
-                return I.getOperand;
+                return I.getOperand(0);
             }
             if DemandedMask.isSubsetOf(RHSKnown.One | LHSKnown.Zero) {
-                return I.getOperand;
+                return I.getOperand(1);
             }
             if ShrinkDemandedConstant(I, 1, DemandedMask) {
                 return I;
             }
-            if operator!(cast(I)()) {
-                let mut LHSCache: WithCache<const Value *> = zeroed();
-                let mut RHSCache: WithCache<const Value *> = zeroed();
-                if haveNoCommonBitsSet(Q) {
-                    cast(I)(true);
+            if !cast(I).isDisjoint() {
+                let mut LHSCache: WithCache<const Value *> = WithCache<const Value *> { I.getOperand(0), LHSKnown };
+                let mut RHSCache: WithCache<const Value *> = WithCache<const Value *> { I.getOperand(1), RHSKnown };
+                if haveNoCommonBitsSet(LHSCache, RHSCache, Q) {
+                    cast(I).setIsDisjoint(true);
                     return I;
                 }
             }
@@ -197,52 +197,58 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
             }
             let mut LHS: *mut Value = null;
             let mut RHS: *mut Value = null;
-            if DemandedMask == 1 && match(I.getOperand, m_Ctpop(m_Value(LHS))) && match(I.getOperand, m_Ctpop(m_Value(RHS))) {
-                let mut Guard: InsertPointGuard = zeroed();
-                let mut Xor: *mut auto = null;
+            if DemandedMask == 1 && match(I.getOperand(0), m_Ctpop(m_Value(LHS))) && match(I.getOperand(1), m_Ctpop(m_Value(RHS))) {
+                let mut Guard: InsertPointGuard = self.Builder;
+                self.Builder.SetInsertPoint(I);
+                let mut Xor: *mut Value = self.Builder.CreateXor(LHS, RHS, "");
+                return self.Builder.CreateUnaryIntrinsic(ctpop, Xor, FMFSource {}, "");
             }
             Known = analyzeKnownBitsFromAndXorOr(cast(I), LHSKnown, RHSKnown, Q, Depth);
             if DemandedMask.isSubsetOf(Known.Zero | Known.One) {
                 return getIntegerValue(VTy, Known.One);
             }
             if DemandedMask.isSubsetOf(RHSKnown.Zero) {
-                return I.getOperand;
+                return I.getOperand(0);
             }
             if DemandedMask.isSubsetOf(LHSKnown.Zero) {
-                return I.getOperand;
+                return I.getOperand(1);
             }
             if DemandedMask.isSubsetOf(RHSKnown.Zero | LHSKnown.Zero) {
-                let mut Or: *mut Instruction = CreateOr(I.getOperand, I.getOperand);
+                let mut Or: *mut Instruction = CreateOr(I.getOperand(0), I.getOperand(1), "");
                 if DemandedMask.isAllOnes() {
-                    cast(Or)(true);
+                    cast(Or).setIsDisjoint(true);
                 }
-                Or.takeName;
+                Or.takeName(I);
+                return self.InsertNewInstWith(Or, I.getIterator());
             }
             if DemandedMask.isSubsetOf(RHSKnown.Zero | RHSKnown.One) && RHSKnown.One.isSubsetOf(LHSKnown.One) {
                 let mut AndC: *mut Constant = getIntegerValue(VTy, operator(RHSKnown.One) & DemandedMask);
-                let mut And: *mut Instruction = CreateAnd(I.getOperand, AndC);
+                let mut And: *mut Instruction = CreateAnd(I.getOperand(0), AndC, "");
+                return self.InsertNewInstWith(And, I.getIterator());
             }
             let mut C: *APInt = null;
-            if match(I.getOperand) && !C.isAllOnes() {
+            if match(I.getOperand(1), m_APInt(C)) && !C.isAllOnes() {
                 if (*C | operator(DemandedMask)).isAllOnes() {
-                    I.setOperand;
+                    I.setOperand(1, getAllOnesValue(VTy));
                     return I;
                 }
                 if ShrinkDemandedConstant(I, 1, DemandedMask) {
                     return I;
                 }
             }
-            if dyn_cast(I.getOperand) {
+            if dyn_cast(I.getOperand(0)) {
                 LHSInst;
             } else {
                 let mut AndRHS: *mut ConstantInt = null;
                 let mut XorRHS: *mut ConstantInt = null;
-                if LHSInst.getOpcode() == And && LHSInst.hasOneUse && match(I.getOperand, m_ConstantInt(XorRHS)) && match(LHSInst.getOperand, m_ConstantInt(AndRHS)) && (LHSKnown.One & RHSKnown.One & DemandedMask) != 0 {
+                if LHSInst.getOpcode() == And && LHSInst.hasOneUse() && match(I.getOperand(1), m_ConstantInt(XorRHS)) && match(LHSInst.getOperand(1), m_ConstantInt(AndRHS)) && (LHSKnown.One & RHSKnown.One & DemandedMask) != 0 {
                     let mut NewMask: APInt = operator((LHSKnown.One & RHSKnown.One & DemandedMask));
                     let mut AndC: *mut Constant = get(VTy, NewMask & AndRHS.getValue());
-                    let mut NewAnd: *mut Instruction = CreateAnd(I.getOperand, AndC);
+                    let mut NewAnd: *mut Instruction = CreateAnd(I.getOperand(0), AndC, "");
+                    self.InsertNewInstWith(NewAnd, I.getIterator());
                     let mut XorC: *mut Constant = get(VTy, NewMask & XorRHS.getValue());
-                    let mut NewXor: *mut Instruction = CreateXor(NewAnd, XorC);
+                    let mut NewXor: *mut Instruction = CreateXor(NewAnd, XorC, "");
+                    return self.InsertNewInstWith(NewXor, I.getIterator());
                 }
             }
             break;
@@ -255,23 +261,25 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
             if CanonicalizeSelectConstant.call(I, 1, DemandedMask) || CanonicalizeSelectConstant.call(I, 2, DemandedMask) {
                 return I;
             }
-            adjustKnownBitsForSelectArm(LHSKnown, I.getOperand, I.getOperand, false, Q, Depth);
-            adjustKnownBitsForSelectArm(RHSKnown, I.getOperand, I.getOperand, true, Q, Depth);
+            adjustKnownBitsForSelectArm(LHSKnown, I.getOperand(0), I.getOperand(1), false, Q, Depth);
+            adjustKnownBitsForSelectArm(RHSKnown, I.getOperand(0), I.getOperand(2), true, Q, Depth);
             Known = LHSKnown.intersectWith(RHSKnown);
             break;
         },
         Trunc => {
             let mut X: *mut Value = null;
             let mut C: *APInt = null;
-            if match(I.getOperand, m_OneUse(m_LShr(m_Value(X)))) {
+            if match(I.getOperand(0), m_OneUse(m_LShr(m_Value(X), m_APInt(C)))) {
                 if C.ult(VTy.getScalarSizeInBits()) && C.ule(DemandedMask.countl_zero()) {
-                    let mut Guard: InsertPointGuard = zeroed();
-                    let mut Trunc: *mut Value = null;
+                    let mut Guard: InsertPointGuard = self.Builder;
+                    self.Builder.SetInsertPoint(I);
+                    let mut Trunc: *mut Value = self.Builder.CreateTrunc(X, VTy, "", false, false);
+                    return self.Builder.CreateLShr(Trunc, C.getZExtValue(), "", false);
                 }
             }
         },
         ZExt => {
-            let mut SrcBitWidth: u32 = I.getOperand()();
+            let mut SrcBitWidth: u32 = I.getOperand(0).getType().getScalarSizeInBits();
             let mut InputDemandedMask: APInt = DemandedMask.zextOrTrunc(SrcBitWidth);
             let mut InputKnown: KnownBits = SrcBitWidth;
             if self.SimplifyDemandedBits(I, 0, InputDemandedMask, InputKnown, Q, Depth + 1) {
@@ -286,7 +294,7 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
             break;
         },
         SExt => {
-            let mut SrcBitWidth: u32 = I.getOperand()();
+            let mut SrcBitWidth: u32 = I.getOperand(0).getType().getScalarSizeInBits();
             let mut InputDemandedBits: APInt = DemandedMask.trunc(SrcBitWidth);
             if DemandedMask.getActiveBits() > SrcBitWidth {
                 InputDemandedBits.setBit(SrcBitWidth - 1);
@@ -296,8 +304,9 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
                 return I;
             }
             if InputKnown.isNonNegative() || DemandedMask.getActiveBits() <= SrcBitWidth {
-                let mut NewCast: *mut CastInst = I.getOperand;
-                NewCast.takeName;
+                let mut NewCast: *mut CastInst = ZExtInst { I.getOperand(0), VTy, "", null };
+                NewCast.takeName(I);
+                return self.InsertNewInstWith(NewCast, I.getIterator());
             }
             Known = InputKnown.sext(BitWidth);
             break;
@@ -307,12 +316,16 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
                 let mut X: *mut Value = null;
                 let mut Y: *mut Value = null;
                 if match(I, m_c_Add(m_OneUse(m_ZExt(m_Value(X))), m_OneUse(m_SExt(m_Value(Y))))) && X.getType().isIntOrIntVectorTy(1) && X.getType() == Y.getType() {
-                    let mut Guard: InsertPointGuard = zeroed();
-                    let mut AndNot: *mut Value = null;
+                    let mut Guard: InsertPointGuard = self.Builder;
+                    self.Builder.SetInsertPoint(I);
+                    let mut AndNot: *mut Value = self.Builder.CreateAnd(self.Builder.CreateNot(X, ""), Y, "");
+                    return self.Builder.CreateSExt(AndNot, VTy, "");
                 }
-                if match(I, m_Add(m_SExt(m_Value(X)), m_SExt(m_Value(Y)))) && X.getType().isIntOrIntVectorTy(1) && X.getType() == Y.getType() && (I.getOperand() || I.getOperand()) {
-                    let mut Guard: InsertPointGuard = zeroed();
-                    let mut Or: *mut Value = null;
+                if match(I, m_Add(m_SExt(m_Value(X)), m_SExt(m_Value(Y)))) && X.getType().isIntOrIntVectorTy(1) && X.getType() == Y.getType() && (I.getOperand(0).hasOneUse() || I.getOperand(1).hasOneUse()) {
+                    let mut Guard: InsertPointGuard = self.Builder;
+                    self.Builder.SetInsertPoint(I);
+                    let mut Or: *mut Value = self.Builder.CreateOr(X, Y, "", false);
+                    return self.Builder.CreateSExt(Or, VTy, "");
                 }
             }
             let mut NLZ: u32 = DemandedMask.countl_zero();
@@ -333,19 +346,21 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
                 return disableWrapFlagsBasedOnUnusedHighBits.call(I, NLZ);
             }
             if DemandedFromOps.isSubsetOf(RHSKnown.Zero) {
-                return I.getOperand;
+                return I.getOperand(0);
             }
             if DemandedFromOps.isSubsetOf(LHSKnown.Zero) {
-                return I.getOperand;
+                return I.getOperand(1);
             }
             {
                 let mut C: *APInt = null;
-                if match(I.getOperand) && C.isOneBitSet(DemandedMask.getActiveBits() - 1) {
-                    let mut Guard: InsertPointGuard = zeroed();
+                if match(I.getOperand(1), m_APInt(C)) && C.isOneBitSet(DemandedMask.getActiveBits() - 1) {
+                    let mut Guard: InsertPointGuard = self.Builder;
+                    self.Builder.SetInsertPoint(I);
+                    return self.Builder.CreateXor(I.getOperand(0), get(VTy, *C), "");
                 }
             }
-            let mut NSW: bool = cast(I)();
-            let mut NUW: bool = cast(I)();
+            let mut NSW: bool = cast(I).hasNoSignedWrap();
+            let mut NUW: bool = cast(I).hasNoUnsignedWrap();
             Known = add(LHSKnown, RHSKnown, NSW, NUW, false);
             break;
         },
@@ -362,17 +377,19 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
                 return disableWrapFlagsBasedOnUnusedHighBits.call(I, NLZ);
             }
             if DemandedFromOps.isSubsetOf(RHSKnown.Zero) {
-                return I.getOperand;
+                return I.getOperand(0);
             }
             if DemandedFromOps.isOne() && DemandedFromOps.isSubsetOf(LHSKnown.Zero) {
-                return I.getOperand;
+                return I.getOperand(1);
             }
             let mut LHSC: *APInt = null;
-            if match(I.getOperand) && DemandedFromOps.isSubsetOf(*LHSC) {
-                let mut Guard: InsertPointGuard = zeroed();
+            if match(I.getOperand(0), m_LowBitMask(LHSC)) && DemandedFromOps.isSubsetOf(*LHSC) {
+                let mut Guard: InsertPointGuard = self.Builder;
+                self.Builder.SetInsertPoint(I);
+                return self.Builder.CreateNot(I.getOperand(1), "");
             }
-            let mut NSW: bool = cast(I)();
-            let mut NUW: bool = cast(I)();
+            let mut NSW: bool = cast(I).hasNoSignedWrap();
+            let mut NUW: bool = cast(I).hasNoUnsignedWrap();
             Known = sub(LHSKnown, RHSKnown, NSW, NUW);
             break;
         },
@@ -384,24 +401,26 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
             if DemandedMask.isPowerOf2() {
                 let mut CTZ: u32 = DemandedMask.countr_zero();
                 let mut C: *APInt = null;
-                if match(I.getOperand) && C.countr_zero() == CTZ {
+                if match(I.getOperand(1), m_APInt(C)) && C.countr_zero() == CTZ {
                     let mut ShiftC: *mut Constant = get(VTy, CTZ, false, false);
-                    let mut Shl: *mut Instruction = CreateShl(I.getOperand, ShiftC);
+                    let mut Shl: *mut Instruction = CreateShl(I.getOperand(0), ShiftC, "");
+                    return self.InsertNewInstWith(Shl, I.getIterator());
                 }
             }
-            if I.getOperand == I.getOperand && DemandedMask.ult(4) {
+            if I.getOperand(0) == I.getOperand(1) && DemandedMask.ult(4) {
                 let mut One: *mut Constant = get(VTy, 1, false, false);
-                let mut And1: *mut Instruction = CreateAnd(I.getOperand, One);
+                let mut And1: *mut Instruction = CreateAnd(I.getOperand(0), One, "");
+                return self.InsertNewInstWith(And1, I.getIterator());
             }
             computeKnownBits(I, Known, Q, Depth);
             break;
         },
         Shl => {
             let mut SA: *APInt = null;
-            if match(I.getOperand) {
+            if match(I.getOperand(1), m_APInt(SA)) {
                 let mut ShrAmt: *APInt = null;
-                if match(I.getOperand, m_Shr(m_Value())) {
-                    if dyn_cast(I.getOperand) {
+                if match(I.getOperand(0), m_Shr(m_Value(), m_APInt(ShrAmt))) {
+                    if dyn_cast(I.getOperand(0)) {
                         Shr;
                     } else if self.simplifyShrShlDemandedBits(Shr, *ShrAmt, I, *SA, DemandedMask, Known) {
                         R;
@@ -409,11 +428,13 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
                         return R;
                     }
                 }
-                if I.hasOneUse {
+                if I.hasOneUse() {
                     let mut Inst: *mut Instruction = I.user_back();
                     if Inst.getOpcode() == Or {
-                        if  {
-                            if  {
+                        if self.convertOrOfShiftsToFunnelShift(*Inst) {
+                            Opt;
+                        } else {
+                            if (IID == fshl || IID == fshr) && FShiftArgs[0] == FShiftArgs[1] {
                                 computeKnownBits(I, Known, Q, Depth);
                                 break;
                             }
@@ -424,32 +445,33 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
                 if DemandedMask.countr_zero() >= ShiftAmt {
                     if I.hasNoSignedWrap() {
                         let mut NumHiDemandedBits: u32 = BitWidth - DemandedMask.countr_zero();
-                        let mut SignBits: u32 = self.ComputeNumSignBits(I.getOperand, Q.CtxI, Depth + 1);
+                        let mut SignBits: u32 = self.ComputeNumSignBits(I.getOperand(0), Q.CtxI, Depth + 1);
                         if SignBits > ShiftAmt && SignBits - ShiftAmt >= NumHiDemandedBits {
-                            return I.getOperand;
+                            return I.getOperand(0);
                         }
                     }
                     let mut X: *mut Value = null;
                     let mut C: *mut Constant = null;
-                    if match(I.getOperand, m_LShr(m_ImmConstant(C), m_Value(X))) {
+                    if match(I.getOperand(0), m_LShr(m_ImmConstant(C), m_Value(X))) {
                         let mut LeftShiftAmtC: *mut Constant = get(VTy, ShiftAmt, false, false);
-                        let mut NewC: *mut Constant = ConstantFoldBinaryOpOperands(Shl, C, LeftShiftAmtC);
-                        if ConstantFoldBinaryOpOperands(LShr, NewC, LeftShiftAmtC) == C {
+                        let mut NewC: *mut Constant = ConstantFoldBinaryOpOperands(Shl, C, LeftShiftAmtC, self.DL);
+                        if ConstantFoldBinaryOpOperands(LShr, NewC, LeftShiftAmtC, self.DL) == C {
                             let mut Lshr: *mut Instruction = CreateLShr(NewC, X, "");
+                            return self.InsertNewInstWith(Lshr, I.getIterator());
                         }
                     }
                 }
                 let mut DemandedMaskIn: APInt = DemandedMask.lshr(ShiftAmt);
                 let mut IOp: *mut ShlOperator = cast(I);
-                if IOp()() {
+                if IOp.hasNoSignedWrap() {
                     DemandedMaskIn.setHighBits(ShiftAmt + 1);
-                } else if IOp()() {
+                } else if IOp.hasNoUnsignedWrap() {
                     DemandedMaskIn.setHighBits(ShiftAmt);
                 }
                 if self.SimplifyDemandedBits(I, 0, DemandedMaskIn, Known, Q, Depth + 1) {
                     return I;
                 }
-                Known = shl(Known, makeConstant(APInt { BitWidth, ShiftAmt, false, false }), IOp()(), IOp()());
+                Known = shl(Known, makeConstant(APInt { BitWidth, ShiftAmt, false, false }), IOp.hasNoUnsignedWrap(), IOp.hasNoSignedWrap(), false);
             } else {
                 if DemandedMask.countl_zero() {
                     CTLZ;
@@ -466,13 +488,15 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
         },
         LShr => {
             let mut SA: *APInt = null;
-            if match(I.getOperand) {
+            if match(I.getOperand(1), m_APInt(SA)) {
                 let mut ShiftAmt: u64 = SA.getLimitedValue(BitWidth - 1);
-                if I.hasOneUse {
+                if I.hasOneUse() {
                     let mut Inst: *mut Instruction = I.user_back();
                     if Inst.getOpcode() == Or {
-                        if  {
-                            if  {
+                        if self.convertOrOfShiftsToFunnelShift(*Inst) {
+                            Opt;
+                        } else {
+                            if (IID == fshl || IID == fshr) && FShiftArgs[0] == FShiftArgs[1] {
                                 computeKnownBits(I, Known, Q, Depth);
                                 break;
                             }
@@ -481,22 +505,24 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
                 }
                 if DemandedMask.countl_zero() >= ShiftAmt {
                     let mut NumHiDemandedBits: u32 = BitWidth - DemandedMask.countr_zero();
-                    let mut SignBits: u32 = self.ComputeNumSignBits(I.getOperand, Q.CtxI, Depth + 1);
+                    let mut SignBits: u32 = self.ComputeNumSignBits(I.getOperand(0), Q.CtxI, Depth + 1);
                     if SignBits >= NumHiDemandedBits {
-                        return I.getOperand;
+                        return I.getOperand(0);
                     }
                     let mut X: *mut Value = null;
                     let mut C: *mut Constant = null;
-                    if match(I.getOperand, m_Shl(m_ImmConstant(C), m_Value(X))) {
+                    if match(I.getOperand(0), m_Shl(m_ImmConstant(C), m_Value(X))) {
                         let mut RightShiftAmtC: *mut Constant = get(VTy, ShiftAmt, false, false);
-                        let mut NewC: *mut Constant = ConstantFoldBinaryOpOperands(LShr, C, RightShiftAmtC);
-                        if ConstantFoldBinaryOpOperands(Shl, NewC, RightShiftAmtC) == C {
+                        let mut NewC: *mut Constant = ConstantFoldBinaryOpOperands(LShr, C, RightShiftAmtC, self.DL);
+                        if ConstantFoldBinaryOpOperands(Shl, NewC, RightShiftAmtC, self.DL) == C {
                             let mut Shl: *mut Instruction = CreateShl(NewC, X, "");
+                            return self.InsertNewInstWith(Shl, I.getIterator());
                         }
                     }
                     let mut Factor: *APInt = null;
-                    if match(I.getOperand, m_OneUse(m_Mul(m_Value(X)))) && Factor.countr_zero() >= ShiftAmt {
+                    if match(I.getOperand(0), m_OneUse(m_Mul(m_Value(X), m_APInt(Factor)))) && Factor.countr_zero() >= ShiftAmt {
                         let mut Mul: *mut BinaryOperator = CreateMul(X, get(X.getType(), Factor.lshr(ShiftAmt)), "");
+                        return self.InsertNewInstWith(Mul, I.getIterator());
                     }
                 }
                 let mut DemandedMaskIn: APInt = DemandedMask.shl(ShiftAmt);
@@ -519,16 +545,17 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
             break;
         },
         AShr => {
-            let mut SignBits: u32 = self.ComputeNumSignBits(I.getOperand, Q.CtxI, Depth + 1);
+            let mut SignBits: u32 = self.ComputeNumSignBits(I.getOperand(0), Q.CtxI, Depth + 1);
             let mut NumHiDemandedBits: u32 = BitWidth - DemandedMask.countr_zero();
             if SignBits >= NumHiDemandedBits {
-                return I.getOperand;
+                return I.getOperand(0);
             }
             if DemandedMask.isOne() {
-                let mut NewVal: *mut Instruction = CreateLShr(I.getOperand, I.getOperand, I.getName);
+                let mut NewVal: *mut Instruction = CreateLShr(I.getOperand(0), I.getOperand(1), I.getName());
+                return self.InsertNewInstWith(NewVal, I.getIterator());
             }
             let mut SA: *APInt = null;
-            if match(I.getOperand) {
+            if match(I.getOperand(1), m_APInt(SA)) {
                 let mut ShiftAmt: u32 = SA.getLimitedValue(BitWidth - 1);
                 let mut DemandedMaskIn: APInt = DemandedMask.shl(ShiftAmt);
                 let mut ShiftedInBitsDemanded: bool = DemandedMask.countl_zero() < ShiftAmt;
@@ -540,9 +567,10 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
                     return I;
                 }
                 if Known.Zero[BitWidth - 1] || !ShiftedInBitsDemanded {
-                    let mut LShr: *mut BinaryOperator = CreateLShr(I.getOperand, I.getOperand);
-                    LShr.setIsExact(cast(I)());
-                    LShr.takeName;
+                    let mut LShr: *mut BinaryOperator = CreateLShr(I.getOperand(0), I.getOperand(1), "");
+                    LShr.setIsExact(cast(I).isExact());
+                    LShr.takeName(I);
+                    return self.InsertNewInstWith(LShr, I.getIterator());
                 }
                 Known = ashr(Known, makeConstant(APInt { BitWidth, ShiftAmt, false, false }), ShiftAmt != 0, I.isExact());
             } else {
@@ -552,14 +580,14 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
         },
         UDiv => {
             let mut SA: *APInt = null;
-            if match(I.getOperand) {
+            if match(I.getOperand(1), m_APInt(SA)) {
                 let mut RHSTrailingZeros: u32 = SA.countr_zero();
                 let mut DemandedMaskIn: APInt = getHighBitsSet(BitWidth, BitWidth - RHSTrailingZeros);
                 if self.SimplifyDemandedBits(I, 0, DemandedMaskIn, LHSKnown, Q, Depth + 1) {
                     I.dropPoisonGeneratingFlags();
                     return I;
                 }
-                Known = udiv(LHSKnown, makeConstant(*SA), cast(I)());
+                Known = udiv(LHSKnown, makeConstant(*SA), cast(I).isExact());
             } else {
                 computeKnownBits(I, Known, Q, Depth);
             }
@@ -567,9 +595,9 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
         },
         SRem => {
             let mut Rem: *APInt = null;
-            if match(I.getOperand) && Rem.isPowerOf2() {
+            if match(I.getOperand(1), m_APInt(Rem)) && Rem.isPowerOf2() {
                 if DemandedMask.ult(*Rem) {
-                    return I.getOperand;
+                    return I.getOperand(0);
                 }
                 let mut LowBits: APInt = *Rem - 1;
                 let mut Mask2: APInt = LowBits | getSignMask(BitWidth);
@@ -590,35 +618,37 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
                 match II.getIntrinsicID() {
                     abs => {
                         if DemandedMask == 1 {
-                            return II.getArgOperand;
+                            return II.getArgOperand(0);
                         }
                         break;
                     },
                     ctpop => {
                         let mut X: *mut Value = null;
-                        if DemandedMask == 1 && VTy.getScalarSizeInBits() % 2 == 0 && match(II.getArgOperand, m_Not(m_Value(X))) {
-                            let mut Ctpop: *mut Function = getOrInsertDeclaration(II, ctpop, VTy);
+                        if DemandedMask == 1 && VTy.getScalarSizeInBits() % 2 == 0 && match(II.getArgOperand(0), m_Not(m_Value(X))) {
+                            let mut Ctpop: *mut Function = getOrInsertDeclaration(II.getModule(), ctpop, VTy);
+                            return self.InsertNewInstWith(Create(Ctpop, [X], ArrayRef<OperandBundleDef> {}, "", null), I.getIterator());
                         }
                         break;
                     },
                     bswap => {
                         let mut NLZ: u32 = DemandedMask.countl_zero();
                         let mut NTZ: u32 = DemandedMask.countr_zero();
-                        NLZ = alignDown(NLZ, 8);
-                        NTZ = alignDown(NTZ, 8);
+                        NLZ = alignDown(NLZ, 8, 0);
+                        NTZ = alignDown(NTZ, 8, 0);
                         if BitWidth - NLZ - NTZ == 8 {
                             let mut NewVal: *mut Instruction = null;
                             if NLZ > NTZ {
-                                NewVal = CreateLShr(II.getArgOperand, get(VTy, NLZ - NTZ, false, false));
+                                NewVal = CreateLShr(II.getArgOperand(0), get(VTy, NLZ - NTZ, false, false), "");
                             } else {
-                                NewVal = CreateShl(II.getArgOperand, get(VTy, NTZ - NLZ, false, false));
+                                NewVal = CreateShl(II.getArgOperand(0), get(VTy, NTZ - NLZ, false, false), "");
                             }
-                            NewVal.takeName;
+                            NewVal.takeName(I);
+                            return self.InsertNewInstWith(NewVal, I.getIterator());
                         }
                         break;
                     },
                     ptrmask => {
-                        let mut MaskWidth: u32 = I.getOperand()();
+                        let mut MaskWidth: u32 = I.getOperand(1).getType().getScalarSizeInBits();
                         RHSKnown = MaskWidth;
                         if self.SimplifyDemandedBits(I, 0, DemandedMask, LHSKnown, Q, Depth + 1) || self.SimplifyDemandedBits(I, 1, (DemandedMask & operator(LHSKnown.Zero)).zextOrTrunc(MaskWidth), RHSKnown, Q, Depth + 1) {
                             return I;
@@ -626,11 +656,11 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
                         RHSKnown = RHSKnown.anyextOrTrunc(BitWidth);
                         Known = LHSKnown & RHSKnown;
                         KnownBitsComputed = true;
-                        if DemandedMask.isSubsetOf(Known.Zero) && operator!(match(I.getOperand, m_Zero())) {
-                            return self.replaceOperand(*I, 1, getNullValue(I.getOperand()));
+                        if DemandedMask.isSubsetOf(Known.Zero) && !match(I.getOperand(1), m_Zero()) {
+                            return self.replaceOperand(*I, 1, getNullValue(I.getOperand(1).getType()));
                         }
                         if DemandedMask.isSubsetOf(RHSKnown.One | LHSKnown.Zero) {
-                            return I.getOperand;
+                            return I.getOperand(0);
                         }
                         if ShrinkDemandedConstant(I, 1, (DemandedMask & operator(LHSKnown.Zero)).zextOrTrunc(MaskWidth)) {
                             return I;
@@ -639,7 +669,7 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
                         let mut GEPIndex: u64 = 0;
                         let mut PtrMaskImmediate: u64 = 0;
                         if match(I, m_Intrinsic(m_PtrAdd(m_Value(InnerPtr), m_ConstantInt(GEPIndex)), m_ConstantInt(PtrMaskImmediate))) {
-                            LHSKnown = ;
+                            LHSKnown = self.computeKnownBits(InnerPtr, I, Depth + 1);
                             if !LHSKnown.isZero() {
                                 let mut trailingZeros: u32 = LHSKnown.countMinTrailingZeros();
                                 let mut PointerAlignBits: u64 = (1 << trailingZeros) - 1;
@@ -647,10 +677,11 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
                                 let mut MaskedLowBitsGEPIndex: u64 = GEPIndex & PointerAlignBits & PtrMaskImmediate;
                                 let mut MaskedGEPIndex: u64 = HighBitsGEPIndex | MaskedLowBitsGEPIndex;
                                 if MaskedGEPIndex != GEPIndex {
-                                    let mut GEP: *mut auto = cast(II.getArgOperand);
-                                    let mut GEPIndexType: *mut Type = null;
-                                    let mut MaskedGEP: *mut Value = null;
-                                    self.replaceOperand;
+                                    let mut GEP: *mut GEPOperator = cast(II.getArgOperand(0));
+                                    self.Builder.SetInsertPoint(I);
+                                    let mut GEPIndexType: *mut Type = self.DL.getIndexType(GEP.getPointerOperand().getType());
+                                    let mut MaskedGEP: *mut Value = self.Builder.CreateGEP(GEP.getSourceElementType(), InnerPtr, get(GEPIndexType, MaskedGEPIndex, false, false), GEP.getName(), GEP.isInBounds());
+                                    self.replaceOperand(*I, 0, MaskedGEP);
                                     return I;
                                 }
                             }
@@ -663,23 +694,23 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
                     umax => {
                         let mut C: *APInt = null;
                         let mut CTZ: u32 = DemandedMask.countr_zero();
-                        if match(II.getArgOperand) && CTZ >= C.getActiveBits() {
-                            return II.getArgOperand;
+                        if match(II.getArgOperand(1), m_APInt(C)) && CTZ >= C.getActiveBits() {
+                            return II.getArgOperand(0);
                         }
                         break;
                     },
                     umin => {
                         let mut C: *APInt = null;
                         let mut CTZ: u32 = DemandedMask.countr_zero();
-                        if match(II.getArgOperand) && CTZ >= C.getBitWidth() - C.countl_one() {
-                            return II.getArgOperand;
+                        if match(II.getArgOperand(1), m_APInt(C)) && CTZ >= C.getBitWidth() - C.countl_one() {
+                            return II.getArgOperand(0);
                         }
                         break;
                     },
                     _ => {
-                        let mut V: optional<Value *> = zeroed();
-                        if V() {
-                            return operator*();
+                        let mut V: optional<Value *> = self.targetSimplifyDemandedUseBitsIntrinsic(*II, DemandedMask, Known, KnownBitsComputed);
+                        if V {
+                            return operator(V);
                         }
                         break;
                     },
@@ -691,19 +722,19 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
             break;
         },
     }
-    if I.getType() {
-        let mut Alignment: Align = I.getPointerAlignment;
+    if I.getType().isPointerTy() {
+        let mut Alignment: Align = I.getPointerAlignment(self.DL);
         Known.Zero.setLowBits(Log2(Alignment));
     }
-    if operator!(I.getType()) && DemandedMask.isSubsetOf(Known.Zero | Known.One) {
+    if !I.getType().isPointerTy() && DemandedMask.isSubsetOf(Known.Zero | Known.One) {
         return getIntegerValue(VTy, Known.One);
     }
-    if  {
+    if self.CLOpts.verify_known_bits {
         let mut ReferenceKnown: KnownBits = computeKnownBits(I, Q, Depth);
         if Known != ReferenceKnown {
-            errs() << *I << " in " << I.getFunction().getName << "\n";
-            errs() << ReferenceKnown << "\n";
-            errs() << Known << "\n";
+            errs() << "Mismatched known bits for " << *I << " in " << I.getFunction().getName() << "\n";
+            errs() << "computeKnownBits(): " << ReferenceKnown << "\n";
+            errs() << "SimplifyDemandedBits(): " << Known << "\n";
             abort();
         }
     }
@@ -712,71 +743,71 @@ fn InstCombinerImpl::SimplifyDemandedUseBits(self, I: *mut Instruction, Demanded
 
 fn InstCombinerImpl::SimplifyMultipleUseDemandedBits(self, I: *mut Instruction, DemandedMask: *APInt, Known: *mut KnownBits, Q: *SimplifyQuery, Depth: u32) -> *mut Value {
     let mut BitWidth: u32 = DemandedMask.getBitWidth();
-    let mut ITy: *mut Type = I.getType;
+    let mut ITy: *mut Type = I.getType();
     let mut LHSKnown: KnownBits = BitWidth;
     let mut RHSKnown: KnownBits = BitWidth;
     match I.getOpcode() {
         And => {
-            computeKnownBits(I.getOperand, RHSKnown, Q, Depth + 1);
-            computeKnownBits(I.getOperand, LHSKnown, Q, Depth + 1);
+            computeKnownBits(I.getOperand(1), RHSKnown, Q, Depth + 1);
+            computeKnownBits(I.getOperand(0), LHSKnown, Q, Depth + 1);
             Known = analyzeKnownBitsFromAndXorOr(cast(I), LHSKnown, RHSKnown, Q, Depth);
             computeKnownBitsFromContext(I, Known, Q, Depth);
             if DemandedMask.isSubsetOf(Known.Zero | Known.One) {
                 return getIntegerValue(ITy, Known.One);
             }
             if DemandedMask.isSubsetOf(LHSKnown.Zero | RHSKnown.One) {
-                return I.getOperand;
+                return I.getOperand(0);
             }
             if DemandedMask.isSubsetOf(RHSKnown.Zero | LHSKnown.One) {
-                return I.getOperand;
+                return I.getOperand(1);
             }
             break;
         },
         Or => {
-            computeKnownBits(I.getOperand, RHSKnown, Q, Depth + 1);
-            computeKnownBits(I.getOperand, LHSKnown, Q, Depth + 1);
+            computeKnownBits(I.getOperand(1), RHSKnown, Q, Depth + 1);
+            computeKnownBits(I.getOperand(0), LHSKnown, Q, Depth + 1);
             Known = analyzeKnownBitsFromAndXorOr(cast(I), LHSKnown, RHSKnown, Q, Depth);
             computeKnownBitsFromContext(I, Known, Q, Depth);
             if DemandedMask.isSubsetOf(Known.Zero | Known.One) {
                 return getIntegerValue(ITy, Known.One);
             }
             if DemandedMask.isSubsetOf(LHSKnown.One | RHSKnown.Zero) {
-                return I.getOperand;
+                return I.getOperand(0);
             }
             if DemandedMask.isSubsetOf(RHSKnown.One | LHSKnown.Zero) {
-                return I.getOperand;
+                return I.getOperand(1);
             }
             break;
         },
         Xor => {
-            computeKnownBits(I.getOperand, RHSKnown, Q, Depth + 1);
-            computeKnownBits(I.getOperand, LHSKnown, Q, Depth + 1);
+            computeKnownBits(I.getOperand(1), RHSKnown, Q, Depth + 1);
+            computeKnownBits(I.getOperand(0), LHSKnown, Q, Depth + 1);
             Known = analyzeKnownBitsFromAndXorOr(cast(I), LHSKnown, RHSKnown, Q, Depth);
             computeKnownBitsFromContext(I, Known, Q, Depth);
             if DemandedMask.isSubsetOf(Known.Zero | Known.One) {
                 return getIntegerValue(ITy, Known.One);
             }
             if DemandedMask.isSubsetOf(RHSKnown.Zero) {
-                return I.getOperand;
+                return I.getOperand(0);
             }
             if DemandedMask.isSubsetOf(LHSKnown.Zero) {
-                return I.getOperand;
+                return I.getOperand(1);
             }
             break;
         },
         Add => {
             let mut NLZ: u32 = DemandedMask.countl_zero();
             let mut DemandedFromOps: APInt = getLowBitsSet(BitWidth, BitWidth - NLZ);
-            computeKnownBits(I.getOperand, RHSKnown, Q, Depth + 1);
+            computeKnownBits(I.getOperand(1), RHSKnown, Q, Depth + 1);
             if DemandedFromOps.isSubsetOf(RHSKnown.Zero) {
-                return I.getOperand;
+                return I.getOperand(0);
             }
-            computeKnownBits(I.getOperand, LHSKnown, Q, Depth + 1);
+            computeKnownBits(I.getOperand(0), LHSKnown, Q, Depth + 1);
             if DemandedFromOps.isSubsetOf(LHSKnown.Zero) {
-                return I.getOperand;
+                return I.getOperand(1);
             }
-            let mut NSW: bool = cast(I)();
-            let mut NUW: bool = cast(I)();
+            let mut NSW: bool = cast(I).hasNoSignedWrap();
+            let mut NUW: bool = cast(I).hasNoUnsignedWrap();
             Known = add(LHSKnown, RHSKnown, NSW, NUW, false);
             computeKnownBitsFromContext(I, Known, Q, Depth);
             break;
@@ -784,13 +815,13 @@ fn InstCombinerImpl::SimplifyMultipleUseDemandedBits(self, I: *mut Instruction, 
         Sub => {
             let mut NLZ: u32 = DemandedMask.countl_zero();
             let mut DemandedFromOps: APInt = getLowBitsSet(BitWidth, BitWidth - NLZ);
-            computeKnownBits(I.getOperand, RHSKnown, Q, Depth + 1);
+            computeKnownBits(I.getOperand(1), RHSKnown, Q, Depth + 1);
             if DemandedFromOps.isSubsetOf(RHSKnown.Zero) {
-                return I.getOperand;
+                return I.getOperand(0);
             }
-            let mut NSW: bool = cast(I)();
-            let mut NUW: bool = cast(I)();
-            computeKnownBits(I.getOperand, LHSKnown, Q, Depth + 1);
+            let mut NSW: bool = cast(I).hasNoSignedWrap();
+            let mut NUW: bool = cast(I).hasNoUnsignedWrap();
+            computeKnownBits(I.getOperand(0), LHSKnown, Q, Depth + 1);
             Known = sub(LHSKnown, RHSKnown, NSW, NUW);
             computeKnownBitsFromContext(I, Known, Q, Depth);
             break;
@@ -804,7 +835,7 @@ fn InstCombinerImpl::SimplifyMultipleUseDemandedBits(self, I: *mut Instruction, 
             let mut ShiftLC: *APInt = null;
             let mut X: *mut Value = null;
             let mut BitWidth: u32 = DemandedMask.getBitWidth();
-            if match(I, m_AShr(m_Shl(m_Value(X)))) && ShiftLC == ShiftRC && ShiftLC.ult(BitWidth) && DemandedMask.isSubsetOf(getLowBitsSet(BitWidth, BitWidth - ShiftRC.getZExtValue())) {
+            if match(I, m_AShr(m_Shl(m_Value(X), m_APInt(ShiftLC)), m_APInt(ShiftRC))) && ShiftLC == ShiftRC && ShiftLC.ult(BitWidth) && DemandedMask.isSubsetOf(getLowBitsSet(BitWidth, BitWidth - ShiftRC.getZExtValue())) {
                 return X;
             }
             break;
@@ -820,7 +851,7 @@ fn InstCombinerImpl::simplifyShrShlDemandedBits(self, Shr: *mut Instruction, Shr
     if operator(ShlOp1) || operator(ShrOp1) {
         return null;
     }
-    let mut VarX: *mut Value = Shr.getOperand;
+    let mut VarX: *mut Value = Shr.getOperand(0);
     let mut Ty: *mut Type = VarX.getType();
     let mut BitWidth: u32 = Ty.getScalarSizeInBits();
     if ShlOp1.uge(BitWidth) || ShrOp1.uge(BitWidth) {
@@ -844,7 +875,7 @@ fn InstCombinerImpl::simplifyShrShlDemandedBits(self, Shr: *mut Instruction, Shr
         if ShrAmt == ShlAmt {
             return VarX;
         }
-        if operator!(Shr.hasOneUse) {
+        if !Shr.hasOneUse() {
             return null;
         }
         let mut New: *mut BinaryOperator = null;
@@ -852,25 +883,26 @@ fn InstCombinerImpl::simplifyShrShlDemandedBits(self, Shr: *mut Instruction, Shr
             let mut Amt: *mut Constant = get(VarX.getType(), ShlAmt - ShrAmt, false, false);
             New = CreateShl(VarX, Amt, "");
             let mut Orig: *mut BinaryOperator = cast(Shl);
-            New.setHasNoSignedWrap(Orig.hasNoSignedWrap);
-            New.setHasNoUnsignedWrap(Orig.hasNoUnsignedWrap);
+            New.setHasNoSignedWrap(Orig.hasNoSignedWrap());
+            New.setHasNoUnsignedWrap(Orig.hasNoUnsignedWrap());
         } else {
             let mut Amt: *mut Constant = get(VarX.getType(), ShrAmt - ShlAmt, false, false);
             New = if isLshr { CreateLShr(VarX, Amt, "") } else { CreateAShr(VarX, Amt, "") };
-            if cast(Shr)() {
-                New.setIsExact;
+            if cast(Shr).isExact() {
+                New.setIsExact(true);
             }
         }
+        return self.InsertNewInstWith(New, Shl.getIterator());
     }
     return null;
 }
 
 fn canSkipDemandedEltsInInsertChain(IE: *mut InsertElementInst, VWidth: u32, DepthLimit: u32) -> bool {
-    if operator!(IE.hasOneUse) {
+    if !IE.hasOneUse() {
         return false;
     }
-    let mut UserIE: *mut auto = dyn_cast(IE);
-    if operator!() || (0) != &mut IE {
+    let mut UserIE: *mut InsertElementInst = dyn_cast(IE.user_back());
+    if !UserIE || UserIE.getOperand(0) != &mut IE {
         return false;
     }
     let mut SeenIndices: SmallBitVector = SmallBitVector { VWidth, false };
@@ -881,11 +913,11 @@ fn canSkipDemandedEltsInInsertChain(IE: *mut InsertElementInst, VWidth: u32, Dep
             return false;
         }
         let mut Base: *mut Value = Cur.getOperand(0);
-        if match(Base) {
+        if match(Base, m_Poison()) {
             return true;
         }
         Cur = dyn_cast(Base);
-        if !Cur || operator!(Cur.hasOneUse) {
+        if !Cur || !Cur.hasOneUse() {
             return false;
         }
     }
@@ -896,10 +928,10 @@ fn InstCombinerImpl::SimplifyDemandedVectorElts(self, V: *mut Value, DemandedElt
     if isa(V.getType()) {
         return null;
     }
-    let mut VWidth: u32 = cast(V.getType())();
+    let mut VWidth: u32 = cast(V.getType()).getNumElements();
     let mut EltMask: APInt = getAllOnes(VWidth);
     assert!((DemandedElts & operator(EltMask)) == 0, "Invalid DemandedElts!");
-    if match(V) {
+    if match(V, m_Poison()) {
         PoisonElts = EltMask;
         return null;
     }
@@ -908,32 +940,34 @@ fn InstCombinerImpl::SimplifyDemandedVectorElts(self, V: *mut Value, DemandedElt
         return get(V.getType());
     }
     PoisonElts = 0;
-    if  {
+    if dyn_cast(V) {
+        C;
+    } else {
         if DemandedElts.isAllOnes() {
             return null;
         }
-        let mut EltTy: *mut Type = cast(V.getType())();
+        let mut EltTy: *mut Type = cast(V.getType()).getElementType();
         let mut Poison: *mut Constant = get(EltTy);
-        let mut Elts: SmallVector<Constant *, 16> = zeroed();
+        let mut Elts: SmallVector<Constant *, 16> = SmallVector<Constant *, 16> {};
         for let mut i: u32 = 0; i != VWidth; i += 1 {
             if !DemandedElts[i] {
-                Elts()(Poison);
+                Elts.push(Poison);
                 PoisonElts.setBit(i);
                 continue;
             }
-            let mut Elt: *mut Constant = (i);
+            let mut Elt: *mut Constant = C.getAggregateElement(i);
             if !Elt {
                 return null;
             }
-            Elts()(Elt);
+            Elts.push(Elt);
             if isa(Elt) {
                 PoisonElts.setBit(i);
             }
         }
-        let mut NewCV: *mut Constant = get();
-        return if NewCV !=  { NewCV } else { null };
+        let mut NewCV: *mut Constant = get(Elts);
+        return if NewCV != C { NewCV } else { null };
     }
-    if  {
+    if Depth == self.CLOpts.simplify_vector_elts_depth {
         return null;
     }
     if !AllowMultipleUsers {
@@ -958,15 +992,15 @@ fn InstCombinerImpl::SimplifyDemandedVectorElts(self, V: *mut Value, DemandedElt
         },
         GetElementPtr => {
             let mut mayIndexStructType: Closure_6 = Closure_6 {};
-            if mayIndexStructType(cast(*I)) {
+            if mayIndexStructType.call(cast(*I)) {
                 break;
             }
-            for let mut i: u32 = 0; i < I.getNumOperands; i += 1 {
-                if if i == 0 { match(I.getOperand, m_Undef()) } else { match(I.getOperand) } {
+            for let mut i: u32 = 0; i < I.getNumOperands(); i += 1 {
+                if if i == 0 { match(I.getOperand(i), m_Undef()) } else { match(I.getOperand(i), m_Poison()) } {
                     PoisonElts = EltMask;
                     return null;
                 }
-                if I.getOperand()() {
+                if I.getOperand(i).getType().isVectorTy() {
                     let mut PoisonEltsOp: APInt = APInt { VWidth, 0, false, false };
                     simplifyAndSetOp.call(I, i, DemandedElts, PoisonEltsOp);
                     if i == 0 {
@@ -977,12 +1011,12 @@ fn InstCombinerImpl::SimplifyDemandedVectorElts(self, V: *mut Value, DemandedElt
             break;
         },
         InsertElement => {
-            let mut DepthLimit: u32 = 0;
-            let mut IE: *mut auto = cast(I);
-            if Depth == 0 && DemandedElts.isAllOnes() && VWidth > DepthLimit && canSkipDemandedEltsInInsertChain(operator*(), VWidth, DepthLimit) {
+            let mut DepthLimit: u32 = self.CLOpts.simplify_vector_elts_depth;
+            let mut IE: *mut InsertElementInst = cast(I);
+            if Depth == 0 && DemandedElts.isAllOnes() && VWidth > DepthLimit && canSkipDemandedEltsInInsertChain(*IE, VWidth, DepthLimit) {
                 return null;
             }
-            let mut Idx: *mut ConstantInt = dyn_cast(I.getOperand);
+            let mut Idx: *mut ConstantInt = dyn_cast(I.getOperand(2));
             if !Idx {
                 simplifyAndSetOp.call(I, 0, DemandedElts, PoisonElts2);
                 break;
@@ -993,23 +1027,24 @@ fn InstCombinerImpl::SimplifyDemandedVectorElts(self, V: *mut Value, DemandedElt
                 PreInsertDemandedElts.clearBit(IdxNo);
             }
             let mut Vec: *mut Value = null;
-            if PreInsertDemandedElts == 0 && match(I.getOperand, m_ExtractElt(m_Value(Vec))) && Vec.getType() == I.getType {
+            if PreInsertDemandedElts == 0 && match(I.getOperand(1), m_ExtractElt(m_Value(Vec), m_SpecificInt(IdxNo))) && Vec.getType() == I.getType() {
                 return Vec;
             }
             simplifyAndSetOp.call(I, 0, PreInsertDemandedElts, PoisonElts);
             if IdxNo >= VWidth || !DemandedElts[IdxNo] {
-                return I.getOperand;
+                self.Worklist.push(I);
+                return I.getOperand(0);
             }
             PoisonElts.clearBit(IdxNo);
             break;
         },
         ShuffleVector => {
-            let mut Shuffle: *mut auto = cast(I);
-            (((operator!(operator!((Shuffle()(0)() == (1)() && "Expected shuffle operands to have same type")))) || (_wassert(L"Shuffle->getOperand(0)->getType() == Shuffle->getOperand(1)->getType() && \"Expected shuffle operands to have same type\"", L"llvm\\lib\\Transforms\\InstCombine\\InstCombineSimplifyDemanded.cpp", (1708) as u32) , 0)) as void);
-            let mut OpWidth: u32 = cast((0)())();
-            if all_of(equal_to(0)) && DemandedElts.isAllOnes() {
-                if operator!(isa(I.getOperand)) {
-                    I.setOperand(1, get(I.getOperand()));
+            let mut Shuffle: *mut ShuffleVectorInst = cast(I);
+            assert!(Shuffle.getOperand(0).getType() == Shuffle.getOperand(1).getType(), "Expected shuffle operands to have same type");
+            let mut OpWidth: u32 = cast(Shuffle.getOperand(0).getType()).getNumElements();
+            if all_of(Shuffle.getShuffleMask(), equal_to(0)) && DemandedElts.isAllOnes() {
+                if !isa(I.getOperand(1)) {
+                    I.setOperand(1, get(I.getOperand(1).getType()));
                     MadeChange = true;
                 }
                 let mut LeftDemanded: APInt = APInt { OpWidth, 1, false, false };
@@ -1026,7 +1061,7 @@ fn InstCombinerImpl::SimplifyDemandedVectorElts(self, V: *mut Value, DemandedElt
             let mut RightDemanded: APInt = APInt { OpWidth, 0, false, false };
             for let mut i: u32 = 0; i < VWidth; i += 1 {
                 if DemandedElts[i] {
-                    let mut MaskVal: u32 = (i);
+                    let mut MaskVal: u32 = Shuffle.getMaskValue(i);
                     if MaskVal != -1 {
                         assert!(MaskVal < OpWidth * 2, "shufflevector mask index out of range!");
                         if MaskVal < OpWidth {
@@ -1044,14 +1079,14 @@ fn InstCombinerImpl::SimplifyDemandedVectorElts(self, V: *mut Value, DemandedElt
             if VWidth == OpWidth {
                 let mut IsIdentityShuffle: bool = true;
                 for let mut i: u32 = 0; i < VWidth; i += 1 {
-                    let mut MaskVal: u32 = (i);
+                    let mut MaskVal: u32 = Shuffle.getMaskValue(i);
                     if DemandedElts[i] && i != MaskVal {
                         IsIdentityShuffle = false;
                         break;
                     }
                 }
                 if IsIdentityShuffle {
-                    return (0);
+                    return Shuffle.getOperand(0);
                 }
             }
             let mut NewPoisonElts: bool = false;
@@ -1062,7 +1097,7 @@ fn InstCombinerImpl::SimplifyDemandedVectorElts(self, V: *mut Value, DemandedElt
             let mut LHSUniform: bool = true;
             let mut RHSUniform: bool = true;
             for let mut i: u32 = 0; i < VWidth; i += 1 {
-                let mut MaskVal: u32 = (i);
+                let mut MaskVal: u32 = Shuffle.getMaskValue(i);
                 if MaskVal == -1 {
                     PoisonElts.setBit(i);
                 } else if !DemandedElts[i] {
@@ -1088,39 +1123,44 @@ fn InstCombinerImpl::SimplifyDemandedVectorElts(self, V: *mut Value, DemandedElt
                     }
                 }
             }
-            if OpWidth == cast()() {
+            if OpWidth == cast(Shuffle.getType()).getNumElements() {
                 let mut Op: *mut Value = null;
                 let mut Value: *mut Constant = null;
                 let mut Idx: u32 = -1;
                 if LHSIdx < OpWidth && RHSUniform {
-                    if  {
-                        Op = (1);
-                        Value = (LHSValIdx);
+                    if dyn_cast(Shuffle.getOperand(0)) {
+                        CV;
+                    } else {
+                        Op = Shuffle.getOperand(1);
+                        Value = CV.getOperand(LHSValIdx);
                         Idx = LHSIdx;
                     }
                 }
                 if RHSIdx < OpWidth && LHSUniform {
-                    if  {
-                        Op = (0);
-                        Value = (RHSValIdx);
+                    if dyn_cast(Shuffle.getOperand(1)) {
+                        CV;
+                    } else {
+                        Op = Shuffle.getOperand(0);
+                        Value = CV.getOperand(RHSValIdx);
                         Idx = RHSIdx;
                     }
                 }
                 if Op && Value {
-                    let mut New: *mut Instruction = Create(Op, Value, get(getInt64Ty(I.getContext), Idx));
-                    return New();
+                    let mut New: *mut Instruction = Create(Op, Value, get(getInt64Ty(I.getContext()), Idx, false, false), Shuffle.getName(), null);
+                    self.InsertNewInstWith(New, Shuffle.getIterator());
+                    return New;
                 }
             }
             if NewPoisonElts {
-                let mut Elts: SmallVector<int, 16> = zeroed();
+                let mut Elts: SmallVector<int, 16> = SmallVector<int, 16> {};
                 for let mut i: u32 = 0; i < VWidth; i += 1 {
                     if PoisonElts[i] {
-                        Elts()(PoisonMaskElem);
+                        Elts.push(PoisonMaskElem);
                     } else {
-                        Elts()((i));
+                        Elts.push(Shuffle.getMaskValue(i));
                     }
                 }
-                Shuffle()();
+                Shuffle.setShuffleMask(Elts);
                 MadeChange = true;
             }
             break;
@@ -1132,9 +1172,11 @@ fn InstCombinerImpl::SimplifyDemandedVectorElts(self, V: *mut Value, DemandedElt
             }
             let mut DemandedLHS: APInt = DemandedElts;
             let mut DemandedRHS: APInt = DemandedElts;
-            if  {
+            if dyn_cast(Sel.getCondition()) {
+                CV;
+            } else {
                 for let mut i: u32 = 0; i < VWidth; i += 1 {
-                    let mut CElt: *mut Constant = (i);
+                    let mut CElt: *mut Constant = CV.getAggregateElement(i);
                     if CElt.isNullValue() {
                         DemandedLHS.clearBit(i);
                     } else if CElt.isOneValue() {
@@ -1148,11 +1190,11 @@ fn InstCombinerImpl::SimplifyDemandedVectorElts(self, V: *mut Value, DemandedElt
             break;
         },
         BitCast => {
-            let mut VTy: *mut VectorType = dyn_cast(I.getOperand());
+            let mut VTy: *mut VectorType = dyn_cast(I.getOperand(0).getType());
             if !VTy {
                 break;
             }
-            let mut InVWidth: u32 = cast(VTy)();
+            let mut InVWidth: u32 = cast(VTy).getNumElements();
             let mut InputDemandedElts: APInt = APInt { InVWidth, 0, false, false };
             PoisonElts2 = APInt { InVWidth, 0, false, false };
             let mut Ratio: u32 = 0;
@@ -1193,7 +1235,7 @@ fn InstCombinerImpl::SimplifyDemandedVectorElts(self, V: *mut Value, DemandedElt
                     }
                 }
             } else {
-                llvm_unreachable_internal("Unimp", "llvm\\lib\\Transforms\\InstCombine\\InstCombineSimplifyDemanded.cpp", 1946);
+                llvm_unreachable_internal("Unimp", "P:/Goraw/llvm-project/llvm/lib/Transforms/InstCombine/InstCombineSimplifyDemanded.cpp", 1946);
             }
             break;
         },
@@ -1213,9 +1255,9 @@ fn InstCombinerImpl::SimplifyDemandedVectorElts(self, V: *mut Value, DemandedElt
                     umulh;
                 },
                 _ => {
-                    let mut V: optional<Value *> = zeroed();
-                    if V() {
-                        return operator*();
+                    let mut V: optional<Value *> = self.targetSimplifyDemandedVectorEltsIntrinsic(*II, DemandedElts, PoisonElts, PoisonElts2, PoisonElts3, simplifyAndSetOp);
+                    if V {
+                        return operator(V);
                     }
                     break;
                 },
@@ -1224,18 +1266,19 @@ fn InstCombinerImpl::SimplifyDemandedVectorElts(self, V: *mut Value, DemandedElt
         },
     }
     let mut BO: *mut BinaryOperator = null;
-    if match(I, m_BinOp(BO)) && !BO && !BO {
+    if match(I, m_BinOp(BO)) && !BO.isIntDivRem() && !BO.isShift() {
         let mut X: *mut Value = BO.getOperand(0);
         let mut Y: *mut Value = BO.getOperand(1);
-        if DemandedElts == 1 && !X.hasOneUse() && !Y.hasOneUse() && BO.hasOneUse {
+        if DemandedElts == 1 && !X.hasOneUse() && !Y.hasOneUse() && BO.hasOneUse() {
             let mut findShufBO: Closure_7 = Closure_7 { Y: &mut Y, X: &mut X, BO: &mut BO, cap_3: self, I: &mut I };
             let mut ShufBO: *mut User = findShufBO.call(true);
             if !ShufBO {
                 ShufBO = findShufBO.call(false);
             }
             if ShufBO {
-                let mut ShufBOI: *mut auto = cast(ShufBO);
-                ShufBOI()(BO);
+                let mut ShufBOI: *mut Instruction = cast(ShufBO);
+                ShufBOI.andIRFlags(BO);
+                self.Worklist.add(ShufBOI);
                 return ShufBO;
             }
         }
@@ -1244,7 +1287,7 @@ fn InstCombinerImpl::SimplifyDemandedVectorElts(self, V: *mut Value, DemandedElt
         operator(PoisonElts, PoisonElts2);
     }
     if PoisonElts.isAllOnes() {
-        return get(I.getType);
+        return get(I.getType());
     }
     return if MadeChange { I } else { null };
 }
@@ -1288,25 +1331,25 @@ fn simplifyDemandedFPClassFabs(Known: *mut KnownFPClass, Src: *mut Value, Demand
     if (DemandedMask & fcInf) == fcNone {
         KnownSrc.knownNot(fcInf);
     }
-    if KnownSrc()() == false || ((DemandedMask & fcNan) == fcNone && KnownSrc.isKnownNever(fcNegative)) {
+    if KnownSrc.getSignBit() == false || ((DemandedMask & fcNan) == fcNone && KnownSrc.isKnownNever(fcNegative)) {
         return Src;
     }
-    if NSZ && KnownSrc.isKnownNever {
+    if NSZ && KnownSrc.isKnownNever(OrderedLessThanZeroMask | fcNan) {
         return Src;
     }
     Known = fabs(KnownSrc);
-    Known.knownNot;
+    Known.knownNot(operator(DemandedMask));
     return null;
 }
 
 fn inferFastMathValueFlags(FMF: FastMathFlags, ValidResults: FPClassTest, Known: ArrayRef<KnownFPClass>) -> FastMathFlags {
     if !FMF.noNaNs() && (ValidResults & fcNan) == fcNone {
-        if all_of(Closure_8 {}) {
+        if all_of(Known, Closure_8 {}) {
             FMF.setNoNaNs(true);
         }
     }
     if !FMF.noInfs() && (ValidResults & fcInf) == fcNone {
-        if all_of(Closure_9 {}) {
+        if all_of(Known, Closure_9 {}) {
             FMF.setNoInfs(true);
         }
     }
@@ -1315,23 +1358,23 @@ fn inferFastMathValueFlags(FMF: FastMathFlags, ValidResults: FPClassTest, Known:
 
 fn adjustDemandedMaskFromFlags(DemandedMask: FPClassTest, FMF: FastMathFlags) -> FPClassTest {
     if FMF.noNaNs() {
-        DemandedMask(~fcNan);
+        operator(DemandedMask, operator(fcNan));
     }
     if FMF.noInfs() {
-        DemandedMask(~fcInf);
+        operator(DemandedMask, operator(fcInf));
     }
     return DemandedMask;
 }
 
 fn simplifyDemandedFPClassResult(FPOp: *mut Instruction, FMF: FastMathFlags, DemandedMask: FPClassTest, Known: *mut KnownFPClass, KnownSrcs: ArrayRef<KnownFPClass>) -> *mut Value {
     let mut ValidResults: FPClassTest = DemandedMask & Known.getKnownFPClasses();
-    let mut SingleVal: *mut Constant = getFPClassConstant(FPOp.getType, ValidResults, true);
+    let mut SingleVal: *mut Constant = getFPClassConstant(FPOp.getType(), ValidResults, true);
     if SingleVal {
         return SingleVal;
     }
-    let mut InferredFMF: FastMathFlags = inferFastMathValueFlags(FMF, ValidResults);
+    let mut InferredFMF: FastMathFlags = inferFastMathValueFlags(FMF, ValidResults, KnownSrcs);
     if InferredFMF != FMF {
-        FPOp.dropUBImplyingAttrsAndMetadata(void {});
+        FPOp.dropUBImplyingAttrsAndMetadata(ArrayRef<unsigned int> {});
         FPOp.setFastMathFlags(InferredFMF);
         return FPOp;
     }
@@ -1345,14 +1388,14 @@ fn simplifyDemandedFPClassFnegFabs(Known: *mut KnownFPClass, Src: *mut Value, De
     if (DemandedMask & fcInf) == fcNone {
         KnownSrc.knownNot(fcInf);
     }
-    if KnownSrc()() == true {
+    if KnownSrc.getSignBit() == true {
         return Src;
     }
-    if NSZ && KnownSrc.isKnownNever {
+    if NSZ && KnownSrc.isKnownNever(OrderedGreaterThanZeroMask | fcNan) {
         return Src;
     }
-    Known(fneg(fabs(KnownSrc)));
-    Known.knownNot;
+    Known = fneg(fabs(KnownSrc));
+    Known.knownNot(operator(DemandedMask));
     return null;
 }
 
@@ -1360,17 +1403,17 @@ fn simplifyDemandedFPClassCopysignMag(MagSrc: *mut Value, DemandedMask: FPClassT
     if NSZ {
         let mut NegOrZero: FPClassTest = fcNegative | fcPosZero;
         let mut PosOrZero: FPClassTest = fcPositive | fcNegZero;
-        if (DemandedMask & ~NegOrZero) == fcNone && KnownSrc.isKnownAlways(NegOrZero) {
+        if (DemandedMask & operator(NegOrZero)) == fcNone && KnownSrc.isKnownAlways(NegOrZero) {
             return MagSrc;
         }
-        if (DemandedMask & ~PosOrZero) == fcNone && KnownSrc.isKnownAlways(PosOrZero) {
+        if (DemandedMask & operator(PosOrZero)) == fcNone && KnownSrc.isKnownAlways(PosOrZero) {
             return MagSrc;
         }
     } else {
-        if (DemandedMask & ~fcNegative) == fcNone && KnownSrc()() == true {
+        if (DemandedMask & operator(fcNegative)) == fcNone && KnownSrc.getSignBit() == true {
             return MagSrc;
         }
-        if (DemandedMask & ~fcPositive) == fcNone && KnownSrc()() == false {
+        if (DemandedMask & operator(fcPositive)) == fcNone && KnownSrc.getSignBit() == false {
             return MagSrc;
         }
     }
@@ -1384,20 +1427,20 @@ fn simplifyDemandedFPClassMinMax(Known: *mut KnownFPClass, IID: ID, CI: *CallIns
         maximum => {
             OpKind = maximum;
             if cannotOrderStrictlyLess(KnownLHS.getKnownFPClasses(), KnownRHS.getKnownFPClasses(), OrderedZeroSign) && KnownRHS.isKnownNever(fcNan) {
-                return CI.getArgOperand;
+                return CI.getArgOperand(0);
             }
             if cannotOrderStrictlyGreater(KnownLHS.getKnownFPClasses(), KnownRHS.getKnownFPClasses(), OrderedZeroSign) && KnownLHS.isKnownNever(fcNan) {
-                return CI.getArgOperand;
+                return CI.getArgOperand(1);
             }
             break;
         },
         minimum => {
             OpKind = minimum;
             if cannotOrderStrictlyGreater(KnownLHS.getKnownFPClasses(), KnownRHS.getKnownFPClasses(), OrderedZeroSign) && KnownRHS.isKnownNever(fcNan) {
-                return CI.getArgOperand;
+                return CI.getArgOperand(0);
             }
             if cannotOrderStrictlyLess(KnownLHS.getKnownFPClasses(), KnownRHS.getKnownFPClasses(), OrderedZeroSign) && KnownLHS.isKnownNever(fcNan) {
-                return CI.getArgOperand;
+                return CI.getArgOperand(1);
             }
             break;
         },
@@ -1408,67 +1451,69 @@ fn simplifyDemandedFPClassMinMax(Known: *mut KnownFPClass, IID: ID, CI: *CallIns
             minimumnum;
         },
         _ => {
-            llvm_unreachable_internal("not a min/max intrinsic", "llvm\\lib\\Transforms\\InstCombine\\InstCombineSimplifyDemanded.cpp", 2339);
+            llvm_unreachable_internal("not a min/max intrinsic", "P:/Goraw/llvm-project/llvm/lib/Transforms/InstCombine/InstCombineSimplifyDemanded.cpp", 2339);
         },
     }
-    let mut EltTy: *mut Type = CI.getType();
+    let mut EltTy: *mut Type = CI.getType().getScalarType();
     let mut Mode: DenormalMode = F.getDenormalMode(EltTy.getFltSemantics());
-    Known(minMaxLike(KnownLHS, KnownRHS, OpKind, Mode));
-    Known.knownNot;
-    return getFPClassConstant(CI.getType, Known.getKnownFPClasses(), true);
+    Known = minMaxLike(KnownLHS, KnownRHS, OpKind, Mode);
+    Known.knownNot(operator(DemandedMask));
+    return getFPClassConstant(CI.getType(), Known.getKnownFPClasses(), true);
 }
 
 fn simplifyDemandedUseFPClassFPTrunc(IC: *mut InstCombinerImpl, I: *mut Instruction, FMF: FastMathFlags, DemandedMask: FPClassTest, Known: *mut KnownFPClass, SQ: *SimplifyQuery, Depth: u32) -> *mut Value {
     let mut SrcDemandedMask: FPClassTest = DemandedMask;
     if DemandedMask & fcNan {
-        SrcDemandedMask(fcNan);
+        operator(SrcDemandedMask, fcNan);
     }
     if DemandedMask & fcNegZero {
-        SrcDemandedMask(fcNegSubnormal | fcNegNormal);
+        operator(SrcDemandedMask, fcNegSubnormal | fcNegNormal);
     }
     if DemandedMask & fcPosZero {
-        SrcDemandedMask(fcPosSubnormal | fcPosNormal);
+        operator(SrcDemandedMask, fcPosSubnormal | fcPosNormal);
     }
     if DemandedMask & fcNegSubnormal {
-        SrcDemandedMask(fcNegNormal);
+        operator(SrcDemandedMask, fcNegNormal);
     }
     if DemandedMask & fcPosSubnormal {
-        SrcDemandedMask(fcPosNormal);
+        operator(SrcDemandedMask, fcPosNormal);
     }
     if DemandedMask & fcPosInf {
-        SrcDemandedMask(fcPosNormal);
+        operator(SrcDemandedMask, fcPosNormal);
     }
     if DemandedMask & fcNegInf {
-        SrcDemandedMask(fcNegNormal);
+        operator(SrcDemandedMask, fcNegNormal);
     }
-    let mut KnownSrc: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
+    let mut KnownSrc: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
     if IC.SimplifyDemandedFPClass(&mut I, 0, SrcDemandedMask, KnownSrc, SQ, Depth + 1) {
         return &mut I;
     }
-    Known(fptrunc(KnownSrc));
-    Known.knownNot;
-    return simplifyDemandedFPClassResult(&mut I, FMF, DemandedMask, Known, void { KnownSrc });
+    Known = fptrunc(KnownSrc);
+    Known.knownNot(operator(DemandedMask));
+    return simplifyDemandedFPClassResult(&mut I, FMF, DemandedMask, Known, [KnownSrc]);
 }
 
 fn InstCombinerImpl::SimplifyDemandedUseFPClass(self, I: *mut Instruction, DemandedMask: FPClassTest, Known: *mut KnownFPClass, SQ: *SimplifyQuery, Depth: u32) -> *mut Value {
     assert!(Depth <= MaxAnalysisRecursionDepth, "Limit Search Depth");
-    assert!(Known == KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} }, "expected uninitialized state");
-    let mut VTy: *mut Type = I.getType;
+    assert!(Known == KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} }, "expected uninitialized state");
+    let mut VTy: *mut Type = I.getType();
     let mut FMF: FastMathFlags = FastMathFlags {};
-    if  {
-        FMF = ();
+    if dyn_cast(I) {
+        FPOp;
+    } else {
+        FMF = FPOp.getFastMathFlags();
         DemandedMask = adjustDemandedMaskFromFlags(DemandedMask, FMF);
     }
     match I.getOpcode() {
         FNeg => {
-            let mut FNegSrc: *mut Value = I.getOperand;
+            let mut FNegSrc: *mut Value = I.getOperand(0);
             let mut FNegFAbsSrc: *mut Value = null;
             if match(FNegSrc, m_OneUse(m_FAbs(m_Value(FNegFAbsSrc)))) {
-                let mut KnownSrc: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
+                let mut KnownSrc: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
                 if self.SimplifyDemandedFPClass(cast(FNegSrc), 0, unknown_sign(DemandedMask), KnownSrc, SQ, Depth + 1) {
                     return I;
                 }
-                let mut FabsFMF: FastMathFlags = cast(FNegSrc)();
+                let mut FabsFMF: FastMathFlags = cast(FNegSrc).getFastMathFlags();
                 let mut ThisDemandedMask: FPClassTest = adjustDemandedMaskFromFlags(DemandedMask, FabsFMF);
                 let mut IsNSZ: bool = FMF.noSignedZeros() || FabsFMF.noSignedZeros();
                 if simplifyDemandedFPClassFnegFabs(Known, FNegFAbsSrc, ThisDemandedMask, KnownSrc, IsNSZ) {
@@ -1482,11 +1527,11 @@ fn InstCombinerImpl::SimplifyDemandedUseFPClass(self, I: *mut Instruction, Deman
                 if (ThisDemandedMask & fcInf) == fcNone {
                     KnownSrc.knownNot(fcInf);
                 }
-                if KnownSrc()() == false {
-                    return self.replaceOperand;
+                if KnownSrc.getSignBit() == false {
+                    return self.replaceOperand(*I, 0, FNegFAbsSrc);
                 }
-                if IsNSZ && KnownSrc.isKnownNever {
-                    return self.replaceOperand;
+                if IsNSZ && KnownSrc.isKnownNever(OrderedLessThanZeroMask | fcNan) {
+                    return self.replaceOperand(*I, 0, FNegFAbsSrc);
                 }
                 break;
             }
@@ -1494,51 +1539,52 @@ fn InstCombinerImpl::SimplifyDemandedUseFPClass(self, I: *mut Instruction, Deman
                 return I;
             }
             Known.fneg();
-            Known.knownNot;
+            Known.knownNot(operator(DemandedMask));
             break;
         },
         FAdd => {
             FSub;
         },
         FMul => {
-            let mut KnownLHS: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
-            let mut KnownRHS: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
-            let mut X: *mut Value = I.getOperand;
-            let mut Y: *mut Value = I.getOperand;
+            let mut KnownLHS: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
+            let mut KnownRHS: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
+            let mut X: *mut Value = I.getOperand(0);
+            let mut Y: *mut Value = I.getOperand(1);
             let mut SrcDemandedMask: FPClassTest = DemandedMask & (fcNan | fcZero | fcSubnormal | fcNormal);
             if DemandedMask & fcInf {
-                SrcDemandedMask(fcSubnormal | fcNormal | fcInf);
+                operator(SrcDemandedMask, fcSubnormal | fcNormal | fcInf);
             }
             if DemandedMask & fcNan {
-                SrcDemandedMask(fcZero | fcInf | fcNan);
-                SrcDemandedMask(fcSubnormal);
+                operator(SrcDemandedMask, fcZero | fcInf | fcNan);
+                operator(SrcDemandedMask, fcSubnormal);
             }
             if DemandedMask & (fcNormal | fcSubnormal) {
-                SrcDemandedMask(fcNormal | fcSubnormal);
+                operator(SrcDemandedMask, fcNormal | fcSubnormal);
             }
             if DemandedMask & fcZero {
-                SrcDemandedMask(fcNormal | fcSubnormal);
+                operator(SrcDemandedMask, fcNormal | fcSubnormal);
             }
             if X == Y && isGuaranteedNotToBeUndef(X, SQ.AC, SQ.CtxI, SQ.DT, Depth + 1) {
                 if self.SimplifyDemandedFPClass(I, 0, SrcDemandedMask, KnownLHS, SQ, Depth + 1) {
                     return I;
                 }
                 let mut EltTy: *mut Type = VTy.getScalarType();
-                let mut Mode: DenormalMode = zeroed();
-                Known(square(KnownLHS, Mode));
-                Known.knownNot;
+                let mut Mode: DenormalMode = self.F.getDenormalMode(EltTy.getFltSemantics());
+                Known = square(KnownLHS, Mode);
+                Known.knownNot(operator(DemandedMask));
                 if getFPClassConstant(VTy, Known.getKnownFPClasses(), true) {
                     Folded;
                 } else {
                     return Folded;
                 }
-                if Known.isKnownAlways && KnownLHS.isKnownNever {
+                if Known.isKnownAlways(fcPosZero | fcPosInf | fcNan) && KnownLHS.isKnownNever(fcSubnormal | fcNormal) {
                     if KnownLHS.isKnownAlways(fcPositive) {
                         return X;
                     }
-                    let mut Guard: InsertPointGuard = zeroed();
-                    let mut Fabs: *mut Value = null;
-                    Fabs.takeName;
+                    let mut Guard: InsertPointGuard = self.Builder;
+                    self.Builder.SetInsertPoint(I);
+                    let mut Fabs: *mut Value = self.Builder.CreateFAbs(X, FMF, "");
+                    Fabs.takeName(I);
                     return Fabs;
                 }
                 return null;
@@ -1551,52 +1597,58 @@ fn InstCombinerImpl::SimplifyDemandedUseFPClass(self, I: *mut Instruction, Deman
                 KnownRHS.knownNot(fcInf);
             }
             let mut NonNanResult: bool = (DemandedMask & fcNan) == fcNone;
-            if (NonNanResult || KnownLHS.isKnownNeverInfOrNaN()) && KnownRHS.isKnownAlways {
-                let mut Guard: InsertPointGuard = zeroed();
-                let mut Copysign: *mut Value = null;
-                Copysign.takeName;
+            if (NonNanResult || KnownLHS.isKnownNeverInfOrNaN()) && KnownRHS.isKnownAlways(fcPosZero | fcNan) {
+                let mut Guard: InsertPointGuard = self.Builder;
+                self.Builder.SetInsertPoint(I);
+                let mut Copysign: *mut Value = self.Builder.CreateCopySign(Y, X, FMF, "");
+                Copysign.takeName(I);
                 return Copysign;
             }
-            if KnownLHS.isKnownAlways && (NonNanResult || KnownRHS.isKnownNeverInfOrNaN()) {
-                let mut Guard: InsertPointGuard = zeroed();
-                let mut Copysign: *mut Value = null;
-                Copysign.takeName;
+            if KnownLHS.isKnownAlways(fcPosZero | fcNan) && (NonNanResult || KnownRHS.isKnownNeverInfOrNaN()) {
+                let mut Guard: InsertPointGuard = self.Builder;
+                self.Builder.SetInsertPoint(I);
+                let mut Copysign: *mut Value = self.Builder.CreateCopySign(X, Y, FMF, "");
+                Copysign.takeName(I);
                 return Copysign;
             }
-            if (NonNanResult || KnownLHS.isKnownNeverInfOrNaN()) && KnownRHS.isKnownAlways {
-                let mut Guard: InsertPointGuard = zeroed();
-                let mut Copysign: *mut Value = null;
-                Copysign.takeName;
+            if (NonNanResult || KnownLHS.isKnownNeverInfOrNaN()) && KnownRHS.isKnownAlways(fcNegZero | fcNan) {
+                let mut Guard: InsertPointGuard = self.Builder;
+                self.Builder.SetInsertPoint(I);
+                let mut Copysign: *mut Value = self.Builder.CreateCopySign(Y, self.Builder.CreateFNegFMF(X, FMF, "", null), FMF, "");
+                Copysign.takeName(I);
                 return Copysign;
             }
-            if KnownLHS.isKnownAlways && (NonNanResult || KnownRHS.isKnownNeverInfOrNaN()) {
-                let mut Guard: InsertPointGuard = zeroed();
-                let mut Copysign: *mut Value = null;
-                Copysign.takeName;
+            if KnownLHS.isKnownAlways(fcNegZero | fcNan) && (NonNanResult || KnownRHS.isKnownNeverInfOrNaN()) {
+                let mut Guard: InsertPointGuard = self.Builder;
+                self.Builder.SetInsertPoint(I);
+                let mut Copysign: *mut Value = self.Builder.CreateCopySign(X, self.Builder.CreateFNegFMF(Y, FMF, "", null), FMF, "");
+                Copysign.takeName(I);
                 return Copysign;
             }
             let mut EltTy: *mut Type = VTy.getScalarType();
-            let mut Mode: DenormalMode = zeroed();
-            if KnownLHS.isKnownAlways && (KnownRHS.isKnownNeverNaN() && KnownRHS.cannotBeOrderedGreaterEqZero(Mode)) {
-                let mut Guard: InsertPointGuard = zeroed();
-                let mut Neg: *mut Value = null;
-                Neg.takeName;
+            let mut Mode: DenormalMode = self.F.getDenormalMode(EltTy.getFltSemantics());
+            if KnownLHS.isKnownAlways(fcInf | fcNan) && (KnownRHS.isKnownNeverNaN() && KnownRHS.cannotBeOrderedGreaterEqZero(Mode)) {
+                let mut Guard: InsertPointGuard = self.Builder;
+                self.Builder.SetInsertPoint(I);
+                let mut Neg: *mut Value = self.Builder.CreateFNegFMF(X, FMF, "", null);
+                Neg.takeName(I);
                 return Neg;
             }
-            if KnownRHS.isKnownAlways && (KnownLHS.isKnownNeverNaN() && KnownLHS.cannotBeOrderedGreaterEqZero(Mode)) {
-                let mut Guard: InsertPointGuard = zeroed();
-                let mut Neg: *mut Value = null;
-                Neg.takeName;
+            if KnownRHS.isKnownAlways(fcInf | fcNan) && (KnownLHS.isKnownNeverNaN() && KnownLHS.cannotBeOrderedGreaterEqZero(Mode)) {
+                let mut Guard: InsertPointGuard = self.Builder;
+                self.Builder.SetInsertPoint(I);
+                let mut Neg: *mut Value = self.Builder.CreateFNegFMF(Y, FMF, "", null);
+                Neg.takeName(I);
                 return Neg;
             }
-            Known(fmul(KnownLHS, KnownRHS, Mode));
-            Known.knownNot;
+            Known = fmul(KnownLHS, KnownRHS, Mode);
+            Known.knownNot(operator(DemandedMask));
             if getFPClassConstant(VTy, Known.getKnownFPClasses(), true) {
                 SingleVal;
             } else {
                 return SingleVal;
             }
-            let mut InferredFMF: FastMathFlags = inferFastMathValueFlags(FMF, Known.getKnownFPClasses(), void { KnownLHS, KnownRHS });
+            let mut InferredFMF: FastMathFlags = inferFastMathValueFlags(FMF, Known.getKnownFPClasses(), [KnownLHS, KnownRHS]);
             if InferredFMF != FMF {
                 I.setFastMathFlags(InferredFMF);
                 return I;
@@ -1604,40 +1656,42 @@ fn InstCombinerImpl::SimplifyDemandedUseFPClass(self, I: *mut Instruction, Deman
             return null;
         },
         FDiv => {
-            let mut X: *mut Value = I.getOperand;
-            let mut Y: *mut Value = I.getOperand;
+            let mut X: *mut Value = I.getOperand(0);
+            let mut Y: *mut Value = I.getOperand(1);
             if X == Y && isGuaranteedNotToBeUndef(X, SQ.AC, SQ.CtxI, SQ.DT, Depth + 1) {
-                let mut Guard: InsertPointGuard = zeroed();
-                let mut IsZeroOrNan: *mut Value = null;
-                let mut Fabs: *mut Value = null;
-                let mut IsInfOrNan: *mut Value = null;
-                let mut IsInfOrZeroOrNan: *mut Value = null;
+                let mut Guard: InsertPointGuard = self.Builder;
+                self.Builder.SetInsertPoint(I);
+                let mut IsZeroOrNan: *mut Value = self.Builder.CreateFCmpFMF(FCMP_UEQ, I.getOperand(0), getZero(VTy, false), FMF, "", null);
+                let mut Fabs: *mut Value = self.Builder.CreateFAbs(I.getOperand(0), FMF, "");
+                let mut IsInfOrNan: *mut Value = self.Builder.CreateFCmpFMF(FCMP_UEQ, Fabs, getInfinity(VTy, false), FMF, "", null);
+                let mut IsInfOrZeroOrNan: *mut Value = self.Builder.CreateOr(IsInfOrNan, IsZeroOrNan, "", false);
+                return self.Builder.CreateSelectFMFWithUnknownProfile(IsInfOrZeroOrNan, getQNaN(VTy, false, null), get(VTy, getOne(VTy.getScalarType().getFltSemantics(), false)), FMF, "instcombine", "");
             }
             let mut EltTy: *mut Type = VTy.getScalarType();
-            let mut Mode: DenormalMode = zeroed();
+            let mut Mode: DenormalMode = self.F.getDenormalMode(EltTy.getFltSemantics());
             let mut SrcDemandedMask: FPClassTest = (DemandedMask & fcNan) | fcSubnormal;
             if DemandedMask & (fcSubnormal | fcNormal) {
-                SrcDemandedMask(fcNormal);
+                operator(SrcDemandedMask, fcNormal);
             }
             if DemandedMask & fcNan {
-                SrcDemandedMask(fcZero | fcInf | fcNan);
+                operator(SrcDemandedMask, fcZero | fcInf | fcNan);
             }
             if DemandedMask & fcZero {
-                SrcDemandedMask(fcNormal | fcSubnormal);
+                operator(SrcDemandedMask, fcNormal | fcSubnormal);
             }
             let mut LHSDemandedMask: FPClassTest = SrcDemandedMask;
             let mut RHSDemandedMask: FPClassTest = SrcDemandedMask;
             if DemandedMask & fcZero {
                 assert!((LHSDemandedMask & fcSubnormal), "should not have to worry about daz here");
-                LHSDemandedMask(fcZero);
-                RHSDemandedMask(fcInf);
+                operator(LHSDemandedMask, fcZero);
+                operator(RHSDemandedMask, fcInf);
             }
             if DemandedMask & fcInf {
-                LHSDemandedMask(fcInf | fcNormal | fcSubnormal);
-                RHSDemandedMask(fcZero | fcSubnormal | fcNormal);
+                operator(LHSDemandedMask, fcInf | fcNormal | fcSubnormal);
+                operator(RHSDemandedMask, fcZero | fcSubnormal | fcNormal);
             }
-            let mut KnownLHS: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
-            let mut KnownRHS: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
+            let mut KnownLHS: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
+            let mut KnownRHS: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
             if self.SimplifyDemandedFPClass(I, 0, LHSDemandedMask, KnownLHS, SQ, Depth + 1) || self.SimplifyDemandedFPClass(I, 1, RHSDemandedMask, KnownRHS, SQ, Depth + 1) {
                 return I;
             }
@@ -1648,28 +1702,30 @@ fn InstCombinerImpl::SimplifyDemandedUseFPClass(self, I: *mut Instruction, Deman
                 return getZero(VTy, false);
             }
             if KnownLHS.isKnownAlways(fcPosZero) && KnownRHS.isKnownNeverNaN() && CanIgnoreZeroByZeroNan {
-                let mut Guard: InsertPointGuard = zeroed();
-                let mut Copysign: *mut Value = null;
-                Copysign.takeName;
+                let mut Guard: InsertPointGuard = self.Builder;
+                self.Builder.SetInsertPoint(I);
+                let mut Copysign: *mut Value = self.Builder.CreateCopySign(X, Y, FMF, "");
+                Copysign.takeName(I);
                 return Copysign;
             }
             if !ResultNotInf && ((ResultNotNan || (KnownLHS.isKnownNeverNaN() && KnownLHS.isKnownNeverLogicalZero(Mode))) && (KnownRHS.isKnownAlways(fcPosZero) || (FMF.noSignedZeros() && KnownRHS.isKnownAlways(fcZero)))) {
-                let mut Guard: InsertPointGuard = zeroed();
-                let mut Copysign: *mut Value = null;
-                Copysign.takeName;
+                let mut Guard: InsertPointGuard = self.Builder;
+                self.Builder.SetInsertPoint(I);
+                let mut Copysign: *mut Value = self.Builder.CreateCopySign(getInfinity(VTy, false), X, FMF, "");
+                Copysign.takeName(I);
                 return Copysign;
             }
             if ResultNotNan && ResultNotInf && KnownRHS.isKnownAlways(fcZero) {
                 return get(VTy);
             }
-            Known(fdiv(KnownLHS, KnownRHS, Mode));
-            Known.knownNot;
+            Known = fdiv(KnownLHS, KnownRHS, Mode);
+            Known.knownNot(operator(DemandedMask));
             if getFPClassConstant(VTy, Known.getKnownFPClasses(), true) {
                 SingleVal;
             } else {
                 return SingleVal;
             }
-            let mut InferredFMF: FastMathFlags = inferFastMathValueFlags(FMF, Known.getKnownFPClasses(), void { KnownLHS, KnownRHS });
+            let mut InferredFMF: FastMathFlags = inferFastMathValueFlags(FMF, Known.getKnownFPClasses(), [KnownLHS, KnownRHS]);
             if InferredFMF != FMF {
                 I.setFastMathFlags(InferredFMF);
                 return I;
@@ -1682,34 +1738,34 @@ fn InstCombinerImpl::SimplifyDemandedUseFPClass(self, I: *mut Instruction, Deman
         FPExt => {
             let mut SrcDemandedMask: FPClassTest = DemandedMask;
             if DemandedMask & fcNan {
-                SrcDemandedMask(fcNan);
+                operator(SrcDemandedMask, fcNan);
             }
             if (DemandedMask & fcNegNormal) != fcNone {
-                SrcDemandedMask(fcNegSubnormal);
+                operator(SrcDemandedMask, fcNegSubnormal);
             }
             if (DemandedMask & fcPosNormal) != fcNone {
-                SrcDemandedMask(fcPosSubnormal);
+                operator(SrcDemandedMask, fcPosSubnormal);
             }
-            let mut KnownSrc: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
+            let mut KnownSrc: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
             if self.SimplifyDemandedFPClass(I, 0, SrcDemandedMask, KnownSrc, SQ, Depth + 1) {
                 return I;
             }
             let mut DstTy: *fltSemantics = VTy.getScalarType().getFltSemantics();
-            let mut SrcTy: *fltSemantics = I.getOperand()()();
-            Known(fpext(KnownSrc, DstTy, SrcTy));
-            Known.knownNot;
-            return simplifyDemandedFPClassResult(I, FMF, DemandedMask, Known, void { KnownSrc });
+            let mut SrcTy: *fltSemantics = I.getOperand(0).getType().getScalarType().getFltSemantics();
+            Known = fpext(KnownSrc, DstTy, SrcTy);
+            Known.knownNot(operator(DemandedMask));
+            return simplifyDemandedFPClassResult(I, FMF, DemandedMask, Known, [KnownSrc]);
         },
         Call => {
             let mut CI: *mut CallInst = cast(I);
-            let mut IID: ID = CI.getIntrinsicID;
+            let mut IID: ID = CI.getIntrinsicID();
             match IID {
                 fabs => {
-                    let mut KnownSrc: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
+                    let mut KnownSrc: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
                     if self.SimplifyDemandedFPClass(I, 0, inverse_fabs(DemandedMask), KnownSrc, SQ, Depth + 1) {
                         return I;
                     }
-                    if simplifyDemandedFPClassFabs(Known, CI.getArgOperand, DemandedMask, KnownSrc, FMF.noSignedZeros()) {
+                    if simplifyDemandedFPClassFabs(Known, CI.getArgOperand(0), DemandedMask, KnownSrc, FMF.noSignedZeros()) {
                         Simplified;
                     } else {
                         return Simplified;
@@ -1723,42 +1779,42 @@ fn InstCombinerImpl::SimplifyDemandedUseFPClass(self, I: *mut Instruction, Deman
                 },
                 copysign => {
                     let mut DemandedMaskAnySign: FPClassTest = unknown_sign(DemandedMask);
-                    let mut KnownMag: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
-                    if self.SimplifyDemandedFPClass {
+                    let mut KnownMag: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
+                    if self.SimplifyDemandedFPClass(CI, 0, DemandedMaskAnySign, KnownMag, SQ, Depth + 1) {
                         return I;
                     }
                     if (DemandedMask & fcNegative) == DemandedMask {
-                        CI.setOperand;
+                        CI.setOperand(1, get(VTy, -1.0));
                         return I;
                     }
                     if (DemandedMask & fcPositive) == DemandedMask {
-                        CI.setOperand;
+                        CI.setOperand(1, getZero(VTy, false));
                         return I;
                     }
-                    if simplifyDemandedFPClassCopysignMag(CI.getArgOperand, DemandedMask, KnownMag, FMF.noSignedZeros()) {
+                    if simplifyDemandedFPClassCopysignMag(CI.getArgOperand(0), DemandedMask, KnownMag, FMF.noSignedZeros()) {
                         Simplified;
                     } else {
                         return Simplified;
                     }
-                    let mut KnownSign: KnownFPClass = computeKnownFPClass(CI.getArgOperand, fcAllFlags, SQ, Depth + 1);
-                    if KnownMag()() && KnownSign()() && operator*(KnownMag()()) == operator*(KnownSign()()) {
-                        return CI.getOperand;
+                    let mut KnownSign: KnownFPClass = computeKnownFPClass(CI.getArgOperand(1), fcAllFlags, SQ, Depth + 1);
+                    if KnownMag.getSignBit() && KnownSign.getSignBit() && operator(KnownMag.getSignBit()) == operator(KnownSign.getSignBit()) {
+                        return CI.getOperand(0);
                     }
                     if FMF.noNaNs() {
                         KnownSign.knownNot(fcNan);
                     }
-                    if KnownSign()() == false {
-                        CI.dropUBImplyingAttrsAndMetadata;
-                        CI.setOperand;
+                    if KnownSign.getSignBit() == false {
+                        CI.dropUBImplyingAttrsAndMetadata(ArrayRef<unsigned int> {});
+                        CI.setOperand(1, getZero(VTy, false));
                         return I;
                     }
-                    if KnownSign()() == true {
-                        CI.dropUBImplyingAttrsAndMetadata;
-                        CI.setOperand;
+                    if KnownSign.getSignBit() == true {
+                        CI.dropUBImplyingAttrsAndMetadata(ArrayRef<unsigned int> {});
+                        CI.setOperand(1, get(VTy, -1.0));
                         return I;
                     }
-                    Known(copysign(KnownMag, KnownSign));
-                    Known.knownNot;
+                    Known = copysign(KnownMag, KnownSign);
+                    Known.knownNot(operator(DemandedMask));
                     break;
                 },
                 fma => {
@@ -1776,73 +1832,74 @@ fn InstCombinerImpl::SimplifyDemandedUseFPClass(self, I: *mut Instruction, Deman
                 sqrt => {
                     let mut DemandedSrcMask: FPClassTest = DemandedMask & (fcNegZero | fcPositive | fcNan);
                     if DemandedMask & fcNan {
-                        DemandedSrcMask(fcNan | (fcNegative & ~fcNegZero));
+                        operator(DemandedSrcMask, fcNan | (fcNegative & operator(fcNegZero)));
                     }
                     if DemandedMask & fcPosNormal {
-                        DemandedSrcMask(fcPosSubnormal);
+                        operator(DemandedSrcMask, fcPosSubnormal);
                     }
-                    let mut KnownSrc: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
+                    let mut KnownSrc: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
                     if self.SimplifyDemandedFPClass(I, 0, DemandedSrcMask, KnownSrc, SQ, Depth + 1) {
                         return I;
                     }
                     if (DemandedMask & fcNan) == fcNone {
-                        KnownSrc.knownNot;
+                        KnownSrc.knownNot((fcNegative & operator(fcNegZero)) | fcNan);
                     }
                     if (DemandedMask & fcPosInf) == fcNone {
                         KnownSrc.knownNot(fcPosInf);
                     }
                     let mut EltTy: *mut Type = VTy.getScalarType();
-                    let mut Mode: DenormalMode = zeroed();
+                    let mut Mode: DenormalMode = self.F.getDenormalMode(EltTy.getFltSemantics());
                     if KnownSrc.isKnownNever(fcPositive) && KnownSrc.isKnownNeverLogicalZero(Mode) {
                         return getQNaN(VTy, false, null);
                     }
-                    Known(sqrt(KnownSrc, Mode));
-                    Known.knownNot;
+                    Known = sqrt(KnownSrc, Mode);
+                    Known.knownNot(operator(DemandedMask));
                     if Known.getKnownFPClasses() == fcZero {
                         if FMF.noSignedZeros() {
                             return getZero(VTy, false);
                         }
-                        let mut Guard: InsertPointGuard = zeroed();
-                        let mut Copysign: *mut Value = null;
-                        Copysign.takeName;
+                        let mut Guard: InsertPointGuard = self.Builder;
+                        self.Builder.SetInsertPoint(CI);
+                        let mut Copysign: *mut Value = self.Builder.CreateCopySign(getZero(VTy, false), CI.getArgOperand(0), FMF, "");
+                        Copysign.takeName(CI);
                         return Copysign;
                     }
-                    return simplifyDemandedFPClassResult(CI, FMF, DemandedMask, Known, void { KnownSrc });
+                    return simplifyDemandedFPClassResult(CI, FMF, DemandedMask, Known, [KnownSrc]);
                 },
                 ldexp => {
                     let mut SrcDemandedMask: FPClassTest = DemandedMask & fcInf;
                     if DemandedMask & fcNan {
-                        SrcDemandedMask(fcNan);
+                        operator(SrcDemandedMask, fcNan);
                     }
                     if DemandedMask & fcPosInf {
-                        SrcDemandedMask(fcPosNormal | fcPosSubnormal);
+                        operator(SrcDemandedMask, fcPosNormal | fcPosSubnormal);
                     }
                     if DemandedMask & fcNegInf {
-                        SrcDemandedMask(fcNegNormal | fcNegSubnormal);
+                        operator(SrcDemandedMask, fcNegNormal | fcNegSubnormal);
                     }
                     if DemandedMask & (fcPosNormal | fcPosSubnormal) {
-                        SrcDemandedMask(fcPosNormal | fcPosSubnormal);
+                        operator(SrcDemandedMask, fcPosNormal | fcPosSubnormal);
                     }
                     if DemandedMask & (fcNegNormal | fcNegSubnormal) {
-                        SrcDemandedMask(fcNegNormal | fcNegSubnormal);
+                        operator(SrcDemandedMask, fcNegNormal | fcNegSubnormal);
                     }
                     if DemandedMask & fcPosZero {
-                        SrcDemandedMask(fcPosFinite);
+                        operator(SrcDemandedMask, fcPosFinite);
                     }
                     if DemandedMask & fcNegZero {
-                        SrcDemandedMask(fcNegFinite);
+                        operator(SrcDemandedMask, fcNegFinite);
                     }
-                    let mut KnownSrc: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
-                    if self.SimplifyDemandedFPClass {
-                        return CI();
+                    let mut KnownSrc: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
+                    if self.SimplifyDemandedFPClass(CI, 0, SrcDemandedMask, KnownSrc, SQ, Depth + 1) {
+                        return CI;
                     }
                     let mut EltTy: *mut Type = VTy.getScalarType();
                     let mut FltSem: *fltSemantics = EltTy.getFltSemantics();
-                    let mut Mode: DenormalMode = zeroed();
-                    let mut KnownExpBits: KnownBits = computeKnownBits(CI.getArgOperand, SQ, Depth + 1);
-                    Known(ldexp(KnownSrc, KnownExpBits, FltSem, Mode));
-                    Known.knownNot;
-                    return simplifyDemandedFPClassResult(CI, FMF, DemandedMask, Known, void { KnownSrc });
+                    let mut Mode: DenormalMode = self.F.getDenormalMode(FltSem);
+                    let mut KnownExpBits: KnownBits = computeKnownBits(CI.getArgOperand(1), SQ, Depth + 1);
+                    Known = ldexp(KnownSrc, KnownExpBits, FltSem, Mode);
+                    Known.knownNot(operator(DemandedMask));
+                    return simplifyDemandedFPClassResult(CI, FMF, DemandedMask, Known, [KnownSrc]);
                 },
                 trunc => {
                     floor;
@@ -1853,148 +1910,150 @@ fn InstCombinerImpl::SimplifyDemandedUseFPClass(self, I: *mut Instruction, Deman
                 canonicalize => {
                     let mut EltTy: *mut Type = VTy.getScalarType();
                     if EltTy.isIEEELikeFPTy() {
-                        let mut Mode: DenormalMode = zeroed();
+                        let mut Mode: DenormalMode = self.F.getDenormalMode(EltTy.getFltSemantics());
                         let mut SrcDemandedMask: FPClassTest = DemandedMask;
                         if (DemandedMask & fcQNan) != fcNone {
-                            SrcDemandedMask(fcSNan);
+                            operator(SrcDemandedMask, fcSNan);
                         }
                         if Mode != getIEEE() {
                             if DemandedMask & fcPosZero {
-                                SrcDemandedMask(fcPosSubnormal);
+                                operator(SrcDemandedMask, fcPosSubnormal);
                             }
                             if DemandedMask & fcNegZero {
-                                SrcDemandedMask(fcNegSubnormal);
+                                operator(SrcDemandedMask, fcNegSubnormal);
                             }
                         }
                         if Mode == getPreserveSign() {
                             if (DemandedMask & fcPosZero) == fcNone {
-                                SrcDemandedMask(~fcPosSubnormal);
+                                operator(SrcDemandedMask, operator(fcPosSubnormal));
                             }
                             if (DemandedMask & fcNegZero) == fcNone {
-                                SrcDemandedMask(~fcNegSubnormal);
+                                operator(SrcDemandedMask, operator(fcNegSubnormal));
                             }
                         }
-                        let mut KnownSrc: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
+                        let mut KnownSrc: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
                         if self.SimplifyDemandedFPClass(I, 0, SrcDemandedMask, KnownSrc, SQ, Depth + 1) {
                             return I;
                         }
-                        Known(canonicalize(KnownSrc, Mode));
-                        Known.knownNot;
+                        Known = canonicalize(KnownSrc, Mode);
+                        Known.knownNot(operator(DemandedMask));
                         if getFPClassConstant(VTy, Known.getKnownFPClasses(), false) {
                             SingleVal;
                         } else {
                             return SingleVal;
                         }
                         if KnownSrc.isKnownNeverNaN() && (Mode == getIEEE() || KnownSrc.isKnownNeverSubnormal()) {
-                            return CI.getArgOperand;
+                            return CI.getArgOperand(0);
                         }
                         let mut InferredFMF: FastMathFlags = inferFastMathValueFlags(FMF, Known.getKnownFPClasses(), KnownSrc);
                         if InferredFMF != FMF {
-                            CI.dropUBImplyingAttrsAndMetadata;
-                            CI.setFastMathFlags;
-                            return CI();
+                            CI.dropUBImplyingAttrsAndMetadata(ArrayRef<unsigned int> {});
+                            CI.setFastMathFlags(InferredFMF);
+                            return CI;
                         }
                         return null;
                     }
                 },
                 _ => {
-                    Known(computeKnownFPClass(I, DemandedMask, SQ, Depth + 1));
+                    Known = computeKnownFPClass(I, DemandedMask, SQ, Depth + 1);
                 },
             }
             break;
         },
         Select => {
-            let mut KnownLHS: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
-            let mut KnownRHS: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
+            let mut KnownLHS: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
+            let mut KnownRHS: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
             if self.SimplifyDemandedFPClass(I, 2, DemandedMask, KnownRHS, SQ, Depth + 1) || self.SimplifyDemandedFPClass(I, 1, DemandedMask, KnownLHS, SQ, Depth + 1) {
                 return I;
             }
             if KnownLHS.isKnownNever(DemandedMask) {
-                return I.getOperand;
+                return I.getOperand(2);
             }
             if KnownRHS.isKnownNever(DemandedMask) {
-                return I.getOperand;
+                return I.getOperand(1);
             }
-            adjustKnownFPClassForSelectArm(KnownLHS, I.getOperand, I.getOperand, false, SQ, Depth);
-            adjustKnownFPClassForSelectArm(KnownRHS, I.getOperand, I.getOperand, true, SQ, Depth);
-            Known(KnownLHS.intersectWith(KnownRHS));
-            Known.knownNot;
+            adjustKnownFPClassForSelectArm(KnownLHS, I.getOperand(0), I.getOperand(1), false, SQ, Depth);
+            adjustKnownFPClassForSelectArm(KnownRHS, I.getOperand(0), I.getOperand(2), true, SQ, Depth);
+            Known = KnownLHS.intersectWith(KnownRHS);
+            Known.knownNot(operator(DemandedMask));
             break;
         },
         ExtractElement => {
             if self.SimplifyDemandedFPClass(I, 0, DemandedMask, Known, SQ, Depth + 1) {
                 return I;
             }
-            Known.knownNot;
+            Known.knownNot(operator(DemandedMask));
             break;
         },
         InsertElement => {
-            let mut KnownInserted: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
-            let mut KnownVec: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
+            let mut KnownInserted: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
+            let mut KnownVec: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
             if self.SimplifyDemandedFPClass(I, 1, DemandedMask, KnownInserted, SQ, Depth + 1) || self.SimplifyDemandedFPClass(I, 0, DemandedMask, KnownVec, SQ, Depth + 1) {
                 return I;
             }
-            Known(KnownVec | KnownInserted);
-            Known.knownNot;
+            Known = KnownVec | KnownInserted;
+            Known.knownNot(operator(DemandedMask));
             break;
         },
         ShuffleVector => {
-            let mut KnownLHS: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
-            let mut KnownRHS: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
+            let mut KnownLHS: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
+            let mut KnownRHS: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
             if self.SimplifyDemandedFPClass(I, 1, DemandedMask, KnownRHS, SQ, Depth + 1) || self.SimplifyDemandedFPClass(I, 0, DemandedMask, KnownLHS, SQ, Depth + 1) {
                 return I;
             }
-            Known(KnownLHS | KnownRHS);
-            Known.knownNot;
+            Known = KnownLHS | KnownRHS;
+            Known.knownNot(operator(DemandedMask));
             break;
         },
         InsertValue => {
-            let mut KnownAgg: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
-            let mut KnownElt: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
+            let mut KnownAgg: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
+            let mut KnownElt: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
             if self.SimplifyDemandedFPClass(I, 0, DemandedMask, KnownAgg, SQ, Depth + 1) || self.SimplifyDemandedFPClass(I, 1, DemandedMask, KnownElt, SQ, Depth + 1) {
                 return I;
             }
-            Known(KnownAgg | KnownElt);
+            Known = KnownAgg | KnownElt;
             break;
         },
         ExtractValue => {
             let mut ExtractSrc: *mut Value = null;
             if match(I, m_ExtractValue(m_OneUse(m_Value(ExtractSrc)))) {
-                if  {
-                    let mut IID: ID = ();
+                if dyn_cast(ExtractSrc) {
+                    II;
+                } else {
+                    let mut IID: ID = II.getIntrinsicID();
                     match IID {
                         frexp => {
                             let mut SrcDemandedMask: FPClassTest = fcNone;
                             if DemandedMask & fcNan {
-                                SrcDemandedMask(fcNan);
+                                operator(SrcDemandedMask, fcNan);
                             }
                             if DemandedMask & fcNegFinite {
-                                SrcDemandedMask(fcNegFinite);
+                                operator(SrcDemandedMask, fcNegFinite);
                             }
                             if DemandedMask & fcPosFinite {
-                                SrcDemandedMask(fcPosFinite);
+                                operator(SrcDemandedMask, fcPosFinite);
                             }
                             if DemandedMask & fcPosInf {
-                                SrcDemandedMask(fcPosInf);
+                                operator(SrcDemandedMask, fcPosInf);
                             }
                             if DemandedMask & fcNegInf {
-                                SrcDemandedMask(fcNegInf);
+                                operator(SrcDemandedMask, fcNegInf);
                             }
-                            let mut KnownSrc: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
-                            if self.SimplifyDemandedFPClass(0, SrcDemandedMask, KnownSrc, SQ, Depth + 1) {
+                            let mut KnownSrc: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
+                            if self.SimplifyDemandedFPClass(II, 0, SrcDemandedMask, KnownSrc, SQ, Depth + 1) {
                                 return I;
                             }
                             let mut EltTy: *mut Type = VTy.getScalarType();
-                            let mut Mode: DenormalMode = zeroed();
-                            Known(frexp_mant(KnownSrc, Mode));
-                            Known.setKnownFPClasses;
+                            let mut Mode: DenormalMode = self.F.getDenormalMode(EltTy.getFltSemantics());
+                            Known = frexp_mant(KnownSrc, Mode);
+                            Known.setKnownFPClasses(Known.getKnownFPClasses() & DemandedMask);
                             if getFPClassConstant(VTy, Known.getKnownFPClasses(), true) {
                                 SingleVal;
                             } else {
                                 return SingleVal;
                             }
-                            if Known.isKnownAlways {
-                                return (0);
+                            if Known.isKnownAlways(fcInf | fcNan) {
+                                return II.getArgOperand(0);
                             }
                             return null;
                         },
@@ -2004,11 +2063,11 @@ fn InstCombinerImpl::SimplifyDemandedUseFPClass(self, I: *mut Instruction, Deman
                     }
                 }
             }
-            let mut KnownSrc: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
+            let mut KnownSrc: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
             if self.SimplifyDemandedFPClass(I, 0, DemandedMask, KnownSrc, SQ, Depth + 1) {
                 return I;
             }
-            Known(KnownSrc);
+            Known = KnownSrc;
             break;
         },
         PHI => {
@@ -2024,26 +2083,26 @@ fn InstCombinerImpl::SimplifyDemandedUseFPClass(self, I: *mut Instruction, Deman
 let mut E: u32 = P.getNumIncomingValues(); I != E; I += 1 {
                 let mut PredBB: *mut BasicBlock = P.getIncomingBlock(I);
                 let mut CtxI: *Instruction = PredBB.getTerminator();
-                let mut KnownSrc: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: void {} };
-                if self.SimplifyDemandedFPClass {
+                let mut KnownSrc: KnownFPClass = KnownFPClass { KnownFPClassesValue: fcAllFlags, SignBitValue: optional<bool> {} };
+                if self.SimplifyDemandedFPClass(P, P.getOperandNumForIncomingValue(I), DemandedMask, KnownSrc, ContextSQ.getWithInstruction(CtxI), Depth + 1) {
                     P.setIncomingValueForBlock(PredBB, P.getIncomingValue(I));
                     Changed = true;
                 }
                 if First {
-                    Known(KnownSrc);
+                    Known = KnownSrc;
                     First = false;
                 } else {
                     operator(Known, KnownSrc);
                 }
             }
             if Changed {
-                return P();
+                return P;
             }
-            Known.knownNot;
+            Known.knownNot(operator(DemandedMask));
             break;
         },
         _ => {
-            Known(computeKnownFPClass(I, DemandedMask, SQ, Depth + 1));
+            Known = computeKnownFPClass(I, DemandedMask, SQ, Depth + 1);
         },
     }
     return getFPClassConstant(VTy, Known.getKnownFPClasses(), false);
@@ -2051,35 +2110,37 @@ let mut E: u32 = P.getNumIncomingValues(); I != E; I += 1 {
 
 fn InstCombinerImpl::SimplifyMultipleUseDemandedFPClass(self, I: *mut Instruction, DemandedMask: FPClassTest, Known: *mut KnownFPClass, SQ: *SimplifyQuery, Depth: u32) -> *mut Value {
     let mut FMF: FastMathFlags = FastMathFlags {};
-    if  {
-        FMF = ();
+    if dyn_cast(I) {
+        FPOp;
+    } else {
+        FMF = FPOp.getFastMathFlags();
         DemandedMask = adjustDemandedMaskFromFlags(DemandedMask, FMF);
     }
     match I.getOpcode() {
         Select => {
-            let mut KnownRHS: KnownFPClass = computeKnownFPClass(I.getOperand, DemandedMask, SQ, Depth + 1);
+            let mut KnownRHS: KnownFPClass = computeKnownFPClass(I.getOperand(2), DemandedMask, SQ, Depth + 1);
             if KnownRHS.isKnownNever(DemandedMask) {
-                return I.getOperand;
+                return I.getOperand(1);
             }
-            let mut KnownLHS: KnownFPClass = computeKnownFPClass(I.getOperand, DemandedMask, SQ, Depth + 1);
+            let mut KnownLHS: KnownFPClass = computeKnownFPClass(I.getOperand(1), DemandedMask, SQ, Depth + 1);
             if KnownLHS.isKnownNever(DemandedMask) {
-                return I.getOperand;
+                return I.getOperand(2);
             }
-            adjustKnownFPClassForSelectArm(KnownLHS, I.getOperand, I.getOperand, false, SQ, Depth);
-            adjustKnownFPClassForSelectArm(KnownRHS, I.getOperand, I.getOperand, true, SQ, Depth);
-            Known(KnownLHS.intersectWith(KnownRHS));
-            Known.knownNot;
+            adjustKnownFPClassForSelectArm(KnownLHS, I.getOperand(0), I.getOperand(1), false, SQ, Depth);
+            adjustKnownFPClassForSelectArm(KnownRHS, I.getOperand(0), I.getOperand(2), true, SQ, Depth);
+            Known = KnownLHS.intersectWith(KnownRHS);
+            Known.knownNot(operator(DemandedMask));
             break;
         },
         FNeg => {
             let mut Src: *mut Value = null;
-            let mut FNegSrc: *mut Value = I.getOperand;
-            if operator!(match(FNegSrc, m_FAbs(m_Value(Src)))) {
-                Known(computeKnownFPClass(I, DemandedMask, SQ, Depth + 1));
+            let mut FNegSrc: *mut Value = I.getOperand(0);
+            if !match(FNegSrc, m_FAbs(m_Value(Src))) {
+                Known = computeKnownFPClass(I, DemandedMask, SQ, Depth + 1);
                 break;
             }
             let mut KnownSrc: KnownFPClass = computeKnownFPClass(Src, fcAllFlags, SQ, Depth + 1);
-            let mut FabsFMF: FastMathFlags = cast(FNegSrc)();
+            let mut FabsFMF: FastMathFlags = cast(FNegSrc).getFastMathFlags();
             let mut ThisDemandedMask: FPClassTest = adjustDemandedMaskFromFlags(DemandedMask, FabsFMF);
             if simplifyDemandedFPClassFnegFabs(Known, Src, ThisDemandedMask, KnownSrc, false) {
                 Simplified;
@@ -2090,12 +2151,12 @@ fn InstCombinerImpl::SimplifyMultipleUseDemandedFPClass(self, I: *mut Instructio
         },
         Call => {
             let mut CI: *CallInst = cast(I);
-            let mut IID: ID = CI.getIntrinsicID;
+            let mut IID: ID = CI.getIntrinsicID();
             match IID {
                 fabs => {
-                    let mut Src: *mut Value = CI.getArgOperand;
+                    let mut Src: *mut Value = CI.getArgOperand(0);
                     let mut KnownSrc: KnownFPClass = computeKnownFPClass(Src, fcAllFlags, SQ, Depth + 1);
-                    if simplifyDemandedFPClassFabs(Known, CI.getArgOperand, DemandedMask, KnownSrc, false) {
+                    if simplifyDemandedFPClassFabs(Known, CI.getArgOperand(0), DemandedMask, KnownSrc, false) {
                         Simplified;
                     } else {
                         return Simplified;
@@ -2103,10 +2164,10 @@ fn InstCombinerImpl::SimplifyMultipleUseDemandedFPClass(self, I: *mut Instructio
                     break;
                 },
                 copysign => {
-                    let mut Mag: *mut Value = CI.getArgOperand;
-                    let mut Sign: *mut Value = CI.getArgOperand;
+                    let mut Mag: *mut Value = CI.getArgOperand(0);
+                    let mut Sign: *mut Value = CI.getArgOperand(1);
                     let mut KnownMag: KnownFPClass = computeKnownFPClass(Mag, fcAllFlags, SQ, Depth + 1);
-                    KnownMag.knownNot;
+                    KnownMag.knownNot(operator(unknown_sign(DemandedMask)));
                     if simplifyDemandedFPClassCopysignMag(Mag, DemandedMask, KnownMag, false) {
                         Simplified;
                     } else {
@@ -2119,10 +2180,10 @@ fn InstCombinerImpl::SimplifyMultipleUseDemandedFPClass(self, I: *mut Instructio
                     if FMF.noNaNs() {
                         KnownSign.knownNot(fcNan);
                     }
-                    if KnownSign()() && KnownMag()() && operator*(KnownSign()()) == operator*(KnownMag()()) {
+                    if KnownSign.getSignBit() && KnownMag.getSignBit() && operator(KnownSign.getSignBit()) == operator(KnownMag.getSignBit()) {
                         return Mag;
                     }
-                    Known(copysign(KnownMag, KnownSign));
+                    Known = copysign(KnownMag, KnownSign);
                     break;
                 },
                 maxnum => {
@@ -2134,32 +2195,32 @@ fn InstCombinerImpl::SimplifyMultipleUseDemandedFPClass(self, I: *mut Instructio
             }
         },
         _ => {
-            Known(computeKnownFPClass(I, DemandedMask, SQ, Depth + 1));
+            Known = computeKnownFPClass(I, DemandedMask, SQ, Depth + 1);
         },
     }
-    return getFPClassConstant(I.getType, Known.getKnownFPClasses());
+    return getFPClassConstant(I.getType(), Known.getKnownFPClasses(), false);
 }
 
 fn InstCombinerImpl::SimplifyDemandedFPClass(self, I: *mut Instruction, OpNo: u32, DemandedMask: FPClassTest, Known: *mut KnownFPClass, SQ: *SimplifyQuery, Depth: u32) -> bool {
-    let mut U: *mut Use = I;
+    let mut U: *mut Use = I.getOperandUse(OpNo);
     let mut V: *mut Value = U.get();
     let mut VTy: *mut Type = V.getType();
     if DemandedMask == fcNone {
         if isa(V) {
             return false;
         }
-        self.replaceUse;
+        self.replaceUse(U, get(VTy));
         return true;
     }
     let mut VInst: *mut Instruction = dyn_cast(V);
     if !VInst {
-        Known(computeKnownFPClass(V, fcAllFlags, SQ, Depth));
-        Known.knownNot;
+        Known = computeKnownFPClass(V, fcAllFlags, SQ, Depth);
+        Known.knownNot(operator(DemandedMask));
         if Known.getKnownFPClasses() == fcNone {
             if isa(V) {
                 return false;
             }
-            self.replaceUse;
+            self.replaceUse(U, get(VTy));
             return true;
         }
         if isa(V) {
@@ -2169,15 +2230,15 @@ fn InstCombinerImpl::SimplifyDemandedFPClass(self, I: *mut Instruction, OpNo: u3
         if !FoldedToConst || FoldedToConst == V {
             return false;
         }
-        self.replaceUse;
+        self.replaceUse(U, FoldedToConst);
         return true;
     }
     if Depth == MaxAnalysisRecursionDepth {
-        Known.knownNot;
+        Known.knownNot(operator(DemandedMask));
         return false;
     }
     let mut NewVal: *mut Value = null;
-    if VInst.hasOneUse {
+    if VInst.hasOneUse() {
         NewVal = self.SimplifyDemandedUseFPClass(VInst, DemandedMask, Known, SQ, Depth);
     } else {
         NewVal = self.SimplifyMultipleUseDemandedFPClass(VInst, DemandedMask, Known, SQ, Depth);
@@ -2190,7 +2251,7 @@ fn InstCombinerImpl::SimplifyDemandedFPClass(self, I: *mut Instruction, OpNo: u3
     } else {
         salvageDebugInfo(*OpInst);
     }
-    self.replaceUse;
+    self.replaceUse(U, NewVal);
     return true;
 }
 
@@ -2230,19 +2291,19 @@ struct Closure_3 {}
 
 fn Closure_3::call(self: *Closure_3, I: *mut Instruction, OpNo: u32, DemandedMask: *APInt) -> bool {
                 let mut SelC: *APInt = null;
-                if operator!(match(I.getOperand)) {
+                if !match(I.getOperand(OpNo), m_APInt(SelC)) {
                     return false;
                 }
                 let mut X: *mut Value = null;
                 let mut CmpC: *APInt = null;
-                if operator!(match(I.getOperand, m_ICmp(m_Value(X)))) || isa(X) || CmpC.getBitWidth() != SelC.getBitWidth() {
+                if !match(I.getOperand(0), m_ICmp(m_Value(X), m_APInt(CmpC))) || isa(X) || CmpC.getBitWidth() != SelC.getBitWidth() {
                     return ShrinkDemandedConstant(I, OpNo, DemandedMask);
                 }
                 if *CmpC == *SelC {
                     return false;
                 }
                 if (*CmpC & DemandedMask) == (*SelC & DemandedMask) {
-                    I.setOperand(OpNo, get(I.getType, *CmpC));
+                    I.setOperand(OpNo, get(I.getType(), *CmpC));
                     return true;
                 }
                 return ShrinkDemandedConstant(I, OpNo, DemandedMask);
@@ -2254,11 +2315,11 @@ struct Closure_4 {
 }
 
 unsafe fn Closure_4::call(self: *mut Closure_4, Insert: *mut InsertElementInst) -> bool {
-        let mut Idx: *mut auto = dyn_cast(Insert.getOperand(2));
-        if operator!() || ()((*self.VWidth)) {
+        let mut Idx: *mut ConstantInt = dyn_cast(Insert.getOperand(2));
+        if !Idx || Idx.getValue().uge((*self.VWidth)) {
             return false;
         }
-        let mut Index: u32 = ();
+        let mut Index: u32 = Idx.getZExtValue();
         if (*self.SeenIndices).test(Index) {
             return false;
         }
@@ -2273,12 +2334,12 @@ struct Closure_5 {
 }
 
 unsafe fn Closure_5::call(self: *mut Closure_5, Inst: *mut Instruction, OpNum: u32, Demanded: APInt, Undef: *mut APInt) {
-        let mut II: *mut auto = dyn_cast(Inst);
-        let mut Op: *mut Value = if  { (OpNum) } else { Inst.getOperand };
+        let mut II: *mut IntrinsicInst = dyn_cast(Inst);
+        let mut Op: *mut Value = if II { II.getArgOperand(OpNum) } else { Inst.getOperand(OpNum) };
         if self.SimplifyDemandedVectorElts(Op, Demanded, Undef, (*self.Depth) + 1, false) {
             V;
         } else {
-            self.replaceOperand;
+            self.replaceOperand(*Inst, OpNum, V);
             (*self.MadeChange) = true;
         }
     }
@@ -2286,9 +2347,9 @@ unsafe fn Closure_5::call(self: *mut Closure_5, Inst: *mut Instruction, OpNum: u
 struct Closure_6 {}
 
 fn Closure_6::call(self: *Closure_6, GEP: *mut GetElementPtrInst) -> bool {
-                for let mut I: auto = gep_type_begin(GEP);
-let mut E: auto = gep_type_end(GEP); I() != ;  += 1 {
-                    if I()() {
+                for let mut I: gep_type_iterator = gep_type_begin(GEP);
+let mut E: gep_type_iterator = gep_type_end(GEP); I != E; operator(I, 0) {
+                    if I.isStruct() {
                         return true;
                     }
                 }
@@ -2310,6 +2371,17 @@ unsafe fn Closure_7::call(self: *mut Closure_7, MatchShufAsOp0: bool) -> auto {
                 }
                 let mut Opcode: BinaryOps = (*self.BO).getOpcode();
                 let mut ShufOp: *mut Value = if MatchShufAsOp0 { (*self.X) } else { (*self.Y) };
+                for U in OtherOp.users() {
+                    let mut Mask: ArrayRef<int> = ArrayRef<int> {};
+                    let mut Shuf: m_Mask> = m_Shuffle(m_Specific(ShufOp), m_Value(), Mask);
+                    if if (*self.BO).isCommutative() { match(U, m_c_BinOp(Opcode, Shuf, m_Specific(OtherOp))) } else { if MatchShufAsOp0 { match(U, m_BinOp(Opcode, Shuf, m_Specific(OtherOp))) } else { match(U, m_BinOp(Opcode, m_Specific(OtherOp), Shuf)) } } {
+                        if match(Mask, m_ZeroMask {}) && Mask[0] != PoisonMaskElem {
+                            if self.DT.dominates(U, (*self.I)) {
+                                return U;
+                            }
+                        }
+                    }
+                }
                 return null;
             }
 

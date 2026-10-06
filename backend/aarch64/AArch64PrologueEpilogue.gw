@@ -1,48 +1,62 @@
 static mut NumRedZoneFunctions: Statistic = Statistic { "frame-info", "NumRedZoneFunctions", "Number of functions using red zone" };
 
 fn matchLibcall(TLI: *TargetLowering, MO: *MachineOperand, LC: Libcall) -> bool {
-    return MO.isSymbol() && TLI.getLibcallName == MO.getSymbolName();
+    return MO.isSymbol() && TLI.getLibcallName(LC) == MO.getSymbolName();
 }
 
 fn AArch64PrologueEpilogueCommon::requiresGetVGCall(self: *AArch64PrologueEpilogueCommon) -> bool {
-    return self.AFI.hasStreamingModeChanges() && operator!(self.MF());
+    return self.AFI.hasStreamingModeChanges() && !self.MF.getSubtarget().hasSVE();
 }
 
-fn AArch64PrologueEpilogueCommon::isVGInstruction(self: *AArch64PrologueEpilogueCommon, MBBI: i32, TLI: *TargetLowering) -> bool {
-    let mut Opc: u32 = ();
-    if  {
+fn AArch64PrologueEpilogueCommon::isVGInstruction(self: *AArch64PrologueEpilogueCommon, MBBI: iterator, TLI: *TargetLowering) -> bool {
+    let mut Opc: u32 = operator(MBBI).getOpcode();
+    if Opc == CNTD_XPiI {
         return true;
     }
     if !self.requiresGetVGCall() {
         return false;
     }
-    if  {
-        return matchLibcall(TLI, (0), SMEABI_GET_CURRENT_VG);
+    if Opc == BL {
+        return matchLibcall(TLI, operator(MBBI).getOperand(0), SMEABI_GET_CURRENT_VG);
     }
     return Opc == COPY;
 }
 
-fn isPartOfZPRCalleeSaves(I: i32) -> bool {
-    match I()() {
+fn isPartOfZPRCalleeSaves(I: iterator) -> bool {
+    match operator(I).getOpcode() {
         _ => {
             return false;
+        },
+        LD1B_2Z_IMM => {
+            ST1B_2Z_IMM;
+        },
+        SEH_SaveZReg => {
+            return true;
         },
     }
 }
 
-fn isPartOfPPRCalleeSaves(I: i32) -> bool {
-    match I()() {
+fn isPartOfPPRCalleeSaves(I: iterator) -> bool {
+    match operator(I).getOpcode() {
         _ => {
             return false;
+        },
+        STR_PXI => {
+            LDR_PXI;
+        },
+        SEH_SavePReg => {
+            return true;
         },
     }
 }
 
-fn isPartOfSVECalleeSaves(I: i32) -> bool {}
+fn isPartOfSVECalleeSaves(I: iterator) -> bool {
+    return isPartOfZPRCalleeSaves(I) || isPartOfPPRCalleeSaves(I);
+}
 
 fn AArch64PrologueEpilogueCommon::AArch64PrologueEpilogueCommon(self, MF: *mut MachineFunction, MBB: *mut MachineBasicBlock, AFL: *AArch64FrameLowering) {
     self.TII = self.Subtarget.getInstrInfo();
-    self.AFI = MF;
+    self.AFI = MF.getInfo();
     self.HasFP = AFL.hasFP(MF);
     self.NeedsWinCFI = AFL.needsWinCFI(MF);
     if AFL.hasSVECalleeSavesAboveFrameRecord(MF) {
@@ -55,69 +69,109 @@ fn AArch64PrologueEpilogueCommon::AArch64PrologueEpilogueCommon(self, MF: *mut M
     }
 }
 
-fn AArch64PrologueEpilogueCommon::convertCalleeSaveRestoreToSPPrePostIncDec(self: *AArch64PrologueEpilogueCommon, MBBI: i32, DL: *DebugLoc, CSStackSizeInc: i32, EmitCFI: bool, FrameFlag: MIFlag, CFAOffset: i32) -> i32 {
+fn AArch64PrologueEpilogueCommon::convertCalleeSaveRestoreToSPPrePostIncDec(self: *AArch64PrologueEpilogueCommon, MBBI: iterator, DL: *DebugLoc, CSStackSizeInc: i32, EmitCFI: bool, FrameFlag: MIFlag, CFAOffset: i32) -> iterator {
     let mut NewOpc: u32 = 0;
     if self.AFL.requiresSaveVG(self.MF) {
         let mut TLI: *AArch64TargetLowering = *self.Subtarget.getTargetLowering();
-        while  {
-            += 1;
+        while self.isVGInstruction(MBBI, TLI) {
+            operator(MBBI);
         }
     }
-    match MBBI()() {
+    match operator(MBBI).getOpcode() {
         _ => {
-            llvm_unreachable_internal("Unexpected callee-save save/restore opcode!", "llvm\\lib\\Target\\AArch64\\AArch64PrologueEpilogue.cpp", 125);
+            llvm_unreachable_internal("Unexpected callee-save save/restore opcode!", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64PrologueEpilogue.cpp", 125);
+        },
+        STPXi => {
+            NewOpc = STPXpre;
+        },
+        STPDi => {
+            NewOpc = STPDpre;
+        },
+        STPQi => {
+            NewOpc = STPQpre;
+        },
+        STRXui => {
+            NewOpc = STRXpre;
+        },
+        STRDui => {
+            NewOpc = STRDpre;
+        },
+        STRQui => {
+            NewOpc = STRQpre;
+        },
+        LDPXi => {
+            NewOpc = LDPXpost;
+        },
+        LDPDi => {
+            NewOpc = LDPDpost;
+        },
+        LDPQi => {
+            NewOpc = LDPQpost;
+        },
+        LDRXui => {
+            NewOpc = LDRXpost;
+        },
+        LDRDui => {
+            NewOpc = LDRDpost;
+        },
+        LDRQui => {
+            NewOpc = LDRQpost;
         },
     }
-    let mut Scale: TypeSize = (1);
-    let mut Width: TypeSize = (0);
+    let mut Scale: TypeSize = getFixed(1);
+    let mut Width: TypeSize = getFixed(0);
     let mut MinOffset: i64 = 0;
     let mut MaxOffset: i64 = 0;
     let mut Success: bool = self.TII.getMemOpInfo(NewOpc, Scale, Width, MinOffset, MaxOffset);
     Success as void;
     assert!(Success, "unknown load/store opcode");
-    if  {
+    if operator(MBBI).getOperand(operator(MBBI).getNumOperands() - 1).getImm() != 0 || CSStackSizeInc < MinOffset * Scale.getFixedValue() as i64 || CSStackSizeInc > MaxOffset * Scale.getFixedValue() as i64 || (self.NeedsWinCFI && (NewOpc == LDPXpost || NewOpc == STPXpre) && self.RegInfo.getEncodingValue(operator(MBBI).getOperand(0).getReg().operator MCRegister()) + 1 != self.RegInfo.getEncodingValue(operator(MBBI).getOperand(1).getReg().operator MCRegister())) {
         if FrameFlag == FrameDestroy {
-             += 1;
-            if self.NeedsWinCFI && isSEHInstruction(operator*()) {
-                += 1;
+            operator(MBBI);
+            if self.NeedsWinCFI && isSEHInstruction(operator(MBBI)) {
+                operator(MBBI);
             }
         }
-        emitFrameOffset(self.MBB, DL, getFixed(CSStackSizeInc), self.TII, FrameFlag, false, self.NeedsWinCFI, &mut self.HasWinCFI, EmitCFI, getFixed(CFAOffset));
-        return prev();
+        emitFrameOffset(self.MBB, MBBI, DL, SP, SP, getFixed(CSStackSizeInc), self.TII, FrameFlag, false, self.NeedsWinCFI, &mut self.HasWinCFI, EmitCFI, getFixed(CFAOffset), SP);
+        return prev(MBBI, 1);
     }
     if self.NeedsWinCFI {
-        let mut SEH: auto = next();
-        if isSEHInstruction(operator*()) {
-            SEH()();
+        let mut SEH: MachineInstr> = next(MBBI, 1);
+        if isSEHInstruction(operator(SEH)) {
+            operator(SEH).eraseFromParent();
         }
     }
-    let mut MIB: MachineInstrBuilder = BuildMI(self.MBB, DL, self.TII(NewOpc));
-    MIB();
+    let mut MIB: MachineInstrBuilder = BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NewOpc));
+    MIB.addReg(SP, Define, 0);
     let mut OpndIdx: u32 = 0;
-    for let mut OpndEnd: u32 = () - 1; OpndIdx < OpndEnd; OpndIdx += 1 {
-        MIB()((OpndIdx));
+    for let mut OpndEnd: u32 = operator(MBBI).getNumOperands() - 1; OpndIdx < OpndEnd; OpndIdx += 1 {
+        MIB.add(operator(MBBI).getOperand(OpndIdx));
     }
-    (((operator!(operator!((MBBI()(OpndIdx)() == 0 && "Unexpected immediate offset in first/last callee-save save/restore instruction!")))) || (_wassert(L"MBBI->getOperand(OpndIdx).getImm() == 0 && \"Unexpected immediate offset in first/last callee-save save/restore \" \"instruction!\"", L"llvm\\lib\\Target\\AArch64\\AArch64PrologueEpilogue.cpp", (215) as u32) , 0)) as void);
-    (((operator!(operator!((CSStackSizeInc(Scale) == 0)))) || (_wassert(L"CSStackSizeInc % Scale == 0", L"llvm\\lib\\Target\\AArch64\\AArch64PrologueEpilogue.cpp", (218) as u32) , 0)) as void);
-    MIB();
-    MIB()();
-    operator(MIB).setMemRefs();
+    assert!(operator(MBBI).getOperand(OpndIdx).getImm() == 0, "Unexpected immediate offset in first/last callee-save save/restore instruction!");
+    assert!(operator(MBBI).getOperand(OpndIdx - 1).getReg() == SP, "Unexpected base register in callee-save save/restore instruction!");
+    assert!(CSStackSizeInc % Scale.operator unsigned long long() == 0);
+    MIB.addImm(CSStackSizeInc / Scale.operator unsigned long long() as i32);
+    MIB.setMIFlags(operator(MBBI).getFlags());
+    MIB.setMemRefs(operator(MBBI).memoperands());
     if self.NeedsWinCFI {
         self.HasWinCFI = true;
-        self.AFL(*MIB.operator llvm::MachineInstr *(), *self.TII, FrameFlag);
+        self.AFL.insertSEH(*MIB.operator llvm::MachineInstr *(), *self.TII, FrameFlag);
     }
     if EmitCFI {
-        self.MBB.buildDefCFAOffset(CFAOffset - CSStackSizeInc, null);
+        CFIInstBuilder { self.MBB, MBBI, FrameFlag, true }.buildDefCFAOffset(CFAOffset - CSStackSizeInc, null);
     }
-    return prev(self.MBB());
+    return prev(self.MBB.erase(MBBI), 1);
 }
 
-fn fixupSEHOpcode(MBBI: i32, LocalStackSize: u32) {
+fn fixupSEHOpcode(MBBI: iterator, LocalStackSize: u32) {
     let mut ImmOpnd: *mut MachineOperand = null;
-    let mut ImmIdx: u32 = () - 1;
-    match MBBI()() {
+    let mut ImmIdx: u32 = operator(MBBI).getNumOperands() - 1;
+    match operator(MBBI).getOpcode() {
         _ => {
-            llvm_unreachable_internal("Fix the offset in the SEH instruction", "llvm\\lib\\Target\\AArch64\\AArch64PrologueEpilogue.cpp", 244);
+            llvm_unreachable_internal("Fix the offset in the SEH instruction", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64PrologueEpilogue.cpp", 244);
+        },
+        SEH_SaveFPLR => {
+            SEH_SaveRegP;
         },
     }
     if ImmOpnd {
@@ -132,20 +186,27 @@ fn AArch64PrologueEpilogueCommon::fixupCalleeSaveRestoreStackOffset(self: *AArch
     let mut Opc: u32 = MI.getOpcode();
     let mut Scale: u32 = 0;
     match Opc {
+        STPXi => {
+            STRXui;
+        },
+        STPQi => {
+            STRQui;
+        },
         _ => {
-            llvm_unreachable_internal("Unexpected callee-save save/restore opcode!", "llvm\\lib\\Target\\AArch64\\AArch64PrologueEpilogue.cpp", 286);
+            llvm_unreachable_internal("Unexpected callee-save save/restore opcode!", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64PrologueEpilogue.cpp", 286);
         },
     }
     let mut OffsetIdx: u32 = MI.getNumExplicitOperands() - 1;
+    assert!(MI.getOperand(OffsetIdx - 1).getReg() == SP, "Unexpected base register in callee-save save/restore instruction!");
     let mut OffsetOpnd: *mut MachineOperand = MI.getOperand(OffsetIdx);
     assert!(LocalStackSize % Scale == 0);
     OffsetOpnd.setImm(OffsetOpnd.getImm() + LocalStackSize / Scale);
     if self.NeedsWinCFI {
         self.HasWinCFI = true;
-        let mut MBBI: auto = next();
-        (((operator!(operator!((MBBI() != MI.getParent()() && "Expecting a valid instruction")))) || (_wassert(L"MBBI != MI.getParent()->end() && \"Expecting a valid instruction\"", L"llvm\\lib\\Target\\AArch64\\AArch64PrologueEpilogue.cpp", (301) as u32) , 0)) as void);
-        (((operator!(operator!((isSEHInstruction(operator*()) && "Expecting a SEH instruction")))) || (_wassert(L"AArch64InstrInfo::isSEHInstruction(*MBBI) && \"Expecting a SEH instruction\"", L"llvm\\lib\\Target\\AArch64\\AArch64PrologueEpilogue.cpp", (303) as u32) , 0)) as void);
-        fixupSEHOpcode(LocalStackSize);
+        let mut MBBI: MachineInstr> = next(MI, 1);
+        assert!(MBBI != MI.getParent().end(), "Expecting a valid instruction");
+        assert!(isSEHInstruction(operator(MBBI)), "Expecting a SEH instruction");
+        fixupSEHOpcode(MBBI, LocalStackSize);
     }
 }
 
@@ -165,7 +226,7 @@ fn AArch64PrologueEpilogueCommon::shouldCombineCSRLocalStackBump(self: *AArch64P
     if self.MFI.hasVarSizedObjects() {
         return false;
     }
-    if self.RegInfo(self.MF) {
+    if self.RegInfo.hasStackRealignment(self.MF) {
         return false;
     }
     if self.AFL.canUseRedZone(self.MF) {
@@ -208,54 +269,80 @@ struct SVEPartitions {
     ZPR: (unnamed at P:\Goraw\llvm-project\llvm\lib\Target\AArch64\AArch64PrologueEpilogue.cpp:391:3),
 }
 
-fn partitionSVECS(MBB: *mut MachineBasicBlock, MBBI: i32, PPRCalleeSavesSize: StackOffset, ZPRCalleeSavesSize: StackOffset, IsEpilogue: bool) -> SVEPartitions {
-    let mut PPRsI: i32 = ;
-    let mut End: i32 = if IsEpilogue { MBB()() } else { MBB()() };
+fn partitionSVECS(MBB: *mut MachineBasicBlock, MBBI: iterator, PPRCalleeSavesSize: StackOffset, ZPRCalleeSavesSize: StackOffset, IsEpilogue: bool) -> SVEPartitions {
+    let mut PPRsI: iterator = MBBI;
+    let mut End: iterator = if IsEpilogue { MBB.begin() } else { MBB.getFirstTerminator() };
     let mut AdjustI: Closure_1 = Closure_1 { IsEpilogue: &mut IsEpilogue };
     if PPRCalleeSavesSize {
-        PPRsI() = AdjustI();
-        (((operator!(operator!((isPartOfPPRCalleeSaves(operator*()) && "Unexpected instruction")))) || (_wassert(L"isPartOfPPRCalleeSaves(*PPRsI) && \"Unexpected instruction\"", L"llvm\\lib\\Target\\AArch64\\AArch64PrologueEpilogue.cpp", (408) as u32) , 0)) as void);
-        while  {
-            if IsEpilogue { ( -= 1) } else { ( += 1) };
+        PPRsI = AdjustI.call(PPRsI);
+        assert!(isPartOfPPRCalleeSaves(operator(PPRsI)), "Unexpected instruction");
+        while PPRsI != End && isPartOfPPRCalleeSaves(AdjustI.call(PPRsI)) {
+            if IsEpilogue { (operator(PPRsI)) } else { (operator(PPRsI)) };
         }
     }
-    let mut ZPRsI: i32 = ;
+    let mut ZPRsI: iterator = PPRsI;
     if ZPRCalleeSavesSize {
-        ZPRsI() = AdjustI();
-        (((operator!(operator!((isPartOfZPRCalleeSaves(operator*()) && "Unexpected instruction")))) || (_wassert(L"isPartOfZPRCalleeSaves(*ZPRsI) && \"Unexpected instruction\"", L"llvm\\lib\\Target\\AArch64\\AArch64PrologueEpilogue.cpp", (415) as u32) , 0)) as void);
-        while  {
-            if IsEpilogue { ( -= 1) } else { ( += 1) };
+        ZPRsI = AdjustI.call(ZPRsI);
+        assert!(isPartOfZPRCalleeSaves(operator(ZPRsI)), "Unexpected instruction");
+        while ZPRsI != End && isPartOfZPRCalleeSaves(AdjustI.call(ZPRsI)) {
+            if IsEpilogue { (operator(ZPRsI)) } else { (operator(ZPRsI)) };
         }
     }
     if IsEpilogue {
-        return void { void { ,  }, void { ,  } };
+        return SVEPartitions { PPR: (unnamed at P:\Goraw\llvm-project\llvm\lib\Target\AArch64\AArch64PrologueEpilogue.cpp:391:3) { PPRsI, MBBI }, ZPR: (unnamed at P:\Goraw\llvm-project\llvm\lib\Target\AArch64\AArch64PrologueEpilogue.cpp:391:3) { ZPRsI, PPRsI } };
     }
-    return void { void { ,  }, void { ,  } };
+    return SVEPartitions { PPR: (unnamed at P:\Goraw\llvm-project\llvm\lib\Target\AArch64\AArch64PrologueEpilogue.cpp:391:3) { MBBI, PPRsI }, ZPR: (unnamed at P:\Goraw\llvm-project\llvm\lib\Target\AArch64\AArch64PrologueEpilogue.cpp:391:3) { PPRsI, ZPRsI } };
 }
 
 fn AArch64PrologueEmitter::AArch64PrologueEmitter(self, MF: *mut MachineFunction, MBB: *mut MachineBasicBlock, AFL: *AArch64FrameLowering) {
+    self.EmitCFI = self.AFI.needsDwarfUnwindInfo(MF);
+    self.EmitAsyncCFI = self.AFI.needsAsyncDwarfUnwindInfo(MF);
+    self.IsFunclet = MBB.isEHFuncletEntry();
+    self.HomPrologEpilog = AFL.homogeneousPrologEpilog(MF, null);
     self.collectBlockLiveins();
 }
 
 fn getLivePhysRegsUpTo(MI: *mut MachineInstr, TRI: *TargetRegisterInfo, LiveRegs: *mut LivePhysRegs) {
     let mut MBB: *mut MachineBasicBlock = *MI.getParent();
     LiveRegs.addLiveOuts(MBB);
+    for MI in reverse(make_range(MI.getIterator(), MBB.instr_end())) {
+        LiveRegs.stepBackward(MI);
+    }
 }
 
 fn AArch64PrologueEmitter::collectBlockLiveins(self) {
-    if  {
-        getLivePhysRegsUpTo();
+    self.PrologueEndI = self.MBB.begin();
+    while self.PrologueEndI != self.MBB.end() && operator(self.PrologueEndI).getFlag(FrameSetup) {
+        operator(self.PrologueEndI);
+    }
+    if self.PrologueEndI != self.MBB.end() {
+        getLivePhysRegsUpTo(operator(self.PrologueEndI), self.RegInfo, self.LiveRegs);
+        self.LiveRegs.removeReg(SP);
+        self.LiveRegs.removeReg(X19);
+        self.LiveRegs.removeReg(FP);
+        self.LiveRegs.removeReg(LR);
+        if self.requiresGetVGCall() {
+            self.LiveRegs.removeReg(X0);
+        }
     }
 }
 
 fn AArch64PrologueEmitter::verifyPrologueClobbers(self: *AArch64PrologueEmitter) {
-    if  {
+    if self.PrologueEndI == self.MBB.end() {
         return;
+    }
+    for MI in make_range(self.MBB.instr_begin(), operator(self.PrologueEndI).getIterator()) {
+        for Op in MI.operands() {
+            if Op.isReg() && Op.isDef() {
+                assert!(!self.LiveRegs.contains(Op.getReg().operator MCRegister()), "live register clobbered by inserted prologue instructions");
+            }
+        }
     }
 }
 
 fn AArch64PrologueEmitter::determineLocalsStackSize(self, StackSize: u64, PrologueSaveSize: u64) {
-    self.CombineSPBump = self.shouldCombineCSRLocalStackBump;
+    self.AFI.setLocalStackSize(StackSize - PrologueSaveSize);
+    self.CombineSPBump = self.shouldCombineCSRLocalStackBump(StackSize);
 }
 
 fn upperBound(Size: StackOffset) -> i64 {
@@ -263,278 +350,411 @@ fn upperBound(Size: StackOffset) -> i64 {
     return Size.getScalable() * MAX_BYTES_PER_SCALABLE_BYTE + Size.getFixed();
 }
 
-fn AArch64PrologueEmitter::allocateStackSpace(self, MBBI: i32, RealignmentPadding: i64, AllocSize: StackOffset, EmitCFI: bool, InitialOffset: StackOffset, FollowupAllocs: bool) {
+fn AArch64PrologueEmitter::allocateStackSpace(self, MBBI: iterator, RealignmentPadding: i64, AllocSize: StackOffset, EmitCFI: bool, InitialOffset: StackOffset, FollowupAllocs: bool) {
     if !AllocSize {
         return;
     }
     let mut DL: DebugLoc = null;
-    let mut MaxAlign: i64 = 0;
+    let mut MaxAlign: i64 = self.MFI.getMaxAlign().value();
     let mut AndMask: u64 = ~(MaxAlign - 1);
-    if  {
-        let mut TargetReg: Register = zeroed();
-        emitFrameOffset(DL, TargetReg, operator(AllocSize), FrameSetup, false, EmitCFI, InitialOffset);
+    if !self.Subtarget.getTargetLowering().hasInlineStackProbe(self.MF) {
+        let mut TargetReg: Register = if RealignmentPadding { self.AFL.findScratchNonCalleeSaveRegister(&mut self.MBB, false) } else { SP };
+        emitFrameOffset(self.MBB, MBBI, DL, TargetReg.operator unsigned int(), SP, operator(AllocSize), self.TII, FrameSetup, false, self.NeedsWinCFI, &mut self.HasWinCFI, EmitCFI, InitialOffset, SP);
         if RealignmentPadding {
-            BuildMI(DL)(TargetReg, Kill)(encodeLogicalImmediate(AndMask, 64))(FrameSetup);
+            BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ANDXri), SP).addReg(TargetReg, Kill, 0).addImm(encodeLogicalImmediate(AndMask, 64)).setMIFlags(FrameSetup);
+            self.AFI.setStackRealigned(true);
+            assert!(!self.NeedsWinCFI);
         }
         return;
     }
     if AllocSize.getScalable() == 0 && RealignmentPadding == 0 {
-        let mut ScratchReg: Register = zeroed();
+        let mut ScratchReg: Register = self.AFL.findScratchNonCalleeSaveRegister(&mut self.MBB, false);
         assert!(ScratchReg.isValid();
-        BuildMI(DL)(ScratchReg)(AllocSize.getFixed())(InitialOffset.getFixed())(InitialOffset.getScalable());
+        BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(PROBED_STACKALLOC)).addDef(ScratchReg, RegState {}, 0).addImm(AllocSize.getFixed()).addImm(InitialOffset.getFixed()).addImm(InitialOffset.getScalable());
         if FollowupAllocs {
-            BuildMI(DL)(0)(FrameSetup);
+            BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(LDRXui)).addDef(XZR, RegState {}, 0).addReg(SP, RegState {}, 0).addImm(0).addMemOperand(self.MF.getMachineMemOperand(getUnknownStack(self.MF), MOLoad | MOVolatile, 8, 8, MMOMetadata {}, System, NotAtomic, NotAtomic)).setMIFlags(FrameSetup);
         }
         return;
     }
-    let mut ProbeSize: i64 = 0;
+    let mut ProbeSize: i64 = self.AFI.getStackProbeSize();
     if upperBound(AllocSize) + RealignmentPadding <= ProbeSize {
-        let mut ScratchReg: Register = zeroed();
+        let mut ScratchReg: Register = if RealignmentPadding { self.AFL.findScratchNonCalleeSaveRegister(&mut self.MBB, false) } else { SP };
         assert!(ScratchReg.isValid();
-        emitFrameOffset(DL, ScratchReg, operator(AllocSize), FrameSetup, false, EmitCFI, InitialOffset);
+        emitFrameOffset(self.MBB, MBBI, DL, ScratchReg.operator unsigned int(), SP, operator(AllocSize), self.TII, FrameSetup, false, self.NeedsWinCFI, &mut self.HasWinCFI, EmitCFI, InitialOffset, SP);
         if RealignmentPadding {
-            BuildMI(DL)(ScratchReg, Kill)(encodeLogicalImmediate(AndMask, 64))(FrameSetup);
+            BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ANDXri), SP).addReg(ScratchReg, Kill, 0).addImm(encodeLogicalImmediate(AndMask, 64)).setMIFlags(FrameSetup);
+            self.AFI.setStackRealigned(true);
         }
         if FollowupAllocs || upperBound(AllocSize) + RealignmentPadding > StackProbeMaxUnprobedStack {
-            BuildMI(DL)(0)(FrameSetup);
+            BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(LDRXui)).addDef(XZR, RegState {}, 0).addReg(SP, RegState {}, 0).addImm(0).addMemOperand(self.MF.getMachineMemOperand(getUnknownStack(self.MF), MOLoad | MOVolatile, 8, 8, MMOMetadata {}, System, NotAtomic, NotAtomic)).setMIFlags(FrameSetup);
         }
         return;
     }
-    let mut TargetReg: Register = zeroed();
+    let mut TargetReg: Register = self.AFL.findScratchNonCalleeSaveRegister(&mut self.MBB, false);
     assert!(TargetReg.isValid();
-    emitFrameOffset(DL, TargetReg, operator(AllocSize), FrameSetup, false, EmitCFI, InitialOffset);
+    emitFrameOffset(self.MBB, MBBI, DL, TargetReg.operator unsigned int(), SP, operator(AllocSize), self.TII, FrameSetup, false, self.NeedsWinCFI, &mut self.HasWinCFI, EmitCFI, InitialOffset, SP);
     if RealignmentPadding {
-        BuildMI(DL, TargetReg)(TargetReg, Kill)(encodeLogicalImmediate(AndMask, 64))(FrameSetup);
+        BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ANDXri), TargetReg).addReg(TargetReg, Kill, 0).addImm(encodeLogicalImmediate(AndMask, 64)).setMIFlags(FrameSetup);
     }
-    BuildMI(DL)(TargetReg);
-    if EmitCFI {}
+    BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(PROBED_STACKALLOC_VAR)).addReg(TargetReg, RegState {}, 0);
+    if EmitCFI {
+        CFIInstBuilder { self.MBB, MBBI, FrameSetup, true }.buildDefCFARegister(SP);
+    }
+    if RealignmentPadding {
+        self.AFI.setStackRealigned(true);
+    }
 }
 
 fn AArch64PrologueEmitter::emitPrologue(self) {
-    let mut PrologueBeginI: i32 = 0;
-    let mut EndI: i32 = 0;
+    let mut PrologueBeginI: iterator = self.MBB.begin();
+    let mut EndI: iterator = self.MBB.end();
+    self.AFI.setHasRedZone(false);
     let mut DL: DebugLoc = null;
-    if  {
-        if  {
-            BuildMI(DL)(FrameSetup);
+    if self.AFI.getArgumentStackToRestore() {
+        self.HasWinCFI |= self.NeedsWinCFI;
+    }
+    if self.AFI.shouldSignReturnAddress(self.MF) {
+        if !self.AFL.shouldSignReturnAddressEverywhere(self.MF) {
+            BuildMI(self.MBB, PrologueBeginI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(PAUTH_PROLOGUE)).setMIFlag(FrameSetup);
         }
+        self.HasWinCFI |= self.NeedsWinCFI;
     }
-    if  {}
-    if  {
-        BuildMI(DL)(FrameSetup);
+    if self.AFI.needsShadowCallStackPrologueEpilogue(self.MF) {
+        self.emitShadowCallStackPrologue(PrologueBeginI, DL);
+        self.HasWinCFI |= self.NeedsWinCFI;
     }
-    if  {
+    if self.EmitCFI && self.AFI.isMTETagged() {
+        BuildMI(self.MBB, PrologueBeginI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(EMITMTETAGGED)).setMIFlag(FrameSetup);
+    }
+    if self.HasFP && self.AFI.hasSwiftAsyncContext() {
+        self.emitSwiftAsyncContextFramePointer(PrologueBeginI, DL);
+    }
+    if self.MF.getFunction().getCallingConv() == GHC {
         return;
     }
-    let mut NumBytes: i64 = 0;
-    let mut IsWin64: bool = false;
-    let mut FixedObject: u32 = 0;
-    let mut PrologueSaveSize: auto = zeroed();
-    self.determineLocalsStackSize(NumBytes);
-    let mut SVEAllocs: SVEStackAllocations = self.getSVEStackAllocations(void { ,  });
-    let mut FirstGPRSaveI: i32 = ;
-    if  {
+    if self.AFI.getTaggedBasePointerIndex() {
+        TBPI;
+    } else {
+        self.AFI.setTaggedBasePointerOffset(-self.MFI.getObjectOffset(operator(TBPI)));
+    }
+    let mut NumBytes: i64 = if self.IsFunclet { self.AFL.getWinEHFuncletFrameSize(self.MF) } else { self.MFI.getStackSize() };
+    if !self.AFI.hasStackFrame() && !self.AFL.windowsRequiresStackProbe(self.MF, NumBytes) {
+        return self.emitEmptyStackFramePrologue(NumBytes, PrologueBeginI, DL);
+    }
+    let mut IsWin64: bool = self.Subtarget.isCallingConvWin64(self.F.getCallingConv(), self.F.isVarArg());
+    let mut FixedObject: u32 = self.AFL.getFixedObjectSize(self.MF, self.AFI, IsWin64, self.IsFunclet);
+    let mut PrologueSaveSize: u32 = self.AFI.getCalleeSavedStackSize() + FixedObject;
+    self.determineLocalsStackSize(NumBytes, PrologueSaveSize);
+    let mut SVEAllocs: SVEStackAllocations = self.getSVEStackAllocations(SVEFrameSizes { PPR: PPR, ZPR: ZPR });
+    let mut FirstGPRSaveI: iterator = PrologueBeginI;
+    if self.SVELayout == CalleeSavesAboveFrameRecord {
         assert!(!SVEAllocs.AfterPPRs, "unexpected SVE allocs after PPRs with CalleeSavesAboveFrameRecord");
-        let mut SaveSize: auto = SVEAllocs.BeforePPRs + getFixed(FixedObject);
+        let mut SaveSize: StackOffset = SVEAllocs.BeforePPRs + getFixed(FixedObject);
+        self.allocateStackSpace(PrologueBeginI, 0, SaveSize, false, StackOffset {}, true);
         NumBytes -= FixedObject;
-        let mut MBBI: i32 = ;
-        while  {
-            += 1;
+        let mut MBBI: iterator = PrologueBeginI;
+        while MBBI != EndI && isPartOfSVECalleeSaves(MBBI) {
+            operator(MBBI);
         }
+        FirstGPRSaveI = self.convertCalleeSaveRestoreToSPPrePostIncDec(MBBI, DL, -self.AFI.getCalleeSavedStackSize(), self.EmitAsyncCFI, FrameSetup, 0);
+        NumBytes -= self.AFI.getCalleeSavedStackSize();
     } else if self.CombineSPBump {
-        emitFrameOffset(DL, getFixed(-NumBytes), FrameSetup, false, self.EmitAsyncCFI);
+        assert!(!self.AFL.getSVEStackSize(self.MF), "Cannot combine SP bump with SVE");
+        emitFrameOffset(self.MBB, PrologueBeginI, DL, SP, SP, getFixed(-NumBytes), self.TII, FrameSetup, false, self.NeedsWinCFI, &mut self.HasWinCFI, self.EmitAsyncCFI, StackOffset {}, SP);
         NumBytes = 0;
-    } else if  {
-        NumBytes -= ;
-    } else if PrologueSaveSize() != 0 {
-        NumBytes -= ;
+    } else if self.HomPrologEpilog {
+        NumBytes -= PrologueSaveSize;
+    } else if PrologueSaveSize != 0 {
+        FirstGPRSaveI = self.convertCalleeSaveRestoreToSPPrePostIncDec(PrologueBeginI, DL, -PrologueSaveSize, self.EmitAsyncCFI, FrameSetup, 0);
+        NumBytes -= PrologueSaveSize;
     }
     assert!(NumBytes >= 0, "Negative stack allocation size!?");
-    let mut TLI: *mut auto = null;
-    let mut AfterGPRSavesI: i32 = ;
-    while  {
-        if  {
-            self.fixupCalleeSaveRestoreStackOffset;
+    let mut TLI: *AArch64TargetLowering = *self.Subtarget.getTargetLowering();
+    let mut AfterGPRSavesI: iterator = FirstGPRSaveI;
+    while AfterGPRSavesI != EndI && operator(AfterGPRSavesI).getFlag(FrameSetup) && !isPartOfSVECalleeSaves(AfterGPRSavesI) {
+        if self.CombineSPBump && (!self.AFL.requiresSaveVG(self.MF) || !self.isVGInstruction(AfterGPRSavesI, TLI)) {
+            self.fixupCalleeSaveRestoreStackOffset(operator(AfterGPRSavesI), self.AFI.getLocalStackSize());
         }
-         += 1;
+        operator(AfterGPRSavesI);
     }
-    let mut NeedsRealignment: bool = false;
-    let mut RealignmentPadding: i64 = 0;
+    if !self.IsFunclet && self.HasFP {
+        self.emitFramePointerSetup(AfterGPRSavesI, DL, FixedObject);
+    }
+    if self.EmitAsyncCFI {
+        self.emitCalleeSavedGPRLocations(AfterGPRSavesI);
+    }
+    let mut NeedsRealignment: bool = NumBytes && !self.IsFunclet && self.RegInfo.hasStackRealignment(self.MF);
+    let mut RealignmentPadding: i64 = if (NeedsRealignment && self.MFI.getMaxAlign() > 16) { self.MFI.getMaxAlign().value() - 16 } else { 0 };
+    if self.AFL.windowsRequiresStackProbe(self.MF, NumBytes + RealignmentPadding) {
+        self.emitWindowsStackProbe(AfterGPRSavesI, DL, NumBytes, RealignmentPadding);
+    }
     let mut NonSVELocalsSize: StackOffset = getFixed(NumBytes);
     operator(SVEAllocs.AfterZPRs, NonSVELocalsSize);
-    let mut CFAOffset: StackOffset =  - NonSVELocalsSize;
-    let mut AfterSVESavesI: i32 = ;
-    if  {
-        AfterSVESavesI() = ;
+    let mut CFAOffset: StackOffset = getFixed(self.MFI.getStackSize()) - NonSVELocalsSize;
+    let mut AfterSVESavesI: iterator = AfterGPRSavesI;
+    if self.SVELayout != CalleeSavesAboveFrameRecord {
+        AfterSVESavesI = ZPRRange.End;
+        if self.EmitAsyncCFI {
+            self.emitCalleeSavedSVELocations(AfterSVESavesI);
+        }
+        self.allocateStackSpace(PPRRange.Begin, 0, SVEAllocs.BeforePPRs, self.EmitAsyncCFI && !self.HasFP, CFAOffset, self.MFI.hasVarSizedObjects() || SVEAllocs.AfterPPRs || SVEAllocs.AfterZPRs);
         operator(CFAOffset, SVEAllocs.BeforePPRs);
+        assert!(PPRRange.End == ZPRRange.Begin, "Expected ZPR callee saves after PPR locals");
+        self.allocateStackSpace(PPRRange.End, 0, SVEAllocs.AfterPPRs, self.EmitAsyncCFI && !self.HasFP, CFAOffset, self.MFI.hasVarSizedObjects() || SVEAllocs.AfterZPRs);
         operator(CFAOffset, SVEAllocs.AfterPPRs);
     } else {
+        assert!(self.SVELayout == CalleeSavesAboveFrameRecord);
         operator(CFAOffset, SVEAllocs.BeforePPRs);
     }
-    if  {}
-    if  {
-        if  {
-            BuildMI(DL)(FrameSetup);
+    assert!(!(self.AFL.canUseRedZone(self.MF) && NeedsRealignment), "Cannot use redzone with stack realignment");
+    if !self.AFL.canUseRedZone(self.MF) {
+        self.allocateStackSpace(AfterSVESavesI, RealignmentPadding, SVEAllocs.AfterZPRs, self.EmitAsyncCFI && !self.HasFP, CFAOffset, self.MFI.hasVarSizedObjects());
+    }
+    if !self.IsFunclet && self.RegInfo.hasBasePointer(self.MF) {
+        self.TII.copyPhysReg(self.MBB, AfterSVESavesI, DL, self.RegInfo.getBaseRegister(), SP, false, false, false);
+        if self.NeedsWinCFI {
+            self.HasWinCFI = true;
+            BuildMI(self.MBB, AfterSVESavesI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SEH_Nop)).setMIFlag(FrameSetup);
         }
     }
-    if  {
-        BuildMI(DL)(FrameSetup);
+    if self.NeedsWinCFI && self.HasWinCFI {
+        BuildMI(self.MBB, AfterSVESavesI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SEH_PrologEnd)).setMIFlag(FrameSetup);
     }
-    if  {
+    if self.IsFunclet && self.F.hasPersonalityFn() {
         let mut Per: EHPersonality = classifyEHPersonality(self.F.getPersonalityFn());
         if isAsynchronousEHPersonality(Per) {
-            BuildMI(DL)(FrameSetup);
+            BuildMI(self.MBB, AfterSVESavesI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(COPY), FP).addReg(X1, RegState {}, 0).setMIFlag(FrameSetup);
+            self.MBB.addLiveIn(X1, getAll());
         }
     }
-    if  {
-        if  {} else {
-            let mut TotalSize: StackOffset = zeroed();
-            let mut CFIBuilder: CFIInstBuilder = zeroed();
-            CFIBuilder.insertCFIInst(createDefCFA(TotalSize, false));
+    if self.EmitCFI && !self.EmitAsyncCFI {
+        if self.HasFP {
+            self.emitDefineCFAWithFP(AfterSVESavesI, FixedObject);
+        } else {
+            let mut TotalSize: StackOffset = self.AFL.getSVEStackSize(self.MF) + getFixed(self.MFI.getStackSize() as i64);
+            let mut CFIBuilder: CFIInstBuilder = CFIInstBuilder { self.MBB, AfterSVESavesI, FrameSetup, true };
+            CFIBuilder.insertCFIInst(createDefCFA(self.RegInfo, SP, SP, TotalSize, false));
         }
+        self.emitCalleeSavedGPRLocations(AfterSVESavesI);
+        self.emitCalleeSavedSVELocations(AfterSVESavesI);
     }
 }
 
-fn AArch64PrologueEmitter::emitShadowCallStackPrologue(self: *AArch64PrologueEmitter, MBBI: i32, DL: *DebugLoc) {
-    BuildMI(DL)(8)(FrameSetup);
-    if  {
-        BuildMI(DL)(FrameSetup);
+fn AArch64PrologueEmitter::emitShadowCallStackPrologue(self: *AArch64PrologueEmitter, MBBI: iterator, DL: *DebugLoc) {
+    BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(STRXpost)).addReg(X18, Define, 0).addReg(LR, RegState {}, 0).addReg(X18, RegState {}, 0).addImm(8).setMIFlag(FrameSetup);
+    self.MBB.addLiveIn(X18, getAll());
+    if self.NeedsWinCFI {
+        BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SEH_Nop)).setMIFlag(FrameSetup);
     }
-    if  {
+    if self.EmitCFI {
         let mut CFIInst: [5]i8 = [DW_CFA_val_expression, 18, 2, DW_OP_breg18 as i8, -8 as i8 & 127];
+        CFIInstBuilder { self.MBB, MBBI, FrameSetup, true }.buildEscape(CFIInst[0..(CFIInst)], "");
     }
 }
 
-fn AArch64PrologueEmitter::emitSwiftAsyncContextFramePointer(self: *AArch64PrologueEmitter, MBBI: i32, DL: *DebugLoc) {
-    match  {
-
+fn AArch64PrologueEmitter::emitSwiftAsyncContextFramePointer(self: *AArch64PrologueEmitter, MBBI: iterator, DL: *DebugLoc) {
+    match self.MF.getTarget().Options.SwiftAsyncFramePointer {
+        DeploymentBased => {
+            if self.Subtarget.swiftAsyncContextIsDynamicallySet() {
+                BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(LOADgot), X16).addExternalSymbol("swift_async_extendedFramePointerFlags", MO_GOT);
+                if self.NeedsWinCFI {
+                    BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SEH_Nop)).setMIFlags(FrameSetup);
+                    self.HasWinCFI = true;
+                }
+                BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ORRXrs), FP).addUse(FP, RegState {}, 0).addUse(X16, RegState {}, 0).addImm(if self.Subtarget.isTargetILP32() { 32 } else { 0 });
+                if self.NeedsWinCFI {
+                    BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SEH_Nop)).setMIFlags(FrameSetup);
+                    self.HasWinCFI = true;
+                }
+                break;
+            }
+        },
+        Always => {
+            BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ORRXri), FP).addUse(FP, RegState {}, 0).addImm(4352).setMIFlag(FrameSetup);
+        },
+        Never => {
+            break;
+        },
     }
 }
 
-fn AArch64PrologueEmitter::emitEmptyStackFramePrologue(self: *AArch64PrologueEmitter, NumBytes: i64, MBBI: i32, DL: *DebugLoc) {
+fn AArch64PrologueEmitter::emitEmptyStackFramePrologue(self: *AArch64PrologueEmitter, NumBytes: i64, MBBI: iterator, DL: *DebugLoc) {
+    assert!(!self.HasFP, "unexpected function without stack frame but with FP");
+    assert!(!self.AFL.getSVEStackSize(self.MF), "unexpected function without stack frame but with SVE objects");
+    self.AFI.setLocalStackSize(NumBytes);
     if !NumBytes {
-        if  {
-            BuildMI(DL)(FrameSetup);
+        if self.NeedsWinCFI && self.HasWinCFI {
+            BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SEH_PrologEnd)).setMIFlag(FrameSetup);
         }
         return;
     }
-    if  {
+    if self.AFL.canUseRedZone(self.MF) {
+        self.AFI.setHasRedZone(true);
         operator(NumRedZoneFunctions);
     } else {
-        emitFrameOffset(DL, getFixed(-NumBytes), FrameSetup, false);
-        if  {
-            let mut FrameLabel: *mut MCSymbol = null;
+        emitFrameOffset(self.MBB, MBBI, DL, SP, SP, getFixed(-NumBytes), self.TII, FrameSetup, false, self.NeedsWinCFI, &mut self.HasWinCFI, false, StackOffset {}, SP);
+        if self.EmitCFI {
+            let mut FrameLabel: *mut MCSymbol = self.MF.getContext().createTempSymbol();
+            CFIInstBuilder { self.MBB, MBBI, FrameSetup, true }.buildDefCFAOffset(NumBytes, FrameLabel);
         }
     }
-    if  {
-        BuildMI(DL)(FrameSetup);
+    if self.NeedsWinCFI {
+        self.HasWinCFI = true;
+        BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SEH_PrologEnd)).setMIFlag(FrameSetup);
     }
 }
 
-fn AArch64PrologueEmitter::emitFramePointerSetup(self, MBBI: i32, DL: *DebugLoc, FixedObject: u32) {
-    let mut FPOffset: i64 = 0;
-    if  {
-        let mut Attrs: *auto = null;
-        let mut HaveInitialContext: bool = (SwiftAsync);
-        let mut Reg: Register = zeroed();
-        BuildMI(DL)(Reg)(FPOffset - 8)(FrameSetup);
-        if  {
-            BuildMI(DL)(FrameSetup);
+fn AArch64PrologueEmitter::emitFramePointerSetup(self, MBBI: iterator, DL: *DebugLoc, FixedObject: u32) {
+    let mut FPOffset: i64 = self.AFI.getCalleeSaveBaseToFrameRecordOffset();
+    if self.CombineSPBump {
+        FPOffset += self.AFI.getLocalStackSize();
+    }
+    if self.AFI.hasSwiftAsyncContext() {
+        let mut Attrs: *AttributeList = self.MF.getFunction().getAttributes();
+        let mut HaveInitialContext: bool = Attrs.hasAttrSomewhere(SwiftAsync, null);
+        if HaveInitialContext {
+            self.MBB.addLiveIn(X22, getAll());
+        }
+        let mut Reg: Register = if HaveInitialContext { X22 } else { XZR };
+        BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(StoreSwiftAsyncContext)).addUse(Reg, RegState {}, 0).addUse(SP, RegState {}, 0).addImm(FPOffset - 8).setMIFlags(FrameSetup);
+        if self.NeedsWinCFI {
+            assert!(self.Subtarget.getTargetTriple().getArchName() != "arm64e");
+            BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SEH_Nop)).setMIFlags(FrameSetup);
+            self.HasWinCFI = true;
         }
     }
-    if  {
-        let mut Prolog: auto = ;
-         -= 1;
-        Prolog()(CreateImm(FPOffset));
+    if self.HomPrologEpilog {
+        let mut Prolog: iterator = MBBI;
+        operator(Prolog);
+        assert!(operator(Prolog).getOpcode() == HOM_Prolog);
+        operator(Prolog).addOperand(CreateImm(FPOffset));
     } else {
-        emitFrameOffset(DL, getFixed(FPOffset), FrameSetup, false);
-        if  {
-            BuildMI(DL)(FrameSetup);
+        emitFrameOffset(self.MBB, MBBI, DL, FP, SP, getFixed(FPOffset), self.TII, FrameSetup, false, self.NeedsWinCFI, &mut self.HasWinCFI, false, StackOffset {}, SP);
+        if self.NeedsWinCFI && self.HasWinCFI {
+            BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SEH_PrologEnd)).setMIFlag(FrameSetup);
+            self.NeedsWinCFI = false;
         }
+    }
+    if self.EmitAsyncCFI {
+        self.emitDefineCFAWithFP(MBBI, FixedObject);
     }
 }
 
-fn AArch64PrologueEmitter::emitDefineCFAWithFP(self: *AArch64PrologueEmitter, MBBI: i32, FixedObject: u32) {
-    let mut OffsetToFirstCalleeSaveFromFP: i32 = 0;
-    let mut FramePtr: Register = zeroed();
+fn AArch64PrologueEmitter::emitDefineCFAWithFP(self: *AArch64PrologueEmitter, MBBI: iterator, FixedObject: u32) {
+    let mut OffsetToFirstCalleeSaveFromFP: i32 = self.AFI.getCalleeSaveBaseToFrameRecordOffset() - self.AFI.getCalleeSavedStackSize();
+    let mut FramePtr: Register = self.RegInfo.getFrameRegister(self.MF);
+    CFIInstBuilder { self.MBB, MBBI, FrameSetup, true }.buildDefCFA(FramePtr.operator MCRegister(), FixedObject - OffsetToFirstCalleeSaveFromFP);
 }
 
-fn AArch64PrologueEmitter::emitWindowsStackProbe(self: *AArch64PrologueEmitter, MBBI: i32, DL: *DebugLoc, NumBytes: *mut i64, RealignmentPadding: i64) {
-    if  {
+fn AArch64PrologueEmitter::emitWindowsStackProbe(self: *AArch64PrologueEmitter, MBBI: iterator, DL: *DebugLoc, NumBytes: *mut i64, RealignmentPadding: i64) {
+    if self.AFI.getSVECalleeSavedStackSize() {
         report_fatal_error("SVE callee saves not yet supported with stack probing", true);
     }
     let mut X15Scratch: Register = 0;
-    if any_of(Closure_2 { cap_0: self }) {
-        BuildMI(DL, X15Scratch)(FrameSetup);
+    if any_of(self.MBB.liveins(), Closure_2 { cap_0: self }) {
+        X15Scratch = self.AFL.findScratchNonCalleeSaveRegister(&mut self.MBB, true);
+        assert!(X15Scratch.isValid() && (X15Scratch.operator unsigned int() < X15 || X15Scratch.operator unsigned int() > X17);
+        self.LiveRegs.removeReg(X15);
+        BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ORRXrr), X15Scratch).addReg(XZR, RegState {}, 0).addReg(X15, Undef, 0).addReg(X15, Implicit, 0).setMIFlag(FrameSetup);
     }
     let mut NumWords: u64 = (NumBytes + RealignmentPadding) >> 4;
-    if  {
+    if self.NeedsWinCFI {
+        self.HasWinCFI = true;
         if NumBytes >= (1 << 28) {
             report_fatal_error("Stack size cannot exceed 256MB for stack unwinding purposes", true);
         }
         let mut LowNumWords: u32 = NumWords & 65535;
-        BuildMI(DL)(LowNumWords)(getShifterImm(LSL, 0))(FrameSetup);
-        BuildMI(DL)(FrameSetup);
+        BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MOVZXi), X15).addImm(LowNumWords).addImm(getShifterImm(LSL, 0)).setMIFlag(FrameSetup);
+        BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SEH_Nop)).setMIFlag(FrameSetup);
         if (NumWords & 4294901760) != 0 {
-            BuildMI(DL)((NumWords & 4294901760) >> 16)(getShifterImm(LSL, 16))(FrameSetup);
-            BuildMI(DL)(FrameSetup);
+            BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MOVKXi), X15).addReg(X15, RegState {}, 0).addImm((NumWords & 4294901760) >> 16).addImm(getShifterImm(LSL, 16)).setMIFlag(FrameSetup);
+            BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SEH_Nop)).setMIFlag(FrameSetup);
         }
     } else {
-        BuildMI(DL)(NumWords)(FrameSetup);
+        BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MOVi64imm), X15).addImm(NumWords).setMIFlags(FrameSetup);
     }
-    let mut TLI: *AArch64TargetLowering = null;
-    let mut ChkStkLibcall: LibcallImpl = TLI.getLibcallImpl;
+    let mut TLI: *AArch64TargetLowering = self.Subtarget.getTargetLowering();
+    let mut ChkStkLibcall: LibcallImpl = TLI.getLibcallImpl(STACK_PROBE);
     if ChkStkLibcall == Unsupported {
         reportFatalUsageError("no available implementation of __chkstk");
     }
     let mut ChkStk: *u8 = TLI.getLibcallImplName(ChkStkLibcall).ptr;
-    match  {
+    match self.MF.getTarget().getCodeModel() {
         Tiny => {
             Small;
         },
         Large => {
-            BuildMI(DL)(ChkStk)(ChkStk)(FrameSetup);
+            BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MOVaddrEXT)).addReg(X16, Define, 0).addExternalSymbol(ChkStk, 0).addExternalSymbol(ChkStk, 0).setMIFlags(FrameSetup);
         },
     }
-    BuildMI(DL)(getArithExtendImm(UXTX, 4))(FrameSetup);
-    if  {
-        BuildMI(DL)(NumBytes)(FrameSetup);
+    BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SUBXrx64), SP).addReg(SP, Kill, 0).addReg(X15, Kill, 0).addImm(getArithExtendImm(UXTX, 4)).setMIFlags(FrameSetup);
+    if self.NeedsWinCFI {
+        self.HasWinCFI = true;
+        BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SEH_StackAlloc)).addImm(NumBytes).setMIFlag(FrameSetup);
     }
     NumBytes = 0;
     if RealignmentPadding > 0 {
         if RealignmentPadding >= 4096 {
-            BuildMI(DL)(RealignmentPadding)(FrameSetup);
-            BuildMI(DL)(getArithExtendImm(UXTX, 0))(FrameSetup);
+            BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MOVi64imm)).addReg(X16, Define, 0).addImm(RealignmentPadding).setMIFlags(FrameSetup);
+            BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ADDXrx64), X15).addReg(SP, RegState {}, 0).addReg(X16, Kill, 0).addImm(getArithExtendImm(UXTX, 0)).setMIFlag(FrameSetup);
         } else {
-            BuildMI(DL)(RealignmentPadding)(0)(FrameSetup);
+            BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ADDXri), X15).addReg(SP, RegState {}, 0).addImm(RealignmentPadding).addImm(0).setMIFlag(FrameSetup);
         }
-        let mut AndMask: u64 = 0;
-        BuildMI(DL)(encodeLogicalImmediate(AndMask, 64));
+        let mut AndMask: u64 = ~(self.MFI.getMaxAlign().value() - 1);
+        BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ANDXri), SP).addReg(X15, Kill, 0).addImm(encodeLogicalImmediate(AndMask, 64));
+        self.AFI.setStackRealigned(true);
+        assert!(!self.NeedsWinCFI);
     }
     if X15Scratch.isValid() {
-        BuildMI(DL)(X15Scratch, Undef)(X15Scratch, Implicit)(FrameSetup);
+        BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ORRXrr), X15).addReg(XZR, RegState {}, 0).addReg(X15Scratch, Undef, 0).addReg(X15Scratch, Implicit, 0).setMIFlag(FrameSetup);
     }
 }
 
-fn AArch64PrologueEmitter::emitCalleeSavedGPRLocations(self: *AArch64PrologueEmitter, MBBI: i32) {
-    let mut CSI: i32 = 0;
-    if CSI()() {
+fn AArch64PrologueEmitter::emitCalleeSavedGPRLocations(self: *AArch64PrologueEmitter, MBBI: iterator) {
+    let mut CSI: *[]CalleeSavedInfo = self.MFI.getCalleeSavedInfo();
+    if CSI.is_empty() {
         return;
     }
-    let mut CFIBuilder: CFIInstBuilder = zeroed();
+    let mut CFIBuilder: CFIInstBuilder = CFIInstBuilder { self.MBB, MBBI, FrameSetup, true };
+    for Info in CSI {
+        let mut FrameIdx: u32 = Info.getFrameIdx();
+        if self.MFI.hasScalableStackID(FrameIdx) {
+            continue;
+        }
+        assert!(!Info.isSpilledToReg(), "Spilling to registers not implemented");
+        let mut Offset: i64 = self.MFI.getObjectOffset(FrameIdx) - self.AFL.getOffsetOfLocalArea();
+        CFIBuilder.buildOffset(Info.getReg(), Offset);
+    }
 }
 
-fn AArch64PrologueEmitter::emitCalleeSavedSVELocations(self: *AArch64PrologueEmitter, MBBI: i32) {
-    let mut CSI: i32 = 0;
-    if CSI()() {
+fn AArch64PrologueEmitter::emitCalleeSavedSVELocations(self: *AArch64PrologueEmitter, MBBI: iterator) {
+    let mut CSI: *[]CalleeSavedInfo = self.MFI.getCalleeSavedInfo();
+    if CSI.is_empty() {
         return;
     }
-    let mut CFIBuilder: CFIInstBuilder = zeroed();
-    let mut IncomingVGOffsetFromDefCFA: optional<int64_t> = zeroed();
-    if  {
-        let mut IncomingVG: auto = operator*(find_if(reverse(), Closure_3 {}));
+    let mut CFIBuilder: CFIInstBuilder = CFIInstBuilder { self.MBB, MBBI, FrameSetup, true };
+    let mut IncomingVGOffsetFromDefCFA: optional<int64_t> = optional<int64_t> {};
+    if self.AFL.requiresSaveVG(self.MF) {
+        let mut IncomingVG: value_type = operator(find_if(reverse(CSI), Closure_3 {}));
+        IncomingVGOffsetFromDefCFA = self.MFI.getObjectOffset(IncomingVG.getFrameIdx()) - self.AFL.getOffsetOfLocalArea();
     }
-    let mut PPRStackSize: StackOffset = zeroed();
+    let mut PPRStackSize: StackOffset = self.AFL.getPPRStackSize(self.MF);
+    for Info in CSI {
+        let mut FI: i32 = Info.getFrameIdx();
+        if !self.MFI.hasScalableStackID(FI) {
+            continue;
+        }
+        assert!(!Info.isSpilledToReg(), "Spilling to registers not implemented");
+        let mut Reg: MCRegister = Info.getReg();
+        if !self.RegInfo.regNeedsCFI(Reg, Reg) {
+            continue;
+        }
+        let mut Offset: StackOffset = getScalable(self.MFI.getObjectOffset(FI)) - getFixed(self.AFI.getCalleeSavedStackSize(self.MFI));
+        if self.SVELayout == Split && self.MFI.getStackID(FI) == ScalableVector {
+            operator(Offset, PPRStackSize);
+        }
+        CFIBuilder.insertCFIInst(createCFAOffset(self.RegInfo, Reg.operator unsigned int(), Offset, IncomingVGOffsetFromDefCFA));
+    }
 }
 
 fn isFuncletReturnInstr(MI: *MachineInstr) -> bool {
@@ -542,202 +762,279 @@ fn isFuncletReturnInstr(MI: *MachineInstr) -> bool {
         _ => {
             return false;
         },
+        CATCHRET => {
+            CLEANUPRET;
+        },
     }
 }
 
-fn AArch64EpilogueEmitter::moveSPBelowFP(self, MBBI: i32, Offset: StackOffset) {
+fn AArch64EpilogueEmitter::AArch64EpilogueEmitter(self, MF: *mut MachineFunction, MBB: *mut MachineBasicBlock, AFL: *AArch64FrameLowering) {
+    self.EmitCFI = self.AFI.needsAsyncDwarfUnwindInfo(MF);
+    self.HomPrologEpilog = AFL.homogeneousPrologEpilog(MF, &mut MBB);
+    self.SEHEpilogueStartI = MBB.end();
+}
+
+fn AArch64EpilogueEmitter::moveSPBelowFP(self, MBBI: iterator, Offset: StackOffset) {
     assert!(Offset.getScalable() < 0 && Offset.getFixed() <= 0, "expected negative offset (with optional fixed portion)");
-    let mut Base: Register = zeroed();
+    let mut Base: Register = FP;
     if Offset.getFixed() {
         FixedOffset;
     } else {
-        emitFrameOffset(self.DL, Base, getFixed(FixedOffset), FrameDestroy);
+        Base = self.MF.getRegInfo().createVirtualRegister(&mut GPR64RegClass, "");
+        emitFrameOffset(self.MBB, MBBI, self.DL, Base.operator unsigned int(), FP, getFixed(FixedOffset), self.TII, FrameDestroy, false, false, null, false, StackOffset {}, SP);
     }
-    emitFrameOffset(self.DL, Base, getScalable(Offset.getScalable()), FrameDestroy);
+    emitFrameOffset(self.MBB, MBBI, self.DL, SP, Base.operator unsigned int(), getScalable(Offset.getScalable()), self.TII, FrameDestroy, false, false, null, false, StackOffset {}, SP);
 }
 
 fn AArch64EpilogueEmitter::emitEpilogue(self) {
-    let mut EpilogueEndI: i32 = 0;
-    if  {
-        self.DL = ();
+    let mut EpilogueEndI: iterator = self.MBB.getLastNonDebugInstr(true);
+    if self.MBB.end() != EpilogueEndI {
+        self.DL = operator(EpilogueEndI).getDebugLoc();
+        self.IsFunclet = isFuncletReturnInstr(operator(EpilogueEndI));
     }
-    let mut NumBytes: i64 = 0;
-    if  {
+    let mut NumBytes: i64 = if self.IsFunclet { self.AFL.getWinEHFuncletFrameSize(self.MF) } else { self.MFI.getStackSize() };
+    if self.MF.getFunction().getCallingConv() == GHC {
         return;
     }
-    let mut ArgumentStackToRestore: i64 = 0;
-    let mut IsWin64: bool = false;
-    let mut FixedObject: u32 = 0;
+    let mut ArgumentStackToRestore: i64 = self.AFL.getArgumentStackToRestore(self.MF, self.MBB);
+    let mut IsWin64: bool = self.Subtarget.isCallingConvWin64(self.MF.getFunction().getCallingConv(), self.MF.getFunction().isVarArg());
+    let mut FixedObject: u32 = self.AFL.getFixedObjectSize(self.MF, self.AFI, IsWin64, self.IsFunclet);
     let mut AfterCSRPopSize: i64 = ArgumentStackToRestore;
-    let mut PrologueSaveSize: auto = zeroed();
-    if  {
-        let mut FirstHomogenousEpilogI: auto = zeroed();
-        if  {
-            let mut HomogeneousEpilog: auto = prev();
-            if  {
-                FirstHomogenousEpilogI() = ;
+    let mut PrologueSaveSize: u32 = self.AFI.getCalleeSavedStackSize() + FixedObject;
+    if self.MF.hasEHFunclets() {
+        self.AFI.setLocalStackSize(NumBytes - PrologueSaveSize);
+    }
+    if self.HomPrologEpilog {
+        assert!(!self.NeedsWinCFI);
+        let mut FirstHomogenousEpilogI: iterator = self.MBB.getFirstTerminator();
+        if FirstHomogenousEpilogI != self.MBB.begin() {
+            let mut HomogeneousEpilog: MachineInstr> = prev(FirstHomogenousEpilogI, 1);
+            if operator(HomogeneousEpilog).getOpcode() == HOM_Epilog {
+                FirstHomogenousEpilogI = HomogeneousEpilog;
             }
         }
-        emitFrameOffset(self.DL, FrameDestroy, false);
+        emitFrameOffset(self.MBB, FirstHomogenousEpilogI, self.DL, SP, SP, getFixed(self.AFI.getLocalStackSize()), self.TII, FrameDestroy, false, self.NeedsWinCFI, &mut self.HasWinCFI, false, StackOffset {}, SP);
         assert!(AfterCSRPopSize == 0);
         return;
     }
     let mut CombineSPBump: bool = self.shouldCombineCSRLocalStackBump(NumBytes);
-    let mut ProloguePopSize: u32 = ;
-    if  {
+    let mut ProloguePopSize: u32 = PrologueSaveSize;
+    if self.SVELayout == CalleeSavesAboveFrameRecord {
         ProloguePopSize -= FixedObject;
         AfterCSRPopSize += FixedObject;
     }
     if !CombineSPBump && ProloguePopSize != 0 {
-        let mut Pop: i32 = prev();
-        while  {
-            Pop() = prev();
+        let mut Pop: iterator = prev(self.MBB.getFirstTerminator(), 1);
+        while operator(Pop).getOpcode() == CFI_INSTRUCTION || isSEHInstruction(operator(Pop)) || (self.SVELayout == CalleeSavesAboveFrameRecord && isPartOfSVECalleeSaves(Pop)) {
+            Pop = prev(Pop, 1);
         }
-        let mut OffsetOp: *MachineOperand = (() - 1);
-        if OffsetOp.getImm() == 0 && AfterCSRPopSize >= 0 {} else if  {
-            let mut AfterLastPop: i32 = next();
-            if isSEHInstruction(operator*()) {
-                += 1;
+        let mut OffsetOp: *MachineOperand = operator(Pop).getOperand(operator(Pop).getNumOperands() - 1);
+        if OffsetOp.getImm() == 0 && AfterCSRPopSize >= 0 {
+            self.convertCalleeSaveRestoreToSPPrePostIncDec(Pop, self.DL, ProloguePopSize, self.EmitCFI, FrameDestroy, ProloguePopSize);
+        } else if self.SVELayout == CalleeSavesAboveFrameRecord {
+            let mut AfterLastPop: iterator = next(Pop, 1);
+            if isSEHInstruction(operator(AfterLastPop)) {
+                operator(AfterLastPop);
             }
-            emitFrameOffset(self.DL, getFixed(ProloguePopSize), FrameDestroy, false);
+            emitFrameOffset(self.MBB, AfterLastPop, self.DL, SP, SP, getFixed(ProloguePopSize), self.TII, FrameDestroy, false, self.NeedsWinCFI, &mut self.HasWinCFI, false, StackOffset {}, SP);
         } else {
             AfterCSRPopSize += ProloguePopSize;
         }
     }
-    let mut FirstGPRRestoreI: i32 = 0;
-    let mut Begin: i32 = 0;
-    while FirstGPRRestoreI() !=  {
-         -= 1;
-        if  {
-             += 1;
+    let mut FirstGPRRestoreI: iterator = self.MBB.getFirstTerminator();
+    let mut Begin: iterator = self.MBB.begin();
+    while FirstGPRRestoreI != Begin {
+        operator(FirstGPRRestoreI);
+        if !operator(FirstGPRRestoreI).getFlag(FrameDestroy) || (self.SVELayout != CalleeSavesAboveFrameRecord && isPartOfSVECalleeSaves(FirstGPRRestoreI)) {
+            operator(FirstGPRRestoreI);
             break;
         } else if CombineSPBump {
-            self.fixupCalleeSaveRestoreStackOffset;
+            self.fixupCalleeSaveRestoreStackOffset(operator(FirstGPRRestoreI), self.AFI.getLocalStackSize());
         }
     }
-    if  {
-        BuildMI(self.DL)(FrameDestroy);
+    if self.NeedsWinCFI {
+        BuildMI(self.MBB, FirstGPRRestoreI, MIMetadata { DL: self.DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SEH_EpilogStart)).setMIFlag(FrameDestroy);
+        self.SEHEpilogueStartI = FirstGPRRestoreI;
+        operator(self.SEHEpilogueStartI);
+    }
+    if self.HasFP && self.AFI.hasSwiftAsyncContext() {
+        self.emitSwiftAsyncContextFramePointer(EpilogueEndI, self.DL);
     }
     if CombineSPBump {
-        emitFrameOffset(self.DL, getFixed(NumBytes + AfterCSRPopSize), FrameDestroy, false, getFixed(NumBytes));
+        assert!(!self.AFI.hasSVEStackSize(), "Cannot combine SP bump with SVE");
+        if self.EmitCFI && self.HasFP {
+            CFIInstBuilder { self.MBB, FirstGPRRestoreI, FrameDestroy, true }.buildDefCFA(SP, NumBytes);
+        }
+        emitFrameOffset(self.MBB, self.MBB.getFirstTerminator(), self.DL, SP, SP, getFixed(NumBytes + AfterCSRPopSize), self.TII, FrameDestroy, false, self.NeedsWinCFI, &mut self.HasWinCFI, self.EmitCFI, getFixed(NumBytes), SP);
         return;
     }
-    NumBytes -= ;
+    NumBytes -= PrologueSaveSize;
     assert!(NumBytes >= 0, "Negative stack allocation size!?");
-    let mut SVECalleeSavesSize: StackOffset =  + ;
-    let mut SVEAllocs: SVEStackAllocations = self.getSVEStackAllocations(void { ,  });
-    if  {
+    let mut SVECalleeSavesSize: StackOffset = ZPR.CalleeSavesSize + PPR.CalleeSavesSize;
+    let mut SVEAllocs: SVEStackAllocations = self.getSVEStackAllocations(SVEFrameSizes { PPR: PPR, ZPR: ZPR });
+    if self.SVELayout == CalleeSavesAboveFrameRecord {
         assert!(!SVEAllocs.AfterPPRs, "unexpected SVE allocs after PPRs with CalleeSavesAboveFrameRecord");
-        if  {
-            emitFrameOffset(self.DL, SVEAllocs.AfterZPRs, FrameDestroy, false);
+        if !self.AFI.isStackRealigned() && !self.MFI.hasVarSizedObjects() {
+            emitFrameOffset(self.MBB, FirstGPRRestoreI, self.DL, SP, SP, SVEAllocs.AfterZPRs, self.TII, FrameDestroy, false, self.NeedsWinCFI, &mut self.HasWinCFI, false, StackOffset {}, SP);
         }
-        emitFrameOffset(self.DL, SVEAllocs.BeforePPRs, FrameDestroy, false);
-    } else if  {
-        let mut BaseForSVEDealloc: Register = zeroed();
-        if  {
-            if  {
-                let mut FPOffsetZPR: StackOffset = operator(SVECalleeSavesSize) -  - ;
+        emitFrameOffset(self.MBB, PPRRange.End, self.DL, SP, SP, SVEAllocs.BeforePPRs, self.TII, FrameDestroy, false, self.NeedsWinCFI, &mut self.HasWinCFI, false, StackOffset {}, SP);
+    } else if self.AFI.hasSVEStackSize() {
+        let mut BaseForSVEDealloc: Register = if (self.AFI.isStackRealigned() || self.MFI.hasVarSizedObjects()) { FP } else { SP };
+        if SVECalleeSavesSize && BaseForSVEDealloc == FP {
+            if ZPR.CalleeSavesSize || self.SVELayout != Split {
+                let mut FPOffsetZPR: StackOffset = operator(SVECalleeSavesSize) - PPR.LocalsSize - getFixed(self.AFI.getCalleeSaveBaseToFrameRecordOffset());
+                self.moveSPBelowFP(ZPRRange.Begin, FPOffsetZPR);
             }
-            if  {
-                let mut FPOffsetPPR: StackOffset = operator-();
+            if PPR.CalleeSavesSize && self.SVELayout == Split {
+                let mut FPOffsetPPR: StackOffset = operator(PPR.CalleeSavesSize);
                 assert!(!FPOffsetPPR.getFixed(), "expected only scalable offset");
-                emitFrameOffset(self.DL, FPOffsetPPR, FrameDestroy);
+                emitFrameOffset(self.MBB, ZPRRange.End, self.DL, SP, FP, FPOffsetPPR, self.TII, FrameDestroy, false, false, null, false, StackOffset {}, SP);
             }
-        } else if  {
+        } else if BaseForSVEDealloc == SP {
             let mut NonSVELocals: StackOffset = getFixed(NumBytes);
-            let mut CFAOffset: auto = NonSVELocals + () + SVEAllocs.totalSize();
-            if  {
+            let mut CFAOffset: StackOffset = NonSVELocals + getFixed(PrologueSaveSize) + SVEAllocs.totalSize();
+            if SVECalleeSavesSize || self.SVELayout == Split {
                 operator(SVEAllocs.AfterZPRs, NonSVELocals);
                 NumBytes -= NonSVELocals.getFixed();
             }
-            emitFrameOffset(self.DL, SVEAllocs.AfterZPRs, FrameDestroy, false);
-            CFAOffset() -= SVEAllocs.AfterZPRs;
-            emitFrameOffset(self.DL, SVEAllocs.AfterPPRs, FrameDestroy, false);
-            CFAOffset() -= SVEAllocs.AfterPPRs;
-            emitFrameOffset(self.DL, SVEAllocs.BeforePPRs, FrameDestroy, false);
+            emitFrameOffset(self.MBB, ZPRRange.Begin, self.DL, SP, SP, SVEAllocs.AfterZPRs, self.TII, FrameDestroy, false, self.NeedsWinCFI, &mut self.HasWinCFI, self.EmitCFI && !self.HasFP, CFAOffset, SP);
+            operator(CFAOffset, SVEAllocs.AfterZPRs);
+            assert!(PPRRange.Begin == ZPRRange.End, "Expected PPR restores after ZPR");
+            emitFrameOffset(self.MBB, PPRRange.Begin, self.DL, SP, SP, SVEAllocs.AfterPPRs, self.TII, FrameDestroy, false, self.NeedsWinCFI, &mut self.HasWinCFI, self.EmitCFI && !self.HasFP, CFAOffset, SP);
+            operator(CFAOffset, SVEAllocs.AfterPPRs);
+            emitFrameOffset(self.MBB, PPRRange.End, self.DL, SP, SP, SVEAllocs.BeforePPRs, self.TII, FrameDestroy, false, self.NeedsWinCFI, &mut self.HasWinCFI, self.EmitCFI && !self.HasFP, CFAOffset, SP);
+        }
+        if self.EmitCFI {
+            self.emitCalleeSavedSVERestores(if self.SVELayout == Split { ZPRRange.End } else { PPRRange.End });
         }
     }
-    if  {
-        let mut RedZone: bool = false;
+    if !self.HasFP {
+        let mut RedZone: bool = self.AFL.canUseRedZone(self.MF);
         if RedZone && AfterCSRPopSize == 0 {
             return;
         }
-        let mut NoCalleeSaveRestore: bool =  == 0;
+        let mut NoCalleeSaveRestore: bool = PrologueSaveSize == 0;
         let mut StackRestoreBytes: i64 = if RedZone { 0 } else { NumBytes };
         if NoCalleeSaveRestore {
             StackRestoreBytes += AfterCSRPopSize;
         }
-        emitFrameOffset(self.DL, getFixed(StackRestoreBytes), FrameDestroy, false, ((if RedZone { 0 } else { NumBytes }) + ));
+        emitFrameOffset(self.MBB, FirstGPRRestoreI, self.DL, SP, SP, getFixed(StackRestoreBytes), self.TII, FrameDestroy, false, self.NeedsWinCFI, &mut self.HasWinCFI, self.EmitCFI, getFixed((if RedZone { 0 } else { NumBytes }) + PrologueSaveSize), SP);
         if NoCalleeSaveRestore || AfterCSRPopSize == 0 {
             return;
         }
         NumBytes = 0;
     }
-    if  {
-        emitFrameOffset(self.DL, FrameDestroy, false);
+    if !self.IsFunclet && (self.MFI.hasVarSizedObjects() || self.AFI.isStackRealigned()) {
+        emitFrameOffset(self.MBB, FirstGPRRestoreI, self.DL, SP, FP, getFixed(-self.AFI.getCalleeSaveBaseToFrameRecordOffset()), self.TII, FrameDestroy, false, self.NeedsWinCFI, &mut self.HasWinCFI, false, StackOffset {}, SP);
     } else if NumBytes {
-        emitFrameOffset(self.DL, getFixed(NumBytes), FrameDestroy, false);
+        emitFrameOffset(self.MBB, FirstGPRRestoreI, self.DL, SP, SP, getFixed(NumBytes), self.TII, FrameDestroy, false, self.NeedsWinCFI, &mut self.HasWinCFI, false, StackOffset {}, SP);
+    }
+    if self.EmitCFI && self.HasFP {
+        CFIInstBuilder { self.MBB, FirstGPRRestoreI, FrameDestroy, true }.buildDefCFA(SP, PrologueSaveSize);
     }
     if AfterCSRPopSize {
         assert!(AfterCSRPopSize > 0, "attempting to reallocate arg stack that an interrupt may have clobbered");
-        emitFrameOffset(self.DL, getFixed(AfterCSRPopSize), FrameDestroy, false, getFixed(AfterCSRPopSize - ArgumentStackToRestore));
+        emitFrameOffset(self.MBB, self.MBB.getFirstTerminator(), self.DL, SP, SP, getFixed(AfterCSRPopSize), self.TII, FrameDestroy, false, self.NeedsWinCFI, &mut self.HasWinCFI, self.EmitCFI, getFixed(AfterCSRPopSize - ArgumentStackToRestore), SP);
     }
 }
 
 fn AArch64EpilogueEmitter::shouldCombineCSRLocalStackBump(self: *AArch64EpilogueEmitter, StackBumpBytes: u64) -> bool {
-    if operator!(self.shouldCombineCSRLocalStackBump) {
+    if !self.shouldCombineCSRLocalStackBump(StackBumpBytes) {
         return false;
     }
-    if  {
+    if self.MBB.is_empty() {
         return true;
     }
-    let mut LastI: i32 = 0;
-    let mut Begin: i32 = 0;
-    while LastI() !=  {
-         -= 1;
-        if LastI()() {
+    let mut LastI: iterator = self.MBB.getFirstTerminator();
+    let mut Begin: iterator = self.MBB.begin();
+    while LastI != Begin {
+        operator(LastI);
+        if operator(LastI).isTransient() {
             continue;
         }
-        if operator!((FrameDestroy)) {
+        if !operator(LastI).getFlag(FrameDestroy) {
             break;
         }
     }
-    match LastI()() {
+    match operator(LastI).getOpcode() {
+        STGloop => {
+            STZGloop;
+        },
         _ => {
             return true;
         },
     }
-    llvm_unreachable_internal("unreachable", "llvm\\lib\\Target\\AArch64\\AArch64PrologueEpilogue.cpp", 1695);
+    llvm_unreachable_internal("unreachable", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64PrologueEpilogue.cpp", 1695);
 }
 
-fn AArch64EpilogueEmitter::emitSwiftAsyncContextFramePointer(self: *AArch64EpilogueEmitter, MBBI: i32, DL: *DebugLoc) {
-    match  {
-
+fn AArch64EpilogueEmitter::emitSwiftAsyncContextFramePointer(self: *AArch64EpilogueEmitter, MBBI: iterator, DL: *DebugLoc) {
+    match self.MF.getTarget().Options.SwiftAsyncFramePointer {
+        DeploymentBased => {
+            
+        },
+        Always => {
+            BuildMI(self.MBB, self.MBB.getFirstTerminator(), MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ANDXri), FP).addUse(FP, RegState {}, 0).addImm(4350).setMIFlag(FrameDestroy);
+        },
+        Never => {
+            break;
+        },
     }
 }
 
-fn AArch64EpilogueEmitter::emitShadowCallStackEpilogue(self: *AArch64EpilogueEmitter, MBBI: i32, DL: *DebugLoc) {
-    BuildMI(DL)(-8)(FrameDestroy);
-    if  {
-        BuildMI(DL)(FrameDestroy);
+fn AArch64EpilogueEmitter::emitShadowCallStackEpilogue(self: *AArch64EpilogueEmitter, MBBI: iterator, DL: *DebugLoc) {
+    BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(LDRXpre)).addReg(X18, Define, 0).addReg(LR, Define, 0).addReg(X18, RegState {}, 0).addImm(-8).setMIFlag(FrameDestroy);
+    if self.NeedsWinCFI {
+        BuildMI(self.MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SEH_Nop)).setMIFlag(FrameDestroy);
+    }
+    if self.AFI.needsAsyncDwarfUnwindInfo(self.MF) {
+        CFIInstBuilder { self.MBB, MBBI, FrameDestroy, true }.buildRestore(X18);
     }
 }
 
-fn AArch64EpilogueEmitter::emitCalleeSavedRestores(self: *AArch64EpilogueEmitter, MBBI: i32, SVE: bool) {
-    let mut CSI: i32 = 0;
-    if CSI()() {
+fn AArch64EpilogueEmitter::emitCalleeSavedRestores(self: *AArch64EpilogueEmitter, MBBI: iterator, SVE: bool) {
+    let mut CSI: *[]CalleeSavedInfo = self.MFI.getCalleeSavedInfo();
+    if CSI.is_empty() {
         return;
     }
-    let mut CFIBuilder: CFIInstBuilder = zeroed();
+    let mut CFIBuilder: CFIInstBuilder = CFIInstBuilder { self.MBB, MBBI, FrameDestroy, true };
+    for Info in CSI {
+        if SVE != self.MFI.hasScalableStackID(Info.getFrameIdx()) {
+            continue;
+        }
+        let mut Reg: MCRegister = Info.getReg();
+        if SVE && !self.RegInfo.regNeedsCFI(Reg, Reg) {
+            continue;
+        }
+        CFIBuilder.buildRestore(Info.getReg());
+    }
 }
 
 fn AArch64EpilogueEmitter::finalizeEpilogue(self: *AArch64EpilogueEmitter) {
-    if  {}
-    if  {}
-    if  {
-        BuildMI(self.DL)(FrameDestroy);
+    if self.AFI.needsShadowCallStackPrologueEpilogue(self.MF) {
+        self.emitShadowCallStackEpilogue(self.MBB.getFirstTerminator(), self.DL);
+        self.HasWinCFI |= self.NeedsWinCFI;
     }
-    if  {}
+    if self.EmitCFI {
+        self.emitCalleeSavedGPRRestores(self.MBB.getFirstTerminator());
+    }
+    if self.AFI.shouldSignReturnAddress(self.MF) {
+        if !self.AFL.shouldSignReturnAddressEverywhere(self.MF) {
+            self.TII.createPauthEpilogueInstr(self.MBB, self.DL);
+        }
+        self.HasWinCFI |= self.NeedsWinCFI;
+    }
+    if self.HasWinCFI {
+        BuildMI(self.MBB, self.MBB.getFirstTerminator(), MIMetadata { DL: self.DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SEH_EpilogEnd)).setMIFlag(FrameDestroy);
+        if !self.MF.hasWinCFI() {
+            self.MF.setHasWinCFI(true);
+        }
+    }
+    if self.NeedsWinCFI {
+        assert!(self.SEHEpilogueStartI != self.MBB.end();
+        if !self.HasWinCFI {
+            self.MBB.erase(self.SEHEpilogueStartI);
+        }
+    }
 }
 
 struct Closure_1 {
@@ -752,8 +1049,12 @@ struct Closure_2 {
     cap_0: *AArch64PrologueEmitter,
 }
 
-fn Closure_2::call(self: *Closure_2, LiveIn: *RegisterMaskPair) {}
+fn Closure_2::call(self: *Closure_2, LiveIn: *RegisterMaskPair) -> bool {
+        return self.RegInfo.isSuperOrSubRegisterEq(X15, LiveIn.PhysReg);
+    }
 
 struct Closure_3 {}
 
-fn Closure_3::call(self: *Closure_3) {}
+fn Closure_3::call(self: *Closure_3) {
+            return Info.getReg() == VG;
+        }

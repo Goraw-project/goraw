@@ -5,11 +5,11 @@ struct X86InterleavedAccessGroup {
     Factor: u32,
     Subtarget: *X86Subtarget,
     DL: *DataLayout,
-    Builder: *mut i32,
+    Builder: *mut IRBuilder<>,
 }
 
 fn X86InterleavedAccessGroup::isSupported(self: *X86InterleavedAccessGroup) -> bool {
-    let mut ShuffleVecTy: *mut VectorType = null;
+    let mut ShuffleVecTy: *mut VectorType = self.Shuffles[0].getType();
     let mut ShuffleEltTy: *mut Type = ShuffleVecTy.getElementType();
     let mut ShuffleElemSize: u32 = self.DL.getTypeSizeInBits(ShuffleEltTy).operator unsigned long long();
     let mut WideInstSize: u32 = 0;
@@ -18,11 +18,11 @@ fn X86InterleavedAccessGroup::isSupported(self: *X86InterleavedAccessGroup) -> b
     }
     if isa(self.Inst) {
         WideInstSize = self.DL.getTypeSizeInBits(self.Inst.getType()).operator unsigned long long();
-        if cast(self.Inst)() {
+        if cast(self.Inst).getPointerAddressSpace() {
             return false;
         }
     } else {
-        WideInstSize = self.DL.getTypeSizeInBits;
+        WideInstSize = self.DL.getTypeSizeInBits(self.Shuffles[0].getType()).operator unsigned long long();
     }
     if ShuffleElemSize == 64 && WideInstSize == 1024 && self.Factor == 4 {
         return true;
@@ -41,11 +41,13 @@ fn X86InterleavedAccessGroup::decompose(self, VecInst: *mut Instruction, NumSubV
     let mut VecWidth: *mut Type = VecInst.getType();
     VecWidth as void;
     assert!(VecWidth.isVectorTy() && self.DL.getTypeSizeInBits(VecWidth).operator unsigned long long() >= self.DL.getTypeSizeInBits(SubVecTy) * NumSubVectors.operator unsigned long long(), "Invalid Inst-size!!!");
-    if  {
-        let mut Op0: *mut Value = (0);
-        let mut Op1: *mut Value = (1);
+    if dyn_cast(VecInst) {
+        SVI;
+    } else {
+        let mut Op0: *mut Value = SVI.getOperand(0);
+        let mut Op1: *mut Value = SVI.getOperand(1);
         for let mut i: u32 = 0; i < NumSubVectors; i += 1 {
-            DecomposedVectors()(cast());
+            DecomposedVectors.push(cast(self.Builder.CreateShuffleVector(Op0, Op1, createSequentialMask(self.Indices[i], SubVecTy.getNumElements(), 0), "")));
         }
         return;
     }
@@ -65,9 +67,9 @@ fn X86InterleavedAccessGroup::decompose(self, VecInst: *mut Instruction, NumSubV
     let mut SubsequentAlignment: Align = commonAlignment(FirstAlignment, VecBaseTy.getPrimitiveSizeInBits().getFixedValue() / 8);
     let mut Alignment: Align = FirstAlignment;
     for let mut i: u32 = 0; i < NumLoads; i += 1 {
-        let mut NewBasePtr: *mut Value = null;
-        let mut NewLoad: *mut Instruction = null;
-        DecomposedVectors()(NewLoad);
+        let mut NewBasePtr: *mut Value = self.Builder.CreateGEP(VecBaseTy, VecBasePtr, self.Builder.getInt32(i), "", none());
+        let mut NewLoad: *mut Instruction = self.Builder.CreateAlignedLoad(VecBaseTy, NewBasePtr, Alignment, "");
+        DecomposedVectors.push(NewLoad);
         Alignment = SubsequentAlignment;
     }
 }
@@ -90,73 +92,87 @@ fn genShuffleBland(VT: MVT, Mask: ArrayRef<int>, Out: *mut SmallVectorImpl<int>,
     }
 }
 
-fn reorderSubVector(VT: MVT, TransposedMatrix: *mut SmallVectorImpl<Value *>, Vec: ArrayRef<Value *>, VPShuf: ArrayRef<int>, VecElems: u32, Stride: u32, Builder: *mut i32) {
+fn reorderSubVector(VT: MVT, TransposedMatrix: *mut SmallVectorImpl<Value *>, Vec: ArrayRef<Value *>, VPShuf: ArrayRef<int>, VecElems: u32, Stride: u32, Builder: *mut IRBuilder<>) {
     if VecElems == 16 {
+        for let mut i: u32 = 0; i < Stride; i += 1 {
+            TransposedMatrix[i] = Builder.CreateShuffleVector(Vec[i], VPShuf, "");
+        }
         return;
     }
-    let mut OptimizeShuf: SmallVector<int, 32> = zeroed();
+    let mut OptimizeShuf: SmallVector<int, 32> = SmallVector<int, 32> {};
     let mut Temp: [8]*mut Value = zeroed();
     for let mut i: u32 = 0; i < (VecElems / 16) * Stride; i += 2 {
-        genShuffleBland(VT, VPShuf, (i / Stride) * 16, (i + 1) / Stride * 16);
-        Temp[i / 2] = (Vec[i % Stride], Vec[(i + 1) % Stride]);
-        OptimizeShuf()();
+        genShuffleBland(VT, VPShuf, OptimizeShuf, (i / Stride) * 16, (i + 1) / Stride * 16);
+        Temp[i / 2] = Builder.CreateShuffleVector(Vec[i % Stride], Vec[(i + 1) % Stride], OptimizeShuf, "");
+        OptimizeShuf.clear();
     }
     if VecElems == 32 {
-        copy(Temp, Temp + Stride, TransposedMatrix()());
+        copy(Temp, Temp + Stride, TransposedMatrix.begin());
         return;
     } else {
-        
+        for let mut i: u32 = 0; i < Stride; i += 1 {
+            TransposedMatrix[i] = Builder.CreateShuffleVector(Temp[2 * i], Temp[2 * i + 1], Concat, "");
+        }
     }
 }
 
 fn X86InterleavedAccessGroup::interleave8bitStride4VF8(self, Matrix: ArrayRef<Instruction *>, TransposedMatrix: *mut SmallVectorImpl<Value *>) {
-    let mut VT: MVT = MVT { SimpleTy: v8i16 };
-    TransposedMatrix()(2);
+    let mut VT: MVT = v8i16;
+    TransposedMatrix.resize(2);
     let mut MaskLow: SmallVector<int, 16> = SmallVector<int, 16> {};
-    let mut MaskLowTemp1: SmallVector<int, 32> = zeroed();
-    let mut MaskLowWord: SmallVector<int, 32> = zeroed();
-    let mut MaskHighTemp1: SmallVector<int, 32> = zeroed();
-    let mut MaskHighWord: SmallVector<int, 32> = zeroed();
+    let mut MaskLowTemp1: SmallVector<int, 32> = SmallVector<int, 32> {};
+    let mut MaskLowWord: SmallVector<int, 32> = SmallVector<int, 32> {};
+    let mut MaskHighTemp1: SmallVector<int, 32> = SmallVector<int, 32> {};
+    let mut MaskHighWord: SmallVector<int, 32> = SmallVector<int, 32> {};
     for let mut i: u32 = 0; i < 8; i += 1 {
         MaskLow.push(i);
         MaskLow.push(i + 8);
     }
-    createUnpackShuffleMask(VT, true, false);
-    createUnpackShuffleMask(VT, false, false);
-    narrowShuffleMaskElts(2);
-    narrowShuffleMaskElts(2);
-    let mut IntrVec1Low: *mut Value = null;
-    let mut IntrVec2Low: *mut Value = null;
+    createUnpackShuffleMask(VT, MaskLowTemp1, true, false);
+    createUnpackShuffleMask(VT, MaskHighTemp1, false, false);
+    narrowShuffleMaskElts(2, MaskHighTemp1, MaskHighWord);
+    narrowShuffleMaskElts(2, MaskLowTemp1, MaskLowWord);
+    let mut IntrVec1Low: *mut Value = self.Builder.CreateShuffleVector(Matrix[0], Matrix[1], MaskLow, "");
+    let mut IntrVec2Low: *mut Value = self.Builder.CreateShuffleVector(Matrix[2], Matrix[3], MaskLow, "");
+    TransposedMatrix[0] = self.Builder.CreateShuffleVector(IntrVec1Low, IntrVec2Low, MaskLowWord, "");
+    TransposedMatrix[1] = self.Builder.CreateShuffleVector(IntrVec1Low, IntrVec2Low, MaskHighWord, "");
 }
 
 fn X86InterleavedAccessGroup::interleave8bitStride4(self, Matrix: ArrayRef<Instruction *>, TransposedMatrix: *mut SmallVectorImpl<Value *>, NumOfElm: u32) {
-    let mut VT: MVT = getVectorVT(MVT { SimpleTy: i8 }, NumOfElm);
+    let mut VT: MVT = getVectorVT(i8, NumOfElm);
     let mut HalfVT: MVT = scaleVectorType(VT);
-    TransposedMatrix()(4);
-    let mut MaskHigh: SmallVector<int, 32> = zeroed();
-    let mut MaskLow: SmallVector<int, 32> = zeroed();
-    let mut LowHighMask: [2]SmallVector<int, 32> = zeroed();
-    let mut MaskHighTemp: SmallVector<int, 32> = zeroed();
-    let mut MaskLowTemp: SmallVector<int, 32> = zeroed();
-    createUnpackShuffleMask(VT, true, false);
-    createUnpackShuffleMask(VT, false, false);
-    createUnpackShuffleMask(HalfVT, true, false);
-    createUnpackShuffleMask(HalfVT, false, false);
-    narrowShuffleMaskElts(2, [0]);
-    narrowShuffleMaskElts(2, [1]);
+    TransposedMatrix.resize(4);
+    let mut MaskHigh: SmallVector<int, 32> = SmallVector<int, 32> {};
+    let mut MaskLow: SmallVector<int, 32> = SmallVector<int, 32> {};
+    let mut LowHighMask: [2]SmallVector<int, 32> = [2]SmallVector<int, 32> {};
+    let mut MaskHighTemp: SmallVector<int, 32> = SmallVector<int, 32> {};
+    let mut MaskLowTemp: SmallVector<int, 32> = SmallVector<int, 32> {};
+    createUnpackShuffleMask(VT, MaskLow, true, false);
+    createUnpackShuffleMask(VT, MaskHigh, false, false);
+    createUnpackShuffleMask(HalfVT, MaskLowTemp, true, false);
+    createUnpackShuffleMask(HalfVT, MaskHighTemp, false, false);
+    narrowShuffleMaskElts(2, MaskLowTemp, LowHighMask[0]);
+    narrowShuffleMaskElts(2, MaskHighTemp, LowHighMask[1]);
     let mut IntrVec: [4]*mut Value = zeroed();
+    IntrVec[0] = self.Builder.CreateShuffleVector(Matrix[0], Matrix[1], MaskLow, "");
+    IntrVec[1] = self.Builder.CreateShuffleVector(Matrix[0], Matrix[1], MaskHigh, "");
+    IntrVec[2] = self.Builder.CreateShuffleVector(Matrix[2], Matrix[3], MaskLow, "");
+    IntrVec[3] = self.Builder.CreateShuffleVector(Matrix[2], Matrix[3], MaskHigh, "");
     let mut VecOut: [4]*mut Value = zeroed();
+    for let mut i: i32 = 0; i < 4; i += 1 {
+        VecOut[i] = self.Builder.CreateShuffleVector(IntrVec[i / 2], IntrVec[i / 2 + 2], LowHighMask[i % 2], "");
+    }
     if VT == v16i8 {
-        copy(VecOut, VecOut + 4, TransposedMatrix()());
+        copy(VecOut, VecOut + 4, TransposedMatrix.begin());
         return;
     }
-    reorderSubVector(VT, TransposedMatrix, VecOut, Concat(16), NumOfElm, 4);
+    reorderSubVector(VT, TransposedMatrix, VecOut, ArrayRef<int> { Concat, 16 }, NumOfElm, 4, self.Builder);
 }
 
 fn createShuffleStride(VT: MVT, Stride: i32, Mask: *mut SmallVectorImpl<int>) {
     let mut VectorSize: i32 = VT.getSizeInBits().operator unsigned long long();
     let mut VF: i32 = VT.getVectorNumElements();
-    let mut LaneCount: i32 = max(VectorSize / 128, 1);
+    let mut LaneCount: i32 = if VectorSize / 128 > 1 { VectorSize / 128 } else { 1 };
     for let mut Lane: i32 = 0; Lane < LaneCount; Lane += 1 {
         for let mut i: i32 = 0;
 let mut LaneSize: i32 = VF / LaneCount; i != LaneSize; i += 1 {
@@ -167,7 +183,7 @@ let mut LaneSize: i32 = VF / LaneCount; i != LaneSize; i += 1 {
 
 fn setGroupSize(VT: MVT, SizeInfo: *mut SmallVectorImpl<int>) {
     let mut VectorSize: i32 = VT.getSizeInBits().operator unsigned long long();
-    let mut VF: i32 = VT.getVectorNumElements() / max(VectorSize / 128, 1);
+    let mut VF: i32 = VT.getVectorNumElements() / if VectorSize / 128 > 1 { VectorSize / 128 } else { 1 };
     for let mut i: i32 = 0;
 let mut FirstGroupElement: i32 = 0; i < 3; i += 1 {
         let mut GroupSize: i32 = ceil((VF - FirstGroupElement) / 3.0);
@@ -178,7 +194,7 @@ let mut FirstGroupElement: i32 = 0; i < 3; i += 1 {
 
 fn DecodePALIGNRMask(VT: MVT, Imm: u32, ShuffleMask: *mut SmallVectorImpl<int>, AlignDirection: bool, Unary: bool) {
     let mut NumElts: u32 = VT.getVectorNumElements();
-    let mut NumLanes: u32 = max(VT.getSizeInBits().operator unsigned long long() as i32 / 128, 1);
+    let mut NumLanes: u32 = if VT.getSizeInBits().operator unsigned long long() as i32 / 128 > 1 { VT.getSizeInBits().operator unsigned long long() as i32 / 128 } else { 1 };
     let mut NumLaneElts: u32 = NumElts / NumLanes;
     Imm = if AlignDirection { Imm } else { (NumLaneElts - Imm) };
     let mut Offset: u32 = Imm * (VT.getScalarSizeInBits() / 8);
@@ -193,45 +209,57 @@ fn DecodePALIGNRMask(VT: MVT, Imm: u32, ShuffleMask: *mut SmallVectorImpl<int>, 
     }
 }
 
-fn concatSubVector(Vec: *mut *mut Value, InVec: ArrayRef<Instruction *>, VecElems: u32, Builder: *mut i32) {
+fn concatSubVector(Vec: *mut *mut Value, InVec: ArrayRef<Instruction *>, VecElems: u32, Builder: *mut IRBuilder<>) {
     if VecElems == 16 {
         for let mut i: i32 = 0; i < 3; i += 1 {
-            Vec[i] = [i];
+            Vec[i] = InVec[i];
         }
         return;
     }
     for let mut j: u32 = 0; j < VecElems / 32; j += 1 {
         for let mut i: i32 = 0; i < 3; i += 1 {
-            Vec[i + j * 3] = ([j * 6 + i], [j * 6 + i + 3], Concat(32));
+            Vec[i + j * 3] = Builder.CreateShuffleVector(InVec[j * 6 + i], InVec[j * 6 + i + 3], ArrayRef<int> { Concat, 32 }, "");
         }
     }
     if VecElems == 32 {
         return;
     }
     for let mut i: i32 = 0; i < 3; i += 1 {
-        Vec[i] = (Vec[i], Vec[i + 3], Concat);
+        Vec[i] = Builder.CreateShuffleVector(Vec[i], Vec[i + 3], Concat, "");
     }
 }
 
 fn X86InterleavedAccessGroup::deinterleave8bitStride3(self, InVec: ArrayRef<Instruction *>, TransposedMatrix: *mut SmallVectorImpl<Value *>, VecElems: u32) {
-    TransposedMatrix()(3);
-    let mut VPShuf: SmallVector<int, 32> = zeroed();
-    let mut VPAlign: [2]SmallVector<int, 32> = zeroed();
-    let mut VPAlign2: SmallVector<int, 32> = zeroed();
-    let mut VPAlign3: SmallVector<int, 32> = zeroed();
-    let mut GroupSize: SmallVector<int, 3> = zeroed();
+    TransposedMatrix.resize(3);
+    let mut VPShuf: SmallVector<int, 32> = SmallVector<int, 32> {};
+    let mut VPAlign: [2]SmallVector<int, 32> = [2]SmallVector<int, 32> {};
+    let mut VPAlign2: SmallVector<int, 32> = SmallVector<int, 32> {};
+    let mut VPAlign3: SmallVector<int, 32> = SmallVector<int, 32> {};
+    let mut GroupSize: SmallVector<int, 3> = SmallVector<int, 3> {};
     let mut Vec: [6]*mut Value = zeroed();
     let mut TempVector: [3]*mut Value = zeroed();
-    let mut VT: MVT = getVT();
-    createShuffleStride(VT, 3);
-    setGroupSize(VT);
+    let mut VT: MVT = getVT(self.Shuffles[0].getType(), false);
+    createShuffleStride(VT, 3, VPShuf);
+    setGroupSize(VT, GroupSize);
     for let mut i: i32 = 0; i < 2; i += 1 {
-        DecodePALIGNRMask(VT, [2 - i], [i], false);
+        DecodePALIGNRMask(VT, GroupSize[2 - i], VPAlign[i], false, false);
     }
-    DecodePALIGNRMask(VT, [2] + [1], true, true);
-    DecodePALIGNRMask(VT, [1], true, true);
-    concatSubVector(Vec, VecElems);
-    let mut TempVec: *mut Value = null;
+    DecodePALIGNRMask(VT, GroupSize[2] + GroupSize[1], VPAlign2, true, true);
+    DecodePALIGNRMask(VT, GroupSize[1], VPAlign3, true, true);
+    concatSubVector(Vec, InVec, VecElems, self.Builder);
+    for let mut i: i32 = 0; i < 3; i += 1 {
+        Vec[i] = self.Builder.CreateShuffleVector(Vec[i], VPShuf, "");
+    }
+    for let mut i: i32 = 0; i < 3; i += 1 {
+        TempVector[i] = self.Builder.CreateShuffleVector(Vec[(i + 2) % 3], Vec[i], VPAlign[0], "");
+    }
+    for let mut i: i32 = 0; i < 3; i += 1 {
+        Vec[i] = self.Builder.CreateShuffleVector(TempVector[(i + 1) % 3], TempVector[i], VPAlign[1], "");
+    }
+    let mut TempVec: *mut Value = self.Builder.CreateShuffleVector(Vec[1], VPAlign3, "");
+    TransposedMatrix[0] = self.Builder.CreateShuffleVector(Vec[0], VPAlign2, "");
+    TransposedMatrix[1] = if VecElems == 8 { Vec[2] } else { TempVec };
+    TransposedMatrix[2] = if VecElems == 8 { TempVec } else { Vec[2] };
 }
 
 fn group2Shuffle(VT: MVT, Mask: *mut SmallVectorImpl<int>, Output: *mut SmallVectorImpl<int>) {
@@ -251,51 +279,63 @@ fn group2Shuffle(VT: MVT, Mask: *mut SmallVectorImpl<int>, Output: *mut SmallVec
 }
 
 fn X86InterleavedAccessGroup::interleave8bitStride3(self, InVec: ArrayRef<Instruction *>, TransposedMatrix: *mut SmallVectorImpl<Value *>, VecElems: u32) {
-    TransposedMatrix()(3);
-    let mut GroupSize: SmallVector<int, 3> = zeroed();
-    let mut VPShuf: SmallVector<int, 32> = zeroed();
-    let mut VPAlign: [3]SmallVector<int, 32> = zeroed();
-    let mut VPAlign2: SmallVector<int, 32> = zeroed();
-    let mut VPAlign3: SmallVector<int, 32> = zeroed();
+    TransposedMatrix.resize(3);
+    let mut GroupSize: SmallVector<int, 3> = SmallVector<int, 3> {};
+    let mut VPShuf: SmallVector<int, 32> = SmallVector<int, 32> {};
+    let mut VPAlign: [3]SmallVector<int, 32> = [3]SmallVector<int, 32> {};
+    let mut VPAlign2: SmallVector<int, 32> = SmallVector<int, 32> {};
+    let mut VPAlign3: SmallVector<int, 32> = SmallVector<int, 32> {};
     let mut Vec: [3]*mut Value = zeroed();
     let mut TempVector: [3]*mut Value = zeroed();
-    let mut VT: MVT = getVectorVT(MVT { SimpleTy: i8 }, VecElems);
-    setGroupSize(VT);
+    let mut VT: MVT = getVectorVT(i8, VecElems);
+    setGroupSize(VT, GroupSize);
     for let mut i: i32 = 0; i < 3; i += 1 {
-        DecodePALIGNRMask(VT, [i], [i]);
+        DecodePALIGNRMask(VT, GroupSize[i], VPAlign[i], true, false);
     }
-    DecodePALIGNRMask(VT, [1] + [2], false, true);
-    DecodePALIGNRMask(VT, [1], false, true);
-    Vec[2] = [2];
+    DecodePALIGNRMask(VT, GroupSize[1] + GroupSize[2], VPAlign2, false, true);
+    DecodePALIGNRMask(VT, GroupSize[1], VPAlign3, false, true);
+    Vec[0] = self.Builder.CreateShuffleVector(InVec[0], VPAlign2, "");
+    Vec[1] = self.Builder.CreateShuffleVector(InVec[1], VPAlign3, "");
+    Vec[2] = InVec[2];
+    for let mut i: i32 = 0; i < 3; i += 1 {
+        TempVector[i] = self.Builder.CreateShuffleVector(Vec[i], Vec[(i + 2) % 3], VPAlign[1], "");
+    }
+    for let mut i: i32 = 0; i < 3; i += 1 {
+        Vec[i] = self.Builder.CreateShuffleVector(TempVector[i], TempVector[(i + 1) % 3], VPAlign[2], "");
+    }
     let mut NumOfElm: u32 = VT.getVectorNumElements();
-    group2Shuffle(VT);
-    reorderSubVector(VT, TransposedMatrix, Vec, NumOfElm, 3);
+    group2Shuffle(VT, GroupSize, VPShuf);
+    reorderSubVector(VT, TransposedMatrix, Vec, VPShuf, NumOfElm, 3, self.Builder);
 }
 
 fn X86InterleavedAccessGroup::transpose_4x4(self, Matrix: ArrayRef<Instruction *>, TransposedMatrix: *mut SmallVectorImpl<Value *>) {
-    (((operator!(operator!((Matrix()() == 4 && "Invalid matrix size")))) || (_wassert(L"Matrix.size() == 4 && \"Invalid matrix size\"", L"llvm\\lib\\Target\\X86\\X86InterleavedAccess.cpp", (684) as u32) , 0)) as void);
-    TransposedMatrix()(4);
+    assert!(Matrix.len == 4, "Invalid matrix size");
+    TransposedMatrix.resize(4);
     let mut IntMask1: [4]i32 = [0, 1, 4, 5];
-    let mut Mask: ArrayRef<int> = IntMask1(4);
-    let mut IntrVec1: *mut Value = null;
-    let mut IntrVec2: *mut Value = null;
+    let mut Mask: ArrayRef<int> = ArrayRef<int> { IntMask1, 4 };
+    let mut IntrVec1: *mut Value = self.Builder.CreateShuffleVector(Matrix[0], Matrix[2], Mask, "");
+    let mut IntrVec2: *mut Value = self.Builder.CreateShuffleVector(Matrix[1], Matrix[3], Mask, "");
     let mut IntMask2: [4]i32 = [2, 3, 6, 7];
-    Mask = IntMask2(4);
-    let mut IntrVec3: *mut Value = null;
-    let mut IntrVec4: *mut Value = null;
+    Mask = ArrayRef<int> { IntMask2, 4 };
+    let mut IntrVec3: *mut Value = self.Builder.CreateShuffleVector(Matrix[0], Matrix[2], Mask, "");
+    let mut IntrVec4: *mut Value = self.Builder.CreateShuffleVector(Matrix[1], Matrix[3], Mask, "");
     let mut IntMask3: [4]i32 = [0, 4, 2, 6];
-    Mask = IntMask3(4);
+    Mask = ArrayRef<int> { IntMask3, 4 };
+    TransposedMatrix[0] = self.Builder.CreateShuffleVector(IntrVec1, IntrVec2, Mask, "");
+    TransposedMatrix[2] = self.Builder.CreateShuffleVector(IntrVec3, IntrVec4, Mask, "");
     let mut IntMask4: [4]i32 = [1, 5, 3, 7];
-    Mask = IntMask4(4);
+    Mask = ArrayRef<int> { IntMask4, 4 };
+    TransposedMatrix[1] = self.Builder.CreateShuffleVector(IntrVec1, IntrVec2, Mask, "");
+    TransposedMatrix[3] = self.Builder.CreateShuffleVector(IntrVec3, IntrVec4, Mask, "");
 }
 
 fn X86InterleavedAccessGroup::lowerIntoOptimizedSequence(self) -> bool {
-    let mut DecomposedVectors: SmallVector<Instruction *, 4> = zeroed();
-    let mut TransposedVectors: SmallVector<Value *, 4> = zeroed();
-    let mut ShuffleTy: *mut auto = cast();
+    let mut DecomposedVectors: SmallVector<Instruction *, 4> = SmallVector<Instruction *, 4> {};
+    let mut TransposedVectors: SmallVector<Value *, 4> = SmallVector<Value *, 4> {};
+    let mut ShuffleTy: *mut FixedVectorType = cast(self.Shuffles[0].getType());
     if isa(self.Inst) {
-        let mut ShuffleEltTy: *mut auto = cast(self.Inst.getType());
-        let mut NumSubVecElems: u32 = () / self.Factor;
+        let mut ShuffleEltTy: *mut FixedVectorType = cast(self.Inst.getType());
+        let mut NumSubVecElems: u32 = ShuffleEltTy.getNumElements() / self.Factor;
         match NumSubVecElems {
             _ => {
                 return false;
@@ -304,23 +344,27 @@ fn X86InterleavedAccessGroup::lowerIntoOptimizedSequence(self) -> bool {
                 8;
             },
         }
-        self.decompose(self.Inst, self.Factor);
+        self.decompose(self.Inst, self.Factor, ShuffleTy, DecomposedVectors);
         if NumSubVecElems == 4 {
-            self.transpose_4x4();
+            self.transpose_4x4(DecomposedVectors, TransposedVectors);
         } else {
-            self.deinterleave8bitStride3(NumSubVecElems);
+            self.deinterleave8bitStride3(DecomposedVectors, TransposedVectors, NumSubVecElems);
+        }
+        for let mut i: u32 = 0;
+let mut e: u32 = self.Shuffles.len; i < e; i += 1 {
+            self.Shuffles[i].replaceAllUsesWith(TransposedVectors[self.Indices[i]]);
         }
         return true;
     }
-    let mut ShuffleEltTy: *mut Type = ();
-    let mut NumSubVecElems: u32 = () / self.Factor;
-    self.decompose;
+    let mut ShuffleEltTy: *mut Type = ShuffleTy.getElementType();
+    let mut NumSubVecElems: u32 = ShuffleTy.getNumElements() / self.Factor;
+    self.decompose(self.Shuffles[0], self.Factor, get(ShuffleEltTy, NumSubVecElems), DecomposedVectors);
     match NumSubVecElems {
         4 => {
-            self.transpose_4x4();
+            self.transpose_4x4(DecomposedVectors, TransposedVectors);
         },
         8 => {
-            self.interleave8bitStride4VF8();
+            self.interleave8bitStride4VF8(DecomposedVectors, TransposedVectors);
         },
         16 => {
             32;
@@ -329,37 +373,38 @@ fn X86InterleavedAccessGroup::lowerIntoOptimizedSequence(self) -> bool {
             return false;
         },
     }
-    let mut WideVec: *mut Value = concatenateVectors();
+    let mut WideVec: *mut Value = concatenateVectors(self.Builder, TransposedVectors);
     let mut SI: *mut StoreInst = cast(self.Inst);
+    self.Builder.CreateAlignedStore(WideVec, SI.getPointerOperand(), SI.getAlign(), false);
     return true;
 }
 
 fn X86TargetLowering::lowerInterleavedLoad(self: *X86TargetLowering, Load: *mut Instruction, Mask: *mut Value, Shuffles: ArrayRef<ShuffleVectorInst *>, Indices: ArrayRef<unsigned int>, Factor: u32, GapMask: *APInt) -> bool {
     assert!(Factor >= 2 && Factor <= self.getMaxSupportedInterleaveFactor(), "Invalid interleave factor");
-    (((operator!(operator!((operator!() && "Empty shufflevector input")))) || (_wassert(L"!Shuffles.empty() && \"Empty shufflevector input\"", L"llvm\\lib\\Target\\X86\\X86InterleavedAccess.cpp", (808) as u32) , 0)) as void);
-    (((operator!(operator!((Shuffles()() == Indices.len && "Unmatched number of shufflevectors and indices")))) || (_wassert(L"Shuffles.size() == Indices.size() && \"Unmatched number of shufflevectors and indices\"", L"llvm\\lib\\Target\\X86\\X86InterleavedAccess.cpp", (810) as u32) , 0)) as void);
-    let mut LI: *mut auto = dyn_cast(Load);
-    if operator!() {
+    assert!(!Shuffles.is_empty(), "Empty shufflevector input");
+    assert!(Shuffles.len == Indices.len, "Unmatched number of shufflevectors and indices");
+    let mut LI: *mut LoadInst = dyn_cast(Load);
+    if !LI {
         return false;
     }
     assert!(!Mask && GapMask.popcount() == Factor, "Unexpected mask on a load");
-    let mut Builder: i32 = LI();
-    let mut Grp: X86InterleavedAccessGroup = LI();
+    let mut Builder: IRBuilder<> = LI;
+    let mut Grp: X86InterleavedAccessGroup = X86InterleavedAccessGroup { LI, Shuffles, Indices, Factor, self.Subtarget, Builder };
     return Grp.isSupported() && Grp.lowerIntoOptimizedSequence();
 }
 
 fn X86TargetLowering::lowerInterleavedStore(self: *X86TargetLowering, Store: *mut Instruction, LaneMask: *mut Value, SVI: *mut ShuffleVectorInst, Factor: u32, GapMask: *APInt) -> bool {
     assert!(Factor >= 2 && Factor <= self.getMaxSupportedInterleaveFactor(), "Invalid interleave factor");
-    (((operator!(operator!((cast(SVI.getType())() % Factor == 0 && "Invalid interleaved store")))) || (_wassert(L"cast<FixedVectorType>(SVI->getType())->getNumElements() % Factor == 0 && \"Invalid interleaved store\"", L"llvm\\lib\\Target\\X86\\X86InterleavedAccess.cpp", (835) as u32) , 0)) as void);
-    let mut SI: *mut auto = dyn_cast(Store);
-    if operator!() {
+    assert!(cast(SVI.getType()).getNumElements() % Factor == 0, "Invalid interleaved store");
+    let mut SI: *mut StoreInst = dyn_cast(Store);
+    if !SI {
         return false;
     }
     assert!(!LaneMask && GapMask.popcount() == Factor, "Unexpected mask on store");
     let mut Mask: ArrayRef<int> = SVI.getShuffleMask();
     let mut Indices: SmallVector<unsigned int, 4> = Mask.take_front(Factor);
-    let mut Shuffles: ArrayRef<ShuffleVectorInst *> = zeroed();
-    let mut Builder: i32 = SI();
-    let mut Grp: X86InterleavedAccessGroup = SI();
+    let mut Shuffles: ArrayRef<ShuffleVectorInst *> = SVI;
+    let mut Builder: IRBuilder<> = SI;
+    let mut Grp: X86InterleavedAccessGroup = X86InterleavedAccessGroup { SI, Shuffles, Indices, Factor, self.Subtarget, Builder };
     return Grp.isSupported() && Grp.lowerIntoOptimizedSequence();
 }

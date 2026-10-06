@@ -1,4 +1,4 @@
-static mut DisableX86LEAOpt: i32 = "disable-x86-lea-opt";
+static mut DisableX86LEAOpt: opt<bool> = opt<bool> { "disable-x86-lea-opt", Hidden, "X86: Disable LEA optimizations.", init(false) };
 
 static mut NumSubstLEAs: Statistic = Statistic { "x86-optimize-leas", "NumSubstLEAs", "Number of LEA instruction substitutions" };
 
@@ -45,10 +45,11 @@ fn isSimilarDispOp(MO1: *MachineOperand, MO2: *MachineOperand) -> bool {
 
 fn isLEA(MI: *MachineInstr) -> bool {
     let mut Opcode: u32 = MI.getOpcode();
+    return Opcode == LEA16r || Opcode == LEA32r || Opcode == LEA64r || Opcode == LEA64_32r;
 }
 
 struct X86OptimizeLEAsImpl {
-    InstrPos: i32,
+    InstrPos: DenseMap<const MachineInstr *, unsigned int>,
     MRI: *mut MachineRegisterInfo,
     TII: *X86InstrInfo,
     TRI: *X86RegisterInfo,
@@ -68,10 +69,10 @@ fn X86OptimizeLEAsLegacy::getPassName(self: *X86OptimizeLEAsLegacy) -> str {
 }
 
 fn X86OptimizeLEAsLegacy::getAnalysisUsage(self: *X86OptimizeLEAsLegacy, AU: *mut AnalysisUsage) {
-    AU;
-    AU;
-    AU;
-    self.getAnalysisUsage;
+    AU.addRequired();
+    AU.addRequired();
+    AU.addPreserved();
+    self.getAnalysisUsage(AU);
 }
 
 fn X86OptimizeLEAsLegacy::getPassKind(self: *X86OptimizeLEAsLegacy) -> PassKind {
@@ -116,6 +117,8 @@ fn createX86OptimizeLEAsLegacyPass() -> *mut FunctionPass {
 
 fn X86OptimizeLEAsImpl::calcInstrDist(self, First: *MachineInstr, Last: *MachineInstr) -> i32 {
     assert!(Last.getParent() == First.getParent(), "Instructions are in different basic blocks");
+    assert!(self.InstrPos.contains(&mut First) && self.InstrPos.contains(&mut Last), "Instructions' positions are undefined");
+    return self.InstrPos[&mut Last] - self.InstrPos[&mut First];
 }
 
 fn X86OptimizeLEAsImpl::chooseBestLEA(self, List: *SmallVectorImpl<MachineInstr *>, MI: *MachineInstr, BestLEA: *mut *mut MachineInstr, AddrDispShift: *mut i64, Dist: *mut i32) -> bool {
@@ -123,6 +126,28 @@ fn X86OptimizeLEAsImpl::chooseBestLEA(self, List: *SmallVectorImpl<MachineInstr 
     let mut MemOpNo: i32 = getMemoryOperandIdx(Desc);
     assert!(MemOpNo >= 0, "Expected a memory operand");
     BestLEA = null;
+    for DefMI in List {
+        let mut AddrDispShiftTemp: i64 = self.getAddrDispShift(MI, MemOpNo, *DefMI, 1);
+        if !isInt(AddrDispShiftTemp) {
+            continue;
+        }
+        if self.TII.getRegClass(Desc, MemOpNo + AddrBaseReg) != self.MRI.getRegClass(DefMI.getOperand(0).getReg()) {
+            continue;
+        }
+        let mut DistTemp: i32 = self.calcInstrDist(*DefMI, MI);
+        assert!(DistTemp != 0, "The distance between two different instructions cannot be zero");
+        if DistTemp > 0 || BestLEA == null {
+            if BestLEA != null && !isInt(AddrDispShiftTemp) && isInt(AddrDispShift) {
+                continue;
+            }
+            BestLEA = DefMI;
+            AddrDispShift = AddrDispShiftTemp;
+            Dist = DistTemp;
+        }
+        if DistTemp < 0 {
+            break;
+        }
+    }
     return BestLEA != null;
 }
 
@@ -142,17 +167,92 @@ fn X86OptimizeLEAsImpl::isReplaceable(self: *X86OptimizeLEAsImpl, First: *Machin
         return false;
     }
     AddrDispShift = self.getAddrDispShift(Last, 1, First, 1);
+    for MO in self.MRI.use_nodbg_operands(Last.getOperand(0).getReg()) {
+        let mut MI: *mut MachineInstr = *MO.getParent();
+        let mut MemOpNo: i32 = getMemoryOperandIdx(MI.getDesc());
+        if MemOpNo < 0 {
+            return false;
+        }
+        if !isIdenticalOp(MI.getOperand(MemOpNo + AddrBaseReg), MO) {
+            return false;
+        }
+        for let mut i: u32 = 0; i < MI.getNumOperands(); i += 1 {
+            if i != (MemOpNo + AddrBaseReg) as u32 && isIdenticalOp(MI.getOperand(i), MO) {
+                return false;
+            }
+        }
+        if MI.getOperand(MemOpNo + AddrDisp).isImm() && !isInt(MI.getOperand(MemOpNo + AddrDisp).getImm() + AddrDispShift) {
+            return false;
+        }
+    }
     return true;
 }
 
-fn X86OptimizeLEAsImpl::findLEAs(self, MBB: *MachineBasicBlock, LEAs: *mut i32) {
+fn X86OptimizeLEAsImpl::findLEAs(self, MBB: *MachineBasicBlock, LEAs: *mut MemOpMap) {
     let mut Pos: u32 = 0;
+    for MI in MBB {
+        self.InstrPos[&mut MI] = Pos += 2;
+        if isLEA(MI) {
+            LEAs[getMemOpKey(MI, 1)].push(&mut MI);
+        }
+    }
 }
 
-fn X86OptimizeLEAsImpl::removeRedundantAddrCalc(self, LEAs: *mut i32) -> bool {
+fn X86OptimizeLEAsImpl::removeRedundantAddrCalc(self, LEAs: *mut MemOpMap) -> bool {
     let mut Changed: bool = false;
-    (((operator!(operator!((operator!())))) || (_wassert(L"!LEAs.empty()", L"llvm\\lib\\Target\\X86\\X86OptimizeLEAs.cpp", (482) as u32) , 0)) as void);
-    let mut MBB: *mut MachineBasicBlock = (operator*(()()))();
+    assert!(!LEAs.is_empty();
+    let mut MBB: *mut MachineBasicBlock = (*operator(LEAs.begin()).second.begin()).getParent();
+    for MI in make_early_inc_range(*MBB) {
+        if !MI.mayLoadOrStore(AnyInBundle) {
+            continue;
+        }
+        let mut MemOpNo: i32 = getMemoryOperandIdx(MI.getDesc());
+        if MemOpNo < 0 {
+            continue;
+        }
+        let mut Insns: iterator = LEAs.find(getMemOpKey(MI, MemOpNo));
+        if Insns == LEAs.end() {
+            continue;
+        }
+        let mut DefMI: *mut MachineInstr = null;
+        let mut AddrDispShift: i64 = 0;
+        let mut Dist: i32 = 0;
+        if !self.chooseBestLEA(operator(Insns).second, MI, DefMI, AddrDispShift, Dist) {
+            continue;
+        }
+        if Dist < 0 {
+            DefMI.removeFromParent();
+            MBB.insert(&mut MI, DefMI);
+            self.InstrPos[DefMI] = self.InstrPos[&mut MI] - 1;
+            assert!(((self.InstrPos[DefMI] == 1 && DefMI == MBB.begin()) || self.InstrPos[DefMI] > self.InstrPos[&mut operator(prev(DefMI, 1))]), "Instruction positioning is broken");
+        }
+        self.MRI.clearKillFlags(DefMI.getOperand(0).getReg());
+        operator(NumSubstLEAs);
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-optimize-leas", 1) {
+                dbgs() << "OptimizeLEAs: Candidate to replace: ";
+                MI.dump();
+            }
+        }
+            if !(false) { break; }
+        }
+        MI.getOperand(MemOpNo + AddrBaseReg).ChangeToRegister(DefMI.getOperand(0).getReg(), false, false, false, false, false, false);
+        MI.getOperand(MemOpNo + AddrScaleAmt).ChangeToImmediate(1, 0);
+        MI.getOperand(MemOpNo + AddrIndexReg).ChangeToRegister(NoRegister, false, false, false, false, false, false);
+        MI.getOperand(MemOpNo + AddrDisp).ChangeToImmediate(AddrDispShift, 0);
+        MI.getOperand(MemOpNo + AddrSegmentReg).ChangeToRegister(NoRegister, false, false, false, false, false, false);
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-optimize-leas", 1) {
+                dbgs() << "OptimizeLEAs: Replaced by: ";
+                MI.dump();
+            }
+        }
+            if !(false) { break; }
+        }
+        Changed = true;
+    }
     return Changed;
 }
 
@@ -162,8 +262,12 @@ fn X86OptimizeLEAsImpl::replaceDebugValue(self, MI: *mut MachineInstr, OldReg: R
         if MI.isNonListDebugValue() {
             Expr = prepend(Expr, StackValue, AddrDispShift);
         } else {
-            let mut Ops: SmallVector<uint64_t, 3> = zeroed();
-            appendOffset(AddrDispShift);
+            let mut Ops: SmallVector<uint64_t, 3> = SmallVector<uint64_t, 3> {};
+            appendOffset(Ops, AddrDispShift);
+            for Op in MI.getDebugOperandsForReg(OldReg) {
+                let mut OpIdx: u32 = MI.getDebugOperandIndex(&mut Op);
+                Expr = appendOpsToArg(Expr, Ops, OpIdx, false);
+            }
         }
     }
     let mut MBB: *mut MachineBasicBlock = MI.getParent();
@@ -174,46 +278,113 @@ fn X86OptimizeLEAsImpl::replaceDebugValue(self, MI: *mut MachineInstr, OldReg: R
     if IsIndirect {
         assert!(MI.getDebugOffset().getImm() == 0, "DBG_VALUE with nonzero offset");
     }
-    let mut NewOps: SmallVector<MachineOperand, 4> = zeroed();
+    let mut NewOps: SmallVector<MachineOperand, 4> = SmallVector<MachineOperand, 4> {};
     let mut replaceOldReg: Closure_1 = Closure_1 { cap_0: OldReg, cap_1: NewReg };
-    return BuildMI(*MBB, MBB()(&mut MI), DL, self.TII(Opcode), IsIndirect, Var, Expr);
+    for Op in MI.debug_operands() {
+        NewOps.push(replaceOldReg.call(Op));
+    }
+    return BuildMI(*MBB, MBB.erase(&mut MI), DL, self.TII.get(Opcode), IsIndirect, NewOps, Var, Expr).operator llvm::MachineInstr *();
 }
 
-fn X86OptimizeLEAsImpl::removeRedundantLEAs(self, LEAs: *mut i32) -> bool {
+fn X86OptimizeLEAsImpl::removeRedundantLEAs(self, LEAs: *mut MemOpMap) -> bool {
     let mut Changed: bool = false;
+    for E in LEAs {
+        let mut List: *mut MachineInstr *, 16> = E.second;
+        let mut I1: iterator = List.begin();
+        while I1 != List.end() {
+            let mut First: *mut MachineInstr = **I1;
+            let mut I2: *mut *mut MachineInstr = next(I1, 1);
+            while I2 != List.end() {
+                let mut Last: *mut MachineInstr = **I2;
+                let mut AddrDispShift: i64 = 0;
+                assert!(self.calcInstrDist(First, Last) > 0, "LEAs must be in occurrence order in the list");
+                if !self.isReplaceable(First, Last, AddrDispShift) {
+                    I2 += 1;
+                    continue;
+                }
+                let mut FirstVReg: Register = First.getOperand(0).getReg();
+                let mut LastVReg: Register = Last.getOperand(0).getReg();
+                while !self.MRI.use_empty(LastVReg) {
+                    let mut MO: *mut MachineOperand = operator(self.MRI.use_begin(LastVReg));
+                    let mut MI: *mut MachineInstr = *MO.getParent();
+                    if MI.isDebugValue() {
+                        self.replaceDebugValue(MI, LastVReg, FirstVReg, AddrDispShift);
+                        continue;
+                    }
+                    let mut MemOpNo: i32 = getMemoryOperandIdx(MI.getDesc());
+                    assert!(MemOpNo >= 0, "Expected a memory operand");
+                    MO.setReg(FirstVReg);
+                    let mut Op: *mut MachineOperand = MI.getOperand(MemOpNo + AddrDisp);
+                    if Op.isImm() {
+                        Op.setImm(Op.getImm() + AddrDispShift);
+                    } else if !Op.isJTI() {
+                        Op.setOffset(Op.getOffset() + AddrDispShift);
+                    }
+                }
+                self.MRI.clearKillFlags(FirstVReg);
+                operator(NumRedundantLEAs);
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("x86-optimize-leas", 1) {
+                        dbgs() << "OptimizeLEAs: Remove redundant LEA: ";
+                        Last.dump();
+                    }
+                }
+                    if !(false) { break; }
+                }
+                assert!(self.MRI.use_empty(LastVReg), "The LEA's def register must have no uses");
+                Last.eraseFromParent();
+                I2 = List.erase(I2);
+                Changed = true;
+            }
+            I1 += 1;
+        }
+    }
     return Changed;
 }
 
 fn X86OptimizeLEAsImpl::runOnMachineFunction(self, MF: *mut MachineFunction, PSI: *mut ProfileSummaryInfo, MBFI: *mut MachineBlockFrequencyInfo) -> bool {
     let mut Changed: bool = false;
-    if DisableX86LEAOpt() {
+    if DisableX86LEAOpt {
         return false;
     }
     self.MRI = &mut MF.getRegInfo();
-    self.TII = MF();
-    self.TRI = MF();
+    self.TII = MF.getSubtarget().getInstrInfo();
+    self.TRI = MF.getSubtarget().getRegisterInfo();
+    for MBB in MF {
+        let mut LEAs: MemOpMap = MemOpMap {};
+        self.InstrPos.clear();
+        self.findLEAs(MBB, LEAs);
+        if LEAs.is_empty() {
+            continue;
+        }
+        Changed |= self.removeRedundantLEAs(LEAs);
+        if shouldOptimizeForSize(&mut MBB, PSI, MBFI, Other) {
+            Changed |= self.removeRedundantAddrCalc(LEAs);
+        }
+    }
     return Changed;
 }
 
 fn X86OptimizeLEAsLegacy::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
-    if self.skipFunction {
+    if self.skipFunction(MF.getFunction()) {
         return false;
     }
-    let mut PSI: *mut ProfileSummaryInfo = operator&();
-    let mut MBFI: *mut MachineBlockFrequencyInfo = if (PSI && PSI.hasProfileSummary()) { operator&() } else { null };
+    let mut PSI: *mut ProfileSummaryInfo = &mut self.getAnalysis().getPSI();
+    let mut MBFI: *mut MachineBlockFrequencyInfo = if (PSI && PSI.hasProfileSummary()) { &mut self.getAnalysis().getBFI() } else { null };
     let mut PassImpl: X86OptimizeLEAsImpl = X86OptimizeLEAsImpl {};
     return PassImpl.runOnMachineFunction(MF, PSI, MBFI);
 }
 
 fn X86OptimizeLEAsPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
-    let mut PSI: *mut ProfileSummaryInfo = MFAM()(MF)(operator*(MF.getFunction()));
-    let mut MBFI: *mut MachineBlockFrequencyInfo = if (PSI && PSI.hasProfileSummary()) { operator&(MFAM()(MF)) } else { null };
+    let mut PSI: *mut ProfileSummaryInfo = MFAM.getResult(MF).getCachedResult(*MF.getFunction().getParent());
+    let mut MBFI: *mut MachineBlockFrequencyInfo = if (PSI && PSI.hasProfileSummary()) { &mut MFAM.getResult(MF) } else { null };
     let mut PassImpl: X86OptimizeLEAsImpl = X86OptimizeLEAsImpl {};
     let mut Changed: bool = PassImpl.runOnMachineFunction(MF, PSI, MBFI);
     if !Changed {
         return all();
     }
-    return getMachineFunctionPassPreservedAnalyses();
+    return getMachineFunctionPassPreservedAnalyses().preserveSet();
 }
 
 struct Closure_1 {

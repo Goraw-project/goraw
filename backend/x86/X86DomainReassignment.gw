@@ -2,7 +2,7 @@ static mut NumClosuresConverted: Statistic = Statistic { "x86-domain-reassignmen
 
 static mut NumClosuresBuilt: Statistic = Statistic { "x86-domain-reassignment", "NumClosuresBuilt", "Number of closures built by the pass" };
 
-static mut DisableX86DomainReassignment: i32 = "disable-x86-domain-reassignment";
+static mut DisableX86DomainReassignment: opt<bool> = opt<bool> { "disable-x86-domain-reassignment", Hidden, "X86: Disable Virtual Register Reassignment.", init(false) };
 
 enum RegDomain {
     NoDomain = 0,
@@ -12,7 +12,9 @@ enum RegDomain {
     NumDomains = 4,
 }
 
-fn isMask(RC: *TargetRegisterClass, TRI: *TargetRegisterInfo) -> bool {}
+fn isMask(RC: *TargetRegisterClass, TRI: *TargetRegisterInfo) -> bool {
+    return VK16RegClass.hasSubClassEq(RC);
+}
 
 fn getDomain(RC: *TargetRegisterClass, TRI: *TargetRegisterInfo) -> RegDomain {
     if TRI.isGeneralPurposeRegisterClass(RC) {
@@ -26,7 +28,19 @@ fn getDomain(RC: *TargetRegisterClass, TRI: *TargetRegisterInfo) -> RegDomain {
 
 fn getDstRC(SrcRC: *TargetRegisterClass, Domain: RegDomain) -> *TargetRegisterClass {
     assert!(Domain == MaskDomain, "add domain");
-    llvm_unreachable_internal("add register class", "llvm\\lib\\Target\\X86\\X86DomainReassignment.cpp", 71);
+    if GR8RegClass.hasSubClassEq(SrcRC) {
+        return &mut VK8RegClass;
+    }
+    if GR16RegClass.hasSubClassEq(SrcRC) {
+        return &mut VK16RegClass;
+    }
+    if GR32RegClass.hasSubClassEq(SrcRC) {
+        return &mut VK32RegClass;
+    }
+    if GR64RegClass.hasSubClassEq(SrcRC) {
+        return &mut VK64RegClass;
+    }
+    llvm_unreachable_internal("add register class", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86DomainReassignment.cpp", 71);
     return null;
 }
 
@@ -69,7 +83,7 @@ fn InstrReplacer::isLegal(self: *InstrReplacer, MI: *MachineInstr, TII: *TargetI
         return false;
     }
     for MO in MI.implicit_operands() {
-        if MO.isReg() && MO.isDef() && !MO.isDead() && operator!(TII.get(MO.getReg())) {
+        if MO.isReg() && MO.isDef() && !MO.isDead() && !TII.get(self.DstOpcode).hasImplicitDefOfPhysReg(MO.getReg().operator MCRegister(), null) {
             return false;
         }
     }
@@ -78,7 +92,7 @@ fn InstrReplacer::isLegal(self: *InstrReplacer, MI: *MachineInstr, TII: *TargetI
 
 fn InstrReplacer::convertInstr(self: *InstrReplacer, MI: *mut MachineInstr, TII: *TargetInstrInfo, MRI: *mut MachineRegisterInfo) -> bool {
     assert!(self.isLegal(MI, TII), "Cannot convert instruction");
-    let mut Bld: MachineInstrBuilder = BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII.get);
+    let mut Bld: MachineInstrBuilder = BuildMI(*MI.getParent(), MI, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(self.DstOpcode));
     for Op in MI.explicit_operands() {
         Bld.add(Op);
     }
@@ -98,9 +112,12 @@ fn InstrReplacerDstCOPY::convertInstr(self: *InstrReplacerDstCOPY, MI: *mut Mach
     assert!(self.isLegal(MI, TII), "Cannot convert instruction");
     let mut MBB: *mut MachineBasicBlock = MI.getParent();
     let mut DL: *DebugLoc = MI.getDebugLoc();
-    let mut Reg: Register = MRI(TII.getRegClass(TII.get, 0));
-    let mut Bld: MachineInstrBuilder = BuildMI(*MBB, MI, DL, TII.get, Reg);
-    BuildMI(*MBB, MI, DL, TII.get)(MI.getOperand(0))(Reg);
+    let mut Reg: Register = MRI.createVirtualRegister(TII.getRegClass(TII.get(self.DstOpcode), 0), "");
+    let mut Bld: MachineInstrBuilder = BuildMI(*MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(self.DstOpcode), Reg);
+    for MO in drop_begin(MI.operands(), 1) {
+        Bld.add(MO);
+    }
+    BuildMI(*MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(COPY)).add(MI.getOperand(0)).addReg(Reg, RegState {}, 0);
     return true;
 }
 
@@ -124,11 +141,11 @@ fn InstrCOPYReplacer::isLegal(self: *InstrCOPYReplacer, MI: *MachineInstr, TII: 
         return false;
     }
     let mut DstReg: Register = MI.getOperand(0).getReg();
-    if  {
+    if DstReg.isPhysical() && (GR8RegClass.contains(DstReg.operator MCRegister()) || GR16RegClass.contains(DstReg.operator MCRegister())) {
         return false;
     }
     let mut SrcReg: Register = MI.getOperand(1).getReg();
-    if  {
+    if SrcReg.isPhysical() && (GR8RegClass.contains(SrcReg.operator MCRegister()) || GR16RegClass.contains(SrcReg.operator MCRegister())) {
         return false;
     }
     return true;
@@ -150,7 +167,7 @@ fn InstrCOPYReplacer::getExtraCost(self: *InstrCOPYReplacer, MI: *MachineInstr, 
 
 fn InstrCOPYReplacer::convertInstr(self: *InstrCOPYReplacer, MI: *mut MachineInstr, TII: *TargetInstrInfo, MRI: *mut MachineRegisterInfo) -> bool {
     assert!(self.isLegal(MI, TII), "Cannot convert instruction");
-    let mut Bld: MachineInstrBuilder = BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII.get);
+    let mut Bld: MachineInstrBuilder = BuildMI(*MI.getParent(), MI, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(self.DstOpcode));
     for Op in MI.explicit_operands() {
         Bld.add(Op);
     }
@@ -164,7 +181,7 @@ struct InstrReplaceWithCopy {
 
 fn InstrReplaceWithCopy::convertInstr(self: *InstrReplaceWithCopy, MI: *mut MachineInstr, TII: *TargetInstrInfo, MRI: *mut MachineRegisterInfo) -> bool {
     assert!(self.isLegal(MI, TII), "Cannot convert instruction");
-    BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII.get)(void { MI.getOperand(0), MI.getOperand(self.SrcOpIdx) });
+    BuildMI(*MI.getParent(), MI, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(COPY)).add([MI.getOperand(0), MI.getOperand(self.SrcOpIdx)]);
     return true;
 }
 
@@ -178,34 +195,65 @@ fn InstrReplaceWithCopy::isLegal(self: *InstrReplaceWithCopy, MI: *MachineInstr,
 }
 
 struct Closure {
-    Edges: i32,
+    Edges: DenseSet<Register>,
     Instrs: SmallVector<MachineInstr *, 8>,
     LegalDstDomains: bitset<NumDomains>,
     ID: u32,
 }
 
-fn Closure::setAllIllegal(self) {}
+fn Closure::Closure(self, ID: u32, LegalDstDomainList: initializer_list<RegDomain>) {
+    for D in LegalDstDomainList {
+        self.LegalDstDomains.set(D, true);
+    }
+}
 
-fn Closure::hasLegalDstDomain(self: *Closure) -> bool {}
+fn Closure::setAllIllegal(self) {
+    self.LegalDstDomains.reset();
+}
 
-fn Closure::isLegal(self: *Closure, RD: RegDomain) -> bool {}
+fn Closure::hasLegalDstDomain(self: *Closure) -> bool {
+    return self.LegalDstDomains.any();
+}
 
-fn Closure::setIllegal(self, RD: RegDomain) {}
+fn Closure::isLegal(self: *Closure, RD: RegDomain) -> bool {
+    return self.LegalDstDomains[RD];
+}
 
-fn Closure::empty(self: *Closure) -> bool {}
+fn Closure::setIllegal(self, RD: RegDomain) {
+    self.LegalDstDomains[RD] = false;
+}
 
-fn Closure::insertEdge(self, Reg: Register) -> bool {}
+fn Closure::empty(self: *Closure) -> bool {
+    return self.Edges.is_empty();
+}
 
-fn Closure::edges(self: *Closure) -> i32 {}
+fn Closure::insertEdge(self, Reg: Register) -> bool {
+    return self.Edges.insert(Reg).second;
+}
 
-fn Closure::addInstruction(self, I: *mut MachineInstr) {}
+fn Closure::edges(self: *Closure) -> iterator_range<const_edge_iterator> {
+    return self.Edges;
+}
 
-fn Closure::instructions(self: *Closure) -> ArrayRef<MachineInstr *> {}
+fn Closure::addInstruction(self, I: *mut MachineInstr) {
+    self.Instrs.push(I);
+}
+
+fn Closure::instructions(self: *Closure) -> ArrayRef<MachineInstr *> {
+    return self.Instrs;
+}
 
 fn Closure::dump(self: *Closure, MRI: *MachineRegisterInfo) {
     dbgs() << "Registers: ";
     let mut LS: ListSeparator = ListSeparator { ", ", "" };
+    for Reg in self.Edges {
+        dbgs() << LS.operator StringRef() << printReg(Reg, MRI.getTargetRegisterInfo(), 0, MRI);
+    }
     dbgs() << "\n" << "Instructions:";
+    for MI in self.Instrs {
+        dbgs() << "\n  ";
+        MI.print(dbgs(), true, false, false, true, null);
+    }
     dbgs() << "\n";
 }
 
@@ -217,8 +265,8 @@ struct X86DomainReassignmentImpl {
     STI: *X86Subtarget,
     MRI: *mut MachineRegisterInfo,
     TII: *X86InstrInfo,
-    EnclosedEdges: i32,
-    EnclosedInstrs: i32,
+    EnclosedEdges: DenseMap<Register, unsigned int>,
+    EnclosedInstrs: DenseMap<MachineInstr *, unsigned int>,
     Converters: InstrConverterBaseMap,
 }
 
@@ -280,9 +328,9 @@ fn X86DomainReassignmentImpl::visitRegister(self, C: *mut Closure, Reg: Register
     if !Reg.isVirtual() {
         return true;
     }
-    let mut I: auto = zeroed();
-    if  {
-        if I() != C.getID() {
+    let mut I: iterator = self.EnclosedEdges.find(Reg);
+    if I != self.EnclosedEdges.end() {
+        if operator(I).second != C.getID() {
             C.setAllIllegal();
             return false;
         }
@@ -298,13 +346,13 @@ fn X86DomainReassignmentImpl::visitRegister(self, C: *mut Closure, Reg: Register
     if Domain != RD {
         return true;
     }
-    Worklist()(Reg);
+    Worklist.push(Reg);
     return true;
 }
 
 fn X86DomainReassignmentImpl::encloseInstr(self, C: *mut Closure, MI: *mut MachineInstr) -> bool {
-    if operator!() {
-        if  {
+    if !Inserted {
+        if operator(I).second != C.getID() {
             C.setAllIllegal();
             return false;
         }
@@ -313,8 +361,8 @@ fn X86DomainReassignmentImpl::encloseInstr(self, C: *mut Closure, MI: *mut Machi
     C.addInstruction(MI);
     for let mut i: i32 = 0; i != NumDomains; i += 1 {
         if C.isLegal(i as RegDomain) {
-            let mut I: auto = self.Converters(void { i, MI.getOpcode() });
-            if I() == self.Converters() || operator!((MI, self.TII)) {
+            let mut I: iterator = self.Converters.find(pair<int, unsigned int> { i, MI.getOpcode() });
+            if I == self.Converters.end() || !operator(operator(I).second).isLegal(MI, self.TII) {
                 C.setIllegal(i as RegDomain);
             }
         }
@@ -325,6 +373,9 @@ fn X86DomainReassignmentImpl::encloseInstr(self, C: *mut Closure, MI: *mut Machi
 fn X86DomainReassignmentImpl::calculateCost(self: *X86DomainReassignmentImpl, C: *Closure, DstDomain: RegDomain) -> f64 {
     assert!(C.isLegal(DstDomain), "Cannot calculate cost for illegal closure");
     let mut Cost: f64 = 0.0;
+    for MI in C.instructions() {
+        Cost += operator(operator(self.Converters.find(pair<int, unsigned int> { DstDomain, MI.getOpcode() })).second).getExtraCost(MI, self.MRI);
+    }
     return Cost;
 }
 
@@ -334,14 +385,30 @@ fn X86DomainReassignmentImpl::isReassignmentProfitable(self: *X86DomainReassignm
 
 fn X86DomainReassignmentImpl::reassign(self: *X86DomainReassignmentImpl, C: *Closure, Domain: RegDomain) {
     assert!(C.isLegal(Domain), "Cannot convert illegal closure");
-    let mut ToErase: SmallVector<MachineInstr *, 8> = zeroed();
+    let mut ToErase: SmallVector<MachineInstr *, 8> = SmallVector<MachineInstr *, 8> {};
+    for MI in C.instructions() {
+        if operator(operator(self.Converters.find(pair<int, unsigned int> { Domain, MI.getOpcode() })).second).convertInstr(MI, self.TII, self.MRI) {
+            ToErase.push(MI);
+        }
+    }
+    for Reg in C.edges() {
+        self.MRI.setRegClass(Reg, getDstRC(self.MRI.getRegClass(Reg), Domain));
+        for MO in self.MRI.use_operands(Reg) {
+            if MO.isReg() {
+                MO.setSubReg(0);
+            }
+        }
+    }
+    for MI in ToErase {
+        MI.eraseFromParent();
+    }
 }
 
 fn usedAsAddr(MI: *MachineInstr, Reg: Register, TII: *TargetInstrInfo) -> bool {
     if !MI.mayLoadOrStore(AnyInBundle) {
         return false;
     }
-    let mut MemOpStart: i32 = getMemoryOperandIdx(TII.get);
+    let mut MemOpStart: i32 = getMemoryOperandIdx(TII.get(MI.getOpcode()));
     if MemOpStart == -1 {
         return false;
     }
@@ -356,14 +423,15 @@ let mut MemOpEnd: u32 = MemOpStart + AddrNumOperands; MemOpIdx < MemOpEnd; MemOp
 }
 
 fn X86DomainReassignmentImpl::buildClosure(self, C: *mut Closure, Reg: Register) {
-    let mut Worklist: SmallVector<Register, 4> = zeroed();
+    let mut Worklist: SmallVector<Register, 4> = SmallVector<Register, 4> {};
     let mut Domain: RegDomain = NoDomain;
-    self.visitRegister(C, Reg, Domain);
-    while operator!() {
-        let mut CurReg: Register = ();
+    self.visitRegister(C, Reg, Domain, Worklist);
+    while !Worklist.is_empty() {
+        let mut CurReg: Register = Worklist.pop_back_val();
         if !C.insertEdge(CurReg) {
             continue;
         }
+        self.EnclosedEdges[CurReg] = C.getID();
         let mut DefMI: *mut MachineInstr = self.MRI.getVRegDef(CurReg);
         if !self.encloseInstr(C, DefMI) {
             return;
@@ -375,117 +443,143 @@ fn X86DomainReassignmentImpl::buildClosure(self, C: *mut Closure, Reg: Register)
                 OpIdx += (AddrNumOperands - 1);
                 continue;
             }
-            let mut Op: *mut auto = DefMI.getOperand(OpIdx);
-            if operator!() || operator!() {
+            let mut Op: *mut MachineOperand = DefMI.getOperand(OpIdx);
+            if !Op.isReg() || !Op.isUse() {
                 continue;
             }
-            if operator!(self.visitRegister(C, Domain)) {
+            if !self.visitRegister(C, Op.getReg(), Domain, Worklist) {
                 return;
+            }
+        }
+        for UseMI in self.MRI.use_nodbg_instructions(CurReg) {
+            if usedAsAddr(UseMI, CurReg, self.TII) {
+                C.setAllIllegal();
+                return;
+            }
+            if !self.encloseInstr(C, &mut UseMI) {
+                return;
+            }
+            for DefOp in UseMI.defs() {
+                if !DefOp.isReg() {
+                    continue;
+                }
+                let mut DefReg: Register = DefOp.getReg();
+                if !DefReg.isVirtual() {
+                    C.setAllIllegal();
+                    return;
+                }
+                if !self.visitRegister(C, DefReg, Domain, Worklist) {
+                    return;
+                }
             }
         }
     }
 }
 
 fn X86DomainReassignmentImpl::initConverters(self) {
+    self.Converters[pair<int, unsigned int> { MaskDomain, PHI }] = make_unique(PHI);
+    self.Converters[pair<int, unsigned int> { MaskDomain, IMPLICIT_DEF }] = make_unique(IMPLICIT_DEF);
+    self.Converters[pair<int, unsigned int> { MaskDomain, INSERT_SUBREG }] = make_unique(INSERT_SUBREG, 2);
+    self.Converters[pair<int, unsigned int> { MaskDomain, COPY }] = make_unique(COPY, MaskDomain, COPY);
     let mut createReplacerDstCOPY: Closure_1 = Closure_1 { cap_0: self };
-    createReplacerDstCOPY();
-    createReplacerDstCOPY();
-    createReplacerDstCOPY();
-    createReplacerDstCOPY();
-    if self.STI() {
-        createReplacerDstCOPY();
-        createReplacerDstCOPY();
-        createReplacerDstCOPY();
-        createReplacerDstCOPY();
-        createReplacerDstCOPY();
-        createReplacerDstCOPY();
+    createReplacerDstCOPY.call(MOVZX32rm16, if self.STI.hasEGPR() { KMOVWkm_EVEX } else { KMOVWkm });
+    createReplacerDstCOPY.call(MOVZX64rm16, if self.STI.hasEGPR() { KMOVWkm_EVEX } else { KMOVWkm });
+    createReplacerDstCOPY.call(MOVZX32rr16, if self.STI.hasEGPR() { KMOVWkk_EVEX } else { KMOVWkk });
+    createReplacerDstCOPY.call(MOVZX64rr16, if self.STI.hasEGPR() { KMOVWkk_EVEX } else { KMOVWkk });
+    if self.STI.hasDQI() {
+        createReplacerDstCOPY.call(MOVZX16rm8, if self.STI.hasEGPR() { KMOVBkm_EVEX } else { KMOVBkm });
+        createReplacerDstCOPY.call(MOVZX32rm8, if self.STI.hasEGPR() { KMOVBkm_EVEX } else { KMOVBkm });
+        createReplacerDstCOPY.call(MOVZX64rm8, if self.STI.hasEGPR() { KMOVBkm_EVEX } else { KMOVBkm });
+        createReplacerDstCOPY.call(MOVZX16rr8, if self.STI.hasEGPR() { KMOVBkk_EVEX } else { KMOVBkk });
+        createReplacerDstCOPY.call(MOVZX32rr8, if self.STI.hasEGPR() { KMOVBkk_EVEX } else { KMOVBkk });
+        createReplacerDstCOPY.call(MOVZX64rr8, if self.STI.hasEGPR() { KMOVBkk_EVEX } else { KMOVBkk });
     }
     let mut createReplacer: Closure_2 = Closure_2 { cap_0: self };
-    createReplacer();
-    createReplacer();
-    createReplacer();
-    createReplacer();
-    createReplacer();
-    createReplacer();
-    createReplacer();
-    createReplacer();
-    createReplacer();
-    let mut HasNDD: bool = self.STI();
+    createReplacer.call(MOV16rm, if self.STI.hasEGPR() { KMOVWkm_EVEX } else { KMOVWkm });
+    createReplacer.call(MOV16mr, if self.STI.hasEGPR() { KMOVWmk_EVEX } else { KMOVWmk });
+    createReplacer.call(MOV16rr, if self.STI.hasEGPR() { KMOVWkk_EVEX } else { KMOVWkk });
+    createReplacer.call(SHR16ri, KSHIFTRWki);
+    createReplacer.call(SHL16ri, KSHIFTLWki);
+    createReplacer.call(NOT16r, KNOTWkk);
+    createReplacer.call(OR16rr, KORWkk);
+    createReplacer.call(AND16rr, KANDWkk);
+    createReplacer.call(XOR16rr, KXORWkk);
+    let mut HasNDD: bool = self.STI.hasNDD();
     if HasNDD {
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
+        createReplacer.call(SHR16ri_ND, KSHIFTRWki);
+        createReplacer.call(SHL16ri_ND, KSHIFTLWki);
+        createReplacer.call(NOT16r_ND, KNOTWkk);
+        createReplacer.call(OR16rr_ND, KORWkk);
+        createReplacer.call(AND16rr_ND, KANDWkk);
+        createReplacer.call(XOR16rr_ND, KXORWkk);
     }
-    if self.STI() {
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
+    if self.STI.hasBWI() {
+        createReplacer.call(MOV32rm, if self.STI.hasEGPR() { KMOVDkm_EVEX } else { KMOVDkm });
+        createReplacer.call(MOV64rm, if self.STI.hasEGPR() { KMOVQkm_EVEX } else { KMOVQkm });
+        createReplacer.call(MOV32mr, if self.STI.hasEGPR() { KMOVDmk_EVEX } else { KMOVDmk });
+        createReplacer.call(MOV64mr, if self.STI.hasEGPR() { KMOVQmk_EVEX } else { KMOVQmk });
+        createReplacer.call(MOV32rr, if self.STI.hasEGPR() { KMOVDkk_EVEX } else { KMOVDkk });
+        createReplacer.call(MOV64rr, if self.STI.hasEGPR() { KMOVQkk_EVEX } else { KMOVQkk });
+        createReplacer.call(SHR32ri, KSHIFTRDki);
+        createReplacer.call(SHR64ri, KSHIFTRQki);
+        createReplacer.call(SHL32ri, KSHIFTLDki);
+        createReplacer.call(SHL64ri, KSHIFTLQki);
+        createReplacer.call(ADD32rr, KADDDkk);
+        createReplacer.call(ADD64rr, KADDQkk);
+        createReplacer.call(NOT32r, KNOTDkk);
+        createReplacer.call(NOT64r, KNOTQkk);
+        createReplacer.call(OR32rr, KORDkk);
+        createReplacer.call(OR64rr, KORQkk);
+        createReplacer.call(AND32rr, KANDDkk);
+        createReplacer.call(AND64rr, KANDQkk);
+        createReplacer.call(ANDN32rr, KANDNDkk);
+        createReplacer.call(ANDN64rr, KANDNQkk);
+        createReplacer.call(XOR32rr, KXORDkk);
+        createReplacer.call(XOR64rr, KXORQkk);
         if HasNDD {
-            createReplacer();
-            createReplacer();
-            createReplacer();
-            createReplacer();
-            createReplacer();
-            createReplacer();
-            createReplacer();
-            createReplacer();
-            createReplacer();
-            createReplacer();
-            createReplacer();
-            createReplacer();
-            createReplacer();
-            createReplacer();
+            createReplacer.call(SHR32ri_ND, KSHIFTRDki);
+            createReplacer.call(SHL32ri_ND, KSHIFTLDki);
+            createReplacer.call(ADD32rr_ND, KADDDkk);
+            createReplacer.call(NOT32r_ND, KNOTDkk);
+            createReplacer.call(OR32rr_ND, KORDkk);
+            createReplacer.call(AND32rr_ND, KANDDkk);
+            createReplacer.call(XOR32rr_ND, KXORDkk);
+            createReplacer.call(SHR64ri_ND, KSHIFTRQki);
+            createReplacer.call(SHL64ri_ND, KSHIFTLQki);
+            createReplacer.call(ADD64rr_ND, KADDQkk);
+            createReplacer.call(NOT64r_ND, KNOTQkk);
+            createReplacer.call(OR64rr_ND, KORQkk);
+            createReplacer.call(AND64rr_ND, KANDQkk);
+            createReplacer.call(XOR64rr_ND, KXORQkk);
         }
     }
-    if self.STI() {
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
-        createReplacer();
+    if self.STI.hasDQI() {
+        createReplacer.call(ADD8rr, KADDBkk);
+        createReplacer.call(ADD16rr, KADDWkk);
+        createReplacer.call(AND8rr, KANDBkk);
+        createReplacer.call(MOV8rm, if self.STI.hasEGPR() { KMOVBkm_EVEX } else { KMOVBkm });
+        createReplacer.call(MOV8mr, if self.STI.hasEGPR() { KMOVBmk_EVEX } else { KMOVBmk });
+        createReplacer.call(MOV8rr, if self.STI.hasEGPR() { KMOVBkk_EVEX } else { KMOVBkk });
+        createReplacer.call(NOT8r, KNOTBkk);
+        createReplacer.call(OR8rr, KORBkk);
+        createReplacer.call(SHR8ri, KSHIFTRBki);
+        createReplacer.call(SHL8ri, KSHIFTLBki);
+        createReplacer.call(XOR8rr, KXORBkk);
         if HasNDD {
-            createReplacer();
-            createReplacer();
-            createReplacer();
-            createReplacer();
-            createReplacer();
-            createReplacer();
-            createReplacer();
-            createReplacer();
+            createReplacer.call(ADD8rr_ND, KADDBkk);
+            createReplacer.call(ADD16rr_ND, KADDWkk);
+            createReplacer.call(AND8rr_ND, KANDBkk);
+            createReplacer.call(NOT8r_ND, KNOTBkk);
+            createReplacer.call(OR8rr_ND, KORBkk);
+            createReplacer.call(SHR8ri_ND, KSHIFTRBki);
+            createReplacer.call(SHL8ri_ND, KSHIFTLBki);
+            createReplacer.call(XOR8rr_ND, KXORBkk);
         }
     }
 }
 
 fn X86DomainReassignmentImpl::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
-    if DisableX86DomainReassignment() {
+    if DisableX86DomainReassignment {
         return false;
     }
     while true {
@@ -504,8 +598,8 @@ fn X86DomainReassignmentImpl::runOnMachineFunction(self, MF: *mut MachineFunctio
     }
         if !(false) { break; }
     }
-    self.STI = operator&(MF);
-    if !self.STI.hasAVX512() || operator!(self.STI()) {
+    self.STI = &mut MF.getSubtarget();
+    if !self.STI.hasAVX512() || !self.STI.hasBWI() {
         return false;
     }
     self.MRI = &mut MF.getRegInfo();
@@ -513,7 +607,9 @@ fn X86DomainReassignmentImpl::runOnMachineFunction(self, MF: *mut MachineFunctio
     self.TII = self.STI.getInstrInfo();
     self.initConverters();
     let mut Changed: bool = false;
-    let mut Closures: i32 = 0;
+    self.EnclosedEdges.clear();
+    self.EnclosedInstrs.clear();
+    let mut Closures: []Closure = []Closure {};
     let mut ClosureID: u32 = 0;
     for let mut Idx: u32 = 0; Idx < self.MRI.getNumVirtRegs(); Idx += 1 {
         let mut Reg: Register = index2VirtReg(Idx);
@@ -523,14 +619,29 @@ fn X86DomainReassignmentImpl::runOnMachineFunction(self, MF: *mut MachineFunctio
         if !self.MRI.getTargetRegisterInfo().isGeneralPurposeRegisterClass(self.MRI.getRegClass(Reg)) {
             continue;
         }
-        if  {
+        if self.EnclosedEdges.contains(Reg) {
             continue;
         }
-        let mut C: Closure = ClosureID += 1;
+        let mut C: Closure = Closure { ClosureID += 1, [MaskDomain] };
         self.buildClosure(C, Reg);
         operator(NumClosuresBuilt);
         if !C.is_empty() && C.isLegal(MaskDomain) {
-            Closures()(move(C));
+            Closures.push(move(C));
+        }
+    }
+    for C in Closures {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-domain-reassignment", 1) {
+                C.dump(self.MRI);
+            }
+        }
+            if !(false) { break; }
+        }
+        if self.isReassignmentProfitable(C, MaskDomain) {
+            self.reassign(C, MaskDomain);
+            operator(NumClosuresConverted);
+            Changed = true;
         }
     }
     while true {
@@ -571,7 +682,7 @@ fn X86DomainReassignmentPass::run(self, MF: *mut MachineFunction, MFAM: *mut Mac
         return all();
     }
     let mut PA: PreservedAnalyses = getMachineFunctionPassPreservedAnalyses();
-    PA;
+    PA.preserveSet();
     return PA;
 }
 
@@ -579,10 +690,14 @@ struct Closure_1 {
     cap_0: *mut X86DomainReassignmentImpl,
 }
 
-fn Closure_1::call(self: *Closure_1, From: u32, To: u32) {}
+fn Closure_1::call(self: *Closure_1, From: u32, To: u32) {
+        self.Converters[pair<int, unsigned int> { MaskDomain, From }] = make_unique(From, To);
+    }
 
 struct Closure_2 {
     cap_0: *mut X86DomainReassignmentImpl,
 }
 
-fn Closure_2::call(self: *Closure_2, From: u32, To: u32) {}
+fn Closure_2::call(self: *Closure_2, From: u32, To: u32) {
+        self.Converters[pair<int, unsigned int> { MaskDomain, From }] = make_unique(From, To);
+    }

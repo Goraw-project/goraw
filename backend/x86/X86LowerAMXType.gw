@@ -1,17 +1,22 @@
 fn isAMXCast(II: *mut Instruction) -> bool {
-    return match(II) || match(II);
+    return match(II, m_Intrinsic(m_Value())) || match(II, m_Intrinsic(m_Value()));
 }
 
 fn isAMXIntrinsic(I: *mut Value) -> bool {
-    let mut II: *mut auto = dyn_cast(I);
-    if operator!() {
+    let mut II: *mut IntrinsicInst = dyn_cast(I);
+    if !II {
         return false;
     }
-    if isAMXCast() {
+    if isAMXCast(II) {
         return false;
     }
-    if II()()() {
+    if II.getType().isX86_AMXTy() {
         return true;
+    }
+    for V in II.args() {
+        if V.getType().isX86_AMXTy() {
+            return true;
+        }
     }
     return false;
 }
@@ -27,14 +32,14 @@ fn containsAMXCode(F: *mut Function) -> bool {
     return false;
 }
 
-fn createAllocaInstAtEntry(Builder: *mut i32, BB: *mut BasicBlock, Ty: *mut Type) -> *mut AllocaInst {
+fn createAllocaInstAtEntry(Builder: *mut IRBuilder<>, BB: *mut BasicBlock, Ty: *mut Type) -> *mut AllocaInst {
     let mut F: *mut Function = *BB.getParent();
     let mut DL: *DataLayout = F.getDataLayout();
-    let mut Ctx: *mut LLVMContext = ();
-    let mut AllocaAlignment: auto = DL.getPrefTypeAlign(getX86_AMXTy(Ctx));
+    let mut Ctx: *mut LLVMContext = Builder.getContext();
+    let mut AllocaAlignment: Align = DL.getPrefTypeAlign(getX86_AMXTy(Ctx));
     let mut AllocaAS: u32 = DL.getAllocaAddrSpace();
-    let mut AllocaRes: *mut AllocaInst = AllocaInst { Ty, AllocaAS, "", InsertPosition { InsertAt: F.getEntryBlock().begin() } };
-    AllocaRes.setAlignment();
+    let mut AllocaRes: *mut AllocaInst = AllocaInst { Ty, AllocaAS, "", F.getEntryBlock().begin() };
+    AllocaRes.setAlignment(AllocaAlignment);
     return AllocaRes;
 }
 
@@ -44,32 +49,41 @@ fn getFirstNonAllocaInTheEntryBlock(F: *mut Function) -> *mut Instruction {
             return &mut I;
         }
     }
-    llvm_unreachable_internal("No terminator in the entry block!", "llvm\\lib\\Target\\X86\\X86LowerAMXType.cpp", 121);
+    llvm_unreachable_internal("No terminator in the entry block!", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86LowerAMXType.cpp", 121);
 }
 
 fn getRowFromCol(II: *mut Instruction, V: *mut Value, Granularity: u32) -> *mut Value {
-    let mut Builder: i32 = II;
+    let mut Builder: IRBuilder<> = II;
     let mut RealRow: *mut Value = null;
     if isa(V) {
-        RealRow = ((cast(V)()) / Granularity);
+        RealRow = Builder.getInt16((cast(V).getSExtValue()) / Granularity);
     } else if isa(V) {
-        Builder()(cast(V));
-        RealRow = (V, (4));
-        cast(RealRow)(cast(V));
+        Builder.SetInsertPoint(cast(V));
+        RealRow = Builder.CreateUDiv(V, Builder.getInt16(4), "", false);
+        cast(RealRow).moveAfter(cast(V));
     } else {
-        let mut NewBuilder: i32 = getFirstNonAllocaInTheEntryBlock(*II.getFunction());
-        RealRow = (V, (Granularity));
+        let mut NewBuilder: IRBuilder<> = getFirstNonAllocaInTheEntryBlock(*II.getFunction());
+        RealRow = NewBuilder.CreateUDiv(V, NewBuilder.getInt16(Granularity), "", false);
     }
     return RealRow;
 }
 
 fn getShape(II: *mut IntrinsicInst, OpNo: u32) -> pair<Value *, Value *> {
-    let mut Builder: i32 = II;
+    let mut Builder: IRBuilder<> = II;
     let mut Row: *mut Value = null;
     let mut Col: *mut Value = null;
     match II.getIntrinsicID() {
         _ => {
-            llvm_unreachable_internal("Expect amx intrinsics", "llvm\\lib\\Target\\X86\\X86LowerAMXType.cpp", 162);
+            llvm_unreachable_internal("Expect amx intrinsics", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86LowerAMXType.cpp", 162);
+        },
+        x86_tileloadd64_internal => {
+            x86_tileloaddt164_internal;
+        },
+        x86_tcmmimfp16ps_internal => {
+            x86_tcmmrlfp16ps_internal;
+        },
+        x86_tcvtrowd2ps_internal => {
+            x86_tcvtrowps2bf16h_internal;
         },
     }
     return make_pair(Row, Col);
@@ -87,7 +101,9 @@ fn getShape(Phi: *mut PHINode) -> pair<Value *, Value *> {
             let mut U: *mut Use = operator((V.use_begin()));
             OpNo = U.getOperandNo();
             V = U.getUser();
-        } else if isAMXIntrinsic(V) {} else if isa(V) {
+        } else if isAMXIntrinsic(V) {
+            return getShape(cast(V), OpNo);
+        } else if isa(V) {
             if V.use_empty() {
                 break;
             }
@@ -102,7 +118,7 @@ fn getShape(Phi: *mut PHINode) -> pair<Value *, Value *> {
 
 struct X86LowerAMXType {
     Func: *mut Function,
-    Col2Row: i32,
+    Col2Row: map<Value *, Value *>,
 }
 
 fn X86LowerAMXType::combineLoadBitcast(self, LD: *mut LoadInst, Bitcast: *mut BitCastInst) {
@@ -110,101 +126,155 @@ fn X86LowerAMXType::combineLoadBitcast(self, LD: *mut LoadInst, Bitcast: *mut Bi
     let mut Col: *mut Value = null;
     let mut U: *mut Use = operator((Bitcast.use_begin()));
     let mut OpNo: u32 = U.getOperandNo();
-    let mut II: *mut auto = cast(U.getUser());
-    let mut Builder: i32 = Bitcast;
-    let mut Stride: *mut Value = (64);
+    let mut II: *mut IntrinsicInst = cast(U.getUser());
+    tie(Row, Col) = getShape(II, OpNo);
+    let mut Builder: IRBuilder<> = Bitcast;
+    let mut Stride: *mut Value = Builder.getInt64(64);
     let mut I8Ptr: *mut Value = LD.getOperand(0);
-    let mut Args: array<Value *, 4> = zeroed();
-    let mut NewInst: *mut Value = ;
+    let mut Args: array<Value *, 4> = array<Value *, 4> { [Row, Col, I8Ptr, Stride] };
+    let mut NewInst: *mut Value = Builder.CreateIntrinsic(x86_tileloadd64_internal, Args, FMFSource {}, "", function_ref<void (CallInst *)> { Closure_1 {}, null, null });
     Bitcast.replaceAllUsesWith(NewInst);
 }
 
 fn X86LowerAMXType::combineBitcastStore(self, Bitcast: *mut BitCastInst, ST: *mut StoreInst) {
     let mut Tile: *mut Value = Bitcast.getOperand(0);
-    let mut II: *mut auto = cast(Tile);
-    let mut Row: *mut Value = (0);
-    let mut Col: *mut Value = (1);
-    let mut Builder: i32 = ST;
-    let mut Stride: *mut Value = (64);
+    let mut II: *mut IntrinsicInst = cast(Tile);
+    let mut Row: *mut Value = II.getOperand(0);
+    let mut Col: *mut Value = II.getOperand(1);
+    let mut Builder: IRBuilder<> = ST;
+    let mut Stride: *mut Value = Builder.getInt64(64);
     let mut I8Ptr: *mut Value = ST.getOperand(1);
-    let mut Args: array<Value *, 5> = zeroed();
-    Builder();
+    let mut Args: array<Value *, 5> = array<Value *, 5> { [Row, Col, I8Ptr, Stride, Tile] };
+    Builder.CreateIntrinsic(x86_tilestored64_internal, Args, FMFSource {}, "", function_ref<void (CallInst *)> { Closure_2 {}, null, null });
     if Bitcast.hasOneUse() {
         return;
     }
-    let mut Vec: *mut Value = (Bitcast.getType(), ST.getOperand(1));
+    let mut Vec: *mut Value = Builder.CreateLoad(Bitcast.getType(), ST.getOperand(1), "");
     Bitcast.replaceAllUsesWith(Vec);
 }
 
 fn X86LowerAMXType::transformBitcast(self, Bitcast: *mut BitCastInst) -> bool {
-    let mut Builder: i32 = Bitcast;
+    let mut Builder: IRBuilder<> = Bitcast;
     let mut AllocaAddr: *mut AllocaInst = null;
     let mut I8Ptr: *mut Value = null;
     let mut Stride: *mut Value = null;
     let mut Src: *mut Value = Bitcast.getOperand(0);
-    let mut Prepare: Closure_1 = Closure_1 { AllocaAddr: &mut AllocaAddr, Bitcast: &mut Bitcast, I8Ptr: &mut I8Ptr, Stride: &mut Stride };
+    let mut Prepare: Closure_3 = Closure_3 { AllocaAddr: &mut AllocaAddr, Builder: &mut Builder, Bitcast: &mut Bitcast, I8Ptr: &mut I8Ptr, Stride: &mut Stride };
     if Bitcast.getType().isX86_AMXTy() {
         let mut U: *mut Use = operator((Bitcast.use_begin()));
         let mut OpNo: u32 = U.getOperandNo();
-        let mut II: *mut auto = dyn_cast(U.getUser());
-        if operator!() {
+        let mut II: *mut IntrinsicInst = dyn_cast(U.getUser());
+        if !II {
             return false;
         }
         Prepare.call(Bitcast.getOperand(0).getType());
-        Builder()(Src, AllocaAddr);
+        Builder.CreateStore(Src, AllocaAddr, false);
         let mut Row: *mut Value = null;
         let mut Col: *mut Value = null;
-        let mut Args: array<Value *, 4> = zeroed();
-        let mut NewInst: *mut Value = ;
+        tie(Row, Col) = getShape(II, OpNo);
+        let mut Args: array<Value *, 4> = array<Value *, 4> { [Row, Col, I8Ptr, Stride] };
+        let mut NewInst: *mut Value = Builder.CreateIntrinsic(x86_tileloadd64_internal, Args, FMFSource {}, "", function_ref<void (CallInst *)> { Closure_4 {}, null, null });
         Bitcast.replaceAllUsesWith(NewInst);
     } else {
-        let mut II: *mut auto = dyn_cast(Src);
-        if operator!() {
+        let mut II: *mut IntrinsicInst = dyn_cast(Src);
+        if !II {
             return false;
         }
         Prepare.call(Bitcast.getType());
-        let mut Row: *mut Value = (0);
-        let mut Col: *mut Value = (1);
-        let mut Args: array<Value *, 5> = zeroed();
-        Builder();
-        let mut NewInst: *mut Value = (Bitcast.getType(), AllocaAddr);
+        let mut Row: *mut Value = II.getOperand(0);
+        let mut Col: *mut Value = II.getOperand(1);
+        let mut Args: array<Value *, 5> = array<Value *, 5> { [Row, Col, I8Ptr, Stride, Src] };
+        Builder.CreateIntrinsic(x86_tilestored64_internal, Args, FMFSource {}, "", function_ref<void (CallInst *)> { Closure_5 {}, null, null });
+        let mut NewInst: *mut Value = Builder.CreateLoad(Bitcast.getType(), AllocaAddr, "");
         Bitcast.replaceAllUsesWith(NewInst);
     }
     return true;
 }
 
 fn X86LowerAMXType::visit(self) -> bool {
-    let mut DeadInsts: SmallVector<Instruction *, 8> = zeroed();
-    let mut C: bool = operator!();
+    let mut DeadInsts: SmallVector<Instruction *, 8> = SmallVector<Instruction *, 8> {};
+    self.Col2Row.clear();
+    for BB in post_order(&mut self.Func) {
+        for Inst in make_early_inc_range(reverse(*BB)) {
+            let mut Bitcast: *mut BitCastInst = dyn_cast(&mut Inst);
+            if !Bitcast {
+                continue;
+            }
+            let mut Src: *mut Value = Bitcast.getOperand(0);
+            if Bitcast.getType().isX86_AMXTy() {
+                if Bitcast.user_empty() {
+                    DeadInsts.push(Bitcast);
+                    continue;
+                }
+                let mut LD: *mut LoadInst = dyn_cast(Src);
+                if !LD {
+                    if self.transformBitcast(Bitcast) {
+                        DeadInsts.push(Bitcast);
+                    }
+                    continue;
+                }
+                self.combineLoadBitcast(LD, Bitcast);
+                DeadInsts.push(Bitcast);
+                if LD.hasOneUse() {
+                    DeadInsts.push(LD);
+                }
+            } else if Src.getType().isX86_AMXTy() {
+                if Bitcast.user_empty() {
+                    DeadInsts.push(Bitcast);
+                    continue;
+                }
+                let mut ST: *mut StoreInst = null;
+                for U in Bitcast.uses() {
+                    ST = dyn_cast(U.getUser());
+                    if ST {
+                        break;
+                    }
+                }
+                if !ST {
+                    if self.transformBitcast(Bitcast) {
+                        DeadInsts.push(Bitcast);
+                    }
+                    continue;
+                }
+                self.combineBitcastStore(Bitcast, ST);
+                DeadInsts.push(ST);
+                DeadInsts.push(Bitcast);
+            }
+        }
+    }
+    let mut C: bool = !DeadInsts.is_empty();
+    for Inst in DeadInsts {
+        Inst.eraseFromParent();
+    }
     return C;
 }
 
 fn getAllocaPos(BB: *mut BasicBlock) -> *mut Value {
     let mut F: *mut Function = BB.getParent();
-    let mut Builder: i32 = &mut F.getEntryBlock().front();
+    let mut Builder: IRBuilder<> = &mut F.getEntryBlock().front();
     let mut DL: *DataLayout = F.getDataLayout();
     let mut AllocaAS: u32 = DL.getAllocaAddrSpace();
-    let mut V256I32Ty: *mut Type = get(256, false);
-    let mut AllocaRes: *mut AllocaInst = AllocaInst { V256I32Ty, AllocaAS, "", InsertPosition { InsertAt: F.getEntryBlock().begin() } };
+    let mut V256I32Ty: *mut Type = get(Builder.getInt32Ty(), 256, false);
+    let mut AllocaRes: *mut AllocaInst = AllocaInst { V256I32Ty, AllocaAS, "", F.getEntryBlock().begin() };
     let mut Iter: iterator = AllocaRes.getIterator();
     operator(Iter);
-    Builder()(&mut operator(Iter));
-    let mut I8Ptr: *mut Value = (AllocaRes);
+    Builder.SetInsertPoint(&mut operator(Iter));
+    let mut I8Ptr: *mut Value = Builder.CreateBitCast(AllocaRes, Builder.getPtrTy(0), "");
     return I8Ptr;
 }
 
 fn createTileStore(TileDef: *mut Instruction, Ptr: *mut Value) -> *mut Instruction {
     assert!(TileDef.getType().isX86_AMXTy(), "Not define tile!");
-    let mut II: *mut auto = cast(TileDef);
-    (((operator!(operator!((II() && "Not tile intrinsic!")))) || (_wassert(L"II && \"Not tile intrinsic!\"", L"llvm\\lib\\Target\\X86\\X86LowerAMXType.cpp", (497) as u32) , 0)) as void);
-    let mut Row: *mut Value = (0);
-    let mut Col: *mut Value = (1);
+    let mut II: *mut IntrinsicInst = cast(TileDef);
+    assert!(II, "Not tile intrinsic!");
+    let mut Row: *mut Value = II.getOperand(0);
+    let mut Col: *mut Value = II.getOperand(1);
     let mut BB: *mut BasicBlock = TileDef.getParent();
     let mut Iter: iterator = TileDef.getIterator();
-    let mut Builder: i32 = BB;
-    let mut Stride: *mut Value = (64);
-    let mut Args: array<Value *, 5> = zeroed();
-    let mut TileStore: *mut Instruction = ;
+    let mut Builder: IRBuilder<> = IRBuilder<> { BB, operator(Iter) };
+    let mut Stride: *mut Value = Builder.getInt64(64);
+    let mut Args: array<Value *, 5> = array<Value *, 5> { [Row, Col, Ptr, Stride, TileDef] };
+    let mut TileStore: *mut Instruction = Builder.CreateIntrinsicWithoutFolding(x86_tilestored64_internal, Args, FMFSource {}, "");
     return TileStore;
 }
 
@@ -213,7 +283,7 @@ fn replaceWithTileLoad(U: *mut Use, Ptr: *mut Value, IsPHI: bool) {
     assert!(V.getType().isX86_AMXTy(), "Not define tile!");
     let mut II: *mut IntrinsicInst = null;
     if IsPHI {
-        let mut PhiOp: *mut Value = cast(V)(0);
+        let mut PhiOp: *mut Value = cast(V).getIncomingValue(0);
         II = cast(PhiOp);
     } else {
         II = cast(V);
@@ -221,10 +291,10 @@ fn replaceWithTileLoad(U: *mut Use, Ptr: *mut Value, IsPHI: bool) {
     let mut Row: *mut Value = II.getOperand(0);
     let mut Col: *mut Value = II.getOperand(1);
     let mut UserI: *mut Instruction = cast(U.getUser());
-    let mut Builder: i32 = UserI;
-    let mut Stride: *mut Value = (64);
-    let mut Args: array<Value *, 4> = zeroed();
-    let mut TileLoad: *mut Value = ;
+    let mut Builder: IRBuilder<> = UserI;
+    let mut Stride: *mut Value = Builder.getInt64(64);
+    let mut Args: array<Value *, 4> = array<Value *, 4> { [Row, Col, Ptr, Stride] };
+    let mut TileLoad: *mut Value = Builder.CreateIntrinsic(x86_tileloadd64_internal, Args, FMFSource {}, "", function_ref<void (CallInst *)> { Closure_6 {}, null, null });
     UserI.replaceUsesOfWith(V, TileLoad);
 }
 
@@ -295,7 +365,7 @@ fn X86VolatileTileData::volatileTileData(self) -> bool {
     let mut Changed: bool = false;
     for BB in self.F {
         let mut PHIInsts: SmallVector<Instruction *, 2> = SmallVector<Instruction *, 2> {};
-        let mut AMXDefInsts: SmallVector<Instruction *, 8> = zeroed();
+        let mut AMXDefInsts: SmallVector<Instruction *, 8> = SmallVector<Instruction *, 8> {};
         for I in BB {
             if !I.getType().isX86_AMXTy() {
                 continue;
@@ -303,8 +373,15 @@ fn X86VolatileTileData::volatileTileData(self) -> bool {
             if isa(&mut I) {
                 PHIInsts.push(&mut I);
             } else {
-                AMXDefInsts()(&mut I);
+                AMXDefInsts.push(&mut I);
             }
+        }
+        for I in AMXDefInsts {
+            if isIncomingOfPHI(I) {
+                continue;
+            }
+            self.volatileTileNonPHI(I);
+            Changed = true;
         }
         for I in PHIInsts {
             self.volatileTilePHI(dyn_cast(I));
@@ -316,7 +393,7 @@ fn X86VolatileTileData::volatileTileData(self) -> bool {
 
 struct X86LowerAMXCast {
     Func: *mut Function,
-    DT: i32,
+    DT: unique_ptr<DominatorTree>,
 }
 
 fn DCEInstruction(I: *mut Instruction, WorkList: *mut SmallSetVector<Instruction *, 16>, TLI: *TargetLibraryInfo) -> bool {
@@ -334,7 +411,7 @@ let mut e: u32 = I.getNumOperands(); i != e; i += 1 {
                 OpI;
             } else {
                 if isInstructionTriviallyDead(OpI, TLI) {
-                    WorkList()(OpI);
+                    WorkList.insert(OpI);
                 }
             }
         }
@@ -345,40 +422,43 @@ let mut e: u32 = I.getNumOperands(); i != e; i += 1 {
 }
 
 fn X86LowerAMXCast::optimizeAMXCastFromPhi(self, CI: *mut IntrinsicInst, PN: *mut PHINode, DeadInst: *mut SmallSetVector<Instruction *, 16>) -> bool {
-    let mut Builder: i32 = CI;
+    let mut Builder: IRBuilder<> = CI;
     let mut Src: *mut Value = CI.getOperand(0);
     let mut SrcTy: *mut Type = Src.getType();
     let mut DestTy: *mut Type = CI.getType();
-    let mut PhiWorklist: SmallVector<PHINode *, 4> = zeroed();
-    let mut OldPhiNodes: SmallSetVector<PHINode *, 4> = zeroed();
-    PhiWorklist()(PN);
-    OldPhiNodes()(PN);
-    while operator!() {
-        let mut OldPN: *mut auto = ();
-        for let mut I: u32 = 0; I < OldPN()(); I += 1 {
-            let mut IncValue: *mut Value = (I);
+    let mut PhiWorklist: SmallVector<PHINode *, 4> = SmallVector<PHINode *, 4> {};
+    let mut OldPhiNodes: SmallSetVector<PHINode *, 4> = SmallSetVector<PHINode *, 4> {};
+    PhiWorklist.push(PN);
+    OldPhiNodes.insert(PN);
+    while !PhiWorklist.is_empty() {
+        let mut OldPN: *mut PHINode = PhiWorklist.pop_back_val();
+        for let mut I: u32 = 0; I < OldPN.getNumOperands(); I += 1 {
+            let mut IncValue: *mut Value = OldPN.getIncomingValue(I);
             if isa(IncValue) {
-                let mut IncConst: *mut auto = dyn_cast(IncValue);
-                if !isa(IncValue) && operator!() {
+                let mut IncConst: *mut Constant = dyn_cast(IncValue);
+                if !isa(IncValue) && !IncConst.isNullValue() {
                     return false;
                 }
                 let mut Row: *mut Value = null;
                 let mut Col: *mut Value = null;
+                tie(Row, Col) = getShape(OldPN);
                 if !Row || !Col || !isa(Row) || !isa(Col) {
                     return false;
                 }
-                let mut Block: *mut auto = (I);
-                let mut Iter: iterator = ()();
-                let mut NewInst: *mut Instruction = ;
-                NewInst.moveBefore(iterator { Iter });
-                NewInst = ;
-                NewInst.moveBefore(iterator { Iter });
-                OldPN()(I, NewInst);
+                let mut Block: *mut BasicBlock = OldPN.getIncomingBlock(I);
+                let mut Iter: iterator = Block.getTerminator().getIterator();
+                let mut NewInst: *mut Instruction = Builder.CreateIntrinsicWithoutFolding(x86_tilezero_internal, ArrayRef<Type *> {}, [Row, Col], FMFSource {}, "", ArrayRef<OperandBundleDef> {});
+                NewInst.moveBefore(Iter);
+                NewInst = Builder.CreateIntrinsicWithoutFolding(x86_cast_tile_to_vector, [IncValue.getType()], [NewInst], FMFSource {}, "", ArrayRef<OperandBundleDef> {});
+                NewInst.moveBefore(Iter);
+                OldPN.setIncomingValue(I, NewInst);
                 IncValue = NewInst;
             }
-            if  {
-                if OldPhiNodes()() {
-                    PhiWorklist()();
+            if dyn_cast(IncValue) {
+                PNode;
+            } else {
+                if OldPhiNodes.insert(PNode) {
+                    PhiWorklist.push(PNode);
                 }
                 continue;
             }
@@ -394,7 +474,68 @@ fn X86LowerAMXCast::optimizeAMXCastFromPhi(self, CI: *mut IntrinsicInst, PN: *mu
             return false;
         }
     }
-    let mut NewPNodes: i32 = 0;
+    for OldPN in OldPhiNodes {
+        for V in OldPN.users() {
+            let mut ACI: *mut Instruction = dyn_cast(V);
+            if ACI && isAMXCast(ACI) {
+                let mut TyB: *mut Type = ACI.getOperand(0).getType();
+                let mut TyA: *mut Type = ACI.getType();
+                if TyA != DestTy || TyB != SrcTy {
+                    return false;
+                }
+            } else if dyn_cast(V) {
+                PHI;
+            } else {
+                if OldPhiNodes.count(PHI) == 0 {
+                    return false;
+                }
+            }
+        }
+    }
+    let mut NewPNodes: SmallDenseMap<PHINode *, PHINode *> = SmallDenseMap<PHINode *, PHINode *> {};
+    for OldPN in OldPhiNodes {
+        Builder.SetInsertPoint(OldPN);
+        let mut NewPN: *mut PHINode = Builder.CreatePHI(DestTy, OldPN.getNumOperands(), "");
+        NewPNodes[OldPN] = NewPN;
+    }
+    for OldPN in OldPhiNodes {
+        let mut NewPN: *mut PHINode = NewPNodes[OldPN];
+        for let mut j: u32 = 0;
+let mut e: u32 = OldPN.getNumOperands(); j != e; j += 1 {
+            let mut V: *mut Value = OldPN.getOperand(j);
+            let mut NewV: *mut Value = null;
+            let mut ACI: *mut Instruction = dyn_cast(V);
+            if ACI && isAMXCast(ACI) {
+                NewV = ACI.getOperand(0);
+            } else if dyn_cast(V) {
+                PrevPN;
+            } else {
+                NewV = NewPNodes[PrevPN];
+            }
+            assert!(NewV);
+            NewPN.addIncoming(NewV, OldPN.getIncomingBlock(j));
+        }
+    }
+    for OldPN in OldPhiNodes {
+        let mut NewPN: *mut PHINode = NewPNodes[OldPN];
+        for V in make_early_inc_range(OldPN.users()) {
+            let mut ACI: *mut Instruction = dyn_cast(V);
+            if ACI && isAMXCast(ACI) {
+                let mut TyB: *mut Type = ACI.getOperand(0).getType();
+                let mut TyA: *mut Type = ACI.getType();
+                assert!(TyA == DestTy && TyB == SrcTy);
+                TyA as void;
+                TyB as void;
+                ACI.replaceAllUsesWith(NewPN);
+                DeadInst.insert(ACI);
+            } else if dyn_cast(V) {
+                PHI;
+            } else {
+                assert!(OldPhiNodes.contains(PHI);
+                PHI as void;
+            }
+        }
+    }
     return true;
 }
 
@@ -404,14 +545,14 @@ fn X86LowerAMXCast::combineCastStore(self, Cast: *mut IntrinsicInst, ST: *mut St
     if !Tile.hasOneUse() {
         return false;
     }
-    let mut II: *mut auto = cast(Tile);
-    let mut Row: *mut Value = (0);
-    let mut Col: *mut Value = (1);
-    let mut Builder: i32 = ST;
-    let mut Stride: *mut Value = (Col);
-    let mut I8Ptr: *mut Value = (ST.getOperand(1));
-    let mut Args: array<Value *, 5> = zeroed();
-    Builder();
+    let mut II: *mut IntrinsicInst = cast(Tile);
+    let mut Row: *mut Value = II.getOperand(0);
+    let mut Col: *mut Value = II.getOperand(1);
+    let mut Builder: IRBuilder<> = ST;
+    let mut Stride: *mut Value = Builder.CreateSExt(Col, Builder.getInt64Ty(), "");
+    let mut I8Ptr: *mut Value = Builder.CreateBitCast(ST.getOperand(1), Builder.getPtrTy(0), "");
+    let mut Args: array<Value *, 5> = array<Value *, 5> { [Row, Col, I8Ptr, Stride, Tile] };
+    Builder.CreateIntrinsic(x86_tilestored64_internal, Args, FMFSource {}, "", function_ref<void (CallInst *)> { Closure_7 {}, null, null });
     return true;
 }
 
@@ -421,25 +562,29 @@ fn X86LowerAMXCast::combineLoadCast(self, Cast: *mut IntrinsicInst, LD: *mut Loa
     let mut Col: *mut Value = null;
     let mut U: *mut Use = operator((Cast.use_begin()));
     let mut OpNo: u32 = U.getOperandNo();
-    let mut II: *mut auto = cast(U.getUser());
-    if operator!(isAMXIntrinsic()) {
+    let mut II: *mut IntrinsicInst = cast(U.getUser());
+    if !isAMXIntrinsic(II) {
         return false;
     }
-    let mut Builder: i32 = LD;
+    tie(Row, Col) = getShape(II, OpNo);
+    let mut Builder: IRBuilder<> = LD;
     let mut I8Ptr: *mut Value = null;
-    if  {
-        let mut AllocaAddr: *mut auto = null;
-        Builder()(operator&(operator*(next(LD.getIterator()))));
-        Builder()(LD);
-        Builder()(Cast);
-        I8Ptr = ();
+    if !self.DT {
+        self.DT.reset(self.Func);
+    }
+    if !operator(self.DT).dominates(Row, LD) || !operator(self.DT).dominates(Col, LD) {
+        let mut AllocaAddr: *mut AllocaInst = createAllocaInstAtEntry(Builder, Cast.getParent(), LD.getType());
+        Builder.SetInsertPoint(&mut operator(next(LD.getIterator(), 1)));
+        Builder.CreateStore(LD, AllocaAddr, false);
+        Builder.SetInsertPoint(Cast);
+        I8Ptr = Builder.CreateBitCast(AllocaAddr, Builder.getPtrTy(0), "");
         EraseLoad = false;
     } else {
-        I8Ptr = (LD.getOperand(0));
+        I8Ptr = Builder.CreateBitCast(LD.getOperand(0), Builder.getPtrTy(0), "");
     }
-    let mut Stride: *mut Value = (Col);
-    let mut Args: array<Value *, 4> = zeroed();
-    let mut NewInst: *mut Value = ;
+    let mut Stride: *mut Value = Builder.CreateSExt(Col, Builder.getInt64Ty(), "");
+    let mut Args: array<Value *, 4> = array<Value *, 4> { [Row, Col, I8Ptr, Stride] };
+    let mut NewInst: *mut Value = Builder.CreateIntrinsic(x86_tileloadd64_internal, Args, FMFSource {}, "", function_ref<void (CallInst *)> { Closure_8 {}, null, null });
     Cast.replaceAllUsesWith(NewInst);
     return EraseLoad;
 }
@@ -449,12 +594,13 @@ fn X86LowerAMXCast::combineTilezero(self, Cast: *mut IntrinsicInst) -> bool {
     let mut Col: *mut Value = null;
     let mut U: *mut Use = operator((Cast.use_begin()));
     let mut OpNo: u32 = U.getOperandNo();
-    let mut II: *mut auto = cast(U.getUser());
-    if operator!(isAMXIntrinsic()) {
+    let mut II: *mut IntrinsicInst = cast(U.getUser());
+    if !isAMXIntrinsic(II) {
         return false;
     }
-    let mut Builder: i32 = Cast;
-    let mut NewInst: *mut Value = ;
+    tie(Row, Col) = getShape(II, OpNo);
+    let mut Builder: IRBuilder<> = Cast;
+    let mut NewInst: *mut Value = Builder.CreateIntrinsic(x86_tilezero_internal, ArrayRef<Type *> {}, [Row, Col], FMFSource {}, "", ArrayRef<OperandBundleDef> {}, function_ref<void (CallInst *)> { Closure_9 {}, null, null });
     Cast.replaceAllUsesWith(NewInst);
     return true;
 }
@@ -462,8 +608,8 @@ fn X86LowerAMXCast::combineTilezero(self, Cast: *mut IntrinsicInst) -> bool {
 fn X86LowerAMXCast::combineLdSt(self, Casts: *mut SmallVectorImpl<Instruction *>) -> bool {
     let mut Change: bool = false;
     for Cast in Casts {
-        let mut II: *mut auto = cast(Cast);
-        if  {
+        let mut II: *mut IntrinsicInst = cast(Cast);
+        if II.getIntrinsicID() == x86_cast_tile_to_vector {
             let mut DeadStores: SmallVector<Instruction *, 2> = SmallVector<Instruction *, 2> {};
             for U in Cast.users() {
                 let mut Store: *mut StoreInst = dyn_cast(U);
@@ -480,16 +626,16 @@ fn X86LowerAMXCast::combineLdSt(self, Casts: *mut SmallVectorImpl<Instruction *>
             }
         } else {
             if isa(Cast.getOperand(0)) {
-                operator|=(Change, self.combineTilezero(cast(Cast)));
+                Change |= self.combineTilezero(cast(Cast));
                 continue;
             }
-            let mut Load: *mut auto = dyn_cast(Cast.getOperand(0));
-            if operator!() || operator!() {
+            let mut Load: *mut LoadInst = dyn_cast(Cast.getOperand(0));
+            if !Load || !Load.hasOneUse() {
                 continue;
             }
-            if self.combineLoadCast(cast(Cast)) {
+            if self.combineLoadCast(cast(Cast), Load) {
                 Cast.setOperand(0, null);
-                Load()();
+                Load.eraseFromParent();
                 Change = true;
             }
         }
@@ -499,27 +645,27 @@ fn X86LowerAMXCast::combineLdSt(self, Casts: *mut SmallVectorImpl<Instruction *>
 
 fn X86LowerAMXCast::combineAMXcast(self, TLI: *mut TargetLibraryInfo) -> bool {
     let mut Change: bool = false;
-    let mut Vec2TileInsts: SmallVector<Instruction *, 8> = zeroed();
-    let mut Tile2VecInsts: SmallVector<Instruction *, 8> = zeroed();
-    let mut PhiCastWorkList: SmallVector<Instruction *, 8> = zeroed();
-    let mut DeadInst: SmallSetVector<Instruction *, 16> = zeroed();
+    let mut Vec2TileInsts: SmallVector<Instruction *, 8> = SmallVector<Instruction *, 8> {};
+    let mut Tile2VecInsts: SmallVector<Instruction *, 8> = SmallVector<Instruction *, 8> {};
+    let mut PhiCastWorkList: SmallVector<Instruction *, 8> = SmallVector<Instruction *, 8> {};
+    let mut DeadInst: SmallSetVector<Instruction *, 16> = SmallSetVector<Instruction *, 16> {};
     for BB in self.Func {
         for I in BB {
             let mut Vec: *mut Value = null;
-            if match(&mut I) {
-                Vec2TileInsts()(&mut I);
-            } else if match(&mut I) {
-                Tile2VecInsts()(&mut I);
+            if match(&mut I, m_Intrinsic(m_Value(Vec))) {
+                Vec2TileInsts.push(&mut I);
+            } else if match(&mut I, m_Intrinsic(m_Value(Vec))) {
+                Tile2VecInsts.push(&mut I);
             }
         }
     }
-    let mut Convert: Closure_2 = Closure_2 { Change: &mut Change };
-    Convert();
-    Convert();
-    let mut LiveCasts: SmallVector<Instruction *, 8> = zeroed();
-    let mut EraseInst: Closure_3 = Closure_3 { Change: &mut Change };
-    EraseInst();
-    EraseInst();
+    let mut Convert: Closure_10 = Closure_10 { Change: &mut Change };
+    Convert.call(Vec2TileInsts, x86_cast_tile_to_vector);
+    Convert.call(Tile2VecInsts, x86_cast_vector_to_tile);
+    let mut LiveCasts: SmallVector<Instruction *, 8> = SmallVector<Instruction *, 8> {};
+    let mut EraseInst: Closure_11 = Closure_11 { Change: &mut Change, LiveCasts: &mut LiveCasts };
+    EraseInst.call(Vec2TileInsts);
+    EraseInst.call(Tile2VecInsts);
     while true {
         {
         if DebugFlag && isCurrentDebugType("x86-lower-amx-type", 1) {
@@ -529,8 +675,8 @@ fn X86LowerAMXCast::combineAMXcast(self, TLI: *mut TargetLibraryInfo) -> bool {
     }
         if !(false) { break; }
     }
-    operator|=(Change, self.combineLdSt());
-    EraseInst();
+    Change |= self.combineLdSt(LiveCasts);
+    EraseInst.call(LiveCasts);
     while true {
         {
         if DebugFlag && isCurrentDebugType("x86-lower-amx-type", 1) {
@@ -544,14 +690,24 @@ fn X86LowerAMXCast::combineAMXcast(self, TLI: *mut TargetLibraryInfo) -> bool {
         for I in BB {
             if isAMXCast(&mut I) {
                 if isa(I.getOperand(0)) {
-                    PhiCastWorkList()(&mut I);
+                    PhiCastWorkList.push(&mut I);
                 }
             }
         }
     }
-    while operator!() {
-        let mut I: *mut Instruction = ();
-        operator|=(Change, DCEInstruction(I, TLI));
+    for I in PhiCastWorkList {
+        if DeadInst.contains(I) {
+            continue;
+        }
+        let mut PN: *mut PHINode = cast(I.getOperand(0));
+        if self.optimizeAMXCastFromPhi(cast(I), PN, DeadInst) {
+            DeadInst.insert(PN);
+            Change = true;
+        }
+    }
+    while !DeadInst.is_empty() {
+        let mut I: *mut Instruction = DeadInst.pop_back_val();
+        Change |= DCEInstruction(I, DeadInst, TLI);
     }
     while true {
         {
@@ -566,12 +722,12 @@ fn X86LowerAMXCast::combineAMXcast(self, TLI: *mut TargetLibraryInfo) -> bool {
 }
 
 fn X86LowerAMXCast::transformAMXCast(self, AMXCast: *mut IntrinsicInst) -> bool {
-    let mut Builder: i32 = AMXCast;
+    let mut Builder: IRBuilder<> = AMXCast;
     let mut AllocaAddr: *mut AllocaInst = null;
     let mut I8Ptr: *mut Value = null;
     let mut Stride: *mut Value = null;
     let mut Src: *mut Value = AMXCast.getOperand(0);
-    let mut Prepare: Closure_4 = Closure_4 { AllocaAddr: &mut AllocaAddr, AMXCast: &mut AMXCast, I8Ptr: &mut I8Ptr, Stride: &mut Stride };
+    let mut Prepare: Closure_12 = Closure_12 { AllocaAddr: &mut AllocaAddr, Builder: &mut Builder, AMXCast: &mut AMXCast, I8Ptr: &mut I8Ptr, Stride: &mut Stride };
     if AMXCast.getType().isX86_AMXTy() {
         if AMXCast.use_empty() {
             AMXCast.eraseFromParent();
@@ -579,29 +735,30 @@ fn X86LowerAMXCast::transformAMXCast(self, AMXCast: *mut IntrinsicInst) -> bool 
         }
         let mut U: *mut Use = operator((AMXCast.use_begin()));
         let mut OpNo: u32 = U.getOperandNo();
-        let mut II: *mut auto = dyn_cast(U.getUser());
-        if operator!() {
+        let mut II: *mut IntrinsicInst = dyn_cast(U.getUser());
+        if !II {
             return false;
         }
         Prepare.call(AMXCast.getOperand(0).getType());
-        Builder()(Src, AllocaAddr);
+        Builder.CreateStore(Src, AllocaAddr, false);
         let mut Row: *mut Value = null;
         let mut Col: *mut Value = null;
-        let mut Args: array<Value *, 4> = zeroed();
-        let mut NewInst: *mut Value = ;
+        tie(Row, Col) = getShape(II, OpNo);
+        let mut Args: array<Value *, 4> = array<Value *, 4> { [Row, Col, I8Ptr, Builder.CreateSExt(Col, Builder.getInt64Ty(), "")] };
+        let mut NewInst: *mut Value = Builder.CreateIntrinsic(x86_tileloadd64_internal, Args, FMFSource {}, "", function_ref<void (CallInst *)> { Closure_13 {}, null, null });
         AMXCast.replaceAllUsesWith(NewInst);
         AMXCast.eraseFromParent();
     } else {
-        let mut II: *mut auto = dyn_cast(Src);
-        if operator!() {
+        let mut II: *mut IntrinsicInst = dyn_cast(Src);
+        if !II {
             return false;
         }
         Prepare.call(AMXCast.getType());
-        let mut Row: *mut Value = (0);
-        let mut Col: *mut Value = (1);
-        let mut Args: array<Value *, 5> = zeroed();
-        Builder();
-        let mut NewInst: *mut Value = (AMXCast.getType(), AllocaAddr);
+        let mut Row: *mut Value = II.getOperand(0);
+        let mut Col: *mut Value = II.getOperand(1);
+        let mut Args: array<Value *, 5> = array<Value *, 5> { [Row, Col, I8Ptr, Builder.CreateSExt(Col, Builder.getInt64Ty(), ""), Src] };
+        Builder.CreateIntrinsic(x86_tilestored64_internal, Args, FMFSource {}, "", function_ref<void (CallInst *)> { Closure_14 {}, null, null });
+        let mut NewInst: *mut Value = Builder.CreateLoad(AMXCast.getType(), AllocaAddr, "");
         AMXCast.replaceAllUsesWith(NewInst);
         AMXCast.eraseFromParent();
     }
@@ -610,13 +767,16 @@ fn X86LowerAMXCast::transformAMXCast(self, AMXCast: *mut IntrinsicInst) -> bool 
 
 fn X86LowerAMXCast::transformAllAMXCast(self) -> bool {
     let mut Change: bool = false;
-    let mut WorkLists: SmallVector<Instruction *, 8> = zeroed();
+    let mut WorkLists: SmallVector<Instruction *, 8> = SmallVector<Instruction *, 8> {};
     for BB in self.Func {
         for I in BB {
             if isAMXCast(&mut I) {
-                WorkLists()(&mut I);
+                WorkLists.push(&mut I);
             }
         }
+    }
+    for Inst in WorkLists {
+        Change |= self.transformAMXCast(cast(Inst));
     }
     return Change;
 }
@@ -626,14 +786,14 @@ fn lowerAmxType(F: *mut Function, TM: *TargetMachine, TLI: *mut TargetLibraryInf
         return false;
     }
     let mut C: bool = false;
-    let mut LAC: X86LowerAMXCast = X86LowerAMXCast { F };
+    let mut LAC: X86LowerAMXCast = F;
     C |= LAC.combineAMXcast(TLI);
     C |= LAC.transformAllAMXCast();
-    let mut LAT: X86LowerAMXType = X86LowerAMXType { F };
+    let mut LAT: X86LowerAMXType = F;
     C |= LAT.visit();
     if TM.getOptLevel() == None {
         if !F.hasFnAttribute(OptimizeNone) {
-            let mut VTD: X86VolatileTileData = X86VolatileTileData { F: F };
+            let mut VTD: X86VolatileTileData = F;
             C = VTD.volatileTileData() || C;
         }
     }
@@ -641,13 +801,13 @@ fn lowerAmxType(F: *mut Function, TM: *TargetMachine, TLI: *mut TargetLibraryInf
 }
 
 fn X86LowerAMXTypePass::run(self, F: *mut Function, FAM: *mut FunctionAnalysisManager) -> PreservedAnalyses {
-    let mut TLI: *mut TargetLibraryInfo = FAM;
+    let mut TLI: *mut TargetLibraryInfo = FAM.getResult(F);
     let mut Changed: bool = lowerAmxType(F, self.TM, &mut TLI);
     if !Changed {
         return all();
     }
     let mut PA: PreservedAnalyses = none();
-    PA;
+    PA.preserveSet();
     return PA;
 }
 
@@ -658,15 +818,15 @@ struct X86LowerAMXTypeLegacyPass {
 }
 
 fn X86LowerAMXTypeLegacyPass::runOnFunction(self, F: *mut Function) -> bool {
-    let mut TM: *mut TargetMachine = operator&();
-    let mut TLI: *mut TargetLibraryInfo = operator&((F));
+    let mut TM: *mut TargetMachine = &mut self.getAnalysis().getTM();
+    let mut TLI: *mut TargetLibraryInfo = &mut self.getAnalysis().getTLI(F);
     return lowerAmxType(F, TM, TLI);
 }
 
 fn X86LowerAMXTypeLegacyPass::getAnalysisUsage(self: *X86LowerAMXTypeLegacyPass, AU: *mut AnalysisUsage) {
     AU.setPreservesCFG();
-    AU;
-    AU;
+    AU.addRequired();
+    AU.addRequired();
 }
 
 fn X86LowerAMXTypeLegacyPass::getPassKind(self: *X86LowerAMXTypeLegacyPass) -> PassKind {
@@ -699,23 +859,57 @@ fn createX86LowerAMXTypeLegacyPass() -> *mut FunctionPass {
     return X86LowerAMXTypeLegacyPass {};
 }
 
-struct Closure_1 {
+struct Closure_1 {}
+
+fn Closure_1::call(self: *Closure_1, arg: *mut CallInst) {}
+
+struct Closure_2 {}
+
+fn Closure_2::call(self: *Closure_2, arg: *mut CallInst) {}
+
+struct Closure_3 {
     AllocaAddr: *mut *mut AllocaInst,
+    Builder: *mut IRBuilder<>,
     Bitcast: *mut *mut BitCastInst,
     I8Ptr: *mut *mut Value,
     Stride: *mut *mut Value,
 }
 
-unsafe fn Closure_1::call(self: *mut Closure_1, MemTy: *mut Type) {
+unsafe fn Closure_3::call(self: *mut Closure_3, MemTy: *mut Type) {
+        (*self.AllocaAddr) = createAllocaInstAtEntry((*self.Builder), (*self.Bitcast).getParent(), MemTy);
         (*self.I8Ptr) = (*self.AllocaAddr);
-        (*self.Stride) = (64);
+        (*self.Stride) = (*self.Builder).getInt64(64);
     }
 
-struct Closure_2 {
+struct Closure_4 {}
+
+fn Closure_4::call(self: *Closure_4, arg: *mut CallInst) {}
+
+struct Closure_5 {}
+
+fn Closure_5::call(self: *Closure_5, arg: *mut CallInst) {}
+
+struct Closure_6 {}
+
+fn Closure_6::call(self: *Closure_6, arg: *mut CallInst) {}
+
+struct Closure_7 {}
+
+fn Closure_7::call(self: *Closure_7, arg: *mut CallInst) {}
+
+struct Closure_8 {}
+
+fn Closure_8::call(self: *Closure_8, arg: *mut CallInst) {}
+
+struct Closure_9 {}
+
+fn Closure_9::call(self: *Closure_9, arg: *mut CallInst) {}
+
+struct Closure_10 {
     Change: *mut bool,
 }
 
-unsafe fn Closure_2::call(self: *mut Closure_2, Insts: *mut SmallVectorImpl<Instruction *>, IID: ID) {
+unsafe fn Closure_10::call(self: *mut Closure_10, Insts: *mut SmallVectorImpl<Instruction *>, IID: ID) {
         for Inst in Insts {
             for U in Inst.users() {
                 let mut II: *mut IntrinsicInst = dyn_cast(U);
@@ -728,29 +922,40 @@ unsafe fn Closure_2::call(self: *mut Closure_2, Insts: *mut SmallVectorImpl<Inst
         }
     }
 
-struct Closure_3 {
+struct Closure_11 {
     Change: *mut bool,
+    LiveCasts: *mut SmallVector<Instruction *, 8>,
 }
 
-unsafe fn Closure_3::call(self: *mut Closure_3, Insts: *mut SmallVectorImpl<Instruction *>) {
+unsafe fn Closure_11::call(self: *mut Closure_11, Insts: *mut SmallVectorImpl<Instruction *>) {
         for Inst in Insts {
             if Inst.use_empty() {
                 Inst.eraseFromParent();
                 (*self.Change) = true;
             } else {
-                LiveCasts()(Inst);
+                (*self.LiveCasts).push(Inst);
             }
         }
     }
 
-struct Closure_4 {
+struct Closure_12 {
     AllocaAddr: *mut *mut AllocaInst,
+    Builder: *mut IRBuilder<>,
     AMXCast: *mut *mut IntrinsicInst,
     I8Ptr: *mut *mut Value,
     Stride: *mut *mut Value,
 }
 
-unsafe fn Closure_4::call(self: *mut Closure_4, MemTy: *mut Type) {
-        (*self.I8Ptr) = ((*self.AllocaAddr));
-        (*self.Stride) = (64);
+unsafe fn Closure_12::call(self: *mut Closure_12, MemTy: *mut Type) {
+        (*self.AllocaAddr) = createAllocaInstAtEntry((*self.Builder), (*self.AMXCast).getParent(), MemTy);
+        (*self.I8Ptr) = (*self.Builder).CreateBitCast((*self.AllocaAddr), (*self.Builder).getPtrTy(0), "");
+        (*self.Stride) = (*self.Builder).getInt64(64);
     }
+
+struct Closure_13 {}
+
+fn Closure_13::call(self: *Closure_13, arg: *mut CallInst) {}
+
+struct Closure_14 {}
+
+fn Closure_14::call(self: *Closure_14, arg: *mut CallInst) {}

@@ -1,3 +1,6 @@
+// Внешние системные функции libc
+extern fn memset(dest: *mut u8, c: i32, n: u64) -> *mut u8;
+
 static mut NumADRPSimpleCandidate: Statistic = Statistic { "aarch64-collect-loh", "NumADRPSimpleCandidate", "Number of simplifiable ADRP dominate by another" };
 
 static mut NumADDToSTR: Statistic = Statistic { "aarch64-collect-loh", "NumADDToSTR", "Number of simplifiable STR reachable by ADD" };
@@ -28,6 +31,15 @@ fn canDefBePartOfLOH(MI: *MachineInstr) -> bool {
         _ => {
             return false;
         },
+        ADRP => {
+            return true;
+        },
+        ADDXri => {
+            return canAddBePartOfLOH(MI);
+        },
+        LDRXui => {
+            LDRWui;
+        },
     }
 }
 
@@ -35,6 +47,9 @@ fn isCandidateStore(MI: *MachineInstr, MO: *MachineOperand) -> bool {
     match MI.getOpcode() {
         _ => {
             return false;
+        },
+        STRBBui => {
+            STRHHui;
         },
     }
 }
@@ -44,6 +59,9 @@ fn isCandidateLoad(MI: *MachineInstr) -> bool {
         _ => {
             return false;
         },
+        LDRSBWui => {
+            LDRSBXui;
+        },
     }
 }
 
@@ -52,25 +70,34 @@ fn supportLoadFromLiteral(MI: *MachineInstr) -> bool {
         _ => {
             return false;
         },
+        LDRSWui => {
+            LDRWui;
+        },
     }
 }
 
 fn areInstructionsConsecutive(First: *MachineInstr, Second: *MachineInstr) -> bool {
-    let mut It: auto = First()();
-    let mut EndIt: auto = First.getParent()();
-    if It() ==  {
+    let mut It: const_self_iterator = First.getIterator();
+    let mut EndIt: const_instr_iterator = First.getParent().instr_end();
+    if It == EndIt {
         return false;
     }
-    return next_nodbg() == Second()();
+    return next_nodbg(It, EndIt, true) == Second.getIterator();
 }
 
 const N_GPR_REGS: u32 = 31;
 
 fn mapRegToGPRIndex(Reg: MCRegister) -> i32 {
-    if  {
+    if X0 <= Reg.operator unsigned int() && Reg.operator unsigned int() <= X28 {
+        return Reg.operator unsigned int() - X0;
+    }
+    if W0 <= Reg.operator unsigned int() && Reg.operator unsigned int() <= W30 {
+        return Reg.operator unsigned int() - W0;
+    }
+    if Reg == FP {
         return 29;
     }
-    if  {
+    if Reg == LR {
         return 30;
     }
     return -1;
@@ -113,11 +140,11 @@ fn handleUse(MI: *MachineInstr, MO: *MachineOperand, Info: *mut LOHInfo) {
         Info.IsCandidate = true;
         Info.MI0 = &mut MI;
         Info.MI1 = null;
-    } else if  {
+    } else if MI.getOpcode() == ADDXri {
         Info.Type = MCLOH_AdrpAdd;
         Info.IsCandidate = true;
         Info.MI0 = &mut MI;
-    } else if  {
+    } else if (MI.getOpcode() == LDRXui || MI.getOpcode() == LDRWui) && MI.getOperand(2).getTargetFlags() & MO_GOT {
         Info.Type = MCLOH_AdrpLdrGot;
         Info.IsCandidate = true;
         Info.MI0 = &mut MI;
@@ -142,7 +169,7 @@ fn handleMiddleInst(MI: *MachineInstr, DefInfo: *mut LOHInfo, OpInfo: *mut LOHIn
         DefInfo.LastADRP = null;
     }
     assert!(OpInfo.IsCandidate, "Expect valid state");
-    if  {
+    if MI.getOpcode() == ADDXri && canAddBePartOfLOH(MI) {
         if OpInfo.Type == MCLOH_AdrpLdr {
             OpInfo.Type = MCLOH_AdrpAddLdr;
             OpInfo.IsCandidate = true;
@@ -155,6 +182,7 @@ fn handleMiddleInst(MI: *MachineInstr, DefInfo: *mut LOHInfo, OpInfo: *mut LOHIn
             return true;
         }
     } else {
+        assert!((MI.getOpcode() == LDRXui || MI.getOpcode() == LDRWui), "Expect LDRXui or LDRWui");
         assert!((MI.getOperand(2).getTargetFlags() & MO_GOT), "Expected GOT relocation");
         if OpInfo.Type == MCLOH_AdrpAddStr && OpInfo.MI1 == null {
             OpInfo.Type = MCLOH_AdrpLdrGotStr;
@@ -181,7 +209,7 @@ fn handleADRP(MI: *MachineInstr, AFI: *mut AArch64FunctionInfo, Info: *mut LOHIn
         }
             if !(false) { break; }
         }
-        AFI.addLOHDirective;
+        AFI.addLOHDirective(MCLOH_AdrpAdrp, [&mut MI, Info.LastADRP]);
         operator(NumADRPSimpleCandidate);
     }
     if Info.IsCandidate {
@@ -202,7 +230,7 @@ fn handleADRP(MI: *MachineInstr, AFI: *mut AArch64FunctionInfo, Info: *mut LOHIn
                 }
                     if !(false) { break; }
                 }
-                AFI.addLOHDirective;
+                AFI.addLOHDirective(MCLOH_AdrpAdd, [&mut MI, Info.MI0]);
                 operator(NumADRSimpleCandidate);
                 break;
             },
@@ -216,7 +244,7 @@ fn handleADRP(MI: *MachineInstr, AFI: *mut AArch64FunctionInfo, Info: *mut LOHIn
                     }
                         if !(false) { break; }
                     }
-                    AFI.addLOHDirective;
+                    AFI.addLOHDirective(MCLOH_AdrpLdr, [&mut MI, Info.MI0]);
                     operator(NumADRPToLDR);
                 }
             },
@@ -261,7 +289,7 @@ fn handleADRP(MI: *MachineInstr, AFI: *mut AArch64FunctionInfo, Info: *mut LOHIn
                 }
             },
             MCLOH_AdrpAdrp => {
-                llvm_unreachable_internal("MCLOH_AdrpAdrp not used in state machine", "llvm\\lib\\Target\\AArch64\\AArch64CollectLOH.cpp", 458);
+                llvm_unreachable_internal("MCLOH_AdrpAdrp not used in state machine", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64CollectLOH.cpp", 458);
             },
         }
     }
@@ -280,7 +308,39 @@ fn handleRegMaskClobber(RegMask: *u32, Reg: MCPhysReg, LOHInfos: *mut LOHInfo) {
 }
 
 fn handleNormalInst(MI: *MachineInstr, LOHInfos: *mut LOHInfo) {
-    let mut UsesSeen: i32 = 0;
+    for MO in MI.operands() {
+        if MO.isRegMask() {
+            let mut RegMask: *u32 = MO.getRegMask();
+            for Reg in GPR32RegClass {
+                handleRegMaskClobber(RegMask, Reg, LOHInfos);
+            }
+            for Reg in GPR64RegClass {
+                handleRegMaskClobber(RegMask, Reg, LOHInfos);
+            }
+            continue;
+        }
+        if !MO.isReg() || !MO.isDef() {
+            continue;
+        }
+        let mut Idx: i32 = mapRegToGPRIndex(MO.getReg().operator MCRegister());
+        if Idx < 0 {
+            continue;
+        }
+        handleClobber(LOHInfos[Idx]);
+    }
+    let mut UsesSeen: SmallSet<int, 4> = SmallSet<int, 4> {};
+    for MO in MI.uses() {
+        if !MO.isReg() || !MO.readsReg() {
+            continue;
+        }
+        let mut Idx: i32 = mapRegToGPRIndex(MO.getReg().operator MCRegister());
+        if Idx < 0 {
+            continue;
+        }
+        if UsesSeen.insert(Idx).second {
+            handleUse(MI, MO, LOHInfos[Idx]);
+        }
+    }
 }
 
 fn runAArch64CollectLOH(MF: *mut MachineFunction) {
@@ -293,7 +353,30 @@ fn runAArch64CollectLOH(MF: *mut MachineFunction) {
         if !(false) { break; }
     }
     let mut LOHInfos: [31]LOHInfo = [31]LOHInfo {};
-    let mut AFI: *mut AArch64FunctionInfo = operator*(MF);
+    let mut AFI: *mut AArch64FunctionInfo = *MF.getInfo();
+    for MBB in MF {
+        memset(LOHInfos, 0, (LOHInfos));
+        for Succ in MBB.successors() {
+            for LI in Succ.liveins() {
+                let mut RegIdx: i32 = mapRegToGPRIndex(LI.PhysReg);
+                if RegIdx >= 0 {
+                    LOHInfos[RegIdx].OneUser = true;
+                }
+            }
+        }
+        for MI in instructionsWithoutDebug(MBB.instr_rbegin(), MBB.instr_rend(), true) {
+            let mut Opcode: u32 = MI.getOpcode();
+            match Opcode {
+                ADDXri => {
+                    LDRXui;
+                },
+                ADRP => {
+                    let mut Op0: *MachineOperand = MI.getOperand(0);
+                },
+            }
+            handleNormalInst(MI, LOHInfos);
+        }
+    }
 }
 
 struct AArch64CollectLOHLegacy {
@@ -306,7 +389,7 @@ struct AArch64CollectLOHLegacy {
 }
 
 fn AArch64CollectLOHLegacy::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
-    if self.skipFunction {
+    if self.skipFunction(MF.getFunction()) {
         return false;
     }
     runAArch64CollectLOH(MF);
@@ -322,7 +405,7 @@ fn AArch64CollectLOHLegacy::getPassName(self: *AArch64CollectLOHLegacy) -> str {
 }
 
 fn AArch64CollectLOHLegacy::getAnalysisUsage(self: *AArch64CollectLOHLegacy, AU: *mut AnalysisUsage) {
-    self.getAnalysisUsage;
+    self.getAnalysisUsage(AU);
     AU.setPreservesAll();
 }
 

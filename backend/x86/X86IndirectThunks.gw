@@ -22,8 +22,8 @@ fn RetpolineThunkInserter::getThunkPrefix(self) -> *u8 {
 }
 
 fn RetpolineThunkInserter::mayUseThunk(self, MF: *MachineFunction) -> bool {
-    let mut STI: *auto = MF;
-    return (STI()() || ()) && operator!();
+    let mut STI: *X86Subtarget const = MF.getSubtarget();
+    return (STI.useRetpolineIndirectCalls() || STI.useRetpolineIndirectBranches()) && !STI.useRetpolineExternalThunk();
 }
 
 struct LVIThunkInserter {
@@ -34,14 +34,14 @@ fn LVIThunkInserter::getThunkPrefix(self) -> *u8 {
 }
 
 fn LVIThunkInserter::mayUseThunk(self, MF: *MachineFunction) -> bool {
-    return MF();
+    return MF.getSubtarget().useLVIControlFlowIntegrity();
 }
 
 fn LVIThunkInserter::insertThunks(self, MMI: *mut MachineModuleInfo, MF: *mut MachineFunction, ExistingThunks: bool) -> bool {
     if ExistingThunks {
         return false;
     }
-    createThunkFunction(MMI, R11LVIThunkName);
+    self.createThunkFunction(MMI, R11LVIThunkName, true, "");
     return true;
 }
 
@@ -49,10 +49,10 @@ fn LVIThunkInserter::populateThunk(self, MF: *mut MachineFunction) {
     assert!(MF.len == 1);
     let mut Entry: *mut MachineBasicBlock = &mut MF.front();
     Entry.clear();
-    let mut TII: *TargetInstrInfo = MF();
-    BuildMI(&mut MF.front(), DebugLoc { Loc: null }, TII.get);
-    BuildMI(&mut MF.front(), DebugLoc { Loc: null }, TII.get);
-    MF.front();
+    let mut TII: *TargetInstrInfo = MF.getSubtarget().getInstrInfo();
+    BuildMI(&mut MF.front(), MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(LFENCE));
+    BuildMI(&mut MF.front(), MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(JMP64r)).addReg(R11, RegState {}, 0);
+    MF.front().addLiveIn(R11, getAll());
 }
 
 struct X86IndirectThunks {
@@ -67,58 +67,61 @@ fn RetpolineThunkInserter::insertThunks(self, MMI: *mut MachineModuleInfo, MF: *
         return false;
     }
     if MMI.getTarget().getTargetTriple().isX86_64() {
-        createThunkFunction(MMI, R11RetpolineName);
+        self.createThunkFunction(MMI, R11RetpolineName, true, "");
     } else {
-        
+        for Name in [EAXRetpolineName, ECXRetpolineName, EDXRetpolineName, EDIRetpolineName] {
+            self.createThunkFunction(MMI, Name, true, "");
+        }
     }
     return true;
 }
 
 fn RetpolineThunkInserter::populateThunk(self, MF: *mut MachineFunction) {
     let mut Is64Bit: bool = MF.getTarget().getTargetTriple().isX86_64();
-    let mut ThunkReg: Register = Register { Reg: 0 };
+    let mut ThunkReg: Register = 0;
     if Is64Bit {
         assert!(MF.getName() == "__llvm_retpoline_r11", "Should only have an r11 thunk on 64-bit targets");
+        ThunkReg = R11;
     } else {
         if MF.getName() == EAXRetpolineName {
-            
+            ThunkReg = EAX;
         } else if MF.getName() == ECXRetpolineName {
-            
+            ThunkReg = ECX;
         } else if MF.getName() == EDXRetpolineName {
-            
+            ThunkReg = EDX;
         } else if MF.getName() == EDIRetpolineName {
-            
+            ThunkReg = EDI;
         } else {
-            llvm_unreachable_internal("Invalid thunk name on x86-32!", "llvm\\lib\\Target\\X86\\X86IndirectThunks.cpp", 182);
+            llvm_unreachable_internal("Invalid thunk name on x86-32!", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86IndirectThunks.cpp", 182);
         }
     }
-    let mut TII: *TargetInstrInfo = MF();
+    let mut TII: *TargetInstrInfo = MF.getSubtarget().getInstrInfo();
     assert!(MF.len == 1);
     let mut Entry: *mut MachineBasicBlock = &mut MF.front();
     Entry.clear();
-    let mut CaptureSpec: *mut MachineBasicBlock = MF.CreateMachineBasicBlock(Entry.getBasicBlock(), optional<UniqueBBID> { nullopt });
-    let mut CallTarget: *mut MachineBasicBlock = MF.CreateMachineBasicBlock(Entry.getBasicBlock(), optional<UniqueBBID> { nullopt });
+    let mut CaptureSpec: *mut MachineBasicBlock = MF.CreateMachineBasicBlock(Entry.getBasicBlock(), nullopt);
+    let mut CallTarget: *mut MachineBasicBlock = MF.CreateMachineBasicBlock(Entry.getBasicBlock(), nullopt);
     let mut TargetSym: *mut MCSymbol = MF.getContext().createTempSymbol();
     MF.push(CaptureSpec);
     MF.push(CallTarget);
-    let mut CallOpc: u32 = 0;
-    let mut RetOpc: u32 = 0;
+    let mut CallOpc: u32 = if Is64Bit { CALL64pcrel32 } else { CALLpcrel32 };
+    let mut RetOpc: u32 = if Is64Bit { RET64 } else { RET32 };
     Entry.addLiveIn(ThunkReg.operator MCRegister(), getAll());
-    BuildMI(Entry, DebugLoc { Loc: null }, TII.get)(TargetSym);
+    BuildMI(Entry, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(CallOpc)).addSym(TargetSym, 0);
     Entry.addSuccessor(CaptureSpec, getUnknown());
-    BuildMI(CaptureSpec, DebugLoc { Loc: null }, TII.get);
-    BuildMI(CaptureSpec, DebugLoc { Loc: null }, TII.get);
-    BuildMI(CaptureSpec, DebugLoc { Loc: null }, TII.get)(CaptureSpec);
+    BuildMI(CaptureSpec, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(PAUSE));
+    BuildMI(CaptureSpec, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(LFENCE));
+    BuildMI(CaptureSpec, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(JMP_1)).addMBB(CaptureSpec, 0);
     CaptureSpec.setMachineBlockAddressTaken();
     CaptureSpec.addSuccessor(CaptureSpec, getUnknown());
     CallTarget.addLiveIn(ThunkReg.operator MCRegister(), getAll());
     CallTarget.setMachineBlockAddressTaken();
-    CallTarget.setAlignment(Align { ShiftValue: 16 });
-    let mut MovOpc: u32 = 0;
-    let mut SPReg: Register = zeroed();
-    addRegOffset(BuildMI(CallTarget, DebugLoc { Loc: null }, TII.get), SPReg, false, 0)(ThunkReg);
+    CallTarget.setAlignment(16);
+    let mut MovOpc: u32 = if Is64Bit { MOV64mr } else { MOV32mr };
+    let mut SPReg: Register = if Is64Bit { RSP } else { ESP };
+    addRegOffset(BuildMI(CallTarget, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(MovOpc)), SPReg, false, 0).addReg(ThunkReg, RegState {}, 0);
     CallTarget.back().setPreInstrSymbol(MF, TargetSym);
-    BuildMI(CallTarget, DebugLoc { Loc: null }, TII.get);
+    BuildMI(CallTarget, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(RetOpc));
 }
 
 fn createX86IndirectThunksPass() -> *mut FunctionPass {

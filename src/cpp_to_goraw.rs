@@ -82,7 +82,10 @@ pub fn run_clang_ast_dump(
 ) -> Result<Value, String> {
     let sdk = crate::c_interop::get_sdk_paths();
     let raw_target = opts.target_triple.as_deref().unwrap_or("x86_64-w64-windows-gnu");
-    let target = if !sdk.includes.is_empty() && (raw_target.contains("windows-gnu") || raw_target.contains("w64")) {
+    // Для чистого Clang AST нужен когерентный набор заголовков: если доступен
+    // MSVC STL + UCRT — целимся в MSVC; смешивать его с MinGW-сисрутом нельзя,
+    // иначе `vcruntime.h`/STL не резолвятся и AST вырождается в recovery-узлы.
+    let target = if sdk.has_msvc() && (raw_target.contains("windows-gnu") || raw_target.contains("w64")) {
         "x86_64-pc-windows-msvc"
     } else {
         raw_target
@@ -108,9 +111,10 @@ pub fn run_clang_ast_dump(
         cmd.arg("-I").arg(inc);
     }
 
-    // Добавляем пути Windows SDK и MSVC, если обнаружены
+    // Добавляем только тот набор заголовков, что согласован с выбранным target
+    // (MSVC STL+UCRT для msvc, иначе MinGW-сисрут) — без смешивания.
     let sdk = crate::c_interop::get_sdk_paths();
-    for inc in &sdk.includes {
+    for inc in sdk.includes_for_target(target) {
         cmd.arg("-isystem").arg(inc);
     }
 
@@ -125,6 +129,29 @@ pub fn run_clang_ast_dump(
         return Err(format!(
             "clang++ завершился с ошибкой или не вернул AST JSON:\n{stderr_str}"
         ));
+    }
+
+    // Clang с `-ast-dump=json` при fatal-ошибке ВСЁ РАВНО печатает частичный AST
+    // (recovery-узлы). Транслятор переведёт что сможет, но пользователь должен
+    // знать, что вывод неполный и почему — иначе «кривизна» выглядит беспричинной.
+    if !output.status.success() {
+        let stderr_str = String::from_utf8_lossy(&output.stderr);
+        let fatals: Vec<&str> = stderr_str
+            .lines()
+            .filter(|l| l.contains("fatal error:") || l.contains("error:"))
+            .take(5)
+            .collect();
+        eprintln!(
+            "предупреждение: clang++ не разобрал `{}` полностью — AST частичный, \
+             перевод будет приблизительным (recovery-узлы)",
+            cpp_path.display()
+        );
+        if !fatals.is_empty() {
+            eprintln!("  первые ошибки clang (часто не хватает сгенерённых заголовков, напр. *.inc):");
+            for f in fatals {
+                eprintln!("    {}", f.trim());
+            }
+        }
     }
 
     let mut deserializer = serde_json::Deserializer::from_slice(&output.stdout);
@@ -1883,6 +1910,18 @@ fn lift_expr(node: &Value, ctx: &mut TranspilerContext) -> String {
             "()".to_string()
         }
 
+        // Доступ к полю в частично разобранном AST (dependent/unresolved контекст).
+        "CXXDependentScopeMemberExpr" | "UnresolvedMemberExpr" => {
+            let (receiver, member) = dependent_member_parts(node, ctx);
+            if member.is_empty() {
+                receiver
+            } else if receiver.trim().is_empty() {
+                format!("self.{member}")
+            } else {
+                format!("{receiver}.{member}")
+            }
+        }
+
         // Вызовы функций
         "CallExpr" => {
             lift_call_expr(node, ctx)
@@ -1998,6 +2037,21 @@ fn lift_call_expr(node: &Value, ctx: &mut TranspilerContext) -> String {
     }
 
     let callee_node = strip_casts(&inner[0]);
+
+    // Частично разобранный AST (напр. исходники LLVM без сгенерённых `.inc`):
+    // вызов метода приходит как CallExpr над CXXDependentScopeMemberExpr —
+    // имя метода и приёмник восстанавливаем, не теряя их в `()`-мусоре.
+    let callee_kind = callee_node.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+    if callee_kind == "CXXDependentScopeMemberExpr" || callee_kind == "UnresolvedMemberExpr" {
+        let (receiver, method) = dependent_member_parts(callee_node, ctx);
+        let args: Vec<String> = inner[1..]
+            .iter()
+            .map(|arg| lift_expr(arg, ctx))
+            .filter(|s| !s.trim().is_empty())
+            .collect();
+        return render_member_call(&receiver, &method, &args);
+    }
+
     let callee_name = if let Some(n) = callee_node.get("referencedDecl").and_then(|d| d.get("name")).and_then(|n| n.as_str()) {
         n
     } else if let Some(n) = callee_node.get("name").and_then(|n| n.as_str()) {
@@ -2059,6 +2113,51 @@ fn lift_call_expr(node: &Value, ctx: &mut TranspilerContext) -> String {
     }
 }
 
+/// Общая отрисовка вызова метода: идиоматичные перезаписи контейнерных/строковых
+/// методов и дефолтная форма `receiver.method(args)`. Используется и обычным
+/// `CXXMemberCallExpr`, и восстановлением по частичному AST (`CXXDependentScopeMemberExpr`).
+fn render_member_call(receiver_str: &str, method_name: &str, args: &[String]) -> String {
+    let recv = if receiver_str.trim().is_empty() { "self" } else { receiver_str };
+    match method_name {
+        "push_back" | "emplace_back" => format!("{recv}.push({})", args.join(", ")),
+        "pop_back" => format!("{recv}.pop()"),
+        "size" | "length" => format!("{recv}.len"),
+        "empty" => format!("{recv}.is_empty()"),
+        "c_str" | "data" => format!("{recv}.ptr"),
+        "str" if args.is_empty() => recv.to_string(),
+        "substr" => {
+            if args.len() == 1 {
+                format!("{recv}[{}..]", args[0])
+            } else if args.len() >= 2 {
+                format!("{recv}[{}..{} + {}]", args[0], args[0], args[1])
+            } else {
+                recv.to_string()
+            }
+        }
+        "" => {
+            if args.is_empty() {
+                recv.to_string()
+            } else {
+                format!("{recv}({})", args.join(", "))
+            }
+        }
+        _ => format!("{recv}.{method_name}({})", args.join(", ")),
+    }
+}
+
+/// Приёмник + имя метода из узла `CXXDependentScopeMemberExpr`/`UnresolvedMemberExpr`
+/// (появляются в частично разобранном AST — напр. исходники LLVM без сгенерённых `.inc`).
+fn dependent_member_parts(node: &Value, ctx: &mut TranspilerContext) -> (String, String) {
+    let method = node.get("member").and_then(|m| m.as_str()).unwrap_or("").to_string();
+    let receiver = node
+        .get("inner")
+        .and_then(|i| i.as_array())
+        .and_then(|a| a.first())
+        .map(|r| lift_expr(r, ctx))
+        .unwrap_or_default();
+    (receiver, method)
+}
+
 /// Вызов метода CXXMemberCallExpr.
 fn lift_cxx_member_call_expr(node: &Value, ctx: &mut TranspilerContext) -> String {
     let inner = match node.get("inner").and_then(|i| i.as_array()) {
@@ -2114,32 +2213,8 @@ fn lift_cxx_member_call_expr(node: &Value, ctx: &mut TranspilerContext) -> Strin
         .filter(|s| !s.trim().is_empty())
         .collect();
 
-    // Специальные методы векторов / контейнеров / строк
-    match method_name {
-        "push_back" => format!("{receiver_str}.push({})", args.join(", ")),
-        "pop_back" => format!("{receiver_str}.pop()"),
-        "size" | "length" => format!("{receiver_str}.len"),
-        "empty" => format!("{receiver_str}.is_empty()"),
-        "c_str" | "data" => format!("{receiver_str}.ptr"),
-        "str" if args.is_empty() => receiver_str,
-        "substr" => {
-            if args.len() == 1 {
-                format!("{receiver_str}[{}..]", args[0])
-            } else if args.len() >= 2 {
-                format!("{receiver_str}[{}..{} + {}]", args[0], args[0], args[1])
-            } else {
-                receiver_str
-            }
-        }
-        _ if method_name.is_empty() => {
-            if args.is_empty() {
-                receiver_str
-            } else {
-                format!("{receiver_str}({})", args.join(", "))
-            }
-        }
-        _ => format!("{receiver_str}.{method_name}({})", args.join(", ")),
-    }
+    // Специальные методы векторов / контейнеров / строк (общий рендерер)
+    render_member_call(&receiver_str, method_name, &args)
 }
 
 /// Перегруженные операторы CXXOperatorCallExpr (включая поток std::cout << x).

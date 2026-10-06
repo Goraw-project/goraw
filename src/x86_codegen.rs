@@ -239,7 +239,7 @@ impl X86Emitter {
                     }
                     self.scan_locals(&body.stmts);
                 }
-                Stmt::Unsafe(b, _) => {
+                Stmt::Unsafe(b, _) | Stmt::Block(b, _) => {
                     self.scan_locals(&b.stmts);
                 }
                 Stmt::Match { arms, .. } => {
@@ -417,7 +417,7 @@ impl X86Emitter {
                 self.emit_text("add rsp, 32");
                 self.emit_label(&ok_lbl);
             }
-            Stmt::Unsafe(block, _) => {
+            Stmt::Unsafe(block, _) | Stmt::Block(block, _) => {
                 for s in &block.stmts {
                     self.compile_stmt(s)?;
                 }
@@ -779,6 +779,14 @@ impl X86Emitter {
             }
             Expr::Try(expr, _) => {
                 self.compile_expr(expr)?;
+            }
+            Expr::Assign { target, value, .. } => {
+                self.compile_expr(value)?;
+                if let Expr::Ident(name, _) = &**target {
+                    if let Some(off) = self.locals.get(name).copied() {
+                        self.emit_text(&format!("mov [rbp - {off}], rax"));
+                    }
+                }
             }
         }
         Ok(())

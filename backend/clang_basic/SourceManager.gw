@@ -1,110 +1,130 @@
-fn cloneContentCache(Alloc: *mut i32, Other: *ContentCache) -> *mut ContentCache {
-    let mut Clone: *mut auto = ContentCache {};
-    Clone() = Other();
-    Clone() = Other();
-    Clone() = Other.Filename;
-    Clone() = Other.BufferOverridden;
-    Clone() = Other.IsFileVolatile;
-    Clone() = Other.IsTransient;
-    Clone() = Other.IsBufferInvalid;
-    Clone()(Other()());
-    return ;
+fn cloneContentCache(Alloc: *mut BumpPtrAllocator, Other: *ContentCache) -> *mut ContentCache {
+    let mut Clone: *mut ContentCache = ContentCache {};
+    Clone.OrigEntry = Other.OrigEntry;
+    Clone.ContentsEntry = Other.ContentsEntry;
+    Clone.Filename = Other.Filename;
+    Clone.BufferOverridden = Other.BufferOverridden;
+    Clone.IsFileVolatile = Other.IsFileVolatile;
+    Clone.IsTransient = Other.IsTransient;
+    Clone.IsBufferInvalid = Other.IsBufferInvalid;
+    Clone.setUnownedBuffer(Other.getBufferIfLoaded());
+    return Clone;
 }
 
 static mut MaxUsedSLocBytes: Statistic = Statistic { "source-manager", "MaxUsedSLocBytes", "Maximum number of bytes used by source locations (both loaded and local)." };
 
-fn ContentCache::getSizeBytesMapped(self: *ContentCache) -> u32 {}
+fn ContentCache::getSizeBytesMapped(self: *ContentCache) -> u32 {
+    return if self.Buffer { operator(self.Buffer).getBufferSize() } else { 0 };
+}
 
 fn ContentCache::getMemoryBufferKind(self: *ContentCache) -> BufferKind {
-    if  {
+    if self.Buffer == null {
         assert!(0, "Buffer should never be null");
         return MemoryBuffer_Malloc;
     }
+    return operator(self.Buffer).getBufferKind();
 }
 
-fn ContentCache::getSize(self: *ContentCache) -> u32 {}
+fn ContentCache::getSize(self: *ContentCache) -> u32 {
+    return if self.Buffer { operator(self.Buffer).getBufferSize() as u32 } else { operator(self.ContentsEntry).getSize() as u32 };
+}
 
 fn ContentCache::getInvalidBOM(self, BufStr: str) -> *u8 {
-    let mut InvalidBOM: *u8 = null;
+    let mut InvalidBOM: *u8 = BufStr.StartsWith(withInnerNUL("\000\000\376\377"), "UTF-32 (BE)").StartsWith(withInnerNUL("\377\376\000\000"), "UTF-32 (LE)").StartsWith("\376\377", "UTF-16 (BE)").StartsWith("\377\376", "UTF-16 (LE)").StartsWith("+/v", "UTF-7").StartsWith("\367dL", "UTF-1").StartsWith("\335sfs", "UTF-EBCDIC").StartsWith("\016\376\377", "SCSU").StartsWith("\373\356(", "BOCU-1").StartsWith("\2041\2253", "GB-18030").Default(null);
     return InvalidBOM;
 }
 
 fn ContentCache::getBufferOrNone(self: *ContentCache, Diag: *mut DiagnosticsEngine, FM: *mut FileManager, Loc: SourceLocation) -> MemoryBufferRef> {
     if self.IsBufferInvalid {
-        return nullopt();
+        return nullopt;
     }
-    if  {
-        return nullopt();
+    if self.Buffer {
+        return operator(self.Buffer).getMemBufferRef();
+    }
+    if !self.ContentsEntry {
+        return nullopt;
     }
     self.IsBufferInvalid = true;
-    let mut BufferOrError: auto = FM();
-    if ! {
-        return nullopt();
+    let mut BufferOrError: MemoryBuffer>> = FM.getBufferForFile(operator(self.ContentsEntry), self.IsFileVolatile, true, nullopt, true);
+    if !BufferOrError {
+        Diag.Report(Loc, err_cannot_open_file) << operator(self.ContentsEntry).getName() << BufferOrError.getError().message();
+        return nullopt;
     }
-    if  {
-        return nullopt();
+    self.Buffer = move(operator(BufferOrError));
+    if operator(self.Buffer).getBufferSize() >= max() {
+        Diag.Report(Loc, err_file_too_large) << operator(self.ContentsEntry).getName();
+        return nullopt;
     }
-    if  {
-        return nullopt();
+    assert!(operator(self.Buffer).getBufferSize() >= operator(self.ContentsEntry).getSize() as u64);
+    if !operator(self.ContentsEntry).isNamedPipe() && operator(self.Buffer).getBufferSize() < operator(self.ContentsEntry).getSize() as u64 {
+        Diag.Report(Loc, err_file_modified) << operator(self.ContentsEntry).getName();
+        return nullopt;
     }
-    let mut BufStr: str = zeroed();
+    let mut BufStr: str = operator(self.Buffer).getBuffer();
     let mut InvalidBOM: *u8 = getInvalidBOM(BufStr);
     if InvalidBOM {
-        return nullopt();
+        Diag.Report(Loc, err_unsupported_bom) << InvalidBOM << operator(self.ContentsEntry).getName();
+        return nullopt;
     }
     self.IsBufferInvalid = false;
+    return operator(self.Buffer).getMemBufferRef();
 }
 
 fn LineTableInfo::getLineTableFilenameID(self, Name: str) -> u32 {
-    let mut IterBool: auto = zeroed();
-    return ;
+    let mut IterBool: pair<iterator, bool> = self.FilenameIDs.try_emplace(Name, self.FilenamesByID.len);
+    if IterBool.second {
+        self.FilenamesByID.push(&mut operator(IterBool.first));
+    }
+    return operator(IterBool.first).second;
 }
 
 fn LineTableInfo::AddLineNote(self, FID: FileID, Offset: u32, LineNo: u32, FilenameID: i32, EntryExit: u32, FileKind: CharacteristicKind) {
-    let mut Entries: *mut i32 = null;
-    assert!((Entries()() || () < Offset), "Adding line entries out of order!");
+    let mut Entries: *mut []LineEntry = self.LineEntries[FID];
+    assert!((Entries.is_empty() || Entries.back().FileOffset < Offset), "Adding line entries out of order!");
     let mut IncludeOffset: u32 = 0;
     if EntryExit == 1 {
         IncludeOffset = Offset - 1;
     } else {
-        let mut PrevEntry: *auto = if () { null } else { operator&(()) };
+        let mut PrevEntry: *LineEntry const = if Entries.is_empty() { null } else { &mut Entries.back() };
         if EntryExit == 2 {
-            assert!(PrevEntry() &&, "PPDirectives should have caught case when popping empty include stack");
-            PrevEntry() = self.FindNearestLineEntry(FID);
+            assert!(PrevEntry && PrevEntry.IncludeOffset, "PPDirectives should have caught case when popping empty include stack");
+            PrevEntry = self.FindNearestLineEntry(FID, PrevEntry.IncludeOffset);
         }
-        if PrevEntry() {
-            IncludeOffset = ;
+        if PrevEntry {
+            IncludeOffset = PrevEntry.IncludeOffset;
             if FilenameID == -1 {
-                FilenameID = ;
+                FilenameID = PrevEntry.FilenameID;
             }
         }
     }
-    Entries()(get(Offset, LineNo, FilenameID, FileKind, IncludeOffset));
+    Entries.push(get(Offset, LineNo, FilenameID, FileKind, IncludeOffset));
 }
 
 fn LineTableInfo::FindNearestLineEntry(self, FID: FileID, Offset: u32) -> *LineEntry {
-    let mut Entries: i32 = 0;
-    assert!(!(), "No #line entries for this FID after all!");
-    if Entries()() <= Offset {
-        return operator&(());
+    let mut Entries: *[]LineEntry = self.LineEntries[FID];
+    assert!(!Entries.is_empty(), "No #line entries for this FID after all!");
+    if Entries.back().FileOffset <= Offset {
+        return &mut Entries.back();
     }
-    let mut I: i32 = upper_bound(Offset);
-    if I() == () {
+    let mut I: []LineEntry = upper_bound(Entries, Offset);
+    if I == Entries.begin() {
         return null;
     }
-    return operator&(* -= 1);
+    return &mut operator(operator(I));
 }
 
-fn LineTableInfo::AddEntry(self, FID: FileID, Entries: i32) {}
+fn LineTableInfo::AddEntry(self, FID: FileID, Entries: *[]LineEntry) {
+    self.LineEntries[FID] = Entries;
+}
 
 fn SourceManager::getLineTableFilenameID(self, Name: str) -> u32 {
     return self.getLineTable().getLineTableFilenameID(Name);
 }
 
 fn SourceManager::AddLineNote(self, Loc: SourceLocation, LineNo: u32, FilenameID: i32, IsFileEntry: bool, IsFileExit: bool, FileKind: CharacteristicKind) {
-    let mut LocInfo: FileIDAndOffset = zeroed();
+    let mut LocInfo: FileIDAndOffset = self.getDecomposedExpansionLoc(Loc);
     let mut Invalid: bool = false;
-    let mut Entry: *mut SLocEntry = (&mut Invalid);
+    let mut Entry: *mut SLocEntry = self.getSLocEntry(LocInfo.first, &mut Invalid);
     if !Entry.isFile() || Invalid {
         return;
     }
@@ -117,9 +137,15 @@ fn SourceManager::AddLineNote(self, Loc: SourceLocation, LineNo: u32, FilenameID
     } else if IsFileExit {
         EntryExit = 2;
     }
+    operator(self.LineTable).AddLineNote(LocInfo.first, LocInfo.second, LineNo, FilenameID, EntryExit, FileKind);
 }
 
-fn SourceManager::getLineTable(self) -> *mut LineTableInfo {}
+fn SourceManager::getLineTable(self) -> *mut LineTableInfo {
+    if !self.LineTable {
+        self.LineTable.reset(LineTableInfo {});
+    }
+    return operator(self.LineTable);
+}
 
 fn SourceManager::SourceManager(self, Diag: *mut DiagnosticsEngine, FileMgr: *mut FileManager, UserFilesAreVolatile: bool) {
     self.clearIDTables();
@@ -128,31 +154,51 @@ fn SourceManager::SourceManager(self, Diag: *mut DiagnosticsEngine, FileMgr: *mu
 
 fn SourceManager::~SourceManager(self) {
     for let mut i: u32 = 0;
-let mut e: u32 = 0; i != e; i += 1 {
-        if  {}
+let mut e: u32 = self.MemBufferInfos.len; i != e; i += 1 {
+        if self.MemBufferInfos[i] {
+            self.MemBufferInfos[i].~ContentCache();
+            self.ContentCacheAlloc.Deallocate(self.MemBufferInfos[i], 1);
+        }
     }
-    for let mut I: auto = zeroed();
-let mut E: auto = zeroed(); I() != ;  += 1 {
-        if I() {
-            I()();
+    for let mut I: iterator = self.FileInfos.begin();
+let mut E: iterator = self.FileInfos.end(); I != E; operator(I) {
+        if operator(I).second {
+            operator(I).second.~ContentCache();
+            self.ContentCacheAlloc.Deallocate(operator(I).second, 1);
         }
     }
     for let mut i: u32 = 0;
-let mut e: u32 = 0; i != e; i += 1 {
-        if  {}
+let mut e: u32 = self.FileIDContentCaches.len; i != e; i += 1 {
+        if self.FileIDContentCaches[i] {
+            self.FileIDContentCaches[i].~ContentCache();
+            self.ContentCacheAlloc.Deallocate(self.FileIDContentCaches[i], 1);
+        }
     }
 }
 
 fn SourceManager::clearIDTables(self) {
     for let mut i: u32 = 0;
-let mut e: u32 = 0; i != e; i += 1 {
-        if  {}
+let mut e: u32 = self.FileIDContentCaches.len; i != e; i += 1 {
+        if self.FileIDContentCaches[i] {
+            self.FileIDContentCaches[i].~ContentCache();
+            self.ContentCacheAlloc.Deallocate(self.FileIDContentCaches[i], 1);
+        }
     }
+    self.FileIDContentCaches.clear();
     self.MainFileID = FileID {};
+    self.LocalSLocEntryTable.clear();
+    self.LocalLocOffsetTable.clear();
+    self.LoadedSLocEntryTable.clear();
+    self.SLocEntryLoaded.clear();
+    self.SLocEntryOffsetLoaded.clear();
     self.LastLineNoFileIDQuery = FileID {};
     self.LastLineNoContentCache = null;
     self.LastFileIDLookup = FileID {};
     self.LastLookupStartOffset = self.LastLookupEndOffset = 0;
+    self.IncludedLocMap.clear();
+    if self.LineTable {
+        operator(self.LineTable).clear();
+    }
     self.NextLocalOffset = 0;
     self.CurrentLoadedOffset = MaxLoadedOffset;
     self.createExpansionLoc(SourceLocation {}, SourceLocation {}, SourceLocation {}, 1, true, 0, 0);
@@ -172,24 +218,32 @@ fn SourceManager::isMainFile(self, SourceFile: *FileEntry) -> bool {
 fn SourceManager::initializeForReplay(self, Old: *SourceManager) {
     assert!(self.MainFileID.isInvalid(), "expected uninitialized SourceManager");
     for let mut I: u32 = 0;
-let mut N: u32 = Old()(); I != N; I += 1 {
-        if !Old()[I] {
+let mut N: u32 = Old.LoadedSLocEntryTable.len; I != N; I += 1 {
+        if !Old.SLocEntryLoaded[I] {
             Old.loadSLocEntry(I, null);
         }
+    }
+    for FileInfo in Old.FileInfos {
+        let mut Slot: *mut *mut ContentCache = self.FileInfos[FileInfo.first];
+        if Slot {
+            continue;
+        }
+        Slot = cloneContentCache(self.ContentCacheAlloc, *FileInfo.second);
     }
 }
 
 fn SourceManager::getOrCreateContentCache(self, FileEnt: FileEntryRef, isSystemFile: bool) -> *mut ContentCache {
-    let mut Entry: *mut *mut ContentCache = null;
+    let mut Entry: *mut *mut ContentCache = self.FileInfos[FileEnt];
     if Entry {
         return *Entry;
     }
-    if  {
-        let mut overI: auto = zeroed();
-        if  {
+    Entry = self.ContentCacheAlloc.Allocate(1);
+    if self.OverriddenFilesInfo {
+        let mut overI: iterator = operator(self.OverriddenFilesInfo).OverriddenFiles.find(FileEnt.operator const clang::FileEntry *());
+        if overI == operator(self.OverriddenFilesInfo).OverriddenFiles.end() {
             FileEnt;
         } else {
-            if self.OverridenFilesKeepOriginalName { FileEnt } else {  };
+            ContentCache { if self.OverridenFilesKeepOriginalName { FileEnt } else { operator(overI).second }, operator(overI).second };
         }
     } else {
         FileEnt;
@@ -200,10 +254,11 @@ fn SourceManager::getOrCreateContentCache(self, FileEnt: FileEntryRef, isSystemF
     return *Entry;
 }
 
-fn SourceManager::createMemBufferContentCache(self, Buffer: i32) -> *mut ContentCache {
-    let mut Entry: *mut ContentCache = null;
+fn SourceManager::createMemBufferContentCache(self, Buffer: MemoryBuffer>) -> *mut ContentCache {
+    let mut Entry: *mut ContentCache = self.ContentCacheAlloc.Allocate(1);
     ContentCache {};
-    Entry()(move());
+    self.MemBufferInfos.push(Entry);
+    Entry.setBuffer(move(Buffer));
     return *Entry;
 }
 
@@ -212,26 +267,49 @@ fn SourceManager::loadSLocEntry(self: *SourceManager, Index: u32, Invalid: *mut 
 }
 
 fn SourceManager::loadSLocEntry(self, Index: u32, Invalid: *mut bool) -> *mut SLocEntry {
+    assert!(!self.SLocEntryLoaded[Index]);
     if self.ExternalSLocEntries.ReadSLocEntry(-(Index as i32 + 2)) {
         if Invalid {
             *Invalid = true;
         }
-        if  {}
+        if !self.SLocEntryLoaded[Index] {
+            if !self.FakeSLocEntryForRecovery {
+                self.FakeSLocEntryForRecovery = make_unique(get(0, get(SourceLocation {}, self.getFakeContentCacheForRecovery(), C_User, "")));
+            }
+            return operator(self.FakeSLocEntryForRecovery);
+        }
     }
+    return self.LoadedSLocEntryTable[Index];
 }
 
 fn SourceManager::AllocateLoadedSLocEntries(self, NumSLocEntries: u32, TotalSize: UIntTy) -> UIntTy> {
     assert!(self.ExternalSLocEntries, "Don't have an external sloc source");
-    if self.CurrentLoadedOffset < TotalSize || self.CurrentLoadedOffset - TotalSize < self.NextLocalOffset {}
+    if self.CurrentLoadedOffset < TotalSize || self.CurrentLoadedOffset - TotalSize < self.NextLocalOffset {
+        return make_pair(0, 0);
+    }
+    self.LoadedSLocEntryTable.resize(self.LoadedSLocEntryTable.len + NumSLocEntries);
+    self.SLocEntryLoaded.resize(self.LoadedSLocEntryTable.len, false);
+    self.SLocEntryOffsetLoaded.resize(self.LoadedSLocEntryTable.len, false);
     self.CurrentLoadedOffset -= TotalSize;
     self.updateSlocUsageStats();
-    let mut BaseID: i32 = 0;
+    let mut BaseID: i32 = -self.LoadedSLocEntryTable.len - 1;
+    self.LoadedSLocEntryAllocBegin.push(get(BaseID));
+    return make_pair(BaseID, self.CurrentLoadedOffset);
 }
 
-fn SourceManager::getFakeBufferForRecovery(self: *SourceManager) -> MemoryBufferRef {}
+fn SourceManager::getFakeBufferForRecovery(self: *SourceManager) -> MemoryBufferRef {
+    if !self.FakeBufferForRecovery {
+        self.FakeBufferForRecovery = getMemBuffer("<<<INVALID BUFFER>>", "", true);
+    }
+    return operator(self.FakeBufferForRecovery);
+}
 
 fn SourceManager::getFakeContentCacheForRecovery(self: *SourceManager) -> *mut ContentCache {
-    if  {}
+    if !self.FakeContentCacheForRecovery {
+        self.FakeContentCacheForRecovery = make_unique();
+        operator(self.FakeContentCacheForRecovery).setUnownedBuffer(self.getFakeBufferForRecovery());
+    }
+    return operator(self.FakeContentCacheForRecovery);
 }
 
 fn SourceManager::getPreviousFileID(self: *SourceManager, FID: FileID) -> FileID {
@@ -246,7 +324,7 @@ fn SourceManager::getPreviousFileID(self: *SourceManager, FID: FileID) -> FileID
         if ID - 1 == 0 {
             return FileID {};
         }
-    } else if  {
+    } else if -(ID - 1) - 2 >= self.LoadedSLocEntryTable.len {
         return FileID {};
     }
     return get(ID - 1);
@@ -271,22 +349,24 @@ fn SourceManager::createFileID(self, SourceFile: FileEntryRef, IncludePos: Sourc
     let mut IR: *mut ContentCache = self.getOrCreateContentCache(SourceFile, isSystem(FileCharacter));
     let mut Cache: *mut ContentCache = &mut IR;
     let mut Filename: str = SourceFile.getName();
-    if IR() && !IR()(SourceFile) {
-        Cache() = SourceFile;
+    if IR.OrigEntry && !operator(IR.OrigEntry).isSameRef(SourceFile) {
+        Cache = cloneContentCache(self.ContentCacheAlloc, IR);
+        Cache.OrigEntry = SourceFile;
+        self.FileIDContentCaches.push(Cache);
     }
-    if Cache()() {
-        Cache()(self.Diag, self.getFileManager(), SourceLocation {}) as void;
+    if operator(Cache.ContentsEntry).isNamedPipe() {
+        Cache.getBufferOrNone(self.Diag, self.getFileManager(), SourceLocation {}) as void;
     }
     return self.createFileIDImpl(*Cache, Filename, IncludePos, FileCharacter, LoadedID, LoadedOffset);
 }
 
-fn SourceManager::createFileID(self, Buffer: i32, FileCharacter: CharacteristicKind, LoadedID: i32, LoadedOffset: UIntTy, IncludeLoc: SourceLocation) -> FileID {
-    let mut Name: str = ();
-    return self.createFileIDImpl;
+fn SourceManager::createFileID(self, Buffer: MemoryBuffer>, FileCharacter: CharacteristicKind, LoadedID: i32, LoadedOffset: UIntTy, IncludeLoc: SourceLocation) -> FileID {
+    let mut Name: str = operator(Buffer).getBufferIdentifier();
+    return self.createFileIDImpl(self.createMemBufferContentCache(move(Buffer)), Name, IncludeLoc, FileCharacter, LoadedID, LoadedOffset);
 }
 
 fn SourceManager::createFileID(self, Buffer: *MemoryBufferRef, FileCharacter: CharacteristicKind, LoadedID: i32, LoadedOffset: UIntTy, IncludeLoc: SourceLocation) -> FileID {
-    return ((Buffer), FileCharacter, LoadedID, LoadedOffset, IncludeLoc);
+    return self.createFileID(getMemBuffer(Buffer, true), FileCharacter, LoadedID, LoadedOffset, IncludeLoc);
 }
 
 fn SourceManager::getOrCreateFileID(self, SourceFile: FileEntryRef, FileCharacter: CharacteristicKind) -> FileID {
@@ -298,31 +378,40 @@ fn SourceManager::createFileIDImpl(self, File: *mut ContentCache, Filename: str,
     if LoadedID < 0 {
         assert!(LoadedID != -1, "Loading sentinel FileID");
         let mut Index: u32 = -LoadedID - 2;
+        assert!(Index < self.LoadedSLocEntryTable.len, "FileID out of range");
+        assert!(!self.SLocEntryLoaded[Index], "FileID already loaded");
+        self.LoadedSLocEntryTable[Index] = get(LoadedOffset, get(IncludePos, File, FileCharacter, Filename));
+        self.SLocEntryLoaded[Index] = self.SLocEntryOffsetLoaded[Index] = true;
         return get(LoadedID);
     }
     let mut FileSize: u32 = File.getSize();
-    let mut NeedConversion: ErrorOr<bool> = zeroed();
-    if NeedConversion() && * {
-        if  {
-            let mut BufSize: u32 = ();
+    let mut NeedConversion: ErrorOr<bool> = needConversion(Filename, file_t {});
+    if NeedConversion && operator(NeedConversion) {
+        if File.getBufferOrNone(self.Diag, self.getFileManager(), SourceLocation {}) {
+            Buffer;
+        } else {
+            let mut BufSize: u32 = operator(Buffer).getBufferSize();
             if BufSize > FileSize {
-                if File()() {
-                    File()(BufSize);
+                if File.ContentsEntry.has_value() {
+                    operator(File.ContentsEntry).updateFileEntryBufferSize(BufSize);
                 }
                 FileSize = BufSize;
             }
         }
     }
     if !(self.NextLocalOffset + FileSize + 1 > self.NextLocalOffset && self.NextLocalOffset + FileSize + 1 <= self.CurrentLoadedOffset) {
-        self.Diag;
+        self.Diag.Report(IncludePos, err_sloc_space_too_large);
         self.noteSLocAddressSpaceUsage(self.Diag, 32);
         return FileID {};
     }
+    assert!(self.LocalSLocEntryTable.len == self.LocalLocOffsetTable.len);
+    self.LocalSLocEntryTable.push(get(self.NextLocalOffset, get(IncludePos, File, FileCharacter, Filename)));
+    self.LocalLocOffsetTable.push(self.NextLocalOffset);
     self.LastLookupStartOffset = self.NextLocalOffset;
     self.NextLocalOffset += FileSize + 1;
     self.LastLookupEndOffset = self.NextLocalOffset;
     self.updateSlocUsageStats();
-    let mut FID: FileID = get();
+    let mut FID: FileID = get(self.LocalSLocEntryTable.len - 1);
     return self.LastFileIDLookup = FID;
 }
 
@@ -345,10 +434,17 @@ fn SourceManager::createExpansionLocImpl(self, Info: *ExpansionInfo, Length: u32
     if LoadedID < 0 {
         assert!(LoadedID != -1, "Loading sentinel FileID");
         let mut Index: u32 = -LoadedID - 2;
+        assert!(Index < self.LoadedSLocEntryTable.len, "FileID out of range");
+        assert!(!self.SLocEntryLoaded[Index], "FileID already loaded");
+        self.LoadedSLocEntryTable[Index] = get(LoadedOffset, Info);
+        self.SLocEntryLoaded[Index] = self.SLocEntryOffsetLoaded[Index] = true;
         return getMacroLoc(LoadedOffset);
     }
+    assert!(self.LocalSLocEntryTable.len == self.LocalLocOffsetTable.len);
+    self.LocalSLocEntryTable.push(get(self.NextLocalOffset, Info));
+    self.LocalLocOffsetTable.push(self.NextLocalOffset);
     if self.NextLocalOffset + Length + 1 <= self.NextLocalOffset || self.NextLocalOffset + Length + 1 > self.CurrentLoadedOffset {
-        self.Diag;
+        self.Diag.Report(err_sloc_space_too_large);
         report_fatal_error("ran out of source locations", true);
     }
     self.NextLocalOffset += Length + 1;
@@ -358,32 +454,33 @@ fn SourceManager::createExpansionLocImpl(self, Info: *ExpansionInfo, Length: u32
 
 fn SourceManager::getMemoryBufferForFileOrNone(self, File: FileEntryRef) -> MemoryBufferRef> {
     let mut IR: *mut ContentCache = self.getOrCreateContentCache(File, false);
-    return IR()(self.Diag, self.getFileManager(), SourceLocation {});
+    return IR.getBufferOrNone(self.Diag, self.getFileManager(), SourceLocation {});
 }
 
-fn SourceManager::overrideFileContents(self, SourceFile: FileEntryRef, Buffer: i32) {
+fn SourceManager::overrideFileContents(self, SourceFile: FileEntryRef, Buffer: MemoryBuffer>) {
     let mut IR: *mut ContentCache = self.getOrCreateContentCache(SourceFile, false);
-    IR()(move());
+    IR.setBuffer(move(Buffer));
     IR.BufferOverridden = true;
-    self.getOverriddenFilesInfo()(SourceFile);
+    self.getOverriddenFilesInfo().OverriddenFilesWithBuffer.insert(SourceFile.operator const clang::FileEntry *());
 }
 
 fn SourceManager::overrideFileContents(self, SourceFile: *FileEntry, NewFile: FileEntryRef) {
     assert!(SourceFile.getSize() == NewFile.getSize(), "Different sizes, use the FileManager to create a virtual file with the correct size");
-    let mut Pair: auto = self.getOverriddenFilesInfo();
-    if ! {
-        Pair() = NewFile;
+    assert!(self.FileInfos.find_as(SourceFile) == self.FileInfos.end(), "This function should be called at the initialization stage, before any parsing occurs.");
+    let mut Pair: pair<iterator, bool> = self.getOverriddenFilesInfo().OverriddenFiles.insert(make_pair(SourceFile, NewFile));
+    if !Pair.second {
+        operator(Pair.first).second = NewFile;
     }
 }
 
 fn SourceManager::bypassFileContentsOverride(self, File: FileEntryRef) -> OptionalFileEntryRef {
     assert!(self.isFileOverridden(&mut File.getFileEntry();
-    let mut BypassFile: OptionalFileEntryRef = zeroed();
-    if ! {
-        return nullopt();
+    let mut BypassFile: OptionalFileEntryRef = self.FileMgr.getBypassFile(File);
+    if !BypassFile {
+        return nullopt;
     }
-    self.getOrCreateContentCache(*) as void;
-    return ;
+    self.getOrCreateContentCache(operator(BypassFile), false) as void;
+    return BypassFile;
 }
 
 fn SourceManager::setFileIsTransient(self, File: FileEntryRef) {
@@ -393,36 +490,38 @@ fn SourceManager::setFileIsTransient(self, File: FileEntryRef) {
 fn SourceManager::getNonBuiltinFilenameForID(self: *SourceManager, FID: FileID) -> optional<StringRef> {
     if self.getSLocEntryForFile(FID) {
         Entry;
-    } else if Entry.getFile().getContentCache() {
+    } else if Entry.getFile().getContentCache().OrigEntry {
         return Entry.getFile().getName();
     }
-    return nullopt();
+    return nullopt;
 }
 
 fn SourceManager::getBufferData(self: *SourceManager, FID: FileID, Invalid: *mut bool) -> str {
-    let mut B: auto = self.getBufferDataOrNone;
+    let mut B: optional<StringRef> = self.getBufferDataOrNone(FID);
     if Invalid {
-        *Invalid = !;
+        *Invalid = !B;
     }
-    return if  { * } else { "<<<<<INVALID SOURCE LOCATION>>>>>" };
+    return if B { operator(B) } else { "<<<<<INVALID SOURCE LOCATION>>>>>" };
 }
 
 fn SourceManager::getBufferDataIfLoaded(self: *SourceManager, FID: FileID) -> optional<StringRef> {
     if self.getSLocEntryForFile(FID) {
         Entry;
     } else {
-        return Entry.getFile().getContentCache()();
+        return Entry.getFile().getContentCache().getBufferDataIfLoaded();
     }
-    return nullopt();
+    return nullopt;
 }
 
 fn SourceManager::getBufferDataOrNone(self: *SourceManager, FID: FileID) -> optional<StringRef> {
     if self.getSLocEntryForFile(FID) {
         Entry;
-    } else if  {
-        return ();
+    } else if Entry.getFile().getContentCache().getBufferOrNone(self.Diag, self.getFileManager(), SourceLocation {}) {
+        B;
+    } else {
+        return operator(B).getBuffer();
     }
-    return nullopt();
+    return nullopt;
 }
 
 fn SourceManager::getFileIDSlow(self: *SourceManager, SLocOffset: UIntTy) -> FileID {
@@ -437,9 +536,11 @@ fn SourceManager::getFileIDSlow(self: *SourceManager, SLocOffset: UIntTy) -> Fil
 
 fn SourceManager::getFileIDLocal(self: *SourceManager, SLocOffset: UIntTy) -> FileID {
     assert!(SLocOffset < self.NextLocalOffset, "Bad function choice");
+    assert!(SLocOffset >= self.LocalSLocEntryTable[0].getOffset() && SLocOffset > 0, "Invalid SLocOffset");
+    assert!(self.LocalSLocEntryTable.len == self.LocalLocOffsetTable.len);
     assert!(self.LastFileIDLookup.ID >= 0, "Only cache local file sloc entry");
     let mut LessIndex: u32 = 0;
-    let mut GreaterIndex: u32 = 0;
+    let mut GreaterIndex: u32 = self.LocalLocOffsetTable.len;
     if self.LastLookupStartOffset < SLocOffset {
         LessIndex = self.LastFileIDLookup.ID;
     } else {
@@ -448,9 +549,12 @@ fn SourceManager::getFileIDLocal(self: *SourceManager, SLocOffset: UIntTy) -> Fi
     let mut NumProbes: u32 = 0;
     while true {
         GreaterIndex -= 1;
-        if  {
+        assert!(GreaterIndex < self.LocalLocOffsetTable.len);
+        if self.LocalLocOffsetTable[GreaterIndex] <= SLocOffset {
             let mut Res: FileID = get(GreaterIndex);
             self.LastFileIDLookup = Res;
+            self.LastLookupStartOffset = self.LocalLocOffsetTable[GreaterIndex];
+            self.LastLookupEndOffset = if GreaterIndex + 1 >= self.LocalLocOffsetTable.len { self.NextLocalOffset } else { self.LocalLocOffsetTable[GreaterIndex + 1] };
             self.NumLinearScans += NumProbes + 1;
             return Res;
         }
@@ -461,12 +565,14 @@ fn SourceManager::getFileIDLocal(self: *SourceManager, SLocOffset: UIntTy) -> Fi
     while LessIndex < GreaterIndex {
         self.NumBinaryProbes += 1;
         let mut MiddleIndex: u32 = LessIndex + (GreaterIndex - LessIndex) / 2;
-        if  {
+        if self.LocalLocOffsetTable[MiddleIndex] <= SLocOffset {
             LessIndex = MiddleIndex + 1;
         } else {
             GreaterIndex = MiddleIndex;
         }
     }
+    self.LastLookupStartOffset = self.LocalLocOffsetTable[LessIndex - 1];
+    self.LastLookupEndOffset = self.LocalLocOffsetTable[LessIndex];
     return self.LastFileIDLookup = get(LessIndex - 1);
 }
 
@@ -519,14 +625,16 @@ fn SourceManager::getImmediateSpellingLoc(self: *SourceManager, Loc: SourceLocat
     if Loc.isFileID() {
         return Loc;
     }
-    let mut LocInfo: FileIDAndOffset = zeroed();
-    Loc = ()()();
-    return Loc.getLocWithOffset();
+    let mut LocInfo: FileIDAndOffset = self.getDecomposedLoc(Loc);
+    Loc = self.getSLocEntry(LocInfo.first, null).getExpansion().getSpellingLoc();
+    return Loc.getLocWithOffset(LocInfo.second);
 }
 
 fn SourceManager::getFilename(self: *SourceManager, SpellingLoc: SourceLocation) -> str {
-    if  {
-        return ();
+    if self.getFileEntryRefForID(self.getFileID(SpellingLoc)) {
+        F;
+    } else {
+        return operator(F).getName();
     }
     return "";
 }
@@ -586,18 +694,18 @@ fn SourceManager::isMacroBodyExpansion(self: *SourceManager, Loc: SourceLocation
 
 fn SourceManager::isAtStartOfImmediateMacroExpansion(self: *SourceManager, Loc: SourceLocation, MacroBegin: *mut SourceLocation) -> bool {
     assert!(Loc.isValid() && Loc.isMacroID(), "Expected a valid macro loc");
-    let mut DecompLoc: FileIDAndOffset = zeroed();
-    if DecompLoc() > 0 {
+    let mut DecompLoc: FileIDAndOffset = self.getDecomposedLoc(Loc);
+    if DecompLoc.second > 0 {
         return false;
     }
     let mut Invalid: bool = false;
-    let mut ExpInfo: *ExpansionInfo = (&mut Invalid)();
+    let mut ExpInfo: *ExpansionInfo = self.getSLocEntry(DecompLoc.first, &mut Invalid).getExpansion();
     if Invalid {
         return false;
     }
     let mut ExpLoc: SourceLocation = ExpInfo.getExpansionLocStart();
     if ExpInfo.isMacroArgExpansion() {
-        let mut PrevFID: FileID = self.getPreviousFileID();
+        let mut PrevFID: FileID = self.getPreviousFileID(DecompLoc.first);
         if !PrevFID.isInvalid() {
             let mut PrevEntry: *SLocEntry = self.getSLocEntry(PrevFID, &mut Invalid);
             if Invalid {
@@ -645,37 +753,37 @@ fn SourceManager::isAtEndOfImmediateMacroExpansion(self: *SourceManager, Loc: So
 }
 
 fn SourceManager::getCharacterData(self: *SourceManager, SL: SourceLocation, Invalid: *mut bool) -> *u8 {
-    let mut LocInfo: FileIDAndOffset = zeroed();
+    let mut LocInfo: FileIDAndOffset = self.getDecomposedSpellingLoc(SL);
     let mut CharDataInvalid: bool = false;
-    let mut Entry: *SLocEntry = (&mut CharDataInvalid);
+    let mut Entry: *SLocEntry = self.getSLocEntry(LocInfo.first, &mut CharDataInvalid);
     if CharDataInvalid || !Entry.isFile() {
         if Invalid {
             *Invalid = true;
         }
         return "<<<<INVALID BUFFER>>>>";
     }
-    let mut Buffer: MemoryBufferRef> = zeroed();
+    let mut Buffer: MemoryBufferRef> = Entry.getFile().getContentCache().getBufferOrNone(self.Diag, self.getFileManager(), SourceLocation {});
     if Invalid {
-        *Invalid = !;
+        *Invalid = !Buffer;
     }
-    return if  { () +  } else { "<<<<INVALID BUFFER>>>>" };
+    return if Buffer { operator(Buffer).getBufferStart() + LocInfo.second } else { "<<<<INVALID BUFFER>>>>" };
 }
 
 fn SourceManager::getColumnNumber(self: *SourceManager, FID: FileID, FilePos: u32, Invalid: *mut bool) -> u32 {
-    let mut MemBuf: MemoryBufferRef> = zeroed();
+    let mut MemBuf: MemoryBufferRef> = self.getBufferOrNone(FID, SourceLocation {});
     if Invalid {
-        *Invalid = !;
+        *Invalid = !MemBuf;
     }
-    if ! {
+    if !MemBuf {
         return 1;
     }
-    if FilePos > () {
+    if FilePos > operator(MemBuf).getBufferSize() {
         if Invalid {
             *Invalid = true;
         }
         return 1;
     }
-    let mut Buf: *u8 = ();
+    let mut Buf: *u8 = operator(MemBuf).getBufferStart();
     if self.LastLineNoFileIDQuery == FID && self.LastLineNoContentCache.SourceLineCache && self.LastLineNoResult < self.LastLineNoContentCache.SourceLineCache.len {
         let mut SourceLineCache: *u32 = self.LastLineNoContentCache.SourceLineCache.begin();
         let mut LineStart: u32 = SourceLineCache[self.LastLineNoResult - 1];
@@ -699,8 +807,8 @@ fn SourceManager::getColumnNumber(self: *SourceManager, FID: FileID, FilePos: u3
 // ========================================================
 // [C++ Template - Неинстанциированный шаблон функции: isInvalid]
 // template <typename LocType>
-// fn isInvalid(Loc: LocType, Invalid: *mut bool) -> bool {
-//     let mut MyInvalid: bool = Loc();
+// fn isInvalid(Loc: PresumedLoc, Invalid: *mut bool) -> bool {
+//     let mut MyInvalid: bool = Loc.isInvalid();
 //     if Invalid {
 //         *Invalid = MyInvalid;
 //     }
@@ -713,8 +821,8 @@ fn SourceManager::getColumnNumber(self: *SourceManager, Loc: SourceLocation, Inv
     if isInvalid(Loc, Invalid) {
         return 0;
     }
-    let mut LocInfo: FileIDAndOffset = zeroed();
-    return (Invalid);
+    let mut LocInfo: FileIDAndOffset = self.getDecomposedLoc(Loc);
+    return self.getColumnNumber(LocInfo.first, LocInfo.second, Invalid);
 }
 
 fn SourceManager::getPresumedColumnNumber(self: *SourceManager, Loc: SourceLocation, Invalid: *mut bool) -> u32 {
@@ -728,14 +836,14 @@ fn SourceManager::getPresumedColumnNumber(self: *SourceManager, Loc: SourceLocat
 // ========================================================
 // [C++ Template - Неинстанциированный шаблон функции: likelyhasbetween]
 // template <typename T>
-// fn likelyhasbetween(x: T, m: u8, n: u8) -> T {
-//     return ((x - operator~(0 as T) / 255 * (n + 1)) & operator~(x) & ((x & operator~(0 as T) / 255 * 127) + (operator~(0 as T) / 255 * (127 - (m - 1))))) & operator~(0 as T) / 255 * 128;
+// fn likelyhasbetween(x: u64, m: u8, n: u8) -> u64 {
+//     return ((x - ~0 as u64 / 255 * (n + 1)) & ~x & ((x & ~0 as u64 / 255 * 127) + (~0 as u64 / 255 * (127 - (m - 1))))) & ~0 as u64 / 255 * 128;
 // }
 // ========================================================
 
-fn LineOffsetMapping::get(self, Buffer: MemoryBufferRef, Alloc: *mut i32) -> LineOffsetMapping {
-    let mut LineOffsets: SmallVector<unsigned int, 256> = zeroed();
-    LineOffsets()(0);
+fn LineOffsetMapping::get(self, Buffer: MemoryBufferRef, Alloc: *mut BumpPtrAllocator) -> LineOffsetMapping {
+    let mut LineOffsets: SmallVector<unsigned int, 256> = SmallVector<unsigned int, 256> {};
+    LineOffsets.push(0);
     let mut Start: *u8 = Buffer.getBufferStart() as *u8;
     let mut End: *u8 = Buffer.getBufferEnd() as *u8;
     let mut Buf: *u8 = Start;
@@ -744,12 +852,12 @@ fn LineOffsetMapping::get(self, Buffer: MemoryBufferRef, Alloc: *mut i32) -> Lin
         while true {
             {
             Word = read64(Buf, little);
-            let mut Mask: auto = likelyhasbetween(Word, 10, 13);
-            if ! {
+            let mut Mask: u64 = likelyhasbetween(Word, 10, 13);
+            if !Mask {
                 Buf += (Word);
                 continue;
             }
-            let mut N: u32 = countr_zero() - 7;
+            let mut N: u32 = countr_zero(Mask) - 7;
             Word >>= N;
             Buf += N / 8 + 1;
             let mut Byte: u8 = Word;
@@ -760,7 +868,7 @@ fn LineOffsetMapping::get(self, Buffer: MemoryBufferRef, Alloc: *mut i32) -> Lin
                     }
                 },
                 10 => {
-                    LineOffsets()(Buf - Start);
+                    LineOffsets.push(Buf - Start);
                 },
             }
         }
@@ -769,21 +877,21 @@ fn LineOffsetMapping::get(self, Buffer: MemoryBufferRef, Alloc: *mut i32) -> Lin
     }
     while Buf < End {
         if *Buf == 10 {
-            LineOffsets()(Buf - Start + 1);
+            LineOffsets.push(Buf - Start + 1);
         } else if *Buf == 13 {
             if Buf + 1 < End && Buf[1] == 10 {
                 Buf += 1;
             }
-            LineOffsets()(Buf - Start + 1);
+            LineOffsets.push(Buf - Start + 1);
         }
         Buf += 1;
     }
-    return ;
+    return LineOffsetMapping { LineOffsets, Alloc };
 }
 
-fn LineOffsetMapping::LineOffsetMapping(self, LineOffsets: ArrayRef<unsigned int>, Alloc: *mut i32) {
-    self.Storage[0] = ();
-    copy((), (), self.Storage + 1);
+fn LineOffsetMapping::LineOffsetMapping(self, LineOffsets: ArrayRef<unsigned int>, Alloc: *mut BumpPtrAllocator) {
+    self.Storage[0] = LineOffsets.len;
+    copy(LineOffsets.begin(), LineOffsets.end(), self.Storage + 1);
 }
 
 fn SourceManager::getLineNumber(self: *SourceManager, FID: FileID, FilePos: u32, Invalid: *mut bool) -> u32 {
@@ -808,13 +916,14 @@ fn SourceManager::getLineNumber(self: *SourceManager, FID: FileID, FilePos: u32,
         Content = &mut Entry.getFile().getContentCache();
     }
     if !Content.SourceLineCache {
-        let mut Buffer: MemoryBufferRef> = zeroed();
+        let mut Buffer: MemoryBufferRef> = Content.getBufferOrNone(self.Diag, self.getFileManager(), SourceLocation {});
         if Invalid {
-            *Invalid = !;
+            *Invalid = !Buffer;
         }
-        if ! {
+        if !Buffer {
             return 1;
         }
+        Content.SourceLineCache = get(operator(Buffer), self.ContentCacheAlloc);
     } else if Invalid {
         *Invalid = false;
     }
@@ -844,7 +953,7 @@ fn SourceManager::getLineNumber(self: *SourceManager, FID: FileID, FilePos: u32,
             }
         }
     }
-    let mut Pos: *u32 = null;
+    let mut Pos: *u32 = lower_bound(SourceLineCache, SourceLineCacheEnd, QueriedFilePos);
     let mut LineNo: u32 = Pos - SourceLineCacheStart;
     self.LastLineNoFileIDQuery = FID;
     self.LastLineNoContentCache = Content;
@@ -858,8 +967,8 @@ fn SourceManager::getLineNumber(self: *SourceManager, Loc: SourceLocation, Inval
     if isInvalid(Loc, Invalid) {
         return 0;
     }
-    let mut LocInfo: FileIDAndOffset = zeroed();
-    return ();
+    let mut LocInfo: FileIDAndOffset = self.getDecomposedLoc(Loc);
+    return self.getLineNumber(LocInfo.first, LocInfo.second, null);
 }
 
 fn SourceManager::getPresumedLineNumber(self: *SourceManager, Loc: SourceLocation, Invalid: *mut bool) -> u32 {
@@ -872,8 +981,8 @@ fn SourceManager::getPresumedLineNumber(self: *SourceManager, Loc: SourceLocatio
 
 fn SourceManager::getFileCharacteristic(self: *SourceManager, Loc: SourceLocation) -> CharacteristicKind {
     assert!(Loc.isValid(), "Can't get file characteristic of invalid loc!");
-    let mut LocInfo: FileIDAndOffset = zeroed();
-    let mut SEntry: *SLocEntry = ();
+    let mut LocInfo: FileIDAndOffset = self.getDecomposedExpansionLoc(Loc);
+    let mut SEntry: *SLocEntry = self.getSLocEntryForFile(LocInfo.first);
     if !SEntry {
         return C_User;
     }
@@ -881,7 +990,8 @@ fn SourceManager::getFileCharacteristic(self: *SourceManager, Loc: SourceLocatio
     if !FI.hasLineDirectives() {
         return FI.getFileCharacteristic();
     }
-    let mut Entry: *LineEntry = null;
+    assert!(self.LineTable, "Can't have linetable entries without a LineTable!");
+    let mut Entry: *LineEntry = operator(self.LineTable).FindNearestLineEntry(LocInfo.first, LocInfo.second);
     if !Entry {
         return FI.getFileCharacteristic();
     }
@@ -892,52 +1002,56 @@ fn SourceManager::getBufferName(self: *SourceManager, Loc: SourceLocation, Inval
     if isInvalid(Loc, Invalid) {
         return "<invalid loc>";
     }
-    let mut B: auto = zeroed();
+    let mut B: MemoryBufferRef> = self.getBufferOrNone(self.getFileID(Loc), SourceLocation {});
     if Invalid {
-        *Invalid = !;
+        *Invalid = !B;
     }
-    return if  { () } else { "<invalid buffer>" };
+    return if B { operator(B).getBufferIdentifier() } else { "<invalid buffer>" };
 }
 
 fn SourceManager::getPresumedLoc(self: *SourceManager, Loc: SourceLocation, UseLineDirectives: bool) -> PresumedLoc {
     if Loc.isInvalid() {
         return PresumedLoc {};
     }
-    let mut LocInfo: FileIDAndOffset = zeroed();
+    let mut LocInfo: FileIDAndOffset = self.getDecomposedExpansionLoc(Loc);
     let mut Invalid: bool = false;
-    let mut Entry: *SLocEntry = (&mut Invalid);
+    let mut Entry: *SLocEntry = self.getSLocEntry(LocInfo.first, &mut Invalid);
     if Invalid || !Entry.isFile() {
         return PresumedLoc {};
     }
     let mut FI: *FileInfo = Entry.getFile();
     let mut C: *ContentCache = &mut FI.getContentCache();
-    let mut FID: FileID = ;
+    let mut FID: FileID = LocInfo.first;
     let mut Filename: str = "";
-    if C() {
-        Filename = C()();
-    } else if  {
-        Filename = ();
+    if C.OrigEntry {
+        Filename = operator(C.OrigEntry).getName();
+    } else if C.getBufferOrNone(self.Diag, self.getFileManager(), SourceLocation {}) {
+        Buffer;
+    } else {
+        Filename = operator(Buffer).getBufferIdentifier();
     }
-    let mut LineNo: u32 = (&mut Invalid);
+    let mut LineNo: u32 = self.getLineNumber(LocInfo.first, LocInfo.second, &mut Invalid);
     if Invalid {
         return PresumedLoc {};
     }
-    let mut ColNo: u32 = (&mut Invalid);
+    let mut ColNo: u32 = self.getColumnNumber(LocInfo.first, LocInfo.second, &mut Invalid);
     if Invalid {
         return PresumedLoc {};
     }
     let mut IncludeLoc: SourceLocation = FI.getIncludeLoc();
     if UseLineDirectives && FI.hasLineDirectives() {
-        if  {
+        assert!(self.LineTable, "Can't have linetable entries without a LineTable!");
+        if operator(self.LineTable).FindNearestLineEntry(LocInfo.first, LocInfo.second) {
             Entry;
         } else {
             if Entry.FilenameID != -1 {
+                Filename = operator(self.LineTable).getFilename(Entry.FilenameID);
                 FID = get(0);
             }
-            let mut MarkerLineNo: u32 = (Entry.FileOffset);
+            let mut MarkerLineNo: u32 = self.getLineNumber(LocInfo.first, Entry.FileOffset, null);
             LineNo = Entry.LineNo + (LineNo - MarkerLineNo - 1);
             if Entry.IncludeOffset {
-                IncludeLoc = self.getLocForStartOfFile();
+                IncludeLoc = self.getLocForStartOfFile(LocInfo.first);
                 IncludeLoc = IncludeLoc.getLocWithOffset(Entry.IncludeOffset);
             }
         }
@@ -949,14 +1063,14 @@ fn SourceManager::isInMainFile(self: *SourceManager, Loc: SourceLocation) -> boo
     if Loc.isInvalid() {
         return false;
     }
-    let mut LocInfo: FileIDAndOffset = zeroed();
-    let mut Entry: *SLocEntry = ();
+    let mut LocInfo: FileIDAndOffset = self.getDecomposedExpansionLoc(Loc);
+    let mut Entry: *SLocEntry = self.getSLocEntryForFile(LocInfo.first);
     if !Entry {
         return false;
     }
     let mut FI: *FileInfo = Entry.getFile();
     if FI.hasLineDirectives() {
-        if  {
+        if operator(self.LineTable).FindNearestLineEntry(LocInfo.first, LocInfo.second) {
             Entry;
         } else if Entry.IncludeOffset {
             return false;
@@ -999,7 +1113,7 @@ fn SourceManager::translateFile(self: *SourceManager, SourceFile: *FileEntry) ->
             return FileID {};
         }
         if MainSLoc.isFile() {
-            if MainSLoc.getFile().getContentCache() == SourceFile {
+            if MainSLoc.getFile().getContentCache().OrigEntry == SourceFile {
                 return self.MainFileID;
             }
         }
@@ -1007,14 +1121,14 @@ fn SourceManager::translateFile(self: *SourceManager, SourceFile: *FileEntry) ->
     for let mut I: u32 = 0;
 let mut N: u32 = self.local_sloc_entry_size(); I != N; I += 1 {
         let mut SLoc: *SLocEntry = self.getLocalSLocEntry(I);
-        if SLoc.isFile() && SLoc.getFile().getContentCache() == SourceFile {
+        if SLoc.isFile() && SLoc.getFile().getContentCache().OrigEntry == SourceFile {
             return get(I);
         }
     }
     for let mut I: u32 = 0;
 let mut N: u32 = self.loaded_sloc_entry_size(); I != N; I += 1 {
         let mut SLoc: *SLocEntry = self.getLoadedSLocEntry(I, null);
-        if SLoc.isFile() && SLoc.getFile().getContentCache() == SourceFile {
+        if SLoc.isFile() && SLoc.getFile().getContentCache().OrigEntry == SourceFile {
             return get(-I - 2);
         }
     }
@@ -1039,20 +1153,23 @@ fn SourceManager::translateLineCol(self: *SourceManager, FID: FileID, Line: u32,
         return FileLoc;
     }
     let mut Content: *ContentCache = &mut Entry.getFile().getContentCache();
-    let mut Buffer: MemoryBufferRef> = zeroed();
-    if ! {
+    let mut Buffer: MemoryBufferRef> = Content.getBufferOrNone(self.Diag, self.getFileManager(), SourceLocation {});
+    if !Buffer {
         return SourceLocation {};
     }
+    if !Content.SourceLineCache {
+        Content.SourceLineCache = get(operator(Buffer), self.ContentCacheAlloc);
+    }
     if Line > Content.SourceLineCache.len {
-        let mut Size: u32 = ();
+        let mut Size: u32 = operator(Buffer).getBufferSize();
         if Size > 0 {
             Size -= 1;
         }
         return FileLoc.getLocWithOffset(Size);
     }
     let mut FilePos: u32 = Content.SourceLineCache[Line - 1];
-    let mut Buf: *u8 = () + FilePos;
-    let mut BufLength: u32 = () - FilePos;
+    let mut Buf: *u8 = operator(Buffer).getBufferStart() + FilePos;
+    let mut BufLength: u32 = operator(Buffer).getBufferSize() - FilePos;
     if BufLength == 0 {
         return FileLoc.getLocWithOffset(FilePos);
     }
@@ -1063,9 +1180,9 @@ fn SourceManager::translateLineCol(self: *SourceManager, FID: FileID, Line: u32,
     return FileLoc.getLocWithOffset(FilePos + i);
 }
 
-fn SourceManager::computeMacroArgsCache(self: *SourceManager, MacroArgsCache: *mut i32, FID: FileID) {
+fn SourceManager::computeMacroArgsCache(self: *SourceManager, MacroArgsCache: *mut MacroArgsMap, FID: FileID) {
     assert!(FID.isValid();
-    MacroArgsCache()(0);
+    MacroArgsCache.try_emplace(0);
     let mut ID: i32 = FID.ID;
     while true {
         ID += 1;
@@ -1108,34 +1225,37 @@ fn SourceManager::computeMacroArgsCache(self: *SourceManager, MacroArgsCache: *m
         if !ExpInfo.isMacroArgExpansion() {
             continue;
         }
+        self.associateFileChunkWithMacroArgExp(MacroArgsCache, FID, ExpInfo.getSpellingLoc(), getMacroLoc(Entry.getOffset()), self.getFileIDSize(get(ID)));
     }
 }
 
-fn SourceManager::associateFileChunkWithMacroArgExp(self: *SourceManager, MacroArgsCache: *mut i32, FID: FileID, SpellLoc: SourceLocation, ExpansionLoc: SourceLocation, ExpansionLength: u32) {
+fn SourceManager::associateFileChunkWithMacroArgExp(self: *SourceManager, MacroArgsCache: *mut MacroArgsMap, FID: FileID, SpellLoc: SourceLocation, ExpansionLoc: SourceLocation, ExpansionLength: u32) {
     if !SpellLoc.isFileID() {
         let mut SpellBeginOffs: UIntTy = SpellLoc.getOffset();
         let mut SpellEndOffs: UIntTy = SpellBeginOffs + ExpansionLength;
         while true {
-            let mut Entry: *SLocEntry = ();
+            let mut Entry: *SLocEntry = self.getSLocEntry(SpellFID, null);
             let mut SpellFIDBeginOffs: UIntTy = Entry.getOffset();
-            let mut SpellFIDSize: u32 = self.getFileIDSize();
+            let mut SpellFIDSize: u32 = self.getFileIDSize(SpellFID);
             let mut SpellFIDEndOffs: UIntTy = SpellFIDBeginOffs + SpellFIDSize;
             let mut Info: *ExpansionInfo = Entry.getExpansion();
             if Info.isMacroArgExpansion() {
                 let mut CurrSpellLength: u32 = 0;
                 if SpellFIDEndOffs < SpellEndOffs {
-                    CurrSpellLength = SpellFIDSize - ;
+                    CurrSpellLength = SpellFIDSize - SpellRelativeOffs;
                 } else {
                     CurrSpellLength = ExpansionLength;
                 }
+                self.associateFileChunkWithMacroArgExp(MacroArgsCache, FID, Info.getSpellingLoc().getLocWithOffset(SpellRelativeOffs), ExpansionLoc, CurrSpellLength);
             }
             if SpellFIDEndOffs >= SpellEndOffs {
                 return;
             }
-            let mut advance: u32 = SpellFIDSize -  + 1;
+            let mut advance: u32 = SpellFIDSize - SpellRelativeOffs + 1;
             ExpansionLoc = ExpansionLoc.getLocWithOffset(advance);
             ExpansionLength -= advance;
-             += 1;
+            SpellFID.ID += 1;
+            SpellRelativeOffs = 0;
         }
     }
     assert!(SpellLoc.isFileID();
@@ -1144,11 +1264,11 @@ fn SourceManager::associateFileChunkWithMacroArgExp(self: *SourceManager, MacroA
         return;
     }
     let mut EndOffs: u32 = BeginOffs + ExpansionLength;
-    let mut I: i32 = (EndOffs);
-     -= 1;
-    let mut EndOffsMappedLoc: SourceLocation = ;
-    MacroArgsCache()[BeginOffs] = ExpansionLoc;
-    MacroArgsCache()[EndOffs] = EndOffsMappedLoc;
+    let mut I: iterator = MacroArgsCache.upper_bound(EndOffs);
+    operator(I);
+    let mut EndOffsMappedLoc: SourceLocation = operator(I).second;
+    MacroArgsCache[BeginOffs] = ExpansionLoc;
+    MacroArgsCache[EndOffs] = EndOffsMappedLoc;
 }
 
 fn SourceManager::updateSlocUsageStats(self: *SourceManager) {
@@ -1160,30 +1280,36 @@ fn SourceManager::getMacroArgExpandedLocation(self: *SourceManager, Loc: SourceL
     if Loc.isInvalid() || !Loc.isFileID() {
         return Loc;
     }
-    if  {
+    if FID.isInvalid() {
         return Loc;
     }
-    let mut MacroArgsCache: *mut i32 = null;
-    if ! {}
-    assert!(!();
-    let mut I: i32 = ();
-    if I() == () {
+    let mut MacroArgsCache: *mut unique_ptr<MacroArgsMap> = self.MacroArgsCacheMap[FID];
+    if !MacroArgsCache {
+        MacroArgsCache = make_unique();
+        self.computeMacroArgsCache(operator(MacroArgsCache), FID);
+    }
+    assert!(!operator(MacroArgsCache).is_empty();
+    let mut I: iterator = operator(MacroArgsCache).upper_bound(Offset);
+    if I == operator(MacroArgsCache).begin() {
         return Loc;
     }
-     -= 1;
-    let mut MacroArgBeginOffs: UIntTy = ;
-    let mut MacroArgExpandedLoc: SourceLocation = ;
+    operator(I);
+    let mut MacroArgBeginOffs: UIntTy = operator(I).first;
+    let mut MacroArgExpandedLoc: SourceLocation = operator(I).second;
     if MacroArgExpandedLoc.isValid() {
-        return MacroArgExpandedLoc.getLocWithOffset( - MacroArgBeginOffs);
+        return MacroArgExpandedLoc.getLocWithOffset(Offset - MacroArgBeginOffs);
     }
     return Loc;
 }
 
 fn SourceManager::getDecomposedIncludedLoc(self: *SourceManager, FID: FileID) -> FileIDAndOffset {
-    let mut InsertOp: auto = zeroed();
-    let mut DecompLoc: *mut DecompTy = ;
-    if ! {
-        return DecompLoc();
+    if FID.isInvalid() {
+        return make_pair(FileID {}, 0);
+    }
+    let mut InsertOp: pair<iterator, bool> = self.IncludedLocMap.try_emplace(FID);
+    let mut DecompLoc: *mut DecompTy = operator(InsertOp.first).second;
+    if !InsertOp.second {
+        return DecompLoc;
     }
     let mut UpperLoc: SourceLocation = SourceLocation {};
     let mut Invalid: bool = false;
@@ -1195,23 +1321,26 @@ fn SourceManager::getDecomposedIncludedLoc(self: *SourceManager, FID: FileID) ->
             UpperLoc = Entry.getFile().getIncludeLoc();
         }
     }
-    return DecompLoc();
+    if UpperLoc.isValid() {
+        DecompLoc = self.getDecomposedLoc(UpperLoc);
+    }
+    return DecompLoc;
 }
 
 fn SourceManager::getUniqueLoadedASTFileID(self: *SourceManager, Loc: SourceLocation) -> FileID {
     assert!(self.isLoadedSourceLocation(Loc), "Must be a source location in a loaded PCH/Module file");
-    let mut FirstFID: *FileID = lower_bound(, void {});
+    let mut FirstFID: *FileID = lower_bound(self.LoadedSLocEntryAllocBegin, FID, greater<FileID> {});
     assert!(FirstFID, "The failure to find the first FileID of a loaded AST from a loaded source location was unexpected.");
     return *FirstFID;
 }
 
 fn SourceManager::isInTheSameTranslationUnitImpl(self: *SourceManager, LOffs: *FileIDAndOffset, ROffs: *FileIDAndOffset) -> bool {
-    if self.isLoadedFileID(LOffs()) != self.isLoadedFileID(ROffs()) {
+    if self.isLoadedFileID(LOffs.first) != self.isLoadedFileID(ROffs.first) {
         return false;
     }
-    if self.isLoadedFileID(LOffs()) && self.isLoadedFileID(ROffs()) {
+    if self.isLoadedFileID(LOffs.first) && self.isLoadedFileID(ROffs.first) {
         let mut FindSLocEntryAlloc: Closure_1 = Closure_1 { cap_0: self };
-        if FindSLocEntryAlloc(LOffs()) != FindSLocEntryAlloc(ROffs()) {
+        if FindSLocEntryAlloc.call(LOffs.first) != FindSLocEntryAlloc.call(ROffs.first) {
             return false;
         }
     }
@@ -1219,19 +1348,22 @@ fn SourceManager::isInTheSameTranslationUnitImpl(self: *SourceManager, LOffs: *F
 }
 
 fn MoveUpTranslationUnitIncludeHierarchy(Loc: *mut FileIDAndOffset, SM: *SourceManager) -> bool {
-    let mut UpperLoc: FileIDAndOffset = zeroed();
-    if UpperLoc()() || !SM.isInTheSameTranslationUnitImpl(Loc) {
+    let mut UpperLoc: FileIDAndOffset = SM.getDecomposedIncludedLoc(Loc.first);
+    if UpperLoc.first.isInvalid() || !SM.isInTheSameTranslationUnitImpl(UpperLoc, Loc) {
         return true;
     }
-    Loc = ;
+    Loc = UpperLoc;
     return false;
 }
 
 fn SourceManager::getInBeforeInTUCache(self: *SourceManager, LFID: FileID, RFID: FileID) -> *mut InBeforeInTUCacheEntry {
-    let mut Key: IsBeforeInTUCacheKey = zeroed();
-    let mut I: i32 = 0;
-    if  {
-        return ;
+    let mut Key: IsBeforeInTUCacheKey = IsBeforeInTUCacheKey { LFID, RFID };
+    if self.IBTUCache.len < MagicCacheSize {
+        return operator(self.IBTUCache.try_emplace(Key, LFID, RFID).first).second;
+    }
+    let mut I: iterator = self.IBTUCache.find(Key);
+    if I != self.IBTUCache.end() {
+        return operator(I).second;
     }
     self.IBTUCacheOverflow.setQueryFIDs(LFID, RFID);
     return self.IBTUCacheOverflow;
@@ -1242,115 +1374,153 @@ fn SourceManager::isBeforeInTranslationUnit(self: *SourceManager, LHS: SourceLoc
     if LHS == RHS {
         return false;
     }
-    let mut LOffs: FileIDAndOffset = zeroed();
-    let mut ROffs: FileIDAndOffset = zeroed();
-    if LOffs()() || () {
-        return () && !();
+    let mut LOffs: FileIDAndOffset = self.getDecomposedLoc(LHS);
+    let mut ROffs: FileIDAndOffset = self.getDecomposedLoc(RHS);
+    if LOffs.first.isInvalid() || ROffs.first.isInvalid() {
+        return LOffs.first.isInvalid() && !ROffs.first.isInvalid();
     }
-    let mut InSameTU: pair<bool, bool> = zeroed();
-    if InSameTU() {
-        return ;
+    let mut InSameTU: pair<bool, bool> = self.isInTheSameTranslationUnit(LOffs, ROffs);
+    if InSameTU.first {
+        return InSameTU.second;
     }
-    return  < ROffs();
+    return LOffs.first < ROffs.first;
 }
 
 fn SourceManager::isInTheSameTranslationUnit(self: *SourceManager, LOffs: *mut FileIDAndOffset, ROffs: *mut FileIDAndOffset) -> pair<bool, bool> {
-    let mut IsBeforeInTUCache: *mut InBeforeInTUCacheEntry = self.getInBeforeInTUCache(LOffs(), ROffs());
-    let mut LChain: i32 = 0;
+    if !self.isInTheSameTranslationUnitImpl(LOffs, ROffs) {
+        return make_pair(false, false);
+    }
+    if LOffs.first == ROffs.first {
+        return make_pair(true, LOffs.second < ROffs.second);
+    }
+    let mut IsBeforeInTUCache: *mut InBeforeInTUCacheEntry = self.getInBeforeInTUCache(LOffs.first, ROffs.first);
+    if IsBeforeInTUCache.isCacheValid() {
+        return make_pair(true, IsBeforeInTUCache.getCachedResult(LOffs.second, ROffs.second));
+    }
+    let mut LChain: SmallDenseMap<FileID, Entry, 16> = SmallDenseMap<FileID, Entry, 16> {};
     let mut LChild: FileID = FileID {};
     while true {
         {
-        LChain()(LOffs(), Entry { LOffs, LChild });
-        if LOffs() == ROffs() {
+        LChain.try_emplace(LOffs.first, Entry { LOffs, LChild });
+        if LOffs.first == ROffs.first {
             break;
         }
-        LChild = LOffs();
+        LChild = LOffs.first;
     }
         if !(!MoveUpTranslationUnitIncludeHierarchy(LOffs, *self)) { break; }
     }
     let mut RChild: FileID = FileID {};
     while true {
         {
-        let mut LIt: auto = (ROffs());
-        if LIt() != () {
-            LOffs = ;
-            LChild = ;
+        let mut LIt: iterator = LChain.find(ROffs.first);
+        if LIt != LChain.end() {
+            LOffs = operator(LIt).second.DecomposedLoc;
+            LChild = operator(LIt).second.ChildFID;
             let mut LChildID: u32 = LChild.ID;
             let mut RChildID: u32 = RChild.ID;
-            assert!(((LOffs() != ROffs()) || (LChildID == 0 || RChildID == 0) || self.isInSameSLocAddrSpace(self.getComposedLoc(LChild, 0), self.getComposedLoc(RChild, 0), null)), "Mixed local/loaded FileIDs with same include location?");
-            IsBeforeInTUCache.setCommonLoc(LOffs(), LOffs(), ROffs(), LChildID < RChildID);
+            assert!(((LOffs.second != ROffs.second) || (LChildID == 0 || RChildID == 0) || self.isInSameSLocAddrSpace(self.getComposedLoc(LChild, 0), self.getComposedLoc(RChild, 0), null)), "Mixed local/loaded FileIDs with same include location?");
+            IsBeforeInTUCache.setCommonLoc(LOffs.first, LOffs.second, ROffs.second, LChildID < RChildID);
+            return make_pair(true, IsBeforeInTUCache.getCachedResult(LOffs.second, ROffs.second));
         }
-        RChild = ROffs();
+        RChild = ROffs.first;
     }
         if !(!MoveUpTranslationUnitIncludeHierarchy(ROffs, *self)) { break; }
     }
-    let mut LB: str = self.getBufferOrFake(LOffs())();
-    let mut RB: str = self.getBufferOrFake(ROffs())();
+    let mut LB: str = self.getBufferOrFake(LOffs.first, SourceLocation {}).getBufferIdentifier();
+    let mut RB: str = self.getBufferOrFake(ROffs.first, SourceLocation {}).getBufferIdentifier();
     let mut LIsBuiltins: bool = LB == "<built-in>";
     let mut RIsBuiltins: bool = RB == "<built-in>";
-    if LIsBuiltins || RIsBuiltins {}
+    if LIsBuiltins || RIsBuiltins {
+        if LIsBuiltins != RIsBuiltins {
+            return make_pair(true, LIsBuiltins);
+        }
+        return make_pair(true, LOffs.first < ROffs.first);
+    }
     let mut LIsAsm: bool = LB == "<inline asm>";
     let mut RIsAsm: bool = RB == "<inline asm>";
     if LIsAsm || RIsAsm {
-        assert!(LOffs() == ROffs();
+        if LIsAsm != RIsAsm {
+            return make_pair(true, RIsAsm);
+        }
+        assert!(LOffs.first == ROffs.first);
+        return make_pair(true, false);
     }
     let mut LIsScratch: bool = LB == "<scratch space>";
     let mut RIsScratch: bool = RB == "<scratch space>";
-    if LIsScratch || RIsScratch {}
-    llvm_unreachable_internal("Unsortable locations found", "P:\\Goraw\\llvm-project\\clang\\lib\\Basic\\SourceManager.cpp", 2139);
+    if LIsScratch || RIsScratch {
+        if LIsScratch != RIsScratch {
+            return make_pair(true, LIsScratch);
+        }
+        return make_pair(true, LOffs.second < ROffs.second);
+    }
+    llvm_unreachable_internal("Unsortable locations found", "P:/Goraw/llvm-project/clang/lib/Basic/SourceManager.cpp", 2139);
 }
 
 fn SourceManager::PrintStats(self: *SourceManager) {
-    errs();
+    errs() << "\n*** Source Manager Stats:\n";
+    errs() << self.FileInfos.len << " files mapped, " << self.MemBufferInfos.len << " mem buffers mapped.\n";
+    errs() << self.LocalSLocEntryTable.len << " local SLocEntries allocated (" << capacity_in_bytes(self.LocalSLocEntryTable) << " bytes of capacity), " << self.NextLocalOffset << "B of SLoc address space used.\n";
+    errs() << self.LoadedSLocEntryTable.len << " loaded SLocEntries allocated (" << capacity_in_bytes(self.LoadedSLocEntryTable) << " bytes of capacity), " << MaxLoadedOffset - self.CurrentLoadedOffset << "B of SLoc address space used.\n";
     let mut NumLineNumsComputed: u32 = 0;
     let mut NumFileBytesMapped: u32 = 0;
-    for let mut I: i32 = 0; ;  {
-        
+    for let mut I: fileinfo_iterator = self.fileinfo_begin();
+let mut E: fileinfo_iterator = self.fileinfo_end(); I != E; operator(I) {
+        NumLineNumsComputed += operator(I).second.SourceLineCache;
+        NumFileBytesMapped += operator(I).second.getSizeBytesMapped();
     }
-    errs() << self.NumLinearScans << " linear, " << self.NumBinaryProbes << " binary.\n";
+    let mut NumMacroArgsComputed: u32 = self.MacroArgsCacheMap.len;
+    errs() << NumFileBytesMapped << " bytes of files mapped, " << NumLineNumsComputed << " files with line #'s computed, " << NumMacroArgsComputed << " files with macro args computed.\n";
+    errs() << "FileID scans: " << self.NumLinearScans << " linear, " << self.NumBinaryProbes << " binary.\n";
 }
 
 fn SourceManager::dump(self: *SourceManager) {
     let mut out: *mut raw_ostream = errs();
     let mut DumpSLocEntry: Closure_2 = Closure_2 { out: &mut out };
     for let mut ID: u32 = 0;
-let mut NumIDs: u32 = 0; ID != NumIDs; ID += 1 {
-        DumpSLocEntry(ID);
+let mut NumIDs: u32 = self.LocalSLocEntryTable.len; ID != NumIDs; ID += 1 {
+        DumpSLocEntry.call(ID, self.LocalSLocEntryTable[ID], if ID == NumIDs - 1 { self.NextLocalOffset } else { self.LocalSLocEntryTable[ID + 1].getOffset() });
     }
-    let mut NextStart: UIntTy> = zeroed();
-    for let mut Index: u32 = 0; ; Index += 1 {
+    let mut NextStart: UIntTy> = UIntTy> {};
+    for let mut Index: u32 = 0; Index != self.LoadedSLocEntryTable.len; Index += 1 {
         let mut ID: i32 = -Index as i32 - 2;
-        if  {
-            DumpSLocEntry(ID, );
+        if self.SLocEntryLoaded[Index] {
+            DumpSLocEntry.call(ID, self.LoadedSLocEntryTable[Index], NextStart);
+            NextStart = self.LoadedSLocEntryTable[Index].getOffset();
         } else {
-            NextStart() = nullopt;
+            NextStart = nullopt;
         }
     }
 }
 
 fn SourceManager::noteSLocAddressSpaceUsage(self: *SourceManager, Diag: *mut DiagnosticsEngine, MaxNotes: optional<unsigned int>) {
-    let mut Usage: i32 = 0;
+    let mut Usage: UsageMap = UsageMap {};
     let mut CountedSize: u64 = 0;
-    let mut AddUsageForFileID: Closure_3 = Closure_3 { cap_0: self, CountedSize: &mut CountedSize };
-    for let mut Index: u64 = 0; ; Index += 1 {
+    let mut AddUsageForFileID: Closure_3 = Closure_3 { cap_0: self, Usage: &mut Usage, CountedSize: &mut CountedSize };
+    for let mut Index: u64 = 0; Index != self.LoadedSLocEntryTable.len; Index += 1 {
         AddUsageForFileID.call(get(-2 - Index));
     }
-    for let mut Index: u64 = 0; ; Index += 1 {
+    for let mut Index: u64 = 0; Index != self.LocalSLocEntryTable.len; Index += 1 {
         AddUsageForFileID.call(get(Index));
     }
-    let mut SortedUsage: auto = ();
+    let mut SortedUsage: FileEntry *, Info>, 0> = Usage.takeVector();
     let mut Cmp: Closure_4 = Closure_4 {};
-    let mut SortedEnd: auto = ();
-    if MaxNotes() && () > * {
-        SortedEnd() = () + *;
+    let mut SortedEnd: iterator = SortedUsage.end();
+    if MaxNotes && SortedUsage.len > operator(MaxNotes) {
+        SortedEnd = SortedUsage.begin() + operator(MaxNotes);
+        nth_element(SortedUsage.begin(), SortedEnd, SortedUsage.end(), Cmp);
     }
+    sort(SortedUsage.begin(), SortedEnd, Cmp);
     let mut LocalUsage: u64 = self.NextLocalOffset;
     let mut LoadedUsage: u64 = MaxLoadedOffset - self.CurrentLoadedOffset;
     let mut UsagePercent: i32 = 100.0 * LocalUsage + LoadedUsage / MaxLoadedOffset as i32;
-    Diag << LocalUsage << LoadedUsage << (LocalUsage + LoadedUsage) << UsagePercent;
+    Diag.Report(note_total_sloc_usage) << LocalUsage << LoadedUsage << (LocalUsage + LoadedUsage) << UsagePercent;
     let mut ReportedSize: u64 = 0;
+    for x in make_range(SortedUsage.begin(), SortedEnd) {
+        Diag.Report(FileInfo.Loc, note_file_sloc_usage) << FileInfo.Inclusions << FileInfo.DirectSize << (FileInfo.TotalSize - FileInfo.DirectSize);
+        ReportedSize += FileInfo.TotalSize;
+    }
     if ReportedSize != CountedSize {
-        Diag << (SortedUsage()() - ) << CountedSize - ReportedSize;
+        Diag.Report(note_file_misc_sloc_usage) << (SortedUsage.end() - SortedEnd) << CountedSize - ReportedSize;
     }
 }
 
@@ -1360,11 +1530,11 @@ fn SourceManager::getMemoryBufferSizes(self: *SourceManager) -> MemoryBufferSize
     let mut malloc_bytes: u64 = 0;
     let mut mmap_bytes: u64 = 0;
     for let mut i: u32 = 0;
-let mut e: u32 = 0; i != e; i += 1 {
-        if  {
+let mut e: u32 = self.MemBufferInfos.len; i != e; i += 1 {
+        if self.MemBufferInfos[i].getSizeBytesMapped() {
             sized_mapped;
         } else {
-            match  {
+            match self.MemBufferInfos[i].getMemoryBufferKind() {
                 MemoryBuffer_MMap => {
                     mmap_bytes += sized_mapped;
                 },
@@ -1378,53 +1548,60 @@ let mut e: u32 = 0; i != e; i += 1 {
 }
 
 fn SourceManager::getDataStructureSizes(self: *SourceManager) -> u64 {
-    let mut size: u64 = capacity_in_bytes() + capacity_in_bytes() + capacity_in_bytes() + capacity_in_bytes() + capacity_in_bytes() + capacity_in_bytes();
-    if  {
-        size += capacity_in_bytes();
+    let mut size: u64 = capacity_in_bytes(self.MemBufferInfos) + capacity_in_bytes(self.FileIDContentCaches) + capacity_in_bytes(self.LocalSLocEntryTable) + capacity_in_bytes(self.LoadedSLocEntryTable) + capacity_in_bytes(self.SLocEntryLoaded) + capacity_in_bytes(self.FileInfos);
+    if self.OverriddenFilesInfo {
+        size += capacity_in_bytes(operator(self.OverriddenFilesInfo).OverriddenFiles);
     }
     return size;
 }
 
 fn SourceManagerForFile::SourceManagerForFile(self, FileName: str, Content: str) {
-    let mut InMemoryFileSystem: auto = makeIntrusiveRefCnt();
-    InMemoryFileSystem()(FileName, 0, (Content, FileName, false));
-    let mut FE: FileEntryRef = cantFail();
-    let mut ID: FileID = zeroed();
+    let mut InMemoryFileSystem: InMemoryFileSystem> = makeIntrusiveRefCnt();
+    operator(InMemoryFileSystem).addFile(FileName, 0, getMemBuffer(Content, FileName, false), nullopt, nullopt, nullopt, nullopt);
+    self.FileMgr = make_unique(FileSystemOptions {}, move(InMemoryFileSystem));
+    self.DiagOpts = make_unique();
+    self.Diagnostics = make_unique(create(), operator(self.DiagOpts));
+    self.SourceMgr = make_unique(operator(self.Diagnostics), operator(self.FileMgr));
+    let mut FE: FileEntryRef = cantFail(operator(self.FileMgr).getFileRef(FileName, false, true, true), null);
+    let mut ID: FileID = operator(self.SourceMgr).createFileID(FE, SourceLocation {}, C_User, 0, 0);
     assert!(ID.isValid();
+    operator(self.SourceMgr).setMainFileID(ID);
 }
 
 struct Closure_1 {
     cap_0: *SourceManager,
 }
 
-fn Closure_1::call(self: *Closure_1, FID: FileID) -> auto {}
+fn Closure_1::call(self: *Closure_1, FID: FileID) -> *FileID {
+            return lower_bound(self.LoadedSLocEntryAllocBegin, FID, greater<FileID> {});
+        }
 
 struct Closure_2 {
     out: *mut raw_ostream,
 }
 
 unsafe fn Closure_2::call(self: *mut Closure_2, ID: i32, Entry: *SLocEntry, NextStart: UIntTy>) {
-        (*self.out) << "SLocEntry <FileID " << "> " << (if Entry.isFile() { "file" } else { "expansion" }) << " <SourceLocation " << Entry.getOffset() << ":";
-        if NextStart() {
-            (*self.out) << * << ">\n";
+        (*self.out) << "SLocEntry <FileID " << ID << "> " << (if Entry.isFile() { "file" } else { "expansion" }) << " <SourceLocation " << Entry.getOffset() << ":";
+        if NextStart {
+            (*self.out) << operator(NextStart) << ">\n";
         } else {
             (*self.out) << "????>\n";
         }
         if Entry.isFile() {
             let mut FI: *FileInfo = Entry.getFile();
             if FI.NumCreatedFIDs {
-                (*self.out) << "  covers <FileID " << ":" << ID + FI.NumCreatedFIDs << ">\n";
+                (*self.out) << "  covers <FileID " << ID << ":" << ID + FI.NumCreatedFIDs << ">\n";
             }
             if FI.getIncludeLoc().isValid() {
                 (*self.out) << "  included from " << FI.getIncludeLoc().getOffset() << "\n";
             }
             let mut CC: *ContentCache = FI.getContentCache();
-            (*self.out) << "  for " << (if CC() { CC()() } else { "<none>" }) << "\n";
+            (*self.out) << "  for " << (if CC.OrigEntry { operator(CC.OrigEntry).getName() } else { "<none>" }) << "\n";
             if CC.BufferOverridden {
                 (*self.out) << "  contents overridden\n";
             }
-            if CC() != CC() {
-                (*self.out) << "  contents from " << (if CC() { CC()() } else { "<none>" }) << "\n";
+            if CC.ContentsEntry != CC.OrigEntry {
+                (*self.out) << "  contents from " << (if CC.ContentsEntry { operator(CC.ContentsEntry).getName() } else { "<none>" }) << "\n";
             }
         } else {
             let mut EI: *ExpansionInfo = Entry.getExpansion();
@@ -1435,6 +1612,7 @@ unsafe fn Closure_2::call(self: *mut Closure_2, ID: i32, Entry: *SLocEntry, Next
 
 struct Closure_3 {
     cap_0: *SourceManager,
+    Usage: *mut UsageMap,
     CountedSize: *mut u64,
 }
 
@@ -1443,7 +1621,7 @@ unsafe fn Closure_3::call(self: *mut Closure_3, ID: FileID) {
         let mut FileStart: SourceLocation = self.getFileLoc(self.getComposedLoc(ID, 0));
         let mut FileLocID: FileID = self.getFileID(FileStart);
         let mut Entry: *FileEntry = self.getFileEntryForID(FileLocID);
-        let mut EntryInfo: *mut Info = [Entry];
+        let mut EntryInfo: *mut Info = (*self.Usage)[Entry];
         if EntryInfo.Loc.isInvalid() {
             EntryInfo.Loc = FileStart;
         }
@@ -1457,4 +1635,6 @@ unsafe fn Closure_3::call(self: *mut Closure_3, ID: FileID) {
 
 struct Closure_4 {}
 
-fn Closure_4::call(self: *Closure_4, A: i32, B: i32) -> auto {}
+fn Closure_4::call(self: *Closure_4, A: *value_type, B: *value_type) -> bool {
+        return A.second.TotalSize > B.second.TotalSize || (A.second.TotalSize == B.second.TotalSize && A.second.Loc < B.second.Loc);
+    }

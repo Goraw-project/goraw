@@ -1,4 +1,4 @@
-static mut NoX86CFOpt: i32 = "no-x86-call-frame-opt";
+static mut NoX86CFOpt: opt<bool> = opt<bool> { "no-x86-call-frame-opt", "Avoid optimizing x86 call frames for size", init(false), Hidden };
 
 struct X86CallFrameOptimizationImpl {
     TII: *X86InstrInfo,
@@ -19,8 +19,8 @@ struct X86CallFrameOptimizationLegacy {
 }
 
 fn X86CallFrameOptimizationLegacy::getAnalysisUsage(self: *X86CallFrameOptimizationLegacy, AU: *mut AnalysisUsage) {
-    AU;
-    self.getAnalysisUsage;
+    AU.addPreserved();
+    self.getAnalysisUsage(AU);
 }
 
 fn X86CallFrameOptimizationLegacy::getPassName(self: *X86CallFrameOptimizationLegacy) -> str {
@@ -64,19 +64,41 @@ fn X86CallFrameOptimizationLegacy::getClearedProperties(self: *X86CallFrameOptim
 static mut ID: i8 = 0;
 
 fn X86CallFrameOptimizationImpl::isLegal(self, MF: *mut MachineFunction) -> bool {
-    if NoX86CFOpt()() {
+    if NoX86CFOpt.getValue() {
         return false;
     }
-    if self.STI.isTargetDarwin() && (operator!(MF()()()) || (MF.getFunction().needsUnwindTableEntry() && !self.TFL.hasFP(MF))) {
+    if self.STI.isTargetDarwin() && (!MF.getLandingPads().is_empty() || (MF.getFunction().needsUnwindTableEntry() && !self.TFL.hasFP(MF))) {
         return false;
     }
     if self.STI.isTargetWin64() {
         return false;
     }
-    let mut FrameSetupOpcode: u32 = self.TII();
-    let mut FrameDestroyOpcode: u32 = self.TII();
+    let mut FrameSetupOpcode: u32 = self.TII.getCallFrameSetupOpcode();
+    let mut FrameDestroyOpcode: u32 = self.TII.getCallFrameDestroyOpcode();
     let mut EmitStackProbeCall: bool = self.STI.getTargetLowering().hasStackProbeSymbol(MF);
     let mut StackProbeSize: u32 = self.STI.getTargetLowering().getStackProbeSize(MF);
+    for BB in MF {
+        let mut InsideFrameSequence: bool = false;
+        for MI in BB {
+            if MI.getOpcode() == FrameSetupOpcode {
+                if self.TII.getFrameSize(MI) >= StackProbeSize && EmitStackProbeCall {
+                    return false;
+                }
+                if InsideFrameSequence {
+                    return false;
+                }
+                InsideFrameSequence = true;
+            } else if MI.getOpcode() == FrameDestroyOpcode {
+                if !InsideFrameSequence {
+                    return false;
+                }
+                InsideFrameSequence = false;
+            }
+        }
+        if InsideFrameSequence {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -87,11 +109,25 @@ fn X86CallFrameOptimizationImpl::isProfitable(self, MF: *mut MachineFunction, Ca
     }
     let mut StackAlign: Align = self.TFL.getStackAlign();
     let mut Advantage: i64 = 0;
+    for CC in CallSeqVector {
+        if CC.NoStackParams {
+            continue;
+        }
+        if !CC.UsePush {
+            Advantage -= 6;
+        } else {
+            Advantage -= 3;
+            if !isAligned(StackAlign, CC.ExpectedDist) {
+                Advantage -= 3;
+            }
+            Advantage += (CC.ExpectedDist >> self.Log2SlotSize) * 3;
+        }
+    }
     return Advantage >= 0;
 }
 
 fn X86CallFrameOptimizationImpl::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
-    self.STI = operator&(MF);
+    self.STI = &mut MF.getSubtarget();
     self.TII = self.STI.getInstrInfo();
     self.TFL = self.STI.getFrameLowering();
     self.MRI = &mut MF.getRegInfo();
@@ -102,97 +138,149 @@ fn X86CallFrameOptimizationImpl::runOnMachineFunction(self, MF: *mut MachineFunc
     if !self.isLegal(MF) {
         return false;
     }
-    let mut FrameSetupOpcode: u32 = self.TII();
+    let mut FrameSetupOpcode: u32 = self.TII.getCallFrameSetupOpcode();
     let mut Changed: bool = false;
-    let mut CallSeqVector: ContextVector = zeroed();
-    if operator!(self.isProfitable(MF)) {
+    let mut CallSeqVector: ContextVector = ContextVector {};
+    for MBB in MF {
+        for MI in MBB {
+            if MI.getOpcode() == FrameSetupOpcode {
+                let mut Context: CallContext = CallContext {};
+                self.collectCallInfo(MF, MBB, MI, Context);
+                CallSeqVector.push(Context);
+            }
+        }
+    }
+    if !self.isProfitable(MF, CallSeqVector) {
         return false;
+    }
+    for CC in CallSeqVector {
+        if CC.UsePush {
+            self.adjustCallSequence(MF, CC);
+            Changed = true;
+        }
     }
     return Changed;
 }
 
-fn X86CallFrameOptimizationImpl::classifyInstruction(self, MBB: *mut MachineBasicBlock, MI: i32, RegInfo: *X86RegisterInfo, UsedRegs: i32) -> InstClassification {
-    if MI() == MBB()() {
+fn X86CallFrameOptimizationImpl::classifyInstruction(self, MBB: *mut MachineBasicBlock, MI: iterator, RegInfo: *X86RegisterInfo, UsedRegs: *DenseSet<MCRegister>) -> InstClassification {
+    if MI == MBB.end() {
         return Exit;
     }
-    match MI()() {
-
+    match operator(MI).getOpcode() {
+        AND16mi => {
+            AND32mi;
+        },
+        OR16mi => {
+            OR32mi;
+        },
+        MOV32mi => {
+            MOV32mr;
+        },
     }
-    if MI()() || () {
+    if operator(MI).isCall(AnyInBundle) || operator(MI).mayStore(AnyInBundle) {
         return Exit;
+    }
+    for MO in operator(MI).operands() {
+        if !MO.isReg() {
+            continue;
+        }
+        let mut Reg: Register = MO.getReg();
+        if !Reg.isPhysical() {
+            continue;
+        }
+        if RegInfo.regsOverlap(Reg, RegInfo.getStackRegister()) {
+            return Exit;
+        }
+        if MO.isDef() {
+            for U in UsedRegs {
+                if RegInfo.regsOverlap(Reg, U) {
+                    return Exit;
+                }
+            }
+        }
     }
     return Skip;
 }
 
-fn X86CallFrameOptimizationImpl::collectCallInfo(self, MF: *mut MachineFunction, MBB: *mut MachineBasicBlock, I: i32, Context: *mut CallContext) {
+fn X86CallFrameOptimizationImpl::collectCallInfo(self, MF: *mut MachineFunction, MBB: *mut MachineBasicBlock, I: iterator, Context: *mut CallContext) {
     let mut RegInfo: *X86RegisterInfo = *self.STI.getRegisterInfo();
-    (((operator!(operator!((I()() == self.TII())))) || (_wassert(L"I->getOpcode() == TII->getCallFrameSetupOpcode()", L"llvm\\lib\\Target\\X86\\X86CallFrameOptimization.cpp", (372) as u32) , 0)) as void);
-    let mut FrameSetup: i32 =  += 1;
-    Context() = ;
-    let mut MaxAdjust: u32 = self.TII(operator*()) >> self.Log2SlotSize;
+    assert!(operator(I).getOpcode() == self.TII.getCallFrameSetupOpcode();
+    let mut FrameSetup: iterator = operator(I, 0);
+    Context.FrameSetup = FrameSetup;
+    let mut MaxAdjust: u32 = self.TII.getFrameSize(operator(FrameSetup)) >> self.Log2SlotSize;
     if !MaxAdjust {
         Context.NoStackParams = true;
         return;
     }
-    while  {
-        += 1;
+    while operator(I).getOpcode() == LEA32r || operator(I).isDebugInstr() {
+        operator(I);
     }
     let mut StackPtr: Register = RegInfo.getStackRegister();
-    let mut StackPtrCopyInst: auto = MBB()();
-    for let mut J: auto = ; operator!();  += 1 {
-        if J()() && (0)() && (1)() && (1)() == StackPtr {
-            StackPtrCopyInst() = ;
-            Context.SPCopy = operator&(operator*( += 1));
+    let mut StackPtrCopyInst: iterator = MBB.end();
+    for let mut J: iterator = I; !operator(J).isCall(AnyInBundle); operator(J) {
+        if operator(J).isCopy() && operator(J).getOperand(0).isReg() && operator(J).getOperand(1).isReg() && operator(J).getOperand(1).getReg() == StackPtr {
+            StackPtrCopyInst = J;
+            Context.SPCopy = &mut operator(operator(J, 0));
             StackPtr = Context.SPCopy.getOperand(0).getReg();
             break;
         }
     }
     if MaxAdjust > 4 {
-        Context()(MaxAdjust, null);
+        Context.ArgStoreVector.resize(MaxAdjust, null);
     }
-    let mut UsedRegs: i32 = 0;
-    for let mut Classification: InstClassification = Skip; Classification != Exit;  += 1 {
-        if I() ==  {
+    let mut UsedRegs: DenseSet<MCRegister> = DenseSet<MCRegister> {};
+    for let mut Classification: InstClassification = Skip; Classification != Exit; operator(I) {
+        if I == StackPtrCopyInst {
             continue;
         }
+        Classification = self.classifyInstruction(MBB, I, RegInfo, UsedRegs);
         if Classification != Convert {
             continue;
         }
-        if  {
+        if !operator(I).getOperand(AddrBaseReg).isReg() || (operator(I).getOperand(AddrBaseReg).getReg() != StackPtr) || !operator(I).getOperand(AddrScaleAmt).isImm() || (operator(I).getOperand(AddrScaleAmt).getImm() != 1) || (operator(I).getOperand(AddrIndexReg).getReg() != NoRegister) || (operator(I).getOperand(AddrSegmentReg).getReg() != NoRegister) || !operator(I).getOperand(AddrDisp).isImm() {
             return;
         }
-        let mut StackDisp: i64 = (AddrDisp)();
+        let mut StackDisp: i64 = operator(I).getOperand(AddrDisp).getImm();
         assert!(StackDisp >= 0, "Negative stack displacement when passing parameters");
         if StackDisp & (self.SlotSize - 1) {
             return;
         }
         StackDisp >>= self.Log2SlotSize;
-        (((operator!(operator!((StackDisp as u64 < Context()() && "Function call has more parameters than the stack is adjusted for.")))) || (_wassert(L"(size_t)StackDisp < Context.ArgStoreVector.size() && \"Function call has more parameters than the stack is adjusted for.\"", L"llvm\\lib\\Target\\X86\\X86CallFrameOptimization.cpp", (455) as u32) , 0)) as void);
-        if Context()[StackDisp] != null {
+        assert!(StackDisp as u64 < Context.ArgStoreVector.len, "Function call has more parameters than the stack is adjusted for.");
+        if Context.ArgStoreVector[StackDisp] != null {
             return;
         }
-        Context()[StackDisp] = operator&(operator*());
+        Context.ArgStoreVector[StackDisp] = &mut operator(I);
+        for MO in operator(I).uses() {
+            if !MO.isReg() {
+                continue;
+            }
+            let mut Reg: Register = MO.getReg();
+            if Reg.isPhysical() {
+                UsedRegs.insert(Reg.asMCReg());
+            }
+        }
     }
-     -= 1;
-    if I() == MBB()() || operator!() {
+    operator(I);
+    if I == MBB.end() || !operator(I).isCall(AnyInBundle) {
         return;
     }
-    Context.Call = operator&(operator*());
-    if ( += 1)() != self.TII() {
+    Context.Call = &mut operator(I);
+    if operator((operator(I))).getOpcode() != self.TII.getCallFrameDestroyOpcode() {
         return;
     }
-    let mut MMI: auto = Context()();
-    let mut MME: auto = Context()();
-    for ; MMI() != ;  += 1 , Context.ExpectedDist += self.SlotSize {
-        if operator*() == null {
+    let mut MMI: iterator = Context.ArgStoreVector.begin();
+    let mut MME: iterator = Context.ArgStoreVector.end();
+    for ; MMI != MME; MMI += 1 , Context.ExpectedDist += self.SlotSize {
+        if *MMI == null {
             break;
         }
     }
-    if MMI() == Context()() {
+    if MMI == Context.ArgStoreVector.begin() {
         return;
     }
-    for ; MMI() != ;  += 1 {
-        if operator*() != null {
+    for ; MMI != MME; MMI += 1 {
+        if *MMI != null {
             return;
         }
     }
@@ -200,34 +288,40 @@ fn X86CallFrameOptimizationImpl::collectCallInfo(self, MF: *mut MachineFunction,
 }
 
 fn X86CallFrameOptimizationImpl::adjustCallSequence(self, MF: *mut MachineFunction, Context: *CallContext) {
-    let mut FrameSetup: i32 = Context();
-    let mut MBB: *mut MachineBasicBlock = operator*((FrameSetup()()));
-    self.TII.setFrameAdjustment(operator*(), Context.ExpectedDist);
-    let mut DL: *DebugLoc = ();
-    let mut Is64Bit: bool = self.STI();
+    let mut FrameSetup: iterator = Context.FrameSetup;
+    let mut MBB: *mut MachineBasicBlock = *(operator(FrameSetup).getParent());
+    self.TII.setFrameAdjustment(operator(FrameSetup), Context.ExpectedDist);
+    let mut DL: *DebugLoc = operator(FrameSetup).getDebugLoc();
+    let mut Is64Bit: bool = self.STI.is64Bit();
     for let mut Idx: i32 = (Context.ExpectedDist >> self.Log2SlotSize) - 1; Idx >= 0; Idx -= 1 {
-        let mut Store: i32 = operator*(Context()[Idx]);
-        let mut PushOp: *MachineOperand = (AddrNumOperands);
-        let mut Push: i32 = null;
+        let mut Store: iterator = *Context.ArgStoreVector[Idx];
+        let mut PushOp: *MachineOperand = operator(Store).getOperand(AddrNumOperands);
+        let mut Push: iterator = null;
         let mut PushOpcode: u32 = 0;
-        match Store()() {
+        match operator(Store).getOpcode() {
             _ => {
-                llvm_unreachable_internal("Unexpected Opcode!", "llvm\\lib\\Target\\X86\\X86CallFrameOptimization.cpp", 523);
+                llvm_unreachable_internal("Unexpected Opcode!", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86CallFrameOptimization.cpp", 523);
+            },
+            AND16mi => {
+                AND32mi;
+            },
+            MOV32mr => {
+                MOV64mr;
             },
         }
         if !self.TFL.hasFP(MF) {
-            self.TFL(MBB, next(), DL, createAdjustCfaOffset(null, self.SlotSize, SMLoc {}));
+            self.TFL.BuildCFI(MBB, next(Push, 1), DL, createAdjustCfaOffset(null, self.SlotSize, SMLoc {}), NoFlags);
         }
-        MBB()();
+        MBB.erase(Store);
     }
     if Context.SPCopy && self.MRI.use_empty(Context.SPCopy.getOperand(0).getReg()) {
-        Context.SPCopy();
+        Context.SPCopy.eraseFromParent();
     }
-    let mut FuncInfo: *mut X86MachineFunctionInfo = MF;
+    let mut FuncInfo: *mut X86MachineFunctionInfo = MF.getInfo();
     FuncInfo.setHasPushSequences(true);
 }
 
-fn X86CallFrameOptimizationImpl::canFoldIntoRegPush(self, FrameSetup: i32, Reg: Register) -> *mut MachineInstr {
+fn X86CallFrameOptimizationImpl::canFoldIntoRegPush(self, FrameSetup: iterator, Reg: Register) -> *mut MachineInstr {
     if !Reg.isVirtual() {
         return null;
     }
@@ -238,11 +332,11 @@ fn X86CallFrameOptimizationImpl::canFoldIntoRegPush(self, FrameSetup: i32, Reg: 
     if !DefMI {
         return null;
     }
-    if  {
+    if (DefMI.getOpcode() != MOV32rm && DefMI.getOpcode() != MOV64rm) || DefMI.getParent() != operator(FrameSetup).getParent() {
         return null;
     }
-    for let mut I: i32 = *DefMI; I() != ;  += 1 {
-        if I()() {
+    for let mut I: iterator = *DefMI; I != FrameSetup; operator(I) {
+        if operator(I).isLoadFoldBarrier() {
             return null;
         }
     }
@@ -254,7 +348,7 @@ fn createX86CallFrameOptimizationLegacyPass() -> *mut FunctionPass {
 }
 
 fn X86CallFrameOptimizationLegacy::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
-    if self.skipFunction {
+    if self.skipFunction(MF.getFunction()) {
         return false;
     }
     let mut Impl: X86CallFrameOptimizationImpl = X86CallFrameOptimizationImpl {};

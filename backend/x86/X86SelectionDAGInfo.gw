@@ -1,4 +1,4 @@
-static mut UseFSRMForMemcpy: i32 = "x86-use-fsrm-for-memcpy";
+static mut UseFSRMForMemcpy: opt<bool> = opt<bool> { "x86-use-fsrm-for-memcpy", Hidden, init(false), "Use fast short rep mov in memcpy lowering" };
 
 fn X86SelectionDAGInfo::getTargetNodeName(self: *X86SelectionDAGInfo, Opcode: u32) -> *u8 {
     match Opcode as NodeType {
@@ -51,6 +51,9 @@ fn X86SelectionDAGInfo::verifyTargetNode(self: *X86SelectionDAGInfo, DAG: *Selec
         _ => {
             break;
         },
+        VP2INTERSECT => {
+            FSETCCM_SAE;
+        },
     }
     self.verifyTargetNode(DAG, N);
 }
@@ -61,16 +64,16 @@ fn getOptimalRepType(Subtarget: *X86Subtarget, Alignment: Align) -> MVT {
     assert!(isPowerOf2_64(Align), "Align is a power of 2");
     match Align {
         1 => {
-            return MVT { SimpleTy: i8 };
+            return i8;
         },
         2 => {
-            return MVT { SimpleTy: i16 };
+            return i16;
         },
         4 => {
-            return MVT { SimpleTy: i32 };
+            return i32;
         },
         _ => {
-            return if Subtarget()() { i64 } else { i32 };
+            return if Subtarget.is64Bit() { i64 } else { i32 };
         },
     }
 }
@@ -80,54 +83,56 @@ fn X86SelectionDAGInfo::isBaseRegConflictPossible(self: *X86SelectionDAGInfo, DA
     if !MFI.hasVarSizedObjects() && !MFI.hasOpaqueSPAdjustment() {
         return false;
     }
-    let mut TRI: *X86RegisterInfo = null;
-    return is_contained(TRI.getBaseRegister());
+    let mut TRI: *X86RegisterInfo = DAG.getSubtarget().getRegisterInfo() as *X86RegisterInfo;
+    return is_contained(ClobberSet, TRI.getBaseRegister());
 }
 
 fn emitRepstos(Subtarget: *X86Subtarget, DAG: *mut SelectionDAG, dl: *SDLoc, Chain: SDValue, Dst: SDValue, Val: SDValue, Size: SDValue, AVT: MVT) -> SDValue {
     let mut Use64BitRegs: bool = Subtarget.isTarget64BitLP64();
-    let mut AX: u32 = 0;
+    let mut AX: u32 = AL;
     match AVT.getSizeInBits().operator unsigned long long() {
         8 => {
-            
+            AX = AL;
         },
         16 => {
-            
+            AX = AX;
         },
         32 => {
-            
+            AX = EAX;
         },
         _ => {
-            
+            AX = RAX;
         },
     }
-    let mut CX: u32 = 0;
-    let mut DI: u32 = 0;
+    let mut CX: u32 = if Use64BitRegs { RCX } else { ECX };
+    let mut DI: u32 = if Use64BitRegs { RDI } else { EDI };
     let mut InGlue: SDValue = SDValue {};
-    Chain = DAG.getCopyToReg(Chain, dl, Register { Reg: AX }, Val, InGlue);
+    Chain = DAG.getCopyToReg(Chain, dl, AX, Val, InGlue);
     InGlue = Chain.getValue(1);
-    Chain = DAG.getCopyToReg(Chain, dl, Register { Reg: CX }, Size, InGlue);
+    Chain = DAG.getCopyToReg(Chain, dl, CX, Size, InGlue);
     InGlue = Chain.getValue(1);
-    Chain = DAG.getCopyToReg(Chain, dl, Register { Reg: DI }, Dst, InGlue);
+    Chain = DAG.getCopyToReg(Chain, dl, DI, Dst, InGlue);
     InGlue = Chain.getValue(1);
-    let mut Tys: SDVTList = DAG.getVTList(EVT { Other }, EVT { Glue });
-    let mut Ops: [3]SDValue = [Chain, DAG.getValueType(EVT { AVT }), InGlue];
-    return DAG;
+    let mut Tys: SDVTList = DAG.getVTList(Other, Glue);
+    let mut Ops: [3]SDValue = [Chain, DAG.getValueType(AVT), InGlue];
+    return DAG.getNode(REP_STOS, dl, Tys, Ops);
 }
 
 fn emitRepstosB(Subtarget: *X86Subtarget, DAG: *mut SelectionDAG, dl: *SDLoc, Chain: SDValue, Dst: SDValue, Val: SDValue, Size: u64) -> SDValue {
-    return emitRepstos(Subtarget, DAG, dl, Chain, Dst, Val, DAG.getIntPtrConstant(Size, dl, false), MVT { SimpleTy: i8 });
+    return emitRepstos(Subtarget, DAG, dl, Chain, Dst, Val, DAG.getIntPtrConstant(Size, dl, false), i8);
 }
 
 fn emitConstantSizeRepstos(DAG: *mut SelectionDAG, Subtarget: *X86Subtarget, dl: *SDLoc, Chain: SDValue, Dst: SDValue, Val: SDValue, Size: u64, SizeVT: EVT, Alignment: Align, isVolatile: bool, AlwaysInline: bool, DstPtrInfo: MachinePointerInfo) -> SDValue {
     if DAG.getMachineFunction().getFunction().hasMinSize() {
-        if  {
-            if (Size & 31) == 0 && (ValC()() & 255) == 0 {
-                let mut BlockType: MVT = MVT { SimpleTy: i32 };
+        if dyn_cast(Val) {
+            ValC;
+        } else {
+            if (Size & 31) == 0 && (ValC.getZExtValue() & 255) == 0 {
+                let mut BlockType: MVT = i32;
                 let mut BlockBits: u64 = BlockType.getSizeInBits().operator unsigned long long();
                 let mut BlockBytes: u64 = BlockBits / 8;
                 let mut BlockCount: u64 = Size / BlockBytes;
-                Val = DAG.getConstant(0, dl, EVT { BlockType }, false, false);
+                Val = DAG.getConstant(0, dl, BlockType, false, false);
                 return emitRepstos(Subtarget, DAG, dl, Chain, Dst, Val, DAG.getIntPtrConstant(BlockCount, dl, false), BlockType);
             }
         }
@@ -136,16 +141,18 @@ fn emitConstantSizeRepstos(DAG: *mut SelectionDAG, Subtarget: *X86Subtarget, dl:
     if Size > Subtarget.getMaxInlineSizeThreshold() {
         return SDValue {};
     }
-    if Alignment < Align { ShiftValue: 4 } {
+    if Alignment < 4 {
         return SDValue {};
     }
-    let mut BlockType: MVT = MVT { SimpleTy: i8 };
+    let mut BlockType: MVT = i8;
     let mut BlockCount: u64 = Size;
     let mut BytesLeft: u64 = 0;
     let mut OriginalVal: SDValue = Val;
-    if  {
+    if dyn_cast(Val) {
+        ValC;
+    } else {
         BlockType = getOptimalRepType(Subtarget, Alignment);
-        let mut Value: u64 = () & 255;
+        let mut Value: u64 = ValC.getZExtValue() & 255;
         let mut BlockBits: u64 = BlockType.getSizeInBits().operator unsigned long long();
         if BlockBits >= 16 {
             Value = (Value << 8) | Value;
@@ -159,30 +166,30 @@ fn emitConstantSizeRepstos(DAG: *mut SelectionDAG, Subtarget: *X86Subtarget, dl:
         let mut BlockBytes: u64 = BlockBits / 8;
         BlockCount = Size / BlockBytes;
         BytesLeft = Size % BlockBytes;
-        Val = DAG.getConstant(Value, dl, EVT { BlockType }, false, false);
+        Val = DAG.getConstant(Value, dl, BlockType, false, false);
     }
     let mut RepStos: SDValue = emitRepstos(Subtarget, DAG, dl, Chain, Dst, Val, DAG.getIntPtrConstant(BlockCount, dl, false), BlockType);
     if BytesLeft == 0 {
         return RepStos;
     }
-    let mut Results: SmallVector<SDValue, 4> = zeroed();
-    Results()(RepStos);
+    let mut Results: SmallVector<SDValue, 4> = SmallVector<SDValue, 4> {};
+    Results.push(RepStos);
     let mut Offset: u32 = Size - BytesLeft;
     let mut AddrVT: EVT = Dst.getValueType();
-    Results()(DAG.getMemset(Chain, dl, DAG.getNode(ADD, dl, AddrVT, Dst, DAG.getConstant(Offset, dl, AddrVT, false, false)), OriginalVal, DAG.getConstant(BytesLeft, dl, SizeVT, false, false), Alignment, isVolatile, AlwaysInline, null, DstPtrInfo.getWithOffset(Offset), AAMDNodes {}));
-    return DAG(TokenFactor, dl, Other);
+    Results.push(DAG.getMemset(Chain, dl, DAG.getNode(ADD, dl, AddrVT, Dst, DAG.getConstant(Offset, dl, AddrVT, false, false)), OriginalVal, DAG.getConstant(BytesLeft, dl, SizeVT, false, false), Alignment, isVolatile, AlwaysInline, null, DstPtrInfo.getWithOffset(Offset), AAMDNodes {}));
+    return DAG.getNode(TokenFactor, dl, Other, Results);
 }
 
 fn X86SelectionDAGInfo::EmitTargetCodeForMemset(self: *X86SelectionDAGInfo, DAG: *mut SelectionDAG, dl: *SDLoc, Chain: SDValue, Dst: SDValue, Val: SDValue, Size: SDValue, Alignment: Align, isVolatile: bool, AlwaysInline: bool, DstPtrInfo: MachinePointerInfo) -> SDValue {
-    let mut Subtarget: *X86Subtarget = DAG.getMachineFunction();
+    let mut Subtarget: *X86Subtarget = DAG.getMachineFunction().getSubtarget();
     if DstPtrInfo.getAddrSpace() >= 256 {
         return SDValue {};
     }
-    if operator!(Subtarget()()) && Subtarget.isRegisterReservedByUser {
+    if !Subtarget.is64Bit() && Subtarget.isRegisterReservedByUser(EDI) {
         return SDValue {};
     }
-    let mut ClobberSet: []MCPhysReg = zeroed();
-    if self.isBaseRegConflictPossible {
+    let mut ClobberSet: [6]MCPhysReg = [RCX, RAX, RDI, ECX, EAX, EDI];
+    if self.isBaseRegConflictPossible(DAG, ClobberSet) {
         return SDValue {};
     }
     let mut ConstantSize: *mut ConstantSDNode = dyn_cast(Size);
@@ -194,23 +201,23 @@ fn X86SelectionDAGInfo::EmitTargetCodeForMemset(self: *X86SelectionDAGInfo, DAG:
 
 fn emitRepmovs(Subtarget: *X86Subtarget, DAG: *mut SelectionDAG, dl: *SDLoc, Chain: SDValue, Dst: SDValue, Src: SDValue, Size: SDValue, AVT: MVT) -> SDValue {
     let mut Use64BitRegs: bool = Subtarget.isTarget64BitLP64();
-    let mut CX: u32 = 0;
-    let mut DI: u32 = 0;
-    let mut SI: u32 = 0;
+    let mut CX: u32 = if Use64BitRegs { RCX } else { ECX };
+    let mut DI: u32 = if Use64BitRegs { RDI } else { EDI };
+    let mut SI: u32 = if Use64BitRegs { RSI } else { ESI };
     let mut InGlue: SDValue = SDValue {};
-    Chain = DAG.getCopyToReg(Chain, dl, Register { Reg: CX }, Size, InGlue);
+    Chain = DAG.getCopyToReg(Chain, dl, CX, Size, InGlue);
     InGlue = Chain.getValue(1);
-    Chain = DAG.getCopyToReg(Chain, dl, Register { Reg: DI }, Dst, InGlue);
+    Chain = DAG.getCopyToReg(Chain, dl, DI, Dst, InGlue);
     InGlue = Chain.getValue(1);
-    Chain = DAG.getCopyToReg(Chain, dl, Register { Reg: SI }, Src, InGlue);
+    Chain = DAG.getCopyToReg(Chain, dl, SI, Src, InGlue);
     InGlue = Chain.getValue(1);
-    let mut Tys: SDVTList = DAG.getVTList(EVT { Other }, EVT { Glue });
-    let mut Ops: [3]SDValue = [Chain, DAG.getValueType(EVT { AVT }), InGlue];
-    return DAG;
+    let mut Tys: SDVTList = DAG.getVTList(Other, Glue);
+    let mut Ops: [3]SDValue = [Chain, DAG.getValueType(AVT), InGlue];
+    return DAG.getNode(REP_MOVS, dl, Tys, Ops);
 }
 
 fn emitRepmovsB(Subtarget: *X86Subtarget, DAG: *mut SelectionDAG, dl: *SDLoc, Chain: SDValue, Dst: SDValue, Src: SDValue, Size: u64) -> SDValue {
-    return emitRepmovs(Subtarget, DAG, dl, Chain, Dst, Src, DAG.getIntPtrConstant(Size, dl, false), MVT { SimpleTy: i8 });
+    return emitRepmovs(Subtarget, DAG, dl, Chain, Dst, Src, DAG.getIntPtrConstant(Size, dl, false), i8);
 }
 
 fn emitConstantSizeRepmov(DAG: *mut SelectionDAG, Subtarget: *X86Subtarget, dl: *SDLoc, Chain: SDValue, Dst: SDValue, Src: SDValue, Size: u64, SizeVT: EVT, Alignment: Align, isVolatile: bool, AlwaysInline: bool, DstPtrInfo: MachinePointerInfo, SrcPtrInfo: MachinePointerInfo) -> SDValue {
@@ -220,11 +227,11 @@ fn emitConstantSizeRepmov(DAG: *mut SelectionDAG, Subtarget: *X86Subtarget, dl: 
     if !AlwaysInline && Size > Subtarget.getMaxInlineSizeThreshold() {
         return SDValue {};
     }
-    if Subtarget()() {
+    if Subtarget.hasERMSB() {
         return emitRepmovsB(Subtarget, DAG, dl, Chain, Dst, Src, Size);
     }
-    (((operator!(operator!((operator!(Subtarget()()) && "No efficient RepMovs")))) || (_wassert(L"!Subtarget.hasERMSB() && \"No efficient RepMovs\"", L"llvm\\lib\\Target\\X86\\X86SelectionDAGInfo.cpp", (347) as u32) , 0)) as void);
-    if !AlwaysInline && (Alignment < Align { ShiftValue: 4 }) {
+    assert!(!Subtarget.hasERMSB(), "No efficient RepMovs");
+    if !AlwaysInline && (Alignment < 4) {
         return SDValue {};
     }
     let mut BlockType: MVT = getOptimalRepType(Subtarget, Alignment);
@@ -236,34 +243,34 @@ fn emitConstantSizeRepmov(DAG: *mut SelectionDAG, Subtarget: *X86Subtarget, dl: 
         return RepMovs;
     }
     assert!(BytesLeft, "We have leftover at this point");
-    let mut Results: SmallVector<SDValue, 4> = zeroed();
-    Results()(RepMovs);
+    let mut Results: SmallVector<SDValue, 4> = SmallVector<SDValue, 4> {};
+    Results.push(RepMovs);
     let mut Offset: u32 = Size - BytesLeft;
     let mut DstVT: EVT = Dst.getValueType();
     let mut SrcVT: EVT = Src.getValueType();
-    Results()(DAG.getMemcpy(Chain, dl, DAG.getNode(ADD, dl, DstVT, Dst, DAG.getConstant(Offset, dl, DstVT, false, false)), DAG.getNode(ADD, dl, SrcVT, Src, DAG.getConstant(Offset, dl, SrcVT, false, false)), DAG.getConstant(BytesLeft, dl, SizeVT, false, false), Alignment, Alignment, isVolatile, true, null, optional<bool> { nullopt }, DstPtrInfo.getWithOffset(Offset), SrcPtrInfo.getWithOffset(Offset), AAMDNodes {}, null));
-    return DAG(TokenFactor, dl, Other);
+    Results.push(DAG.getMemcpy(Chain, dl, DAG.getNode(ADD, dl, DstVT, Dst, DAG.getConstant(Offset, dl, DstVT, false, false)), DAG.getNode(ADD, dl, SrcVT, Src, DAG.getConstant(Offset, dl, SrcVT, false, false)), DAG.getConstant(BytesLeft, dl, SizeVT, false, false), Alignment, Alignment, isVolatile, true, null, nullopt, DstPtrInfo.getWithOffset(Offset), SrcPtrInfo.getWithOffset(Offset), AAMDNodes {}, null));
+    return DAG.getNode(TokenFactor, dl, Other, Results);
 }
 
 fn X86SelectionDAGInfo::EmitTargetCodeForMemcpy(self: *X86SelectionDAGInfo, DAG: *mut SelectionDAG, dl: *SDLoc, Chain: SDValue, Dst: SDValue, Src: SDValue, Size: SDValue, DstAlign: Align, SrcAlign: Align, isVolatile: bool, AlwaysInline: bool, DstPtrInfo: MachinePointerInfo, SrcPtrInfo: MachinePointerInfo) -> SDValue {
-    let mut Subtarget: *X86Subtarget = DAG.getMachineFunction();
+    let mut Subtarget: *X86Subtarget = DAG.getMachineFunction().getSubtarget();
     if DstPtrInfo.getAddrSpace() >= 256 || SrcPtrInfo.getAddrSpace() >= 256 {
         return SDValue {};
     }
-    if operator!(Subtarget()()) && Subtarget.isRegisterReservedByUser {
+    if !Subtarget.is64Bit() && Subtarget.isRegisterReservedByUser(EDI) {
         return SDValue {};
     }
-    let mut ClobberSet: []MCPhysReg = zeroed();
-    if self.isBaseRegConflictPossible {
+    let mut ClobberSet: [6]MCPhysReg = [RCX, RSI, RDI, ECX, ESI, EDI];
+    if self.isBaseRegConflictPossible(DAG, ClobberSet) {
         return SDValue {};
     }
-    if UseFSRMForMemcpy() && Subtarget()() {
-        return emitRepmovs(Subtarget, DAG, dl, Chain, Dst, Src, Size, MVT { SimpleTy: i8 });
+    if UseFSRMForMemcpy && Subtarget.hasFSRM() {
+        return emitRepmovs(Subtarget, DAG, dl, Chain, Dst, Src, Size, i8);
     }
     if dyn_cast(Size) {
         ConstantSize;
     } else {
-        let mut Alignment: Align = min(DstAlign, SrcAlign);
+        let mut Alignment: Align = if DstAlign < SrcAlign { DstAlign } else { SrcAlign };
         return emitConstantSizeRepmov(DAG, Subtarget, dl, Chain, Dst, Src, ConstantSize.getZExtValue(), Size.getValueType(), Alignment, isVolatile, AlwaysInline, DstPtrInfo, SrcPtrInfo);
     }
     return SDValue {};

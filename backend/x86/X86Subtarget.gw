@@ -1,4 +1,4 @@
-static mut X86EarlyIfConv: i32 = "x86-early-ifcvt";
+static mut X86EarlyIfConv: opt<bool> = opt<bool> { "x86-early-ifcvt", Hidden, "Enable early if-conversion on X86" };
 
 fn X86Subtarget::classifyBlockAddressReference(self: *X86Subtarget) -> u8 {
     return self.classifyLocalReference(null);
@@ -10,13 +10,13 @@ fn X86Subtarget::classifyGlobalReference(self: *X86Subtarget, GV: *GlobalValue) 
 
 fn X86Subtarget::classifyLocalReference(self: *X86Subtarget, GV: *GlobalValue) -> u8 {
     let mut CM: Model = self.TM.getCodeModel();
-    if  {
+    if self.AllowTaggedGlobals && CM != Large && GV && !isa(GV) {
         return MO_GOTPCREL_NORELAX;
     }
     if !self.isPositionIndependent() {
         return MO_NO_FLAG;
     }
-    if is64Bit() {
+    if self.is64Bit() {
         if self.isTargetELF() {
             assert!(CM != Tiny, "Tiny codesize model not supported on X86");
             if CM == Large {
@@ -71,11 +71,11 @@ fn X86Subtarget::classifyGlobalReference(self: *X86Subtarget, GV: *GlobalValue, 
     if self.isOSWindows() {
         return MO_NO_FLAG;
     }
-    if is64Bit() {
+    if self.is64Bit() {
         if self.TM.getCodeModel() == Large {
             return if self.isTargetELF() { MO_GOT } else { MO_NO_FLAG };
         }
-        if  {
+        if self.AllowTaggedGlobals && GV && !isa(GV) {
             return MO_GOTPCREL_NORELAX;
         }
         return MO_GOTPCREL;
@@ -111,18 +111,18 @@ fn X86Subtarget::classifyGlobalFunctionReference(self: *X86Subtarget, GV: *Globa
     }
     let mut F: *Function = dyn_cast_or_null(GV);
     if self.isTargetELF() {
-        if is64Bit() && F && (X86_RegCall == F.getCallingConv()) {
+        if self.is64Bit() && F && (X86_RegCall == F.getCallingConv()) {
             return MO_GOTPCREL;
         }
-        if ((F && F.hasFnAttribute(NonLazyBind)) || (!F && M.getRtLibUseGOT())) && is64Bit() {
+        if ((F && F.hasFnAttribute(NonLazyBind)) || (!F && M.getRtLibUseGOT())) && self.is64Bit() {
             return MO_GOTPCREL;
         }
-        if operator!(is64Bit()) && !GV && self.TM.getRelocationModel() == Static {
+        if !self.is64Bit() && !GV && self.TM.getRelocationModel() == Static {
             return MO_NO_FLAG;
         }
         return MO_PLT;
     }
-    if is64Bit() {
+    if self.is64Bit() {
         if F && F.hasFnAttribute(NonLazyBind) {
             return MO_GOTPCREL;
         }
@@ -132,17 +132,17 @@ fn X86Subtarget::classifyGlobalFunctionReference(self: *X86Subtarget, GV: *Globa
 }
 
 fn X86Subtarget::isLegalToCallImmediateAddr(self: *X86Subtarget) -> bool {
-    if  {
+    if self.Is64Bit || self.isTargetWin32() || self.isPositionIndependent() {
         return false;
     }
     return self.isTargetELF() || self.TM.getRelocationModel() == Static;
 }
 
 fn X86Subtarget::initSubtargetFeatures(self, CPU: str, TuneCPU: str, FS: str) {
-    if CPU.len == 0 {
+    if CPU.is_empty() {
         CPU = "generic";
     }
-    if TuneCPU.len == 0 {
+    if TuneCPU.is_empty() {
         TuneCPU = "i586";
     }
     let mut FullFS: str = ParseX86Triple(self.TargetTriple);
@@ -151,36 +151,42 @@ fn X86Subtarget::initSubtargetFeatures(self, CPU: str, TuneCPU: str, FS: str) {
         FullFS = (FullFS + "," + FS);
     }
     let mut FeaturesIn64BitOnly: [10]str = ["egpr", "push2pop2", "ppx", "ndd", "ccmp", "nf", "cf", "zu", "jmpabs", "uintr"];
-    if FullFS.find != npos {
+    if FullFS.find("-64bit-mode", 0) != npos {
         for F in FeaturesIn64BitOnly[..] {
-            FullFS(",-" + F);
+            operator(FullFS, ",-" + F);
         }
     }
     self.ParseSubtargetFeatures(CPU, TuneCPU, FullFS);
+    if self.hasSSE42() || self.hasSSE4A() {
+        self.IsUnalignedMem16Slow = false;
+    }
     while true {
         {
-        if DebugFlag && isCurrentDebugType("subtarget", 1) {}
+        if DebugFlag && isCurrentDebugType("subtarget", 1) {
+            dbgs() << "Subtarget features: SSELevel " << self.X86SSELevel << ", MMX " << self.HasMMX << ", 64bit " << self.HasX86_64 << "\n";
+        }
     }
         if !(false) { break; }
     }
-    if  {
+    if self.Is64Bit && !self.HasX86_64 {
         reportFatalUsageError("64-bit code requested on a subtarget that doesn't support it!");
     }
-    if  {
+    if self.HasEGPR && !self.hasSSE1() && self.isTargetWin64() {
         reportFatalUsageError("EGPR on Windows x64 requires SSE");
     }
     if self.StackAlignOverride {
         self.stackAlignment = operator(self.StackAlignOverride);
-    } else if  {
-        self.stackAlignment = Align { ShiftValue: 16 };
+    } else if self.isTargetDarwin() || self.isTargetLinux() || self.isTargetKFreeBSD() || self.isTargetHurd() || self.Is64Bit {
+        self.stackAlignment = 16;
     }
     if self.PreferVectorWidthOverride {
         self.PreferVectorWidth = self.PreferVectorWidthOverride;
-    } else if  {
+    } else if self.Prefer128Bit {
         self.PreferVectorWidth = 128;
-    } else if  {
+    } else if self.Prefer256Bit {
         self.PreferVectorWidth = 256;
     }
+    self.HasUserReservedRegisters = self.ReservedRReg.any();
 }
 
 fn X86Subtarget::initializeSubtargetDependencies(self, CPU: str, TuneCPU: str, FS: str) -> *mut X86Subtarget {
@@ -189,9 +195,9 @@ fn X86Subtarget::initializeSubtargetDependencies(self, CPU: str, TuneCPU: str, F
 }
 
 fn X86Subtarget::X86Subtarget(self, TT: *Triple, CPU: str, TuneCPU: str, FS: str, TM: *X86TargetMachine, StackAlignOverride: MaybeAlign, PreferVectorWidthOverride: u32, RequiredVectorWidth: u32) {
-    if !self.isPositionIndependent() || TM.getCodeModel == Large {
+    if !self.isPositionIndependent() || TM.getCodeModel() == Large {
         self.setPICStyle(None);
-    } else if is64Bit() {
+    } else if self.is64Bit() {
         self.setPICStyle(RIPRel);
     } else if self.isTargetCOFF() {
         self.setPICStyle(None);
@@ -200,25 +206,37 @@ fn X86Subtarget::X86Subtarget(self, TT: *Triple, CPU: str, TuneCPU: str, FS: str
     } else if self.isTargetELF() {
         self.setPICStyle(GOT);
     }
-    let mut RBI: *mut auto = null;
+    self.CallLoweringInfo.reset(*self.getTargetLowering());
+    self.Legalizer.reset(X86LegalizerInfo { RulesForOpcode: *self, Subtarget: TM });
+    let mut RBI: *mut X86RegisterBankInfo = *self.getRegisterInfo();
+    self.RegBankInfo.reset(RBI);
+    self.InstSelector.reset(createX86InstructionSelector(TM, *self, *RBI));
 }
 
 fn X86Subtarget::~X86Subtarget(self) {}
 
-fn X86Subtarget::getCallLowering(self: *X86Subtarget) -> *CallLowering {}
-
-fn X86Subtarget::getInstructionSelector(self: *X86Subtarget) -> *mut InstructionSelector {}
-
-fn X86Subtarget::getLegalizerInfo(self: *X86Subtarget) -> *LegalizerInfo {}
-
-fn X86Subtarget::getRegBankInfo(self: *X86Subtarget) -> *RegisterBankInfo {}
-
-fn X86Subtarget::enableEarlyIfConversion(self: *X86Subtarget) -> bool {
-    return self.canUseCMOV() && ;
+fn X86Subtarget::getCallLowering(self: *X86Subtarget) -> *CallLowering {
+    return self.CallLoweringInfo.get();
 }
 
-fn X86Subtarget::getPostRAMutations(self: *X86Subtarget, Mutations: *mut i32) {
-    Mutations();
+fn X86Subtarget::getInstructionSelector(self: *X86Subtarget) -> *mut InstructionSelector {
+    return self.InstSelector.get();
+}
+
+fn X86Subtarget::getLegalizerInfo(self: *X86Subtarget) -> *LegalizerInfo {
+    return self.Legalizer.get();
+}
+
+fn X86Subtarget::getRegBankInfo(self: *X86Subtarget) -> *RegisterBankInfo {
+    return self.RegBankInfo.get();
+}
+
+fn X86Subtarget::enableEarlyIfConversion(self: *X86Subtarget) -> bool {
+    return self.canUseCMOV() && X86EarlyIfConv;
+}
+
+fn X86Subtarget::getPostRAMutations(self: *X86Subtarget, Mutations: *mut []unique_ptr<ScheduleDAGMutation>) {
+    Mutations.push(createX86MacroFusionDAGMutation());
 }
 
 fn X86Subtarget::isPositionIndependent(self: *X86Subtarget) -> bool {

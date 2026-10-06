@@ -2,21 +2,33 @@ static mut MeetsUnwindV2Criteria: Statistic = Statistic { "x86-wineh-unwindv2", 
 
 static mut FailsUnwindV2Criteria: Statistic = Statistic { "x86-wineh-unwindv2", "FailsUnwindV2Criteria", "Number of functions that fail Unwind v2 criteria" };
 
-static mut UnwindCodeThreshold: i32 = "x86-wineh-unwindv2-unwind-codes-threshold";
+static mut UnwindCodeThreshold: opt<unsigned int> = opt<unsigned int> { "x86-wineh-unwindv2-unwind-codes-threshold", Hidden, "Maximum number of unwind codes before splitting into a new unwind info.", init(255) };
 
-static mut ForceMode: i32 = "x86-wineh-unwindv2-force-mode";
+static mut ForceMode: opt<unsigned int> = opt<unsigned int> { "x86-wineh-unwindv2-force-mode", Hidden, "Overwrites the Unwind v2 mode for testing purposes." };
 
-static mut InstructionCountThreshold: i32 = "x86-wineh-unwindv2-instruction-count-threshold";
+static mut InstructionCountThreshold: opt<unsigned int> = opt<unsigned int> { "x86-wineh-unwindv2-instruction-count-threshold", Hidden, "Maximum number of (approximate) instructions before splitting into a new unwind info.", init(600) };
 
 struct EpilogInfo {
     UnwindV2StartLocation: *mut MachineInstr,
     ApproximateInstructionPosition: u32,
 }
 
+fn EpilogInfo::operator=(self, arg: *EpilogInfo) -> *mut EpilogInfo {
+    self.UnwindV2StartLocation = .UnwindV2StartLocation;
+    self.ApproximateInstructionPosition = .ApproximateInstructionPosition;
+    return *self;
+}
+
+fn EpilogInfo::operator=(self, arg: *mut *mut EpilogInfo) -> *mut EpilogInfo {
+    self.UnwindV2StartLocation =  as EpilogInfo.UnwindV2StartLocation;
+    self.ApproximateInstructionPosition =  as EpilogInfo.ApproximateInstructionPosition;
+    return *self;
+}
+
 struct FrameInfo {
     ApproximatePrologCodeCount: u32,
     ApproximateInstructionCount: u32,
-    EpilogInfos: i32,
+    EpilogInfos: SmallVector<EpilogInfo>,
 }
 
 struct X86WinEHUnwindV2Legacy {
@@ -92,20 +104,25 @@ fn createX86WinEHUnwindV2LegacyPass() -> *mut FunctionPass {
 }
 
 fn findDebugLoc(MBB: *MachineBasicBlock) -> DebugLoc {
+    for MI in MBB {
+        if MI.getDebugLoc() {
+            return MI.getDebugLoc();
+        }
+    }
     return getUnknown();
 }
 
-fn runAnalysisOnFuncOrFunclet(MF: *mut MachineFunction, Iter: *mut i32, Mode: WinX64EHUnwindMode) -> optional<FrameInfo> {
+fn runAnalysisOnFuncOrFunclet(MF: *mut MachineFunction, Iter: *mut iterator, Mode: WinX64EHUnwindMode) -> optional<FrameInfo> {
     let mut TFL: *TargetFrameLowering = *MF.getSubtarget().getFrameLowering();
     let mut State: FunctionState = InProlog;
-    let mut PushedRegs: i32 = 0;
+    let mut PushedRegs: SmallVector<int64_t> = SmallVector<int64_t> {};
     let mut HasStackAlloc: bool = false;
     let mut HasSetFrame: bool = false;
     let mut ApproximatePrologCodeCount: u32 = 0;
-    let mut EpilogInfos: i32 = 0;
+    let mut EpilogInfos: SmallVector<EpilogInfo> = SmallVector<EpilogInfo> {};
     let mut ApproximateInstructionCount: u32 = 0;
-    for ; Iter() != MF()();  += 1 {
-        let mut MBB: *mut MachineBasicBlock = operator*();
+    for ; Iter != MF.end(); operator(Iter) {
+        let mut MBB: *mut MachineBasicBlock = operator(Iter);
         if MBB.isEHFuncletEntry() && State != InProlog {
             break;
         }
@@ -113,42 +130,162 @@ fn runAnalysisOnFuncOrFunclet(MF: *mut MachineFunction, Iter: *mut i32, Mode: Wi
         let mut HasStackDealloc: bool = false;
         let mut HasSetFrameBack: bool = false;
         let mut UnwindV2StartLocation: *mut MachineInstr = null;
+        for MI in MBB {
+            if !MI.isPseudo(IgnoreBundle) && !MI.isMetaInstruction(IgnoreBundle) {
+                ApproximateInstructionCount += 1;
+            }
+            match MI.getOpcode() {
+                SEH_PushReg => {
+                    if State != InProlog {
+                        llvm_unreachable_internal("SEH_PushReg outside of prolog", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86WinEHUnwindV2.cpp", 183);
+                    }
+                },
+                SEH_StackAlloc => {
+                    if State != InProlog {
+                        llvm_unreachable_internal("SEH_StackAlloc outside of prolog", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86WinEHUnwindV2.cpp", 190);
+                    }
+                },
+                SEH_SetFrame => {
+                    if State != InProlog {
+                        llvm_unreachable_internal("SEH_SetFrame outside of prolog", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86WinEHUnwindV2.cpp", 198);
+                    }
+                },
+                SEH_SaveReg => {
+                    SEH_SaveXMM;
+                },
+                SEH_PushFrame => {
+                    if State != InProlog {
+                        llvm_unreachable_internal("SEH_PushFrame outside of prolog", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86WinEHUnwindV2.cpp", 213);
+                    }
+                },
+                SEH_EndPrologue => {
+                    if State != InProlog {
+                        llvm_unreachable_internal("SEH_EndPrologue outside of prolog", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86WinEHUnwindV2.cpp", 219);
+                    }
+                },
+                SEH_BeginEpilogue => {
+                    if State != HasProlog {
+                        llvm_unreachable_internal("SEH_BeginEpilogue in prolog or another epilog", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86WinEHUnwindV2.cpp", 228);
+                    }
+                },
+                SEH_EndEpilogue => {
+                    if State != InEpilog {
+                        llvm_unreachable_internal("SEH_EndEpilogue outside of epilog", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86WinEHUnwindV2.cpp", 234);
+                    }
+                },
+                MOV64rr => {
+                    if State == InEpilog {
+                        if !HasSetFrame {
+                            return rejectCurrentFunctionInternalError(MF, Mode, "The epilog is setting frame back, but prolog did not set it");
+                        }
+                        if PoppedRegCount > 0 {
+                            return rejectCurrentFunctionInternalError(MF, Mode, "The epilog is setting the frame back after popping registers");
+                        }
+                        if HasStackDealloc {
+                            return rejectCurrentFunctionInternalError(MF, Mode, "Cannot set the frame back after the stack allocation has been deallocated");
+                        }
+                        HasSetFrameBack = true;
+                    } else if State == FinishedEpilog {
+                        return rejectCurrentFunctionInternalError(MF, Mode, "Unexpected mov instruction after the epilog");
+                    }
+                },
+                LEA64r => {
+                    ADD64ri32;
+                },
+                POP64r => {
+                    if State == InEpilog {
+                        let mut Reg: Register = MI.getOperand(0).getReg();
+                        if HasStackAlloc && (PoppedRegCount == 0) && !is_contained(PushedRegs, Reg) {
+                            HasStackDealloc = true;
+                        } else {
+                            if PoppedRegCount == 0 && HasStackAlloc && !HasStackDealloc && HasSetFrameBack && TFL.hasFP(MF) {
+                                HasStackDealloc = true;
+                            }
+                            PoppedRegCount += 1;
+                            if HasStackAlloc != HasStackDealloc {
+                                return rejectCurrentFunctionInternalError(MF, Mode, "Cannot pop registers before the stack allocation has been deallocated");
+                            }
+                            if PoppedRegCount > PushedRegs.len {
+                                return rejectCurrentFunctionInternalError(MF, Mode, "The epilog is popping more registers than the prolog pushed");
+                            }
+                            if PushedRegs[PushedRegs.len - PoppedRegCount] != Reg.id() {
+                                return rejectCurrentFunctionInternalError(MF, Mode, "The epilog is popping a registers in a different order than the prolog pushed them");
+                            }
+                            if !UnwindV2StartLocation {
+                                assert!(PoppedRegCount == 1);
+                                UnwindV2StartLocation = &mut MI;
+                            }
+                        }
+                    } else if State == FinishedEpilog {
+                        return rejectCurrentFunctionInternalError(MF, Mode, "Registers are being popped after the epilog");
+                    }
+                },
+                _ => {
+                    if MI.isTerminator(AnyInBundle) {
+                        if State == FinishedEpilog {
+                            State = HasProlog;
+                        } else if State == InEpilog {
+                            llvm_unreachable_internal("Terminator in the middle of the epilog", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86WinEHUnwindV2.cpp", 359);
+                        }
+                    } else if !MI.isDebugOrPseudoInstr() {
+                        if (State == FinishedEpilog) || (State == InEpilog) {
+                            return rejectCurrentFunctionInternalError(MF, Mode, "Unexpected instruction in or after the epilog");
+                        }
+                    }
+                },
+            }
+        }
     }
-    return void { ApproximatePrologCodeCount, ApproximateInstructionCount,  };
+    return FrameInfo { ApproximatePrologCodeCount: ApproximatePrologCodeCount, ApproximateInstructionCount: ApproximateInstructionCount, EpilogInfos: EpilogInfos };
 }
 
 fn runX86WinEHUnwindV2(MF: *mut MachineFunction) -> bool {
-    let mut Mode: WinX64EHUnwindMode = if () { () as WinX64EHUnwindMode } else { MF.getFunction()() };
+    let mut Mode: WinX64EHUnwindMode = if ForceMode.getNumOccurrences() { ForceMode.getValue() as WinX64EHUnwindMode } else { MF.getFunction().getParent().getWinX64EHUnwindMode() };
     if Mode != V2BestEffort && Mode != V2Required {
         return false;
     }
     if requireWinX64UnwindV3(MF) {
         return false;
     }
-    let mut FrameInfos: i32 = 0;
-    let mut Iter: i32 = MF()();
-    while Iter() != MF()() {
-        let mut FI: auto = zeroed();
-        if operator!() {
+    let mut FrameInfos: SmallVector<FrameInfo> = SmallVector<FrameInfo> {};
+    let mut Iter: iterator = MF.begin();
+    while Iter != MF.end() {
+        let mut FI: optional<FrameInfo> = runAnalysisOnFuncOrFunclet(MF, Iter, Mode);
+        if !FI {
             return false;
         }
-        if operator!() {
-            FrameInfos()(move(operator*()));
+        if !operator(FI).EpilogInfos.is_empty() {
+            FrameInfos.push(move(operator(FI)));
         }
     }
-    if FrameInfos()() {
+    if FrameInfos.is_empty() {
         return false;
     }
     operator(MeetsUnwindV2Criteria, 0);
     let mut TII: *TargetInstrInfo = MF.getSubtarget().getInstrInfo();
+    for FI in FrameInfos {
+        let mut LastUnwindInfoEndPosition: u32 = FI.ApproximateInstructionCount;
+        let mut UnwindCodeCount: u32 = FI.ApproximatePrologCodeCount + 1;
+        for Info in reverse(FI.EpilogInfos) {
+            let mut MBB: *mut MachineBasicBlock = *Info.UnwindV2StartLocation.getParent();
+            let mut DL: *DebugLoc = Info.UnwindV2StartLocation.getDebugLoc();
+            BuildMI(MBB, Info.UnwindV2StartLocation, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(SEH_UnwindV2Start)).setMIFlag(FrameDestroy);
+            if (LastUnwindInfoEndPosition - Info.ApproximateInstructionPosition >= InstructionCountThreshold.operator unsigned int()) || (UnwindCodeCount >= UnwindCodeThreshold.operator unsigned int()) {
+                BuildMI(MBB, MBB.begin(), MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(SEH_SplitChainedAtEndOfBlock)).setMIFlag(FrameDestroy);
+                LastUnwindInfoEndPosition = Info.ApproximateInstructionPosition;
+                UnwindCodeCount = FI.ApproximatePrologCodeCount + 1;
+            }
+            UnwindCodeCount += 1;
+        }
+    }
     let mut FirstMBB: *mut MachineBasicBlock = MF.front();
-    BuildMI(FirstMBB, FirstMBB.front(), findDebugLoc(FirstMBB), TII.get)(2)(FrameSetup);
+    BuildMI(FirstMBB, FirstMBB.front(), MIMetadata { DL: findDebugLoc(FirstMBB), PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(SEH_UnwindVersion)).addImm(2).setMIFlag(FrameSetup);
     return true;
 }
 
 fn X86WinEHUnwindV2Pass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
     let mut Modified: bool = runX86WinEHUnwindV2(MF);
-    return if Modified { getMachineFunctionPassPreservedAnalyses() } else { all() };
+    return if Modified { getMachineFunctionPassPreservedAnalyses().preserveSet() } else { all() };
 }
 
 fn X86WinEHUnwindV2Legacy::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {

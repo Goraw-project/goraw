@@ -26,8 +26,8 @@ fn FixupLEAsLegacy::getRequiredProperties(self: *FixupLEAsLegacy) -> MachineFunc
 }
 
 fn FixupLEAsLegacy::getAnalysisUsage(self: *FixupLEAsLegacy, AU: *mut AnalysisUsage) {
-    AU;
-    AU;
+    AU.addRequired();
+    AU.addRequired();
     self.getAnalysisUsage(AU);
 }
 
@@ -66,7 +66,9 @@ static mut ID: i8 = 0;
 fn FixupLEAsImpl::postRAConvertToLEA(self: *FixupLEAsImpl, MBB: *mut MachineBasicBlock, MBBI: *mut iterator) -> *mut MachineInstr {
     let mut MI: *mut MachineInstr = operator(MBBI);
     match MI.getOpcode() {
-
+        MOV32rr => {
+            MOV64rr;
+        },
     }
     if !MI.isConvertibleTo3Addr(IgnoreBundle) {
         return null;
@@ -74,6 +76,12 @@ fn FixupLEAsImpl::postRAConvertToLEA(self: *FixupLEAsImpl, MBB: *mut MachineBasi
     match MI.getOpcode() {
         _ => {
             return null;
+        },
+        ADD64ri32 => {
+            ADD64ri32_DB;
+        },
+        SHL64ri => {
+            SHL32ri;
         },
     }
     return self.TII.convertToThreeAddress(MI, null);
@@ -83,15 +91,18 @@ fn createX86FixupLEAsLegacyPass() -> *mut FunctionPass {
     return FixupLEAsLegacy {};
 }
 
-fn isLEA(Opcode: u32) -> bool {}
+fn isLEA(Opcode: u32) -> bool {
+    return Opcode == LEA32r || Opcode == LEA64r || Opcode == LEA64_32r;
+}
 
 fn FixupLEAsImpl::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
-    let mut ST: *X86Subtarget = MF;
-    let mut IsSlowLEA: bool = ST()();
-    let mut IsSlow3OpsLEA: bool = ST()();
-    let mut LEAUsesAG: bool = ST()();
-    let mut OptIncDec: bool = operator!(ST()()) || MF.getFunction().hasOptSize();
-    let mut UseLEAForSP: bool = ST()();
+    let mut ST: *X86Subtarget = MF.getSubtarget();
+    let mut IsSlowLEA: bool = ST.slowLEA();
+    let mut IsSlow3OpsLEA: bool = ST.slow3OpsLEA();
+    let mut LEAUsesAG: bool = ST.leaUsesAG();
+    let mut OptIncDec: bool = !ST.slowIncDec() || MF.getFunction().hasOptSize();
+    let mut UseLEAForSP: bool = ST.useLeaForSP();
+    self.TSM.init(&mut ST, true, true);
     self.TII = ST.getInstrInfo();
     self.TRI = ST.getRegisterInfo();
     while true {
@@ -175,15 +186,18 @@ fn FixupLEAsImpl::searchBackwards(self, p: *mut MachineOperand, I: *mut iterator
         if InstrDistance > INSTR_DISTANCE_THRESHOLD {
             break;
         }
-        if self.usesRegister(p, iterator { CurInst }) == RU_Write {
+        if self.usesRegister(p, CurInst) == RU_Write {
             return CurInst;
         }
+        InstrDistance += self.TSM.computeInstrLatency(&mut operator(CurInst), true);
         Found = getPreviousInstr(CurInst, MBB);
     }
     return iterator {};
 }
 
-fn isInefficientLEAReg(Reg: Register) -> bool {}
+fn isInefficientLEAReg(Reg: Register) -> bool {
+    return Reg == EBP || Reg == RBP || Reg == R13D || Reg == R13;
+}
 
 fn hasInefficientLEABaseReg(Base: *MachineOperand, Index: *MachineOperand) -> bool {
     return Base.isReg() && isInefficientLEAReg(Base.getReg()) && Index.isReg() && Index.getReg().isValid();
@@ -196,7 +210,13 @@ fn mayHaveOffset(Offset: *MachineOperand) -> bool {
 fn getADDrrFromLEA(LEAOpcode: u32) -> u32 {
     match LEAOpcode {
         _ => {
-            llvm_unreachable_internal("Unexpected LEA instruction", "llvm\\lib\\Target\\X86\\X86FixupLEAs.cpp", 354);
+            llvm_unreachable_internal("Unexpected LEA instruction", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86FixupLEAs.cpp", 354);
+        },
+        LEA32r => {
+            LEA64_32r;
+        },
+        LEA64r => {
+            return ADD64rr;
         },
     }
 }
@@ -204,7 +224,13 @@ fn getADDrrFromLEA(LEAOpcode: u32) -> u32 {
 fn getSUBrrFromLEA(LEAOpcode: u32) -> u32 {
     match LEAOpcode {
         _ => {
-            llvm_unreachable_internal("Unexpected LEA instruction", "llvm\\lib\\Target\\X86\\X86FixupLEAs.cpp", 366);
+            llvm_unreachable_internal("Unexpected LEA instruction", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86FixupLEAs.cpp", 366);
+        },
+        LEA32r => {
+            LEA64_32r;
+        },
+        LEA64r => {
+            return SUB64rr;
         },
     }
 }
@@ -212,7 +238,13 @@ fn getSUBrrFromLEA(LEAOpcode: u32) -> u32 {
 fn getADDriFromLEA(LEAOpcode: u32, Offset: *MachineOperand) -> u32 {
     match LEAOpcode {
         _ => {
-            llvm_unreachable_internal("Unexpected LEA instruction", "llvm\\lib\\Target\\X86\\X86FixupLEAs.cpp", 379);
+            llvm_unreachable_internal("Unexpected LEA instruction", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86FixupLEAs.cpp", 379);
+        },
+        LEA32r => {
+            LEA64_32r;
+        },
+        LEA64r => {
+            return ADD64ri32;
         },
     }
 }
@@ -220,7 +252,13 @@ fn getADDriFromLEA(LEAOpcode: u32, Offset: *MachineOperand) -> u32 {
 fn getSUBriFromLEA(LEAOpcode: u32) -> u32 {
     match LEAOpcode {
         _ => {
-            llvm_unreachable_internal("Unexpected LEA instruction", "llvm\\lib\\Target\\X86\\X86FixupLEAs.cpp", 391);
+            llvm_unreachable_internal("Unexpected LEA instruction", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86FixupLEAs.cpp", 391);
+        },
+        LEA32r => {
+            LEA64_32r;
+        },
+        LEA64r => {
+            return SUB64ri32;
         },
     }
 }
@@ -228,7 +266,13 @@ fn getSUBriFromLEA(LEAOpcode: u32) -> u32 {
 fn getINCDECFromLEA(LEAOpcode: u32, IsINC: bool) -> u32 {
     match LEAOpcode {
         _ => {
-            llvm_unreachable_internal("Unexpected LEA instruction", "llvm\\lib\\Target\\X86\\X86FixupLEAs.cpp", 403);
+            llvm_unreachable_internal("Unexpected LEA instruction", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86FixupLEAs.cpp", 403);
+        },
+        LEA32r => {
+            LEA64_32r;
+        },
+        LEA64r => {
+            return if IsINC { INC64r } else { DEC64r };
         },
     }
 }
@@ -236,7 +280,7 @@ fn getINCDECFromLEA(LEAOpcode: u32, IsINC: bool) -> u32 {
 fn FixupLEAsImpl::searchALUInst(self: *FixupLEAsImpl, I: *mut iterator, MBB: *mut MachineBasicBlock) -> iterator {
     let mut InstrDistanceThreshold: i32 = 5;
     let mut InstrDistance: i32 = 1;
-    let mut CurInst: iterator = next(I);
+    let mut CurInst: iterator = next(I, 1);
     let mut LEAOpcode: u32 = operator(I).getOpcode();
     let mut AddOpcode: u32 = getADDrrFromLEA(LEAOpcode);
     let mut SubOpcode: u32 = getSUBrrFromLEA(LEAOpcode);
@@ -265,12 +309,12 @@ let mut E: u32 = operator(CurInst).getNumOperands(); I != E; I += 1 {
                     if Opnd2.getReg() != AluDest.getReg() {
                         return iterator {};
                     }
-                    if operator!(operator(CurInst).registerDefIsDead) {
+                    if !operator(CurInst).registerDefIsDead(EFLAGS, self.TRI) {
                         return iterator {};
                     }
-                    return iterator { CurInst };
+                    return CurInst;
                 }
-                if self.TRI(DestReg, Opnd.getReg()) {
+                if self.TRI.regsOverlap(DestReg, Opnd.getReg()) {
                     return iterator {};
                 }
             }
@@ -287,6 +331,31 @@ fn FixupLEAsImpl::checkRegUsage(self: *FixupLEAsImpl, LeaI: *mut iterator, AluI:
     let mut BaseReg: Register = operator(LeaI).getOperand(1 + AddrBaseReg).getReg();
     let mut IndexReg: Register = operator(LeaI).getOperand(1 + AddrIndexReg).getReg();
     let mut AluDestReg: Register = operator(AluI).getOperand(0).getReg();
+    for CurInst in make_range(next(LeaI, 1), AluI) {
+        for Opnd in CurInst.operands() {
+            if !Opnd.isReg() {
+                continue;
+            }
+            let mut Reg: Register = Opnd.getReg();
+            if self.TRI.regsOverlap(Reg, AluDestReg) {
+                AluDestRef = true;
+            }
+            if self.TRI.regsOverlap(Reg, BaseReg) {
+                if Opnd.isDef() {
+                    BaseIndexDef = true;
+                } else if Opnd.isKill() {
+                    *KilledBase = &mut Opnd;
+                }
+            }
+            if self.TRI.regsOverlap(Reg, IndexReg) {
+                if Opnd.isDef() {
+                    BaseIndexDef = true;
+                } else if Opnd.isKill() {
+                    *KilledIndex = &mut Opnd;
+                }
+            }
+        }
+    }
 }
 
 fn FixupLEAsImpl::optLEAALU(self: *FixupLEAsImpl, I: *mut iterator, MBB: *mut MachineBasicBlock) -> bool {
@@ -299,7 +368,7 @@ fn FixupLEAsImpl::optLEAALU(self: *FixupLEAsImpl, I: *mut iterator, MBB: *mut Ma
     let mut KilledBase: *mut MachineOperand = null;
     let mut KilledIndex: *mut MachineOperand = null;
     self.checkRegUsage(I, AluI, BaseIndexDef, AluDestRef, &mut KilledBase, &mut KilledIndex);
-    let mut InsertPos: iterator = iterator { AluI };
+    let mut InsertPos: iterator = AluI;
     if BaseIndexDef {
         if AluDestRef {
             return false;
@@ -310,9 +379,9 @@ fn FixupLEAsImpl::optLEAALU(self: *FixupLEAsImpl, I: *mut iterator, MBB: *mut Ma
     let mut AluDestReg: Register = operator(AluI).getOperand(0).getReg();
     let mut BaseReg: Register = operator(I).getOperand(1 + AddrBaseReg).getReg();
     let mut IndexReg: Register = operator(I).getOperand(1 + AddrIndexReg).getReg();
-    if  {
-        BaseReg = self.TRI;
-        IndexReg = self.TRI;
+    if operator(I).getOpcode() == LEA64_32r {
+        BaseReg = self.TRI.getSubReg(BaseReg.operator MCRegister(), sub_32bit);
+        IndexReg = self.TRI.getSubReg(IndexReg.operator MCRegister(), sub_32bit);
     }
     if AluDestReg == IndexReg {
         if BaseReg == IndexReg {
@@ -327,10 +396,10 @@ fn FixupLEAsImpl::optLEAALU(self: *FixupLEAsImpl, I: *mut iterator, MBB: *mut Ma
     let mut NewMI1: *mut MachineInstr = null;
     let mut NewMI2: *mut MachineInstr = null;
     let mut NewOpcode: u32 = operator(AluI).getOpcode();
-    NewMI1 = BuildMI(MBB, InsertPos, operator(AluI).getDebugLoc(), self.TII(NewOpcode), AluDestReg)(AluDestReg, Kill)(BaseReg, getKillRegState(KilledBase));
-    NewMI1.addRegisterDead;
-    NewMI2 = BuildMI(MBB, InsertPos, operator(AluI).getDebugLoc(), self.TII(NewOpcode), AluDestReg)(AluDestReg, Kill)(IndexReg, getKillRegState(KilledIndex));
-    NewMI2.addRegisterDead;
+    NewMI1 = BuildMI(MBB, InsertPos, MIMetadata { DL: operator(AluI).getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NewOpcode), AluDestReg).addReg(AluDestReg, Kill, 0).addReg(BaseReg, getKillRegState(KilledBase), 0).operator llvm::MachineInstr *();
+    NewMI1.addRegisterDead(EFLAGS, self.TRI, false);
+    NewMI2 = BuildMI(MBB, InsertPos, MIMetadata { DL: operator(AluI).getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NewOpcode), AluDestReg).addReg(AluDestReg, Kill, 0).addReg(IndexReg, getKillRegState(KilledIndex), 0).operator llvm::MachineInstr *();
+    NewMI2.addRegisterDead(EFLAGS, self.TRI, false);
     if KilledBase {
         KilledBase.setIsKill(false);
     }
@@ -338,9 +407,9 @@ fn FixupLEAsImpl::optLEAALU(self: *FixupLEAsImpl, I: *mut iterator, MBB: *mut Ma
         KilledIndex.setIsKill(false);
     }
     MBB.getParent().substituteDebugValuesForInst(operator(AluI), *NewMI2, 1);
-    MBB.erase(iterator { I });
-    MBB.erase(iterator { AluI });
-    I = MachineInstr> { NewMI1 };
+    MBB.erase(I);
+    MBB.erase(AluI);
+    I = NewMI1;
     return true;
 }
 
@@ -351,21 +420,21 @@ fn FixupLEAsImpl::optTwoAddrLEA(self: *FixupLEAsImpl, I: *mut iterator, MBB: *mu
     let mut Index: *MachineOperand = MI.getOperand(1 + AddrIndexReg);
     let mut Disp: *MachineOperand = MI.getOperand(1 + AddrDisp);
     let mut Segment: *MachineOperand = MI.getOperand(1 + AddrSegmentReg);
-    if Segment.getReg().isValid() || !Disp.isImm() || Scale.getImm() > 1 || MBB.computeRegisterLiveness != LQR_Dead {
+    if Segment.getReg().isValid() || !Disp.isImm() || Scale.getImm() > 1 || MBB.computeRegisterLiveness(self.TRI, EFLAGS, const_iterator { I, null }, 10) != LQR_Dead {
         return false;
     }
     let mut DestReg: Register = MI.getOperand(0).getReg();
     let mut BaseReg: Register = Base.getReg();
     let mut IndexReg: Register = Index.getReg();
-    if  {
+    if UseLEAForSP && (DestReg == ESP || DestReg == RSP) {
         return false;
     }
-    if  {
+    if MI.getOpcode() == LEA64_32r {
         if BaseReg.operator unsigned int() {
-            BaseReg = self.TRI;
+            BaseReg = self.TRI.getSubReg(BaseReg.operator MCRegister(), sub_32bit);
         }
         if IndexReg.operator unsigned int() {
-            IndexReg = self.TRI;
+            IndexReg = self.TRI.getSubReg(IndexReg.operator MCRegister(), sub_32bit);
         }
     }
     let mut NewMI: *mut MachineInstr = null;
@@ -374,26 +443,26 @@ fn FixupLEAsImpl::optTwoAddrLEA(self: *FixupLEAsImpl, I: *mut iterator, MBB: *mu
         if DestReg != BaseReg {
             swap(BaseReg, IndexReg);
         }
-        if  {
-            NewMI = BuildMI(MBB, I, MI.getDebugLoc(), self.TII(NewOpcode), DestReg)(BaseReg)(IndexReg)(Base.getReg(), Implicit)(Index.getReg(), Implicit);
+        if MI.getOpcode() == LEA64_32r {
+            NewMI = BuildMI(MBB, I, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NewOpcode), DestReg).addReg(BaseReg, RegState {}, 0).addReg(IndexReg, RegState {}, 0).addReg(Base.getReg(), Implicit, 0).addReg(Index.getReg(), Implicit, 0).operator llvm::MachineInstr *();
         } else {
-            NewMI = BuildMI(MBB, I, MI.getDebugLoc(), self.TII(NewOpcode), DestReg)(BaseReg)(IndexReg);
+            NewMI = BuildMI(MBB, I, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NewOpcode), DestReg).addReg(BaseReg, RegState {}, 0).addReg(IndexReg, RegState {}, 0).operator llvm::MachineInstr *();
         }
     } else if DestReg == BaseReg && !IndexReg.operator unsigned int() {
         if OptIncDec && (Disp.getImm() == 1 || Disp.getImm() == -1) {
             let mut IsINC: bool = Disp.getImm() == 1;
             let mut NewOpcode: u32 = getINCDECFromLEA(MI.getOpcode(), IsINC);
-            if  {
-                NewMI = BuildMI(MBB, I, MI.getDebugLoc(), self.TII(NewOpcode), DestReg)(BaseReg)(Base.getReg(), Implicit);
+            if MI.getOpcode() == LEA64_32r {
+                NewMI = BuildMI(MBB, I, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NewOpcode), DestReg).addReg(BaseReg, RegState {}, 0).addReg(Base.getReg(), Implicit, 0).operator llvm::MachineInstr *();
             } else {
-                NewMI = BuildMI(MBB, I, MI.getDebugLoc(), self.TII(NewOpcode), DestReg)(BaseReg);
+                NewMI = BuildMI(MBB, I, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NewOpcode), DestReg).addReg(BaseReg, RegState {}, 0).operator llvm::MachineInstr *();
             }
         } else {
             let mut NewOpcode: u32 = getADDriFromLEA(MI.getOpcode(), Disp);
-            if  {
-                NewMI = BuildMI(MBB, I, MI.getDebugLoc(), self.TII(NewOpcode), DestReg)(BaseReg)(Disp.getImm())(Base.getReg(), Implicit);
+            if MI.getOpcode() == LEA64_32r {
+                NewMI = BuildMI(MBB, I, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NewOpcode), DestReg).addReg(BaseReg, RegState {}, 0).addImm(Disp.getImm()).addReg(Base.getReg(), Implicit, 0).operator llvm::MachineInstr *();
             } else {
-                NewMI = BuildMI(MBB, I, MI.getDebugLoc(), self.TII(NewOpcode), DestReg)(BaseReg)(Disp.getImm());
+                NewMI = BuildMI(MBB, I, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NewOpcode), DestReg).addReg(BaseReg, RegState {}, 0).addImm(Disp.getImm()).operator llvm::MachineInstr *();
             }
         }
     } else if BaseReg.isValid() && IndexReg.isValid() && Disp.getImm() == 0 {
@@ -402,8 +471,8 @@ fn FixupLEAsImpl::optTwoAddrLEA(self: *FixupLEAsImpl, I: *mut iterator, MBB: *mu
         return false;
     }
     MBB.getParent().substituteDebugValuesForInst(operator(I), *NewMI, 1);
-    MBB.erase(iterator { I });
-    I = MachineInstr> { NewMI };
+    MBB.erase(I);
+    I = NewMI;
     return true;
 }
 
@@ -412,11 +481,11 @@ fn FixupLEAsImpl::processInstruction(self, I: *mut iterator, MBB: *mut MachineBa
     let mut AddrOffset: i32 = getMemoryOperandIdx(MI.getDesc());
     if AddrOffset >= 0 {
         let mut p: *mut MachineOperand = MI.getOperand(AddrOffset + AddrBaseReg);
-        if  {
+        if p.isReg() && p.getReg() != ESP {
             self.seekLEAFixup(p, I, MBB);
         }
         let mut q: *mut MachineOperand = MI.getOperand(AddrOffset + AddrIndexReg);
-        if  {
+        if q.isReg() && q.getReg() != ESP {
             self.seekLEAFixup(q, I, MBB);
         }
     }
@@ -447,8 +516,8 @@ fn FixupLEAsImpl::seekLEAFixup(self, p: *mut MachineOperand, I: *mut iterator, M
                 if !(false) { break; }
             }
             MBB.getParent().substituteDebugValuesForInst(operator(MBI), *NewMI, 1);
-            MBB.erase(iterator { MBI });
-            let mut J: iterator = iterator { NewMI } as iterator;
+            MBB.erase(MBI);
+            let mut J: iterator = NewMI as iterator;
             self.processInstruction(J, MBB);
         }
     }
@@ -463,7 +532,7 @@ fn FixupLEAsImpl::processInstructionForSlowLEA(self, I: *mut iterator, MBB: *mut
     let mut Index: *MachineOperand = MI.getOperand(1 + AddrIndexReg);
     let mut Offset: *MachineOperand = MI.getOperand(1 + AddrDisp);
     let mut Segment: *MachineOperand = MI.getOperand(1 + AddrSegmentReg);
-    if Segment.getReg().isValid() || !Offset.isImm() || MBB.computeRegisterLiveness != LQR_Dead {
+    if Segment.getReg().isValid() || !Offset.isImm() || MBB.computeRegisterLiveness(self.TRI, EFLAGS, const_iterator { I, null }, 4) != LQR_Dead {
         return;
     }
     let mut DstR: Register = Dst.getReg();
@@ -494,9 +563,9 @@ fn FixupLEAsImpl::processInstructionForSlowLEA(self, I: *mut iterator, MBB: *mut
     }
     let mut NewMI: *mut MachineInstr = null;
     if SrcR1.operator unsigned int() && SrcR2.operator unsigned int() {
-        let mut ADDrr: *MCInstrDesc = self.TII(getADDrrFromLEA(Opcode));
+        let mut ADDrr: *MCInstrDesc = self.TII.get(getADDrrFromLEA(Opcode));
         let mut Src: *MachineOperand = if SrcR1 == DstR { Index } else { Base };
-        NewMI = BuildMI(MBB, iterator { I }, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, ADDrr, DstR).addReg(DstR, RegState {}, 0).add(Src).operator llvm::MachineInstr *();
+        NewMI = BuildMI(MBB, I, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, ADDrr, DstR).addReg(DstR, RegState {}, 0).add(Src).operator llvm::MachineInstr *();
         while true {
             {
             if DebugFlag && isCurrentDebugType("x86-fixup-leas", 1) {
@@ -507,9 +576,9 @@ fn FixupLEAsImpl::processInstructionForSlowLEA(self, I: *mut iterator, MBB: *mut
         }
     }
     if Offset.getImm() != 0 {
-        let mut ADDri: *MCInstrDesc = self.TII(getADDriFromLEA(Opcode, Offset));
+        let mut ADDri: *MCInstrDesc = self.TII.get(getADDriFromLEA(Opcode, Offset));
         let mut SrcR: *MachineOperand = if SrcR1 == DstR { Base } else { Index };
-        NewMI = BuildMI(MBB, iterator { I }, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, ADDri, DstR).add(SrcR).addImm(Offset.getImm()).operator llvm::MachineInstr *();
+        NewMI = BuildMI(MBB, I, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, ADDri, DstR).add(SrcR).addImm(Offset.getImm()).operator llvm::MachineInstr *();
         while true {
             {
             if DebugFlag && isCurrentDebugType("x86-fixup-leas", 1) {
@@ -521,8 +590,8 @@ fn FixupLEAsImpl::processInstructionForSlowLEA(self, I: *mut iterator, MBB: *mut
     }
     if NewMI {
         MBB.getParent().substituteDebugValuesForInst(operator(I), *NewMI, 1);
-        MBB.erase(iterator { I });
-        I = MachineInstr> { NewMI };
+        MBB.erase(I);
+        I = NewMI;
     }
 }
 
@@ -535,18 +604,18 @@ fn FixupLEAsImpl::processInstrForSlow3OpLEA(self, I: *mut iterator, MBB: *mut Ma
     let mut Index: *MachineOperand = MI.getOperand(1 + AddrIndexReg);
     let mut Offset: *MachineOperand = MI.getOperand(1 + AddrDisp);
     let mut Segment: *MachineOperand = MI.getOperand(1 + AddrSegmentReg);
-    if operator!((self.TII(MI) || hasInefficientLEABaseReg(Base, Index))) || MBB.computeRegisterLiveness != LQR_Dead || Segment.getReg().isValid() {
+    if !(self.TII.isThreeOperandsLEA(MI) || hasInefficientLEABaseReg(Base, Index)) || MBB.computeRegisterLiveness(self.TRI, EFLAGS, const_iterator { I, null }, 4) != LQR_Dead || Segment.getReg().isValid() {
         return;
     }
     let mut DestReg: Register = Dest.getReg();
     let mut BaseReg: Register = Base.getReg();
     let mut IndexReg: Register = Index.getReg();
-    if  {
+    if MI.getOpcode() == LEA64_32r {
         if BaseReg.operator unsigned int() {
-            BaseReg = self.TRI;
+            BaseReg = self.TRI.getSubReg(BaseReg.operator MCRegister(), sub_32bit);
         }
         if IndexReg.operator unsigned int() {
-            IndexReg = self.TRI;
+            IndexReg = self.TRI.getSubReg(IndexReg.operator MCRegister(), sub_32bit);
         }
     }
     let mut IsScale1: bool = Scale.getImm() == 1;
@@ -575,7 +644,7 @@ fn FixupLEAsImpl::processInstrForSlow3OpLEA(self, I: *mut iterator, MBB: *mut Ma
     let mut NewMI: *mut MachineInstr = null;
     let mut BaseOrIndexIsDst: bool = DestReg == BaseReg || DestReg == IndexReg;
     if IsScale1 && BaseReg == IndexReg && (mayHaveOffset(Offset) || (IsInefficientBase && !BaseOrIndexIsDst)) {
-        NewMI = BuildMI(MBB, MI, MI.getDebugLoc(), self.TII(LEAOpcode))(Dest)(0)(2)(Index)(Offset)(Segment);
+        NewMI = BuildMI(MBB, MI, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(LEAOpcode)).add(Dest).addReg(0, RegState {}, 0).addImm(2).add(Index).add(Offset).add(Segment).operator llvm::MachineInstr *();
         while true {
             {
             if DebugFlag && isCurrentDebugType("x86-fixup-leas", 1) {
@@ -585,21 +654,21 @@ fn FixupLEAsImpl::processInstrForSlow3OpLEA(self, I: *mut iterator, MBB: *mut Ma
             if !(false) { break; }
         }
         MBB.getParent().substituteDebugValuesForInst(operator(I), *NewMI, 1);
-        MBB.erase(iterator { I });
-        I = MachineInstr> { NewMI };
+        MBB.erase(I);
+        I = NewMI;
         return;
     } else if IsScale1 && BaseOrIndexIsDst {
         let mut NewOpc: u32 = getADDrrFromLEA(MI.getOpcode());
         if DestReg != BaseReg {
             swap(BaseReg, IndexReg);
         }
-        if  {
-            NewMI = BuildMI(MBB, I, MI.getDebugLoc(), self.TII(NewOpc), DestReg)(BaseReg)(IndexReg)(Base.getReg(), Implicit)(Index.getReg(), Implicit);
+        if MI.getOpcode() == LEA64_32r {
+            NewMI = BuildMI(MBB, I, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NewOpc), DestReg).addReg(BaseReg, RegState {}, 0).addReg(IndexReg, RegState {}, 0).addReg(Base.getReg(), Implicit, 0).addReg(Index.getReg(), Implicit, 0).operator llvm::MachineInstr *();
         } else {
-            NewMI = BuildMI(MBB, I, MI.getDebugLoc(), self.TII(NewOpc), DestReg)(BaseReg)(IndexReg);
+            NewMI = BuildMI(MBB, I, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NewOpc), DestReg).addReg(BaseReg, RegState {}, 0).addReg(IndexReg, RegState {}, 0).operator llvm::MachineInstr *();
         }
     } else if !IsInefficientBase || (!IsInefficientIndex && IsScale1) {
-        NewMI = BuildMI(MBB, MI, MI.getDebugLoc(), self.TII(LEAOpcode))(Dest)(if IsInefficientBase { Index } else { Base })(Scale)(if IsInefficientBase { Base } else { Index })(0)(Segment);
+        NewMI = BuildMI(MBB, MI, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(LEAOpcode)).add(Dest).add(if IsInefficientBase { Index } else { Base }).add(Scale).add(if IsInefficientBase { Base } else { Index }).addImm(0).add(Segment).operator llvm::MachineInstr *();
         while true {
             {
             if DebugFlag && isCurrentDebugType("x86-fixup-leas", 1) {
@@ -613,7 +682,7 @@ fn FixupLEAsImpl::processInstrForSlow3OpLEA(self, I: *mut iterator, MBB: *mut Ma
         if mayHaveOffset(Offset) {
             if OptIncDec && Offset.isImm() && (Offset.getImm() == 1 || Offset.getImm() == -1) {
                 let mut NewOpc: u32 = getINCDECFromLEA(MI.getOpcode(), Offset.getImm() == 1);
-                NewMI = BuildMI(MBB, I, MI.getDebugLoc(), self.TII(NewOpc), DestReg)(DestReg);
+                NewMI = BuildMI(MBB, I, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NewOpc), DestReg).addReg(DestReg, RegState {}, 0).operator llvm::MachineInstr *();
                 while true {
                     {
                     if DebugFlag && isCurrentDebugType("x86-fixup-leas", 1) {
@@ -624,7 +693,7 @@ fn FixupLEAsImpl::processInstrForSlow3OpLEA(self, I: *mut iterator, MBB: *mut Ma
                 }
             } else if Offset.isImm() && Offset.getImm() == 128 {
                 let mut NewOpc: u32 = getSUBriFromLEA(MI.getOpcode());
-                NewMI = BuildMI(MBB, I, MI.getDebugLoc(), self.TII(NewOpc), DestReg)(DestReg)(-128);
+                NewMI = BuildMI(MBB, I, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NewOpc), DestReg).addReg(DestReg, RegState {}, 0).addImm(-128).operator llvm::MachineInstr *();
                 while true {
                     {
                     if DebugFlag && isCurrentDebugType("x86-fixup-leas", 1) {
@@ -635,7 +704,7 @@ fn FixupLEAsImpl::processInstrForSlow3OpLEA(self, I: *mut iterator, MBB: *mut Ma
                 }
             } else {
                 let mut NewOpc: u32 = getADDriFromLEA(MI.getOpcode(), Offset);
-                NewMI = BuildMI(MBB, I, MI.getDebugLoc(), self.TII(NewOpc), DestReg)(DestReg)(Offset);
+                NewMI = BuildMI(MBB, I, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NewOpc), DestReg).addReg(DestReg, RegState {}, 0).add(Offset).operator llvm::MachineInstr *();
                 while true {
                     {
                     if DebugFlag && isCurrentDebugType("x86-fixup-leas", 1) {
@@ -647,18 +716,18 @@ fn FixupLEAsImpl::processInstrForSlow3OpLEA(self, I: *mut iterator, MBB: *mut Ma
             }
         }
         MBB.getParent().substituteDebugValuesForInst(operator(I), *NewMI, 1);
-        MBB.erase(iterator { I });
-        I = MachineInstr> { NewMI };
+        MBB.erase(I);
+        I = NewMI;
         return;
     }
     assert!(DestReg != BaseReg, "DestReg == BaseReg should be handled already!");
     assert!(IsInefficientBase, "efficient base should be handled already!");
-    if  {
+    if LEAOpcode == LEA64_32r {
         return;
     }
     if IsScale1 && !mayHaveOffset(Offset) {
         let mut BIK: bool = Base.isKill() && BaseReg != IndexReg;
-        self.TII.copyPhysReg(MBB, iterator { MI }, MI.getDebugLoc(), DestReg, BaseReg, BIK, false, false);
+        self.TII.copyPhysReg(MBB, MI, MI.getDebugLoc(), DestReg, BaseReg, BIK, false, false);
         while true {
             {
             if DebugFlag && isCurrentDebugType("x86-fixup-leas", 1) {
@@ -668,7 +737,7 @@ fn FixupLEAsImpl::processInstrForSlow3OpLEA(self, I: *mut iterator, MBB: *mut Ma
             if !(false) { break; }
         }
         let mut NewOpc: u32 = getADDrrFromLEA(MI.getOpcode());
-        NewMI = BuildMI(MBB, MI, MI.getDebugLoc(), self.TII(NewOpc), DestReg)(DestReg)(Index);
+        NewMI = BuildMI(MBB, MI, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NewOpc), DestReg).addReg(DestReg, RegState {}, 0).add(Index).operator llvm::MachineInstr *();
         while true {
             {
             if DebugFlag && isCurrentDebugType("x86-fixup-leas", 1) {
@@ -678,11 +747,11 @@ fn FixupLEAsImpl::processInstrForSlow3OpLEA(self, I: *mut iterator, MBB: *mut Ma
             if !(false) { break; }
         }
         MBB.getParent().substituteDebugValuesForInst(operator(I), *NewMI, 1);
-        MBB.erase(iterator { I });
-        I = MachineInstr> { NewMI };
+        MBB.erase(I);
+        I = NewMI;
         return;
     }
-    NewMI = BuildMI(MBB, MI, MI.getDebugLoc(), self.TII(LEAOpcode))(Dest)(0)(Scale)(Index)(Offset)(Segment);
+    NewMI = BuildMI(MBB, MI, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(LEAOpcode)).add(Dest).addReg(0, RegState {}, 0).add(Scale).add(Index).add(Offset).add(Segment).operator llvm::MachineInstr *();
     while true {
         {
         if DebugFlag && isCurrentDebugType("x86-fixup-leas", 1) {
@@ -692,7 +761,7 @@ fn FixupLEAsImpl::processInstrForSlow3OpLEA(self, I: *mut iterator, MBB: *mut Ma
         if !(false) { break; }
     }
     let mut NewOpc: u32 = getADDrrFromLEA(MI.getOpcode());
-    NewMI = BuildMI(MBB, MI, MI.getDebugLoc(), self.TII(NewOpc), DestReg)(DestReg)(Base);
+    NewMI = BuildMI(MBB, MI, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NewOpc), DestReg).addReg(DestReg, RegState {}, 0).add(Base).operator llvm::MachineInstr *();
     while true {
         {
         if DebugFlag && isCurrentDebugType("x86-fixup-leas", 1) {
@@ -702,32 +771,32 @@ fn FixupLEAsImpl::processInstrForSlow3OpLEA(self, I: *mut iterator, MBB: *mut Ma
         if !(false) { break; }
     }
     MBB.getParent().substituteDebugValuesForInst(operator(I), *NewMI, 1);
-    MBB.erase(iterator { I });
-    I = MachineInstr> { NewMI };
+    MBB.erase(I);
+    I = NewMI;
 }
 
 fn FixupLEAsLegacy::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
     if self.skipFunction(MF.getFunction()) {
         return false;
     }
-    let mut PSI: *mut auto = operator&();
-    let mut MBFI: *mut auto = if (PSI() && ()) { operator&() } else { null };
-    let mut PassImpl: FixupLEAsImpl = PSI();
+    let mut PSI: *mut ProfileSummaryInfo = &mut self.getAnalysis().getPSI();
+    let mut MBFI: *mut MachineBlockFrequencyInfo = if (PSI && PSI.hasProfileSummary()) { &mut self.getAnalysis().getBFI() } else { null };
+    let mut PassImpl: FixupLEAsImpl = FixupLEAsImpl { PSI, MBFI };
     return PassImpl.runOnMachineFunction(MF);
 }
 
 fn X86FixupLEAsPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
-    let mut PSI: *mut ProfileSummaryInfo = MFAM(*MF.getFunction().getParent());
+    let mut PSI: *mut ProfileSummaryInfo = MFAM.getResult(MF).getCachedResult(*MF.getFunction().getParent());
     if !PSI {
         report_fatal_error("x86-fixup-leas requires ProfileSummaryAnalysis", false);
     }
-    let mut MBFI: *mut MachineBlockFrequencyInfo = operator&(MFAM);
+    let mut MBFI: *mut MachineBlockFrequencyInfo = &mut MFAM.getResult(MF);
     let mut PassImpl: FixupLEAsImpl = FixupLEAsImpl { PSI, MBFI };
     let mut Changed: bool = PassImpl.runOnMachineFunction(MF);
     if !Changed {
         return all();
     }
     let mut PA: PreservedAnalyses = getMachineFunctionPassPreservedAnalyses();
-    PA;
+    PA.preserveSet();
     return PA;
 }

@@ -5,9 +5,9 @@ enum CodeLayoutOpt {
     LLVM_BITMASK_LARGEST_ENUMERATOR = 3,
 }
 
-static mut EnableCodeAlignment: i32 = "aarch64-code-layout-opt-enable";
+static mut EnableCodeAlignment: list<CodeLayoutOpt> = list<CodeLayoutOpt> { "aarch64-code-layout-opt-enable", Hidden, CommaSeparated, "Enable code alignment optimization for instruction pairs", values(OptionEnumValue { Name: "none", Value: None, Description: "Disable the code alignment pass" }, OptionEnumValue { Name: "cmp-csel", Value: CmpCsel, Description: "CMP/CMN-CSEL pair alignment (32-bit)" }, OptionEnumValue { Name: "fcmp-fcsel", Value: FcmpFcsel, Description: "FCMP-FCSEL pair alignment" }) };
 
-static mut FunctionAlignBytes: i32 = "aarch64-code-layout-opt-align-functions";
+static mut FunctionAlignBytes: opt<unsigned int> = opt<unsigned int> { "aarch64-code-layout-opt-align-functions", Hidden, "Function alignment in bytes for code layout optimization (must be a power of 2)", init(64) };
 
 static mut NumFunctionsAligned: Statistic = Statistic { "aarch64-code-layout-opt", "NumFunctionsAligned", "Number of functions with aligned (to 64-bytes by default)" };
 
@@ -67,7 +67,7 @@ static mut ID: i8 = 0;
 
 fn AArch64CodeLayoutOpt::getAnalysisUsage(self: *AArch64CodeLayoutOpt, AU: *mut AnalysisUsage) {
     AU.setPreservesAll();
-    self.getAnalysisUsage;
+    self.getAnalysisUsage(AU);
 }
 
 fn createAArch64CodeLayoutOptPass() -> *mut FunctionPass {
@@ -76,6 +76,9 @@ fn createAArch64CodeLayoutOptPass() -> *mut FunctionPass {
 
 fn isFloatingPointCompare(Opc: u32) -> bool {
     match Opc {
+        FCMPSrr => {
+            FCMPDrr;
+        },
         _ => {
             return false;
         },
@@ -84,6 +87,9 @@ fn isFloatingPointCompare(Opc: u32) -> bool {
 
 fn isFloatingPointConditionalSelect(Opc: u32) -> bool {
     match Opc {
+        FCSELSrrr => {
+            FCSELDrrr;
+        },
         _ => {
             return false;
         },
@@ -92,6 +98,18 @@ fn isFloatingPointConditionalSelect(Opc: u32) -> bool {
 
 fn isQualifyingIntCompare(MI: *MachineInstr) -> bool {
     match MI.getOpcode() {
+        SUBSWrr => {
+            ADDSWrr;
+        },
+        SUBSWri => {
+            ADDSWri;
+        },
+        SUBSWrs => {
+            ADDSWrs;
+        },
+        SUBSWrx => {
+            return MI.definesRegister(WZR, null) && !hasExtendedReg(MI);
+        },
         _ => {
             return false;
         },
@@ -103,26 +121,26 @@ fn AArch64CodeLayoutOpt::runOnMachineFunction(self, MF: *mut MachineFunction) ->
     if F.hasOptSize() {
         return false;
     }
-    let mut Subtarget: *auto = operator&(MF);
-    if Subtarget()() {
+    let mut Subtarget: *AArch64Subtarget const = &mut MF.getSubtarget();
+    if Subtarget.isTargetWindows() {
         return false;
     }
-    self.TII = ();
+    self.TII = Subtarget.getInstrInfo();
     let mut CLO: CodeLayoutOpt = None;
-    if EnableCodeAlignment()() {
-        if is_contained(CmpCsel) {
-            CLO(CmpCsel);
+    if EnableCodeAlignment.getNumOccurrences() {
+        if is_contained(EnableCodeAlignment, CmpCsel) {
+            operator(CLO, CmpCsel);
         }
-        if is_contained(FcmpFcsel) {
-            CLO(FcmpFcsel);
+        if is_contained(EnableCodeAlignment, FcmpFcsel) {
+            operator(CLO, FcmpFcsel);
         }
     } else {
-        if Subtarget()() {
-            if Subtarget()() {
-                CLO(CmpCsel);
+        if Subtarget.hasAlignCmpCSelPairs() {
+            if Subtarget.hasFuseCmpCSel() {
+                operator(CLO, CmpCsel);
             }
-            if Subtarget()() {
-                CLO(FcmpFcsel);
+            if Subtarget.hasFuseFCmpFCSel() {
+                operator(CLO, FcmpFcsel);
             }
         }
     }
@@ -134,19 +152,45 @@ fn AArch64CodeLayoutOpt::runOnMachineFunction(self, MF: *mut MachineFunction) ->
 
 fn AArch64CodeLayoutOpt::emitP2Align(self, MI: *mut MachineInstr, DesiredAlign: Align, MaxSkipBytes: u32) {
     let mut MBB: *mut MachineBasicBlock = MI.getParent();
-    let mut FirstReal: auto = skipDebugInstructionsForward(MBB()(), MBB()());
-    if operator&(operator*()) != &mut MI {
-        let mut PrevIt: auto = prev_nodbg(MI()(), MBB()());
-        MBB = MBB.splitAt(operator*(), true);
+    let mut FirstReal: MachineInstr, true, true, void, false, void>, false, false> = skipDebugInstructionsForward(MBB.instr_begin(), MBB.instr_end(), true);
+    if &mut operator(FirstReal) != &mut MI {
+        let mut PrevIt: MachineInstr, true, true, void, false, void>, false, false> = prev_nodbg(MI.getIterator(), MBB.instr_begin(), true);
+        MBB = MBB.splitAt(operator(PrevIt), true, null);
     }
     MBB.setAlignment(DesiredAlign);
     MBB.setMaxBytesForAlignment(MaxSkipBytes);
 }
 
 fn AArch64CodeLayoutOpt::alignLayoutSensitivePatterns(self, MBB: *mut MachineBasicBlock, CLO: CodeLayoutOpt) -> bool {
-    let mut End: auto = MBB()();
-    let mut Pairs: pair<MachineInstr *, bool>, 4> = zeroed();
-    return operator!();
+    let mut End: instr_iterator = MBB.instr_end();
+    let mut Pairs: pair<MachineInstr *, bool>, 4> = pair<MachineInstr *, bool>, 4> {};
+    for MI in instructionsWithoutDebug(MBB.begin(), MBB.end(), true) {
+        let mut NextIt: MachineInstr, true, true, void, false, void>, false, false> = skipDebugInstructionsForward(next(MI.getIterator(), 1), End, true);
+        if NextIt == End {
+            break;
+        }
+        if (CLO & CmpCsel) && isQualifyingIntCompare(MI) && operator(NextIt).getOpcode() == CSELWr {
+            Pairs.push(ValueParamT { &mut MI, true });
+            continue;
+        }
+        if (CLO & FcmpFcsel) && isFloatingPointCompare(MI.getOpcode()) && isFloatingPointConditionalSelect(operator(NextIt).getOpcode()) {
+            Pairs.push(ValueParamT { &mut MI, false });
+            continue;
+        }
+    }
+    for x in Pairs {
+        self.emitP2Align(*MI, 64, 4);
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("aarch64-code-layout-opt", 1) {
+                dbgs() << "aarch64-code-layout-opt: " << ".p2align 6, , 4 before " << *MI;
+            }
+        }
+            if !(false) { break; }
+        }
+        operator((if IsCmpCsel { NumCmpCselPairsDetected } else { NumFcmpFcselPairsDetected }));
+    }
+    return !Pairs.is_empty();
 }
 
 fn AArch64CodeLayoutOpt::optimizeForCodeLayout(self, MF: *mut MachineFunction, CLO: CodeLayoutOpt) -> bool {
@@ -159,19 +203,22 @@ fn AArch64CodeLayoutOpt::optimizeForCodeLayout(self, MF: *mut MachineFunction, C
         if !(false) { break; }
     }
     let mut Changed: bool = false;
+    for MBB in MF {
+        Changed |= self.alignLayoutSensitivePatterns(&mut MBB, CLO);
+    }
     if !Changed {
         return false;
     }
-    if operator!(isPowerOf2_32()) {
+    if !isPowerOf2_32(FunctionAlignBytes.operator unsigned int()) {
         reportFatalUsageError("aarch64-code-layout-opt-align-functions must be a power of 2");
     }
-    if MF.getAlignment() <  {
-        MF.setAlignment();
+    if MF.getAlignment() < FunctionAlignBytes.operator unsigned int() {
+        MF.setAlignment(FunctionAlignBytes.operator unsigned int());
         operator(NumFunctionsAligned);
         while true {
             {
             if DebugFlag && isCurrentDebugType("aarch64-code-layout-opt", 1) {
-                dbgs() << "aarch64-code-layout-opt: " << "Set " <<  << "-byte alignment for function " << MF.getName() << "\n";
+                dbgs() << "aarch64-code-layout-opt: " << "Set " << FunctionAlignBytes.operator unsigned int() << "-byte alignment for function " << MF.getName() << "\n";
             }
         }
             if !(false) { break; }

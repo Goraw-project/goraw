@@ -1,4 +1,4 @@
-static mut X86EnableMachineCombinerPass: i32 = 0;
+static mut X86EnableMachineCombinerPass: opt<bool> = zeroed();
 
 struct X86CodeGenPassBuilder {
     TM: *mut TargetMachine,
@@ -11,7 +11,9 @@ struct X86CodeGenPassBuilder {
     AddInCGSCCOrder: bool,
 }
 
-fn X86CodeGenPassBuilder::getTM(self: *X86CodeGenPassBuilder) -> *mut X86TargetMachine {}
+fn X86CodeGenPassBuilder::getTM(self: *X86CodeGenPassBuilder) -> *mut X86TargetMachine {
+    return self.TM as X86TargetMachine;
+}
 
 fn X86CodeGenPassBuilder::getPassInstrumentationCallbacks(self: *X86CodeGenPassBuilder) -> *mut PassInstrumentationCallbacks {
     return self.PIC;
@@ -62,14 +64,22 @@ fn X86CodeGenPassBuilder::runBeforeAdding(self, Name: str) -> bool {
 }
 
 fn X86CodeGenPassBuilder::addIRPasses(self, PMW: *mut PassManagerWrapper) {
+    self.addFunctionPass(self.TM, PMW, false, name());
+    self.addFunctionPass(&mut self.TM, PMW, false, name());
+    self.addFunctionPass(&mut self.TM, PMW, false, name());
     self.addIRPasses(PMW);
-    if self.getOptLevel() != None {}
+    if self.getOptLevel() != None {
+        self.addFunctionPass(self.TM, PMW, false, name());
+        self.addFunctionPass(&mut self.getTM(), PMW, false, name());
+    }
+    self.addFunctionPass(self.TM, PMW, false, name());
     let mut TT: *Triple = self.TM.getTargetTriple();
     if TT.isOSWindows() {
-        
+        self.addFunctionPass(CFGuardPass {}, PMW, false, name());
     }
     if self.TM.Options.JMCInstrument {
         self.flushFPMsToMPM(PMW, false);
+        self.addModulePass(JMCInstrumenterPass {}, PMW, false, name());
     }
 }
 
@@ -77,118 +87,490 @@ fn X86CodeGenPassBuilder::addPreISel(self, PMW: *mut PassManagerWrapper) {
     let mut TT: *Triple = self.TM.getTargetTriple();
     if TT.isOSWindows() && TT.isX86_32() {
         self.flushFPMsToMPM(PMW, false);
+        self.addModulePass(X86WinEHStatePass {}, PMW, false, name());
     }
 }
 
 fn X86CodeGenPassBuilder::addInstSelector(self, PMW: *mut PassManagerWrapper) -> Error {
-    if self.TM.getTargetTriple().isOSBinFormatELF() && self.getOptLevel() != None {}
+    self.addMachineFunctionPass(self.getTM(), PMW, false, name());
+    if self.TM.getTargetTriple().isOSBinFormatELF() && self.getOptLevel() != None {
+        self.addMachineFunctionPass(X86CleanupLocalDynamicTLSPass {}, PMW, false, name());
+    }
+    self.addMachineFunctionPass(X86GlobalBaseRegPass {}, PMW, false, name());
+    self.addMachineFunctionPass(X86ArgumentStackSlotPass {}, PMW, false, name());
     return success();
 }
 
 fn X86CodeGenPassBuilder::addIRTranslator(self, PMW: *mut PassManagerWrapper) -> Error {
+    self.addMachineFunctionPass(self.getOptLevel(), PMW, false, name());
     return success();
 }
 
 fn X86CodeGenPassBuilder::addPreLegalizeMachineIR(self, PMW: *mut PassManagerWrapper) {
     if self.getOptLevel() != None {
-        
+        self.addMachineFunctionPass(X86PreLegalizerCombinerPass {}, PMW, false, name());
     }
 }
 
 fn X86CodeGenPassBuilder::addLegalizeMachineIR(self, PMW: *mut PassManagerWrapper) -> Error {
+    self.addMachineFunctionPass(LegalizerPass {}, PMW, false, name());
     return success();
 }
 
 fn X86CodeGenPassBuilder::addPreRegBankSelect(self, PMW: *mut PassManagerWrapper) {
     if self.getOptLevel() != None {
-        
+        self.addMachineFunctionPass(X86PostLegalizerCombinerPass {}, PMW, false, name());
     }
 }
 
 fn X86CodeGenPassBuilder::addRegBankSelect(self, PMW: *mut PassManagerWrapper) -> Error {
+    self.addMachineFunctionPass(RegBankSelectPass { OptMode: Fast }, PMW, false, name());
     return success();
 }
 
 fn X86CodeGenPassBuilder::addGlobalInstructionSelect(self, PMW: *mut PassManagerWrapper) -> Error {
+    self.addMachineFunctionPass(InstructionSelectPass { OptLevel: self.getOptLevel(), RequireRegBankSelection: true }, PMW, false, name());
     if self.isGlobalISelAbortEnabled() {
-        
+        self.addMachineFunctionPass(X86GlobalBaseRegPass {}, PMW, false, name());
     }
     return success();
 }
 
 fn X86CodeGenPassBuilder::addILPOpts(self, PMW: *mut PassManagerWrapper) {
-    if X86EnableMachineCombinerPass() {
-        
+    self.addMachineFunctionPass(EarlyIfConverterPass {}, PMW, false, name());
+    if X86EnableMachineCombinerPass {
+        self.addMachineFunctionPass(MachineCombinerPass {}, PMW, false, name());
     }
+    self.addMachineFunctionPass(X86CmovConversionPass {}, PMW, false, name());
 }
 
 fn X86CodeGenPassBuilder::addMachineSSAOptimization(self, PMW: *mut PassManagerWrapper) {
+    self.addMachineFunctionPass(X86DomainReassignmentPass {}, PMW, false, name());
     self.addMachineSSAOptimization(PMW);
 }
 
 fn X86CodeGenPassBuilder::addPreRegAlloc(self, PMW: *mut PassManagerWrapper) {
-    if self.getOptLevel() != None {}
     if self.getOptLevel() != None {
-        
+        self.addMachineFunctionPass(LiveRangeShrinkPass {}, PMW, false, name());
+        self.addMachineFunctionPass(X86FixupSetCCPass {}, PMW, false, name());
+        self.addMachineFunctionPass(X86CallFrameOptimizationPass {}, PMW, false, name());
+        self.addMachineFunctionPass(X86AvoidStoreForwardingBlocksPass {}, PMW, false, name());
+    }
+    self.addMachineFunctionPass(X86SuppressAPXForRelocationPass {}, PMW, false, name());
+    self.addMachineFunctionPass(X86SpeculativeLoadHardeningPass {}, PMW, false, name());
+    self.addMachineFunctionPass(X86FlagsCopyLoweringPass {}, PMW, false, name());
+    self.addMachineFunctionPass(X86DynAllocaExpanderPass {}, PMW, false, name());
+    if self.getOptLevel() != None {
+        self.addMachineFunctionPass(X86PreTileConfigPass {}, PMW, false, name());
     } else {
-        
+        self.addMachineFunctionPass(X86FastPreTileConfigPass {}, PMW, false, name());
     }
 }
 
 fn X86CodeGenPassBuilder::addPostRegAlloc(self, PMW: *mut PassManagerWrapper) {
-    if self.getOptLevel() != None {}
+    self.addMachineFunctionPass(X86LowerTileCopyPass {}, PMW, false, name());
+    self.addMachineFunctionPass(X86FPStackifierPass {}, PMW, false, name());
+    if self.getOptLevel() != None {
+        self.addMachineFunctionPass(X86LoadValueInjectionLoadHardeningPass {}, PMW, false, name());
+    }
 }
 
-fn X86CodeGenPassBuilder::addPreSched2(self, PMW: *mut PassManagerWrapper) {}
+fn X86CodeGenPassBuilder::addPreSched2(self, PMW: *mut PassManagerWrapper) {
+    self.addMachineFunctionPass(X86ExpandPseudoPass {}, PMW, false, name());
+    self.addMachineFunctionPass(MachineKCFIPass {}, PMW, false, name());
+}
 
 fn X86CodeGenPassBuilder::addPreEmitPass(self, PMW: *mut PassManagerWrapper) {
-    if self.getOptLevel() != None {}
-    if self.getOptLevel() != None {}
+    if self.getOptLevel() != None {
+        self.addMachineFunctionPass(BreakFalseDepsPass {}, PMW, false, name());
+    }
+    self.addMachineFunctionPass(X86IndirectBranchTrackingPass {}, PMW, false, name());
+    self.addMachineFunctionPass(X86InsertVZeroUpperPass {}, PMW, false, name());
+    if self.getOptLevel() != None {
+        self.addMachineFunctionPass(X86FixupBWInstsPass {}, PMW, false, name());
+        self.addMachineFunctionPass(X86FixupLEAsPass {}, PMW, false, name());
+        self.addMachineFunctionPass(X86FixupInstTuningPass {}, PMW, false, name());
+        self.addMachineFunctionPass(X86FixupVectorConstantsPass {}, PMW, false, name());
+    }
+    self.addMachineFunctionPass(X86CompressEVEXPass {}, PMW, false, name());
+    self.addMachineFunctionPass(X86InsertX87WaitPass {}, PMW, false, name());
     if self.TM.getTargetTriple().isLFI() {
-        
+        self.addMachineFunctionPass(X86LFIRewritePass {}, PMW, false, name());
     }
 }
 
 fn X86CodeGenPassBuilder::addPreEmitPass2(self, PMW: *mut PassManagerWrapper) {
     let mut TT: *Triple = self.TM.getTargetTriple();
     let mut MAI: *MCAsmInfo = self.TM.getMCAsmInfo();
+    self.addMachineFunctionPass(X86SpeculativeExecutionSideEffectSuppressionPass {}, PMW, false, name());
+    self.addMachineFunctionPass(X86ReturnThunksPass {}, PMW, false, name());
     if TT.isOSWindows() && TT.isX86_64() {
-        
+        self.addMachineFunctionPass(X86AvoidTrailingCallPass {}, PMW, false, name());
     }
     if !TT.isOSDarwin() && (!TT.isOSWindows() || MAI.getExceptionHandlingType() == DwarfCFI) {
-        
+        self.addMachineFunctionPass(CFIInstrInserterPass {}, PMW, false, name());
     }
-    if TT.isOSWindows() {}
-    if TT.isOSWindows() && TT.isX86_64() {}
+    if TT.isOSWindows() {
+        self.addMachineFunctionPass(EHContGuardTargetsPass {}, PMW, false, name());
+    }
+    self.addMachineFunctionPass(X86LoadValueInjectionRetHardeningPass {}, PMW, false, name());
+    self.addMachineFunctionPass(Closure_1 { TT: &mut TT }, PMW, false, name());
+    if TT.isOSWindows() && TT.isX86_64() {
+        self.addMachineFunctionPass(X86WinEHUnwindV2Pass {}, PMW, false, name());
+    }
 }
 
-fn X86CodeGenPassBuilder::addAsmPrinterBegin(self, PMW: *mut PassManagerWrapper) {}
+fn X86CodeGenPassBuilder::addAsmPrinterBegin(self, PMW: *mut PassManagerWrapper) {
+    self.addModulePass(X86AsmPrinterBeginPass {}, PMW, true, name());
+}
 
-fn X86CodeGenPassBuilder::addAsmPrinter(self, PMW: *mut PassManagerWrapper) {}
+fn X86CodeGenPassBuilder::addAsmPrinter(self, PMW: *mut PassManagerWrapper) {
+    self.addMachineFunctionPass(X86AsmPrinterPass {}, PMW, false, name());
+}
 
-fn X86CodeGenPassBuilder::addAsmPrinterEnd(self, PMW: *mut PassManagerWrapper) {}
+fn X86CodeGenPassBuilder::addAsmPrinterEnd(self, PMW: *mut PassManagerWrapper) {
+    self.addModulePass(X86AsmPrinterEndPass {}, PMW, true, name());
+}
 
 fn X86TargetMachine::registerPassBuilderCallbacks(self, PB: *mut PassBuilder) {
     let mut PIC: *mut PassInstrumentationCallbacks = PB.getPassInstrumentationCallbacks();
     if PIC {
-        PIC;
+        PIC.registerClassToPassNameCallback(Closure_2 { cap_0: self, PIC: PIC });
     }
-    PB;
-    PB;
-    PB;
-    PB;
-    PB;
-    PB;
-    PB;
-    PB;
-    PB;
-    PB;
-    PB.registerParseAACallback;
-    PB;
-    PB;
+    PB.registerPipelineParsingCallback(Closure_3 {});
+    PB.registerPipelineParsingCallback(Closure_4 {});
+    PB.registerPipelineParsingCallback(Closure_5 { cap_0: self });
+    PB.registerPipelineParsingCallback(Closure_6 {});
+    PB.registerPipelineParsingCallback(Closure_7 {});
+    PB.registerPipelineParsingCallback(Closure_8 { cap_0: self });
+    PB.registerPipelineParsingCallback(Closure_9 {});
+    PB.registerPipelineParsingCallback(Closure_10 {});
+    PB.registerAnalysisRegistrationCallback(Closure_11 {});
+    PB.registerAnalysisRegistrationCallback(Closure_12 {});
+    PB.registerParseAACallback(Closure_13 {});
+    PB.registerAnalysisRegistrationCallback(Closure_14 {});
+    PB.registerAnalysisRegistrationCallback(Closure_15 {});
 }
 
 fn X86TargetMachine::buildCodeGenPipeline(self, MPM: *mut ModulePassManager, MAM: *mut ModuleAnalysisManager, Out: *mut raw_pwrite_stream, DwoOut: *mut raw_pwrite_stream, FileType: CodeGenFileType, Opt: *CGPassBuilderOption, Ctx: *mut MCContext, PIC: *mut PassInstrumentationCallbacks) -> Error {
     let mut CGPB: X86CodeGenPassBuilder = X86CodeGenPassBuilder { *self, Opt, PIC };
     return CGPB.buildPipeline(MPM, MAM, Out, DwoOut, FileType, Ctx);
 }
+
+struct Closure_1 {
+    TT: *mut Triple,
+}
+
+unsafe fn Closure_1::call(self: *mut Closure_1, MF: *MachineFunction) -> bool {
+        let mut F: *Function = MF.getFunction();
+        let mut M: *Module = F.getParent();
+        return M.getModuleFlag("kcfi") || ((*self.TT).isOSDarwin() && (M.getFunction("objc_retainAutoreleasedReturnValue") || M.getFunction("objc_unsafeClaimAutoreleasedReturnValue")));
+    }
+
+struct Closure_2 {
+    cap_0: *mut X86TargetMachine,
+    PIC: *mut PassInstrumentationCallbacks,
+}
+
+fn Closure_2::call(self: *Closure_2) {
+            self as void;
+            self.PIC.addClassToPassName(name(), "x86-asm-printer-begin");
+            self.PIC.addClassToPassName(name(), "x86-asm-printer-end");
+            self.PIC.addClassToPassName(name(), "x86-winehstate");
+            self.PIC.addClassToPassName(name(), "x86-lower-amx-intrinsics");
+            self.PIC.addClassToPassName(name(), "x86-lower-amx-type");
+            self.PIC.addClassToPassName(name(), "x86-partial-reduction");
+            self.PIC.addClassToPassName(name(), "x86-argument-stack-slot");
+            self.PIC.addClassToPassName(name(), "x86-asm-printer");
+            self.PIC.addClassToPassName(name(), "x86-avoid-sfb");
+            self.PIC.addClassToPassName(name(), "x86-avoid-trailing-call");
+            self.PIC.addClassToPassName(name(), "x86-cf-opt");
+            self.PIC.addClassToPassName(name(), "x86-cleanup-local-dynamic-tls");
+            self.PIC.addClassToPassName(name(), "x86-cmov-conversion");
+            self.PIC.addClassToPassName(name(), "x86-compress-evex");
+            self.PIC.addClassToPassName(name(), "x86-domain-reassignment");
+            self.PIC.addClassToPassName(name(), "x86-dyn-alloca-expander");
+            self.PIC.addClassToPassName(name(), "x86-expand-pseudo");
+            self.PIC.addClassToPassName(name(), "x86-fast-pre-tile-config");
+            self.PIC.addClassToPassName(name(), "x86-fast-tile-config");
+            self.PIC.addClassToPassName(name(), "x86-fixup-bw-insts");
+            self.PIC.addClassToPassName(name(), "x86-fixup-inst-tuning");
+            self.PIC.addClassToPassName(name(), "x86-fixup-leas");
+            self.PIC.addClassToPassName(name(), "x86-fixup-setcc");
+            self.PIC.addClassToPassName(name(), "x86-fixup-vector-constants");
+            self.PIC.addClassToPassName(name(), "x86-flags-copy-lowering");
+            self.PIC.addClassToPassName(name(), "x86-fp-stackifier");
+            self.PIC.addClassToPassName(name(), "x86-global-base-reg");
+            self.PIC.addClassToPassName(name(), "x86-indirect-branch-tracking");
+            self.PIC.addClassToPassName(name(), "x86-insert-vzeroupper");
+            self.PIC.addClassToPassName(name(), "x86-insert-x87-wait");
+            self.PIC.addClassToPassName(name(), "x86-isel");
+            self.PIC.addClassToPassName(name(), "x86-lfi-rewrite");
+            self.PIC.addClassToPassName(name(), "x86-lower-tile-copy");
+            self.PIC.addClassToPassName(name(), "x86-lvi-load");
+            self.PIC.addClassToPassName(name(), "x86-lvi-ret");
+            self.PIC.addClassToPassName(name(), "x86-optimize-leas");
+            self.PIC.addClassToPassName(name(), "x86-postlegalizer-combiner-pass");
+            self.PIC.addClassToPassName(name(), "x86-pre-tile-config");
+            self.PIC.addClassToPassName(name(), "x86-prelegalizer-combiner-pass");
+            self.PIC.addClassToPassName(name(), "x86-return-thunks");
+            self.PIC.addClassToPassName(name(), "x86-seses");
+            self.PIC.addClassToPassName(name(), "x86-slh");
+            self.PIC.addClassToPassName(name(), "x86-suppress-apx-for-relocation");
+            self.PIC.addClassToPassName(name(), "x86-tile-config");
+            self.PIC.addClassToPassName(name(), "x86-wineh-unwindv2");
+        }
+
+struct Closure_3 {}
+
+fn Closure_3::call(self: *Closure_3, Name: str, PM: *mut ModulePassManager, arg: PipelineElement>) -> bool {
+        if Name == "x86-asm-printer-begin" {
+            PM.addPass(X86AsmPrinterBeginPass {});
+            return true;
+        }
+        if Name == "x86-asm-printer-end" {
+            PM.addPass(X86AsmPrinterEndPass {});
+            return true;
+        }
+        if Name == "x86-winehstate" {
+            PM.addPass(X86WinEHStatePass {});
+            return true;
+        }
+        return false;
+    }
+
+struct Closure_4 {}
+
+fn Closure_4::call(self: *Closure_4, Name: str, PM: *mut ModulePassManager, arg: PipelineElement>) -> bool {
+        return false;
+    }
+
+struct Closure_5 {
+    cap_0: *mut X86TargetMachine,
+}
+
+fn Closure_5::call(self: *Closure_5, Name: str, PM: *mut FunctionPassManager, arg: PipelineElement>) -> bool {
+        if Name == "x86-lower-amx-intrinsics" {
+            PM.addPass(self);
+            return true;
+        }
+        if Name == "x86-lower-amx-type" {
+            PM.addPass(self);
+            return true;
+        }
+        if Name == "x86-partial-reduction" {
+            PM.addPass(self);
+            return true;
+        }
+        return false;
+    }
+
+struct Closure_6 {}
+
+fn Closure_6::call(self: *Closure_6, Name: str, PM: *mut FunctionPassManager, arg: PipelineElement>) -> bool {
+        return false;
+    }
+
+struct Closure_7 {}
+
+fn Closure_7::call(self: *Closure_7, Name: str, PM: *mut LoopPassManager, arg: PipelineElement>) -> bool {
+        return false;
+    }
+
+struct Closure_8 {
+    cap_0: *mut X86TargetMachine,
+}
+
+fn Closure_8::call(self: *Closure_8, Name: str, PM: *mut MachineFunctionPassManager, arg: PipelineElement>) -> bool {
+        if Name == "x86-argument-stack-slot" {
+            PM.addPass(X86ArgumentStackSlotPass {});
+            return true;
+        }
+        if Name == "x86-asm-printer" {
+            PM.addPass(X86AsmPrinterPass {});
+            return true;
+        }
+        if Name == "x86-avoid-sfb" {
+            PM.addPass(X86AvoidStoreForwardingBlocksPass {});
+            return true;
+        }
+        if Name == "x86-avoid-trailing-call" {
+            PM.addPass(X86AvoidTrailingCallPass {});
+            return true;
+        }
+        if Name == "x86-cf-opt" {
+            PM.addPass(X86CallFrameOptimizationPass {});
+            return true;
+        }
+        if Name == "x86-cleanup-local-dynamic-tls" {
+            PM.addPass(X86CleanupLocalDynamicTLSPass {});
+            return true;
+        }
+        if Name == "x86-cmov-conversion" {
+            PM.addPass(X86CmovConversionPass {});
+            return true;
+        }
+        if Name == "x86-compress-evex" {
+            PM.addPass(X86CompressEVEXPass {});
+            return true;
+        }
+        if Name == "x86-domain-reassignment" {
+            PM.addPass(X86DomainReassignmentPass {});
+            return true;
+        }
+        if Name == "x86-dyn-alloca-expander" {
+            PM.addPass(X86DynAllocaExpanderPass {});
+            return true;
+        }
+        if Name == "x86-expand-pseudo" {
+            PM.addPass(X86ExpandPseudoPass {});
+            return true;
+        }
+        if Name == "x86-fast-pre-tile-config" {
+            PM.addPass(X86FastPreTileConfigPass {});
+            return true;
+        }
+        if Name == "x86-fast-tile-config" {
+            PM.addPass(X86FastTileConfigPass {});
+            return true;
+        }
+        if Name == "x86-fixup-bw-insts" {
+            PM.addPass(X86FixupBWInstsPass {});
+            return true;
+        }
+        if Name == "x86-fixup-inst-tuning" {
+            PM.addPass(X86FixupInstTuningPass {});
+            return true;
+        }
+        if Name == "x86-fixup-leas" {
+            PM.addPass(X86FixupLEAsPass {});
+            return true;
+        }
+        if Name == "x86-fixup-setcc" {
+            PM.addPass(X86FixupSetCCPass {});
+            return true;
+        }
+        if Name == "x86-fixup-vector-constants" {
+            PM.addPass(X86FixupVectorConstantsPass {});
+            return true;
+        }
+        if Name == "x86-flags-copy-lowering" {
+            PM.addPass(X86FlagsCopyLoweringPass {});
+            return true;
+        }
+        if Name == "x86-fp-stackifier" {
+            PM.addPass(X86FPStackifierPass {});
+            return true;
+        }
+        if Name == "x86-global-base-reg" {
+            PM.addPass(X86GlobalBaseRegPass {});
+            return true;
+        }
+        if Name == "x86-indirect-branch-tracking" {
+            PM.addPass(X86IndirectBranchTrackingPass {});
+            return true;
+        }
+        if Name == "x86-insert-vzeroupper" {
+            PM.addPass(X86InsertVZeroUpperPass {});
+            return true;
+        }
+        if Name == "x86-insert-x87-wait" {
+            PM.addPass(X86InsertX87WaitPass {});
+            return true;
+        }
+        if Name == "x86-isel" {
+            PM.addPass(*self);
+            return true;
+        }
+        if Name == "x86-lfi-rewrite" {
+            PM.addPass(X86LFIRewritePass {});
+            return true;
+        }
+        if Name == "x86-lower-tile-copy" {
+            PM.addPass(X86LowerTileCopyPass {});
+            return true;
+        }
+        if Name == "x86-lvi-load" {
+            PM.addPass(X86LoadValueInjectionLoadHardeningPass {});
+            return true;
+        }
+        if Name == "x86-lvi-ret" {
+            PM.addPass(X86LoadValueInjectionRetHardeningPass {});
+            return true;
+        }
+        if Name == "x86-optimize-leas" {
+            PM.addPass(X86OptimizeLEAsPass {});
+            return true;
+        }
+        if Name == "x86-postlegalizer-combiner-pass" {
+            PM.addPass(X86PostLegalizerCombinerPass {});
+            return true;
+        }
+        if Name == "x86-pre-tile-config" {
+            PM.addPass(X86PreTileConfigPass {});
+            return true;
+        }
+        if Name == "x86-prelegalizer-combiner-pass" {
+            PM.addPass(X86PreLegalizerCombinerPass {});
+            return true;
+        }
+        if Name == "x86-return-thunks" {
+            PM.addPass(X86ReturnThunksPass {});
+            return true;
+        }
+        if Name == "x86-seses" {
+            PM.addPass(X86SpeculativeExecutionSideEffectSuppressionPass {});
+            return true;
+        }
+        if Name == "x86-slh" {
+            PM.addPass(X86SpeculativeLoadHardeningPass {});
+            return true;
+        }
+        if Name == "x86-suppress-apx-for-relocation" {
+            PM.addPass(X86SuppressAPXForRelocationPass {});
+            return true;
+        }
+        if Name == "x86-tile-config" {
+            PM.addPass(X86TileConfigPass {});
+            return true;
+        }
+        if Name == "x86-wineh-unwindv2" {
+            PM.addPass(X86WinEHUnwindV2Pass {});
+            return true;
+        }
+        return false;
+    }
+
+struct Closure_9 {}
+
+fn Closure_9::call(self: *Closure_9, Name: str, PM: *mut FunctionPassManager, arg: PipelineElement>) -> bool {
+        return false;
+    }
+
+struct Closure_10 {}
+
+fn Closure_10::call(self: *Closure_10, Name: str, PM: *mut MachineFunctionPassManager, arg: PipelineElement>) -> bool {
+        return false;
+    }
+
+struct Closure_11 {}
+
+fn Closure_11::call(self: *Closure_11, AM: *mut ModuleAnalysisManager) {}
+
+struct Closure_12 {}
+
+fn Closure_12::call(self: *Closure_12, AM: *mut FunctionAnalysisManager) {}
+
+struct Closure_13 {}
+
+fn Closure_13::call(self: *Closure_13, Name: str, AM: *mut AAManager) -> bool {
+        return false;
+    }
+
+struct Closure_14 {}
+
+fn Closure_14::call(self: *Closure_14, AM: *mut LoopAnalysisManager) {}
+
+struct Closure_15 {}
+
+fn Closure_15::call(self: *Closure_15, AM: *mut MachineFunctionAnalysisManager) {}

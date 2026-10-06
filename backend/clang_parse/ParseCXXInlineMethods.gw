@@ -6,13 +6,13 @@ fn Parser::ParseCXXDeletedFunctionMessage(self) -> *mut StringLiteral {
     let mut BT: BalancedDelimiterTracker = BalancedDelimiterTracker { *self, l_paren, semi };
     BT.consumeOpen();
     if self.isTokenStringLiteral() {
-        let mut Res: i32 = 0;
-        if Res()() {
-            Message = ();
-             << Message.getSourceRange;
+        let mut Res: ExprResult = self.ParseUnevaluatedStringLiteralExpression();
+        if Res.isUsable() {
+            Message = Res.getAs();
+            self.DiagCompat(Message.getBeginLoc(), delete_with_message) << Message.getSourceRange();
         }
     } else {
-         << 0 << "'delete'";
+        self.Diag(self.Tok.getLocation(), err_expected_string_literal) << 0 << "'delete'";
         self.SkipUntil(r_paren, StopAtSemi | StopBeforeMatch);
     }
     BT.consumeClose();
@@ -32,25 +32,25 @@ fn Parser::SkipDeletedFunctionBody(self) {
 }
 
 fn Parser::ParseCXXInlineMethodDef(self, AS: AccessSpecifier, AccessAttrs: *ParsedAttributesView, D: *mut ParsingDeclarator, TemplateInfo: *ParsedTemplateInfo, VS: *VirtSpecifiers, PureSpecLoc: SourceLocation) -> *mut NamedDecl {
-    assert!(D, "This isn't a function declarator!");
-    assert!(self.Tok, "Current token not a '{', ':', '=', or 'try'!");
-    let mut TemplateParams: MultiTemplateParamsArg = zeroed();
+    assert!(D.isFunctionDeclarator(), "This isn't a function declarator!");
+    assert!(self.Tok.isOneOf(l_brace, colon, kw_try, equal), "Current token not a '{', ':', '=', or 'try'!");
+    let mut TemplateParams: MultiTemplateParamsArg = MultiTemplateParamsArg { if TemplateInfo.TemplateParams { TemplateInfo.TemplateParams.ptr } else { null }, if TemplateInfo.TemplateParams { TemplateInfo.TemplateParams.len } else { 0 } };
     let mut FnD: *mut NamedDecl = null;
-    if D.getDeclSpec().isFriendSpecified {
-        FnD = self.Actions.ActOnFriendFunctionDecl(self.getCurScope(), D);
+    if D.getDeclSpec().isFriendSpecified() {
+        FnD = self.Actions.ActOnFriendFunctionDecl(self.getCurScope(), D, TemplateParams);
     } else {
-        FnD = self.Actions.ActOnCXXMemberDeclarator(self.getCurScope(), AS, D, null, VS, ICIS_NoInit);
+        FnD = self.Actions.ActOnCXXMemberDeclarator(self.getCurScope(), AS, D, TemplateParams, null, VS, ICIS_NoInit);
         if FnD {
-            self.Actions.ProcessDeclAttributeList;
+            self.Actions.ProcessDeclAttributeList(self.getCurScope(), FnD, AccessAttrs, ProcessDeclAttributeOptions {});
             if PureSpecLoc.isValid() {
-                self.Actions.ActOnPureSpecifier;
+                self.Actions.ActOnPureSpecifier(FnD, PureSpecLoc);
             }
         }
     }
     if FnD {
-        self.HandleMemberFunctionDeclDelays;
+        self.HandleMemberFunctionDeclDelays(D, FnD);
     }
-    D.complete;
+    D.complete(FnD);
     if self.TryConsumeToken(equal) {
         if !FnD {
             self.SkipUntil(semi, 0 as SkipUntilFlags);
@@ -59,55 +59,59 @@ fn Parser::ParseCXXInlineMethodDef(self, AS: AccessSpecifier, AccessAttrs: *Pars
         let mut Delete: bool = false;
         let mut KWLoc: SourceLocation = SourceLocation {};
         if self.TryConsumeToken(kw_delete, KWLoc) {
-             << 1;
+            self.DiagCompat(KWLoc, defaulted_deleted_function) << 1;
             let mut Message: *mut StringLiteral = self.ParseCXXDeletedFunctionMessage();
-            self.Actions.SetDeclDeleted;
+            self.Actions.SetDeclDeleted(FnD, KWLoc, Message);
             Delete = true;
-            if  {
-                DeclAsFunction()(self.PrevTokLocation);
+            if dyn_cast(FnD) {
+                DeclAsFunction;
+            } else {
+                DeclAsFunction.setRangeEnd(self.PrevTokLocation);
             }
         } else if self.TryConsumeToken(kw_default, KWLoc) {
-             << 0;
-            self.Actions.SetDeclDefaulted;
-            if  {
-                DeclAsFunction()(self.PrevTokLocation);
+            self.DiagCompat(KWLoc, defaulted_deleted_function) << 0;
+            self.Actions.SetDeclDefaulted(FnD, KWLoc);
+            if dyn_cast(FnD) {
+                DeclAsFunction;
+            } else {
+                DeclAsFunction.setRangeEnd(self.PrevTokLocation);
             }
         } else {
-            llvm_unreachable_internal("function definition after = not 'delete' or 'default'", "clang\\lib\\Parse\\ParseCXXInlineMethods.cpp", 119);
+            llvm_unreachable_internal("function definition after = not 'delete' or 'default'", "P:/Goraw/llvm-project/clang/lib/Parse/ParseCXXInlineMethods.cpp", 119);
         }
         if self.Tok.is(comma) {
-             << Delete;
+            self.Diag(KWLoc, err_default_delete_in_multiple_declaration) << Delete;
             self.SkipUntil(semi, 0 as SkipUntilFlags);
-        } else if self.ExpectAndConsume && !self.isLikelyAtStartOfNewDeclaration() {
+        } else if self.ExpectAndConsume(semi, err_expected_after, if Delete { "delete" } else { "default" }) && !self.isLikelyAtStartOfNewDeclaration() {
             self.SkipUntil(semi, 0 as SkipUntilFlags);
         }
         return FnD;
     }
-    if self.SkipFunctionBodies && (!FnD || self.Actions.canSkipFunctionBody) && self.trySkippingFunctionBody() {
-        self.Actions.ActOnSkippedFunctionBody;
+    if self.SkipFunctionBodies && (!FnD || self.Actions.canSkipFunctionBody(FnD)) && self.trySkippingFunctionBody() {
+        self.Actions.ActOnSkippedFunctionBody(FnD);
         return FnD;
     }
-    if self.getLangOpts() && D.getFunctionDefinitionKind == Definition && operator!(D.getDeclSpec().hasConstexprSpecifier) && operator!((FnD && FnD && FnD()())) && ((self.Actions.CurContext.isDependentContext() || (TemplateInfo.Kind != NonTemplate && TemplateInfo.Kind != ExplicitSpecialization)) && !self.Actions.IsInsideALocalClassWithinATemplateFunction()) {
-        let mut Toks: CachedTokens = zeroed();
-        self.LexTemplateFunctionForLateParsing();
+    if self.getLangOpts().DelayedTemplateParsing && D.getFunctionDefinitionKind() == Definition && !D.getDeclSpec().hasConstexprSpecifier() && !(FnD && FnD.getAsFunction() && operator(FnD.getAsFunction().getReturnType()).getContainedAutoType()) && ((self.Actions.CurContext.isDependentContext() || (TemplateInfo.Kind != NonTemplate && TemplateInfo.Kind != ExplicitSpecialization)) && !self.Actions.IsInsideALocalClassWithinATemplateFunction()) {
+        let mut Toks: CachedTokens = CachedTokens {};
+        self.LexTemplateFunctionForLateParsing(Toks);
         if FnD {
-            let mut FD: *mut FunctionDecl = FnD;
+            let mut FD: *mut FunctionDecl = FnD.getAsFunction();
             self.Actions.CheckForFunctionRedefinition(FD, null, null);
-            self.Actions.MarkAsLateParsedTemplate(FD, FnD);
+            self.Actions.MarkAsLateParsedTemplate(FD, FnD, Toks);
         }
         return FnD;
     }
-    let mut LM: *mut LexedMethod = null;
-    self.getCurrentClass()(LM);
-    let mut Toks: *mut CachedTokens = LM();
+    let mut LM: *mut LexedMethod = LexedMethod { self, FnD };
+    self.getCurrentClass().LateParsedDeclarations.push(LM);
+    let mut Toks: *mut CachedTokens = LM.Toks;
     let mut kind: TokenKind = self.Tok.getKind();
     if self.ConsumeAndStoreFunctionPrologue(Toks) {
         if self.PP.isCodeCompletionEnabled() && any_of(Toks, Closure_1 {}) {
             return FnD;
         }
         self.SkipMalformedDecl();
-        self.getCurrentClass()();
-        self.getCurrentClass()();
+        self.getCurrentClass().LateParsedDeclarations.back();
+        self.getCurrentClass().LateParsedDeclarations.pop();
         return FnD;
     } else {
         self.ConsumeAndStoreUntil(r_brace, Toks, false, true);
@@ -119,28 +123,28 @@ fn Parser::ParseCXXInlineMethodDef(self, AS: AccessSpecifier, AccessAttrs: *Pars
         }
     }
     if FnD {
-        let mut FD: *mut FunctionDecl = FnD;
+        let mut FD: *mut FunctionDecl = FnD.getAsFunction();
         self.Actions.CheckForFunctionRedefinition(FD, null, null);
         FD.setWillHaveBody(true);
     } else {
-        self.getCurrentClass()();
-        self.getCurrentClass()();
+        self.getCurrentClass().LateParsedDeclarations.back();
+        self.getCurrentClass().LateParsedDeclarations.pop();
     }
     return FnD;
 }
 
 fn Parser::ParseCXXNonStaticMemberInitializer(self, VarD: *mut Decl) {
-    assert!(self.Tok, "Current token not a '{' or '='!");
+    assert!(self.Tok.isOneOf(l_brace, equal), "Current token not a '{' or '='!");
     let mut MI: *mut LateParsedMemberInitializer = LateParsedMemberInitializer { self, VarD };
-    self.getCurrentClass()(MI);
-    let mut Toks: *mut CachedTokens = MI();
+    self.getCurrentClass().LateParsedDeclarations.push(MI);
+    let mut Toks: *mut CachedTokens = MI.Toks;
     let mut kind: TokenKind = self.Tok.getKind();
     if kind == equal {
-        Toks()(self.Tok);
+        Toks.push(self.Tok);
         self.ConsumeToken();
     }
     if kind == l_brace {
-        Toks()(self.Tok);
+        Toks.push(self.Tok);
         self.ConsumeBrace();
         self.ConsumeAndStoreUntil(r_brace, Toks, true, true);
     } else {
@@ -151,7 +155,7 @@ fn Parser::ParseCXXNonStaticMemberInitializer(self, VarD: *mut Decl) {
     Eof.setKind(eof);
     Eof.setLocation(self.Tok.getLocation());
     Eof.setEofData(VarD);
-    Toks()(Eof);
+    Toks.push(Eof);
 }
 
 fn LateParsedDeclaration::~LateParsedDeclaration(self) {}
@@ -248,6 +252,9 @@ fn ReenterClassScopeRAII::~ReenterClassScopeRAII(self) {
 
 fn Parser::ParseLexedMethodDeclarations(self, Class: *mut ParsingClass) {
     let mut InClassScope: ReenterClassScopeRAII = ReenterClassScopeRAII { *self, Class };
+    for LateD in Class.LateParsedDeclarations {
+        LateD.ParseLexedMethodDeclarations();
+    }
 }
 
 fn Parser::ParseLexedMethodDeclaration(self, LM: *mut LateParsedMethodDeclaration) {
@@ -257,60 +264,63 @@ fn Parser::ParseLexedMethodDeclaration(self, LM: *mut LateParsedMethodDeclaratio
     let mut PopFnContext: FunctionScopeRAII = self.Actions;
     self.Actions.PushFunctionScope();
     for let mut I: u32 = 0;
-let mut N: u32 = LM()(); I != N; I += 1 {
-        let mut Param: auto = cast(LM()[I]);
-        let mut HasUnparsed: bool = ();
-        self.Actions.ActOnDelayedCXXMethodParameter(self.getCurScope());
-        let mut Toks: i32 = move(LM()[I]);
-        if Toks() {
+let mut N: u32 = LM.DefaultArgs.len; I != N; I += 1 {
+        let mut Param: CastReturnType = cast(LM.DefaultArgs[I].Param);
+        let mut HasUnparsed: bool = Param.hasUnparsedDefaultArg();
+        self.Actions.ActOnDelayedCXXMethodParameter(self.getCurScope(), Param);
+        let mut Toks: unique_ptr<CachedTokens> = move(LM.DefaultArgs[I].Toks);
+        if Toks {
             let mut BalancerRAIIObj: ParenBraceBracketBalancer = *self;
-            let mut LastDefaultArgToken: Token = ();
+            let mut LastDefaultArgToken: Token = operator(Toks).back();
             let mut DefArgEnd: Token = Token {};
             DefArgEnd.startToken();
             DefArgEnd.setKind(eof);
             DefArgEnd.setLocation(LastDefaultArgToken.getEndLoc());
-            DefArgEnd.setEofData();
-            Toks()(DefArgEnd);
-            Toks()(self.Tok);
-            self.PP(operator*(), true, true);
+            DefArgEnd.setEofData(Param);
+            operator(Toks).push(DefArgEnd);
+            operator(Toks).push(self.Tok);
+            self.PP.EnterTokenStream(operator(Toks), true, true);
             self.ConsumeAnyToken(true);
             assert!(self.Tok.is(equal), "Default argument not starting with '='");
             let mut EqualLoc: SourceLocation = self.ConsumeToken();
-            let mut Eval: EnterExpressionEvaluationContext = self.Actions;
-            let mut DefArgResult: i32 = 0;
-            if self.getLangOpts() && self.Tok.is(l_brace) {} else {
-                
-            }
-            if DefArgResult()() {
-                self.Actions.ActOnParamDefaultArgumentError(EqualLoc, null);
+            let mut Eval: EnterExpressionEvaluationContext = EnterExpressionEvaluationContext { self.Actions, PotentiallyEvaluatedIfUsed, Param, EK_Other, true };
+            let mut DefArgResult: ExprResult = false;
+            if self.getLangOpts().CPlusPlus11 && self.Tok.is(l_brace) {
+                self.Diag(self.Tok, compat_cxx11_generalized_initializer_lists);
+                DefArgResult = self.ParseBraceInitializer();
             } else {
-                if self.Tok.isNot(eof) || self.Tok.getEofData() !=  {
-                    (((operator!(operator!((Toks()() >= 3 && "expected a token in default arg")))) || (_wassert(L"Toks->size() >= 3 && \"expected a token in default arg\"", L"clang\\lib\\Parse\\ParseCXXInlineMethods.cpp", (443) as u32) , 0)) as void);
-                     << self.Tok.getLocation();
+                DefArgResult = self.ParseAssignmentExpression(AllowNonTypes);
+            }
+            if DefArgResult.isInvalid() {
+                self.Actions.ActOnParamDefaultArgumentError(Param, EqualLoc, null);
+            } else {
+                if self.Tok.isNot(eof) || self.Tok.getEofData() != Param {
+                    assert!(operator(Toks).len >= 3, "expected a token in default arg");
+                    self.Diag(self.Tok.getLocation(), err_default_arg_unparsed) << SourceRange { B: self.Tok.getLocation(), E: (operator(Toks))[operator(Toks).len - 3].getLocation() };
                 }
-                self.Actions.ActOnParamDefaultArgument(EqualLoc);
+                self.Actions.ActOnParamDefaultArgument(Param, EqualLoc, DefArgResult.get());
             }
             while self.Tok.isNot(eof) {
                 self.ConsumeAnyToken(false);
             }
-            if self.Tok.is(eof) && self.Tok.getEofData() ==  {
+            if self.Tok.is(eof) && self.Tok.getEofData() == Param {
                 self.ConsumeAnyToken(false);
             }
         } else if HasUnparsed {
-            (((operator!(operator!((Param()())))) || (_wassert(L"Param->hasInheritedDefaultArg()", L"clang\\lib\\Parse\\ParseCXXInlineMethods.cpp", (460) as u32) , 0)) as void);
+            assert!(Param.hasInheritedDefaultArg();
             let mut Old: *mut FunctionDecl = null;
-            if  {
-                Old = cast()();
+            if dyn_cast(LM.Method) {
+                FunTmpl;
             } else {
-                Old = cast(LM.Method)();
+                Old = cast(FunTmpl.getTemplatedDecl()).getPreviousDecl();
             }
             if Old {
                 let mut OldParam: *mut ParmVarDecl = Old.getParamDecl(I);
                 assert!(!OldParam.hasUnparsedDefaultArg();
                 if OldParam.hasUninstantiatedDefaultArg() {
-                    Param()(OldParam.getUninstantiatedDefaultArg());
+                    Param.setUninstantiatedDefaultArg(OldParam.getUninstantiatedDefaultArg());
                 } else {
-                    Param()(OldParam);
+                    Param.setDefaultArg(OldParam.getInit());
                 }
             }
         }
@@ -319,15 +329,15 @@ let mut N: u32 = LM()(); I != N; I += 1 {
         Toks;
     } else {
         let mut BalancerRAIIObj: ParenBraceBracketBalancer = *self;
-        let mut LastExceptionSpecToken: Token = Toks()();
+        let mut LastExceptionSpecToken: Token = Toks.back();
         let mut ExceptionSpecEnd: Token = Token {};
         ExceptionSpecEnd.startToken();
         ExceptionSpecEnd.setKind(eof);
         ExceptionSpecEnd.setLocation(LastExceptionSpecToken.getEndLoc());
         ExceptionSpecEnd.setEofData(LM.Method);
-        Toks()(ExceptionSpecEnd);
-        Toks()(self.Tok);
-        self.PP;
+        Toks.push(ExceptionSpecEnd);
+        Toks.push(self.Tok);
+        self.PP.EnterTokenStream(*Toks, true, true);
         self.ConsumeAnyToken(true);
         let mut Method: *mut CXXMethodDecl = null;
         let mut FunctionToPush: *mut FunctionDecl = null;
@@ -338,18 +348,18 @@ let mut N: u32 = LM()(); I != N; I += 1 {
         }
         Method = dyn_cast(FunctionToPush);
         let mut FnScope: ParseScope = ParseScope { self, FnScope, true, false };
-        let mut FnContext: ContextRAII = self.Actions;
-        let mut ThisScope: CXXThisScopeRAII = self.Actions;
+        let mut FnContext: ContextRAII = ContextRAII { self.Actions, FunctionToPush, false };
+        let mut ThisScope: CXXThisScopeRAII = CXXThisScopeRAII { self.Actions, if Method { Method.getParent() } else { null }, if Method { Method.getMethodQualifiers() } else { Qualifiers {} }, Method && self.getLangOpts().CPlusPlus11 };
         let mut SpecificationRange: SourceRange = SourceRange {};
-        let mut DynamicExceptions: SmallVector<ParsedType, 4> = zeroed();
-        let mut DynamicExceptionRanges: SmallVector<SourceRange, 4> = zeroed();
-        let mut NoexceptExpr: i32 = 0;
+        let mut DynamicExceptions: SmallVector<ParsedType, 4> = SmallVector<ParsedType, 4> {};
+        let mut DynamicExceptionRanges: SmallVector<SourceRange, 4> = SmallVector<SourceRange, 4> {};
+        let mut NoexceptExpr: ExprResult = false;
         let mut ExceptionSpecTokens: *mut CachedTokens = null;
-        let mut EST: ExceptionSpecificationType = zeroed();
+        let mut EST: ExceptionSpecificationType = self.tryParseExceptionSpecification(false, SpecificationRange, DynamicExceptions, DynamicExceptionRanges, NoexceptExpr, ExceptionSpecTokens);
         if self.Tok.isNot(eof) || self.Tok.getEofData() != LM.Method {
-            
+            self.Diag(self.Tok.getLocation(), err_except_spec_unparsed);
         }
-        self.Actions.actOnDelayedExceptionSpecification(LM.Method, EST, SpecificationRange, if () { () } else { null });
+        self.Actions.actOnDelayedExceptionSpecification(LM.Method, EST, SpecificationRange, DynamicExceptions, DynamicExceptionRanges, if NoexceptExpr.isUsable() { NoexceptExpr.get() } else { null });
         while self.Tok.isNot(eof) {
             self.ConsumeAnyToken(false);
         }
@@ -365,35 +375,41 @@ let mut N: u32 = LM()(); I != N; I += 1 {
 
 fn Parser::ParseLexedMethodDefs(self, Class: *mut ParsingClass) {
     let mut InClassScope: ReenterClassScopeRAII = ReenterClassScopeRAII { *self, Class };
+    for D in Class.LateParsedDeclarations {
+        D.ParseLexedMethodDefs();
+    }
 }
 
 fn Parser::ParseLexedMethodDef(self, LM: *mut LexedMethod) {
     let mut InFunctionTemplateScope: ReenterTemplateScopeRAII = ReenterTemplateScopeRAII { P: *self, Scopes: LM.D, CurTemplateDepthTracker: true };
     let mut BalancerRAIIObj: ParenBraceBracketBalancer = *self;
-    (((operator!(operator!((operator!(LM()()) && "Empty body!")))) || (_wassert(L"!LM.Toks.empty() && \"Empty body!\"", L"clang\\lib\\Parse\\ParseCXXInlineMethods.cpp", (581) as u32) , 0)) as void);
-    let mut LastBodyToken: Token = LM()();
+    assert!(!LM.Toks.is_empty(), "Empty body!");
+    let mut LastBodyToken: Token = LM.Toks.back();
     let mut BodyEnd: Token = Token {};
     BodyEnd.startToken();
     BodyEnd.setKind(eof);
     BodyEnd.setLocation(LastBodyToken.getEndLoc());
     BodyEnd.setEofData(LM.D);
-    LM()(BodyEnd);
-    LM()(self.Tok);
-    self.PP(LM(), true, true);
+    LM.Toks.push(BodyEnd);
+    LM.Toks.push(self.Tok);
+    self.PP.EnterTokenStream(LM.Toks, true, true);
     self.ConsumeAnyToken(true);
-    assert!(self.Tok, "Inline method not starting with '{', ':' or 'try'");
+    assert!(self.Tok.isOneOf(l_brace, colon, kw_try), "Inline method not starting with '{', ':' or 'try'");
     let mut FnScope: ParseScope = ParseScope { self, FnScope | DeclScope | CompoundStmtScope, true, false };
     let mut SaveFPFeatures: FPFeaturesStateRAII = self.Actions;
     self.Actions.ActOnStartOfFunctionDef(self.getCurScope(), LM.D, null, Other);
-    let mut _: scope_exit = Closure_2 { cap_0: self, LM: &mut LM };
-    (((operator!(operator!(((self.Actions.getDiagnostics().hasErrorOccurred() || !isa(LM.D) || cast(LM.D)()() < self.TemplateParameterDepth) && "TemplateParameterDepth should be greater than the depth of current template being instantiated!")))) || (_wassert(L"(Actions.getDiagnostics().hasErrorOccurred() || !isa<FunctionTemplateDecl>(LM.D) || cast<FunctionTemplateDecl>(LM.D)->getTemplateParameters()->getDepth() < TemplateParameterDepth) && \"TemplateParameterDepth should be greater than the depth of \" \"current template being instantiated!\"", L"clang\\lib\\Parse\\ParseCXXInlineMethods.cpp", (625) as u32) , 0)) as void);
+    let mut _: Closure_2 = Closure_2 { cap_0: self, LM: &mut LM };
+    assert!((self.Actions.getDiagnostics().hasErrorOccurred() || !isa(LM.D) || cast(LM.D).getTemplateParameters().getDepth() < self.TemplateParameterDepth), "TemplateParameterDepth should be greater than the depth of current template being instantiated!");
     self.ParseFunctionBody(LM.D, FnScope);
 }
 
 fn Parser::ParseLexedMemberInitializers(self, Class: *mut ParsingClass) {
     let mut InClassScope: ReenterClassScopeRAII = ReenterClassScopeRAII { *self, Class };
-    if operator!(Class()()) {
+    if !Class.LateParsedDeclarations.is_empty() {
         let mut ThisScope: CXXThisScopeRAII = CXXThisScopeRAII { self.Actions, Class.TagOrTemplate, Qualifiers {}, true };
+        for D in Class.LateParsedDeclarations {
+            D.ParseLexedMemberInitializers();
+        }
     }
     self.Actions.ActOnFinishDelayedMemberInitializers(Class.TagOrTemplate);
 }
@@ -403,20 +419,21 @@ fn Parser::ParseLexedMemberInitializer(self, MI: *mut LateParsedMemberInitialize
         return;
     }
     let mut BalancerRAIIObj: ParenBraceBracketBalancer = *self;
-    MI()(self.Tok);
-    self.PP(MI(), true, true);
+    MI.Toks.push(self.Tok);
+    self.PP.EnterTokenStream(MI.Toks, true, true);
     self.ConsumeAnyToken(true);
     let mut EqualLoc: SourceLocation = SourceLocation {};
     self.Actions.ActOnStartCXXInClassMemberInitializer();
     let mut Eval: EnterExpressionEvaluationContext = EnterExpressionEvaluationContext { self.Actions, PotentiallyEvaluatedIfUsed, null, EK_Other, true };
-    let mut Init: i32 = 0;
-    self.Actions(MI.Field, EqualLoc);
+    let mut Init: ExprResult = self.ParseCXXMemberInitializer(MI.Field, false, EqualLoc);
+    self.Actions.ActOnFinishCXXInClassMemberInitializer(MI.Field, EqualLoc, Init);
     if self.Tok.isNot(eof) {
-        if operator!() {
+        if !Init.isInvalid() {
             let mut EndLoc: SourceLocation = self.PP.getLocForEndOfToken(self.PrevTokLocation, 0);
             if !EndLoc.isValid() {
                 EndLoc = self.Tok.getLocation();
             }
+            self.Diag(EndLoc, err_expected_semi_decl_list);
         }
         while self.Tok.isNot(eof) {
             self.ConsumeAnyToken(false);
@@ -429,26 +446,33 @@ fn Parser::ParseLexedMemberInitializer(self, MI: *mut LateParsedMemberInitialize
 
 fn Parser::ParseLexedAttributes(self, Class: *mut ParsingClass) {
     let mut InClassScope: ReenterClassScopeRAII = ReenterClassScopeRAII { *self, Class };
+    for LateD in Class.LateParsedDeclarations {
+        LateD.ParseLexedAttributes();
+    }
 }
 
 fn Parser::ParseLexedAttributeList(self, LAs: *mut LateParsedAttrList, D: *mut Decl, EnterScope: bool, OnDefinition: bool, OutAttrs: *mut ParsedAttributes) {
     assert!(LAs.parseSoon(), "Attribute list should be marked for immediate parsing.");
     for let mut i: u32 = 0;
-let mut ni: u32 = LAs()(); i < ni; i += 1 {
-        self.ParseLexedAttribute;
+let mut ni: u32 = LAs.len; i < ni; i += 1 {
+        if D {
+            LAs[i].addDecl(D);
+        }
+        self.ParseLexedAttribute(*LAs[i], EnterScope, OnDefinition, OutAttrs);
+        LAs[i];
     }
-    LAs()();
+    LAs.clear();
 }
 
 fn Parser::ParseLexedAttribute(self, LPA: *mut LateParsedAttribute, EnterScope: bool, OnDefinition: bool, OutAttrs: *mut ParsedAttributes) {
-    let mut Attrs: ParsedAttributes = zeroed();
-    if LPA()() > 0 {
-        let mut D: *mut Decl = LPA()[0];
-        let mut HasFuncScope: bool = EnterScope && LPA()() == 1 && D.isFunctionOrFunctionTemplate();
-        let mut IsCPlusPlus: bool = self.getLangOpts();
+    let mut Attrs: ParsedAttributes = self.AttrFactory;
+    if LPA.Decls.len > 0 {
+        let mut D: *mut Decl = LPA.Decls[0];
+        let mut HasFuncScope: bool = EnterScope && LPA.Decls.len == 1 && D.isFunctionOrFunctionTemplate();
+        let mut IsCPlusPlus: bool = self.getLangOpts().CPlusPlus;
         let mut ND: *mut NamedDecl = dyn_cast(D);
         let mut RD: *mut RecordDecl = dyn_cast_or_null(D.getDeclContext());
-        let mut ThisScope: CXXThisScopeRAII = self.Actions;
+        let mut ThisScope: CXXThisScopeRAII = CXXThisScopeRAII { self.Actions, RD, Qualifiers {}, IsCPlusPlus && ND && ND.isCXXInstanceMember() };
         let mut InDeclScope: ReenterTemplateScopeRAII = ReenterTemplateScopeRAII { P: *self, Scopes: D, CurTemplateDepthTracker: IsCPlusPlus && EnterScope };
         if HasFuncScope {
             InDeclScope.Scopes.Enter(FnScope | DeclScope | CompoundStmtScope);
@@ -460,10 +484,13 @@ fn Parser::ParseLexedAttribute(self, LPA: *mut LateParsedAttribute, EnterScope: 
             self.Actions.ActOnExitFunctionContext();
         }
     } else {
-         << LPA.AttrName.getName();
+        self.Diag(LPA.AttrNameLoc, warn_attribute_no_decl) << LPA.AttrName.getName();
     }
-    if OnDefinition && operator!(Attrs.empty) && operator!(Attrs()) && Attrs() {
-        << &mut LPA.AttrName;
+    if OnDefinition && !Attrs.is_empty() && !operator(operator(Attrs.begin())).isCXX11Attribute() && operator(operator(Attrs.begin())).isKnownToGCC() {
+        self.Diag(self.Tok, warn_attribute_on_function_definition) << &mut LPA.AttrName;
+    }
+    for D in LPA.Decls {
+        self.Actions.ActOnFinishDelayedAttribute(self.getCurScope(), D, Attrs);
     }
     if OutAttrs {
         OutAttrs.takeAllAppendingFrom(Attrs);
@@ -472,11 +499,14 @@ fn Parser::ParseLexedAttribute(self, LPA: *mut LateParsedAttribute, EnterScope: 
 
 fn Parser::ParseLexedPragmas(self, Class: *mut ParsingClass) {
     let mut InClassScope: ReenterClassScopeRAII = ReenterClassScopeRAII { *self, Class };
+    for D in Class.LateParsedDeclarations {
+        D.ParseLexedPragmas();
+    }
 }
 
 fn Parser::ParseLexedPragma(self, LP: *mut LateParsedPragma) {
     self.PP.EnterToken(self.Tok, true);
-    self.PP;
+    self.PP.EnterTokenStream(LP.toks(), true, true);
     self.ConsumeAnyToken(true);
     assert!(self.Tok.isAnnotation(), "Expected annotation token.");
     match self.Tok.getKind() {
@@ -484,7 +514,7 @@ fn Parser::ParseLexedPragma(self, LP: *mut LateParsedPragma) {
             annot_pragma_openmp;
         },
         _ => {
-            llvm_unreachable_internal("Unexpected token.", "clang\\lib\\Parse\\ParseCXXInlineMethods.cpp", 792);
+            llvm_unreachable_internal("Unexpected token.", "P:/Goraw/llvm-project/clang/lib/Parse/ParseCXXInlineMethods.cpp", 792);
         },
     }
 }
@@ -494,7 +524,7 @@ fn Parser::ConsumeAndStoreUntil(self, T1: TokenKind, T2: TokenKind, Toks: *mut C
     while true {
         if self.Tok.is(T1) || self.Tok.is(T2) {
             if ConsumeFinalToken {
-                Toks()(self.Tok);
+                Toks.push(self.Tok);
                 self.ConsumeAnyToken(false);
             }
             return true;
@@ -507,13 +537,13 @@ fn Parser::ConsumeAndStoreUntil(self, T1: TokenKind, T2: TokenKind, Toks: *mut C
                 annot_pragma_openmp;
             },
             l_paren => {
-                Toks()(self.Tok);
+                Toks.push(self.Tok);
             },
             l_square => {
-                Toks()(self.Tok);
+                Toks.push(self.Tok);
             },
             l_brace => {
-                Toks()(self.Tok);
+                Toks.push(self.Tok);
             },
             r_paren => {
                 if self.ParenCount && !isFirstTokenConsumed {
@@ -536,7 +566,7 @@ fn Parser::ConsumeAndStoreUntil(self, T1: TokenKind, T2: TokenKind, Toks: *mut C
                 }
             },
             _ => {
-                Toks()(self.Tok);
+                Toks.push(self.Tok);
             },
         }
         isFirstTokenConsumed = false;
@@ -545,60 +575,60 @@ fn Parser::ConsumeAndStoreUntil(self, T1: TokenKind, T2: TokenKind, Toks: *mut C
 
 fn Parser::ConsumeAndStoreFunctionPrologue(self, Toks: *mut CachedTokens) -> bool {
     if self.Tok.is(kw_try) {
-        Toks()(self.Tok);
+        Toks.push(self.Tok);
         self.ConsumeToken();
     }
     if self.Tok.isNot(colon) {
         self.ConsumeAndStoreUntil(l_brace, r_brace, Toks, true, false);
         if self.Tok.isNot(l_brace) {
-            return  << l_brace;
+            return self.Diag(self.Tok.getLocation(), err_expected) << l_brace;
         }
-        Toks()(self.Tok);
+        Toks.push(self.Tok);
         self.ConsumeBrace();
         return false;
     }
-    Toks()(self.Tok);
+    Toks.push(self.Tok);
     self.ConsumeToken();
     let mut MightBeTemplateArgument: bool = false;
     while true {
         if self.Tok.is(kw_decltype) {
-            Toks()(self.Tok);
+            Toks.push(self.Tok);
             let mut OpenLoc: SourceLocation = self.ConsumeToken();
             if self.Tok.isNot(l_paren) {
-                return  << "decltype";
+                return self.Diag(self.Tok.getLocation(), err_expected_lparen_after) << "decltype";
             }
-            Toks()(self.Tok);
+            Toks.push(self.Tok);
             self.ConsumeParen();
             if !self.ConsumeAndStoreUntil(r_paren, Toks, true, true) {
-                 << r_paren;
-                 << l_paren;
+                self.Diag(self.Tok.getLocation(), err_expected) << r_paren;
+                self.Diag(OpenLoc, note_matching) << l_paren;
                 return true;
             }
         }
         while true {
             {
             if self.Tok.is(coloncolon) {
-                Toks()(self.Tok);
+                Toks.push(self.Tok);
                 self.ConsumeToken();
                 if self.Tok.is(kw_template) {
-                    Toks()(self.Tok);
+                    Toks.push(self.Tok);
                     self.ConsumeToken();
                 }
             }
             if self.Tok.is(identifier) {
-                Toks()(self.Tok);
+                Toks.push(self.Tok);
                 self.ConsumeToken();
             } else {
                 break;
             }
             if self.Tok.is(ellipsis) && self.NextToken().is(l_square) {
-                Toks()(self.Tok);
+                Toks.push(self.Tok);
                 let mut OpenLoc: SourceLocation = self.ConsumeToken();
-                Toks()(self.Tok);
+                Toks.push(self.Tok);
                 self.ConsumeBracket();
                 if !self.ConsumeAndStoreUntil(r_square, Toks, true, true) {
-                     << r_square;
-                     << l_square;
+                    self.Diag(self.Tok.getLocation(), err_expected) << r_square;
+                    self.Diag(OpenLoc, note_matching) << l_square;
                     return true;
                 }
             }
@@ -606,14 +636,14 @@ fn Parser::ConsumeAndStoreFunctionPrologue(self, Toks: *mut CachedTokens) -> boo
             if !(self.Tok.is(coloncolon)) { break; }
         }
         if self.Tok.is(code_completion) {
-            Toks()(self.Tok);
+            Toks.push(self.Tok);
             self.ConsumeCodeCompletionToken();
-            if self.Tok {
+            if self.Tok.isOneOf(identifier, coloncolon, kw_decltype) {
                 continue;
             }
         }
         if self.Tok.is(comma) {
-            Toks()(self.Tok);
+            Toks.push(self.Tok);
             self.ConsumeToken();
             continue;
         }
@@ -622,17 +652,17 @@ fn Parser::ConsumeAndStoreFunctionPrologue(self, Toks: *mut CachedTokens) -> boo
         }
         if MightBeTemplateArgument {
             if !self.ConsumeAndStoreUntil(l_paren, l_brace, Toks, true, false) {
-                return  << l_brace;
+                return self.Diag(self.Tok.getLocation(), err_expected) << l_brace;
             }
         } else if self.Tok.isNot(l_paren) && self.Tok.isNot(l_brace) {
-            if self.getLangOpts() {
-                return  << l_paren << l_brace;
+            if self.getLangOpts().CPlusPlus11 {
+                return self.Diag(self.Tok.getLocation(), err_expected_either) << l_paren << l_brace;
             } else {
-                return  << l_paren;
+                return self.Diag(self.Tok.getLocation(), err_expected) << l_paren;
             }
         }
         let mut kind: TokenKind = self.Tok.getKind();
-        Toks()(self.Tok);
+        Toks.push(self.Tok);
         let mut IsLParen: bool = (kind == l_paren);
         let mut OpenLoc: SourceLocation = self.Tok.getLocation();
         if IsLParen {
@@ -640,13 +670,13 @@ fn Parser::ConsumeAndStoreFunctionPrologue(self, Toks: *mut CachedTokens) -> boo
         } else {
             assert!(kind == l_brace, "Must be left paren or brace here.");
             self.ConsumeBrace();
-            if operator!(self.getLangOpts()) {
+            if !self.getLangOpts().CPlusPlus11 {
                 return false;
             }
-            let mut PreviousToken: *Token = Toks[Toks()() - 2];
-            if !MightBeTemplateArgument && !PreviousToken {
+            let mut PreviousToken: *Token = Toks[Toks.len - 2];
+            if !MightBeTemplateArgument && !PreviousToken.isOneOf(identifier, greater, greatergreater) {
                 let mut PA: TentativeParsingAction = TentativeParsingAction { *self, false };
-                if self.SkipUntil(r_brace, 0 as SkipUntilFlags) && !self.Tok {
+                if self.SkipUntil(r_brace, 0 as SkipUntilFlags) && !self.Tok.isOneOf(comma, ellipsis, l_brace) {
                     PA.Revert();
                     return false;
                 }
@@ -655,30 +685,30 @@ fn Parser::ConsumeAndStoreFunctionPrologue(self, Toks: *mut CachedTokens) -> boo
         }
         let mut CloseKind: TokenKind = if IsLParen { r_paren } else { r_brace };
         if !self.ConsumeAndStoreUntil(CloseKind, Toks, true, true) {
-             << CloseKind;
-             << kind;
+            self.Diag(self.Tok, err_expected) << CloseKind;
+            self.Diag(OpenLoc, note_matching) << kind;
             return true;
         }
         if self.Tok.is(ellipsis) {
-            Toks()(self.Tok);
+            Toks.push(self.Tok);
             self.ConsumeToken();
         }
         if self.Tok.is(comma) {
-            Toks()(self.Tok);
+            Toks.push(self.Tok);
             self.ConsumeToken();
         } else if self.Tok.is(l_brace) {
-            Toks()(self.Tok);
+            Toks.push(self.Tok);
             self.ConsumeBrace();
             return false;
         } else if !MightBeTemplateArgument {
-            return  << l_brace << comma;
+            return self.Diag(self.Tok.getLocation(), err_expected_either) << l_brace << comma;
         }
     }
 }
 
 fn Parser::ConsumeAndStoreConditional(self, Toks: *mut CachedTokens) -> bool {
     assert!(self.Tok.is(question);
-    Toks()(self.Tok);
+    Toks.push(self.Tok);
     self.ConsumeToken();
     while self.Tok.isNot(colon) {
         if !self.ConsumeAndStoreUntil(question, colon, Toks, true, false) {
@@ -688,7 +718,7 @@ fn Parser::ConsumeAndStoreConditional(self, Toks: *mut CachedTokens) -> bool {
             return false;
         }
     }
-    Toks()(self.Tok);
+    Toks.push(self.Tok);
     self.ConsumeToken();
     return true;
 }
@@ -721,12 +751,12 @@ fn Parser::ConsumeAndStoreInitializer(self, Toks: *mut CachedTokens, CIK: Cached
                 }
             },
             greatergreatergreater => {
-                if operator!(self.getLangOpts()) {
+                if !self.getLangOpts().CPlusPlus11 {
                     
                 }
             },
             greatergreater => {
-                if operator!(self.getLangOpts()) {
+                if !self.getLangOpts().CPlusPlus11 {
                     
                 }
             },
@@ -736,19 +766,19 @@ fn Parser::ConsumeAndStoreInitializer(self, Toks: *mut CachedTokens, CIK: Cached
                 }
             },
             kw_template => {
-                Toks()(self.Tok);
+                Toks.push(self.Tok);
             },
             kw_operator => {
-                Toks()(self.Tok);
+                Toks.push(self.Tok);
             },
             l_paren => {
-                Toks()(self.Tok);
+                Toks.push(self.Tok);
             },
             l_square => {
-                Toks()(self.Tok);
+                Toks.push(self.Tok);
             },
             l_brace => {
-                Toks()(self.Tok);
+                Toks.push(self.Tok);
             },
             r_paren => {
                 if CIK == DefaultArgument {
@@ -766,7 +796,7 @@ fn Parser::ConsumeAndStoreInitializer(self, Toks: *mut CachedTokens, CIK: Cached
                 }
             },
             code_completion => {
-                Toks()(self.Tok);
+                Toks.push(self.Tok);
             },
             string_literal => {
                 wide_string_literal;
@@ -802,9 +832,9 @@ unsafe fn Closure_2::call(self: *mut Closure_2) {
         if self.Tok.is(eof) && self.Tok.getEofData() == (*self.LM).D {
             self.ConsumeAnyToken(false);
         }
-        if  {
-            if isa() || (IDNS_OrdinaryFriend) {
-                self.Actions.ActOnFinishInlineFunctionDef();
-            }
+        if dyn_cast_or_null((*self.LM).D) {
+            FD;
+        } else if isa(FD) || FD.isInIdentifierNamespace(IDNS_OrdinaryFriend) {
+            self.Actions.ActOnFinishInlineFunctionDef(FD);
         }
     }

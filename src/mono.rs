@@ -355,7 +355,7 @@ fn find_in_stmt(
             find_in_expr(iter, generic_structs, insts);
             find_in_block(body, generic_structs, insts);
         }
-        Stmt::Unsafe(b, _) => find_in_block(b, generic_structs, insts),
+        Stmt::Unsafe(b, _) | Stmt::Block(b, _) => find_in_block(b, generic_structs, insts),
         Stmt::Assert(e, _) => find_in_expr(e, generic_structs, insts),
         Stmt::Match { scrut, arms, .. } => {
             find_in_expr(scrut, generic_structs, insts);
@@ -453,6 +453,10 @@ fn find_in_expr(
             find_in_expr(els, generic_structs, insts);
         }
         Expr::Try(inner, _) => find_in_expr(inner, generic_structs, insts),
+        Expr::Assign { target, value, .. } => {
+            find_in_expr(target, generic_structs, insts);
+            find_in_expr(value, generic_structs, insts);
+        }
         _ => {}
     }
 }
@@ -570,7 +574,7 @@ fn substitute_stmt(
             substitute_expr(iter, subst, generic_name, spec_name);
             substitute_block(body, subst, generic_name, spec_name);
         }
-        Stmt::Unsafe(b, _) => substitute_block(b, subst, generic_name, spec_name),
+        Stmt::Unsafe(b, _) | Stmt::Block(b, _) => substitute_block(b, subst, generic_name, spec_name),
         Stmt::Assert(e, _) => substitute_expr(e, subst, generic_name, spec_name),
         Stmt::Match { scrut, arms, .. } => {
             substitute_expr(scrut, subst, generic_name, spec_name);
@@ -653,6 +657,10 @@ fn substitute_expr(
             substitute_expr(els, subst, generic_name, spec_name);
         }
         Expr::Try(inner, _) => substitute_expr(inner, subst, generic_name, spec_name),
+        Expr::Assign { target, value, .. } => {
+            substitute_expr(target, subst, generic_name, spec_name);
+            substitute_expr(value, subst, generic_name, spec_name);
+        }
         Expr::Ident(name, _) => {
             if let Some(TypeExpr::Named(actual, _)) = subst.get(name) {
                 *name = actual.clone();
@@ -754,7 +762,7 @@ fn rewrite_stmt_generics(s: &mut Stmt) {
             rewrite_expr_generics(iter);
             rewrite_block_generics(body);
         }
-        Stmt::Unsafe(b, _) => rewrite_block_generics(b),
+        Stmt::Unsafe(b, _) | Stmt::Block(b, _) => rewrite_block_generics(b),
         Stmt::Assert(e, _) => rewrite_expr_generics(e),
         Stmt::Match { scrut, arms, .. } => {
             rewrite_expr_generics(scrut);
@@ -816,6 +824,10 @@ fn rewrite_expr_generics(e: &mut Expr) {
             rewrite_expr_generics(els);
         }
         Expr::Try(inner, _) => rewrite_expr_generics(inner),
+        Expr::Assign { target, value, .. } => {
+            rewrite_expr_generics(target);
+            rewrite_expr_generics(value);
+        }
         _ => {}
     }
 }

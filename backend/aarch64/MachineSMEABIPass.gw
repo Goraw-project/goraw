@@ -26,12 +26,19 @@ struct PhysRegSave {
 
 struct InstInfo {
     NeededState: ZAState,
-    InsertPt: i32,
+    InsertPt: iterator,
     PhysLiveRegs: LiveRegs,
 }
 
+fn InstInfo::operator=(self, arg: *mut *mut InstInfo) -> *mut InstInfo {
+    self.NeededState =  as InstInfo.NeededState;
+    self.InsertPt.operator=( as InstInfo.InsertPt);
+    self.PhysLiveRegs =  as InstInfo.PhysLiveRegs;
+    return *self;
+}
+
 struct BlockInfo {
-    Insts: i32,
+    Insts: SmallVector<InstInfo>,
     FixedEntryState: ZAState,
     DesiredIncomingState: ZAState,
     DesiredOutgoingState: ZAState,
@@ -40,8 +47,8 @@ struct BlockInfo {
 }
 
 struct FunctionInfo {
-    Blocks: i32,
-    AfterSMEProloguePt: i32,
+    Blocks: SmallVector<BlockInfo>,
+    AfterSMEProloguePt: iterator>,
     PhysLiveRegsAfterSMEPrologue: LiveRegs,
 }
 
@@ -52,23 +59,36 @@ struct EmitContext {
 }
 
 fn EmitContext::getTPIDR2Block(self, MF: *mut MachineFunction) -> i32 {
+    if self.TPIDR2BlockFI {
+        return operator(self.TPIDR2BlockFI);
+    }
     let mut MFI: *mut MachineFrameInfo = MF.getFrameInfo();
+    self.TPIDR2BlockFI = MFI.CreateStackObject(16, 16, false, null, 0);
+    return operator(self.TPIDR2BlockFI);
 }
 
 fn EmitContext::getAgnosticZABufferPtr(self, MF: *mut MachineFunction) -> Register {
     if self.AgnosticZABufferPtr.isValid() {
         return self.AgnosticZABufferPtr;
     }
-    let mut BufferPtr: Register = MF();
-    self.AgnosticZABufferPtr = if BufferPtr.isValid() { BufferPtr } else { MF.getRegInfo() };
+    let mut BufferPtr: Register = MF.getInfo().getEarlyAllocSMESaveBuffer();
+    self.AgnosticZABufferPtr = if BufferPtr.isValid() { BufferPtr } else { MF.getRegInfo().createVirtualRegister(&mut GPR64RegClass, "") };
     return self.AgnosticZABufferPtr;
 }
 
 fn EmitContext::getZT0SaveSlot(self, MF: *mut MachineFunction) -> i32 {
+    if self.ZT0SaveFI {
+        return operator(self.ZT0SaveFI);
+    }
     let mut MFI: *mut MachineFrameInfo = MF.getFrameInfo();
+    self.ZT0SaveFI = MFI.CreateSpillStackObject(64, 16, Default);
+    return operator(self.ZT0SaveFI);
 }
 
-fn EmitContext::needsSaveBuffer(self: *EmitContext) -> bool {}
+fn EmitContext::needsSaveBuffer(self: *EmitContext) -> bool {
+    assert!(!(self.TPIDR2BlockFI && self.AgnosticZABufferPtr.operator unsigned int()), "Cannot have both a TPIDR2 block and agnostic ZA buffer");
+    return self.TPIDR2BlockFI || self.AgnosticZABufferPtr.isValid();
+}
 
 fn getZAStateString(State: ZAState) -> str {
     match State {
@@ -94,7 +114,7 @@ fn getZAStateString(State: ZAState) -> str {
             return "ZAState::OFF";
         },
         _ => {
-            llvm_unreachable_internal("Unexpected ZAState", "llvm\\lib\\Target\\AArch64\\MachineSMEABIPass.cpp", 217);
+            llvm_unreachable_internal("Unexpected ZAState", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/MachineSMEABIPass.cpp", 217);
         },
     }
 }
@@ -103,22 +123,30 @@ fn isZAorZTRegOp(TRI: *TargetRegisterInfo, MO: *MachineOperand) -> bool {
     if !MO.isReg() || !MO.getReg().isPhysical() {
         return false;
     }
-    return any_of(TRI()(MO.getReg()), Closure_1 {});
+    return any_of(TRI.subregs_inclusive(MO.getReg().operator MCRegister()), Closure_1 {});
 }
 
-fn getInstNeededZAState(TRI: *TargetRegisterInfo, MI: *mut MachineInstr, SMEFnAttrs: SMEAttrs) -> i32 {
-    if  {
-        return void { ACTIVE, prev() };
+fn getInstNeededZAState(TRI: *TargetRegisterInfo, MI: *mut MachineInstr, SMEFnAttrs: SMEAttrs) -> iterator> {
+    let mut InsertPt: iterator = MI;
+    if MI.getOpcode() == InOutZAUsePseudo {
+        return iterator> { ACTIVE, prev(InsertPt, 1) };
     }
-    if  {
-        return void { LOCAL_SAVED, prev() };
+    if MI.getOpcode() == RequiresZASavePseudo {
+        return iterator> { LOCAL_SAVED, prev(InsertPt, 1) };
     }
-    if  {
-        return void { if SMEFnAttrs.hasZAState() { ACTIVE_ZT0_SAVED } else { LOCAL_COMMITTED }, prev() };
+    if MI.getOpcode() == RequiresZT0SavePseudo {
+        return iterator> { if SMEFnAttrs.hasZAState() { ACTIVE_ZT0_SAVED } else { LOCAL_COMMITTED }, prev(InsertPt, 1) };
     }
     if MI.isReturn(AnyInBundle) {
         let mut ZAOffAtReturn: bool = SMEFnAttrs.hasPrivateZAInterface();
+        return iterator> { if ZAOffAtReturn { OFF } else { ACTIVE }, InsertPt };
     }
+    for MO in MI.operands() {
+        if isZAorZTRegOp(TRI, MO) {
+            return iterator> { ACTIVE, InsertPt };
+        }
+    }
+    return iterator> { ANY, InsertPt };
 }
 
 struct MachineSMEABI {
@@ -146,19 +174,34 @@ fn MachineSMEABI::getPassName(self: *MachineSMEABI) -> str {
 
 fn MachineSMEABI::getAnalysisUsage(self: *MachineSMEABI, AU: *mut AnalysisUsage) {
     AU.setPreservesCFG();
-    AU;
-    AU;
-    AU;
+    AU.addRequired();
+    AU.addRequired();
+    AU.addRequired();
     AU.addPreservedID(MachineLoopInfoID);
     AU.addPreservedID(MachineDominatorsID);
-    self.getAnalysisUsage;
+    self.getAnalysisUsage(AU);
 }
 
-fn MachineSMEABI::emitZASave(self, Context: *mut EmitContext, MBB: *mut MachineBasicBlock, MBBI: i32, PhysLiveRegs: LiveRegs) {}
+fn MachineSMEABI::emitZASave(self, Context: *mut EmitContext, MBB: *mut MachineBasicBlock, MBBI: iterator, PhysLiveRegs: LiveRegs) {
+    if self.AFI.getSMEFnAttrs().hasAgnosticZAInterface() {
+        return self.emitFullZASaveRestore(Context, MBB, MBBI, PhysLiveRegs, true);
+    }
+    return self.emitSetupLazySave(Context, MBB, MBBI);
+}
 
-fn MachineSMEABI::emitZARestore(self, Context: *mut EmitContext, MBB: *mut MachineBasicBlock, MBBI: i32, PhysLiveRegs: LiveRegs) {}
+fn MachineSMEABI::emitZARestore(self, Context: *mut EmitContext, MBB: *mut MachineBasicBlock, MBBI: iterator, PhysLiveRegs: LiveRegs) {
+    if self.AFI.getSMEFnAttrs().hasAgnosticZAInterface() {
+        return self.emitFullZASaveRestore(Context, MBB, MBBI, PhysLiveRegs, false);
+    }
+    return self.emitRestoreLazySave(Context, MBB, MBBI, PhysLiveRegs);
+}
 
-fn MachineSMEABI::emitAllocateZASaveBuffer(self, Context: *mut EmitContext, MBB: *mut MachineBasicBlock, MBBI: i32, PhysLiveRegs: LiveRegs) {}
+fn MachineSMEABI::emitAllocateZASaveBuffer(self, Context: *mut EmitContext, MBB: *mut MachineBasicBlock, MBBI: iterator, PhysLiveRegs: LiveRegs) {
+    if self.AFI.getSMEFnAttrs().hasAgnosticZAInterface() {
+        return self.emitAllocateFullZASaveBuffer(Context, MBB, MBBI, PhysLiveRegs);
+    }
+    return self.emitAllocateLazySaveBuffer(Context, MBB, MBBI);
+}
 
 fn MachineSMEABI::emitError(self, Message: str) {
     let mut Context: *mut LLVMContext = self.MF.getFunction().getContext();
@@ -201,32 +244,35 @@ fn MachineSMEABI::getClearedProperties(self: *MachineSMEABI) -> MachineFunctionP
 
 fn getPhysLiveRegs(LiveUnits: *LiveRegUnits) -> LiveRegs {
     let mut PhysLiveRegs: LiveRegs = None;
-    if operator!(LiveUnits.available) {
-        PhysLiveRegs(NZCV);
+    if !LiveUnits.available(NZCV) {
+        operator(PhysLiveRegs, NZCV);
     }
-    if operator!(LiveUnits.available) {
-        PhysLiveRegs(W0);
+    if !LiveUnits.available(W0) {
+        operator(PhysLiveRegs, W0);
     }
-    if operator!(LiveUnits.available) {
-        PhysLiveRegs(W0_HI);
+    if !LiveUnits.available(W0_HI) {
+        operator(PhysLiveRegs, W0_HI);
     }
     return PhysLiveRegs;
 }
 
 fn setPhysLiveRegs(LiveUnits: *mut LiveRegUnits, PhysLiveRegs: LiveRegs) {
     if PhysLiveRegs & NZCV {
-        LiveUnits.addReg;
+        LiveUnits.addReg(NZCV);
     }
     if PhysLiveRegs & W0 {
-        LiveUnits.addReg;
+        LiveUnits.addReg(W0);
     }
     if PhysLiveRegs & W0_HI {
-        LiveUnits.addReg;
+        LiveUnits.addReg(W0_HI);
     }
 }
 
 fn isCallStartOpcode(Opc: u32) -> bool {
     match Opc {
+        BLR => {
+            BLRA;
+        },
         _ => {
             return false;
         },
@@ -235,154 +281,248 @@ fn isCallStartOpcode(Opc: u32) -> bool {
 
 fn MachineSMEABI::collectNeededZAStates(self, SMEFnAttrs: SMEAttrs) -> FunctionInfo {
     assert!((SMEFnAttrs.hasAgnosticZAInterface() || SMEFnAttrs.hasZT0State() || SMEFnAttrs.hasZAState()), "Expected function to have ZA/ZT0 state!");
-    let mut Blocks: i32 = self.MF.getNumBlockIDs();
+    let mut Blocks: SmallVector<BlockInfo> = self.MF.getNumBlockIDs();
     let mut PhysLiveRegsAfterSMEPrologue: LiveRegs = None;
-    let mut AfterSMEProloguePt: i32 = 0;
-    return void { move(), PhysLiveRegsAfterSMEPrologue };
+    let mut AfterSMEProloguePt: iterator> = iterator> {};
+    for MBB in *self.MF {
+        let mut Block: *mut BlockInfo = Blocks[MBB.getNumber()];
+        if MBB.isEntryBlock() {
+            Block.FixedEntryState = ENTRY;
+        } else if MBB.isEHPad() {
+            Block.FixedEntryState = LOCAL_COMMITTED;
+        }
+        let mut LiveUnits: LiveRegUnits = *self.TRI;
+        LiveUnits.addLiveOuts(MBB);
+        Block.PhysLiveRegsAtExit = getPhysLiveRegs(LiveUnits);
+        let mut FirstTerminatorInsertPt: iterator = MBB.getFirstTerminator();
+        let mut FirstNonPhiInsertPt: iterator = MBB.getFirstNonPHI();
+        for MI in reverse(MBB) {
+            if MI.isDebugInstr() {
+                continue;
+            }
+            let mut MBBI: iterator = MI;
+            LiveUnits.stepBackward(MI);
+            let mut PhysLiveRegs: LiveRegs = getPhysLiveRegs(LiveUnits);
+            if MI.getOpcode() == SMEStateAllocPseudo {
+                AfterSMEProloguePt = MBBI;
+                PhysLiveRegsAfterSMEPrologue = PhysLiveRegs;
+            }
+            assert!((InsertPt == MBBI || isCallStartOpcode(operator(InsertPt).getOpcode())), "Unexpected state change insertion point!");
+            if MBBI == FirstTerminatorInsertPt {
+                Block.PhysLiveRegsAtExit = PhysLiveRegs;
+            }
+            if MBBI == FirstNonPhiInsertPt {
+                Block.PhysLiveRegsAtEntry = PhysLiveRegs;
+            }
+            if NeededState != ANY {
+                Block.Insts.push(InstInfo { NeededState: NeededState, InsertPt: InsertPt, PhysLiveRegs: PhysLiveRegs });
+            }
+        }
+        reverse(Block.Insts.begin(), Block.Insts.end());
+        if !Block.Insts.is_empty() {
+            Block.DesiredIncomingState = Block.Insts.front().NeededState;
+            Block.DesiredOutgoingState = Block.Insts.back().NeededState;
+        }
+    }
+    return FunctionInfo { Blocks: move(Blocks), AfterSMEProloguePt: AfterSMEProloguePt, PhysLiveRegsAfterSMEPrologue: PhysLiveRegsAfterSMEPrologue };
 }
 
-fn MachineSMEABI::assignBundleZAStates(self, Bundles: *EdgeBundles, FnInfo: *FunctionInfo) -> i32 {
-    let mut BundleStates: i32 = Bundles.getNumBundles();
+fn MachineSMEABI::assignBundleZAStates(self, Bundles: *EdgeBundles, FnInfo: *FunctionInfo) -> SmallVector<ZAState> {
+    let mut BundleStates: SmallVector<ZAState> = Bundles.getNumBundles();
     for let mut I: u32 = 0;
 let mut E: u32 = Bundles.getNumBundles(); I != E; I += 1 {
-        let mut BundleState: optional<ZAState> = zeroed();
-        if operator!() ||  == ANY {
-            BundleState() = ACTIVE;
+        let mut BundleState: optional<ZAState> = optional<ZAState> {};
+        for BlockID in Bundles.getBlocks(I) {
+            let mut Block: *BlockInfo = FnInfo.Blocks[BlockID];
+            if Block.FixedEntryState != ANY || Bundles.getBundle(BlockID, false) != I {
+                continue;
+            }
+            if !BundleState {
+                BundleState = Block.DesiredIncomingState;
+            } else if BundleState != Block.DesiredIncomingState {
+                BundleState = ACTIVE;
+            }
         }
-        BundleStates()[I] = operator*();
+        if !BundleState || BundleState == ANY {
+            BundleState = ACTIVE;
+        }
+        BundleStates[I] = operator(BundleState);
     }
-    return ;
+    return BundleStates;
 }
 
-fn MachineSMEABI::findStateChangeInsertionPoint(self, MBB: *mut MachineBasicBlock, Block: *BlockInfo, Inst: i32) -> i32 {
+fn MachineSMEABI::findStateChangeInsertionPoint(self, MBB: *mut MachineBasicBlock, Block: *BlockInfo, Inst: const_iterator) -> iterator, LiveRegs> {
     let mut PhysLiveRegs: LiveRegs = zeroed();
-    let mut InsertPt: i32 = 0;
-    if Inst() != Block()() {
-        InsertPt() = ;
-        PhysLiveRegs = ;
+    let mut InsertPt: iterator = iterator {};
+    if Inst != Block.Insts.end() {
+        InsertPt = Inst.InsertPt;
+        PhysLiveRegs = Inst.PhysLiveRegs;
     } else {
-        InsertPt() = MBB()();
+        InsertPt = MBB.getFirstTerminator();
         PhysLiveRegs = Block.PhysLiveRegsAtExit;
     }
     if PhysLiveRegs == None {
-        return void { , PhysLiveRegs };
+        return iterator, LiveRegs> { InsertPt, PhysLiveRegs };
     }
-    let mut PrevStateChangeI: i32 = 0;
-    if Inst() == Block()() {
-        PrevStateChangeI() = MBB()();
+    let mut PrevStateChangeI: iterator = iterator {};
+    if Inst == Block.Insts.begin() {
+        PrevStateChangeI = MBB.begin();
     } else {
-        PrevStateChangeI() = prev();
+        PrevStateChangeI = prev(Inst, 1).InsertPt;
     }
     let mut LiveUnits: LiveRegUnits = *self.TRI;
     setPhysLiveRegs(LiveUnits, PhysLiveRegs);
-    let mut BestCandidate: auto = make_pair(PhysLiveRegs);
-    for let mut I: i32 = ; I() != ;  -= 1 {
-        if I()() {
+    let mut BestCandidate: LiveRegs &>> = make_pair(InsertPt, PhysLiveRegs);
+    for let mut I: iterator = InsertPt; I != PrevStateChangeI; operator(I) {
+        if operator(I).isDebugInstr() {
             continue;
         }
-        if I()() == self.TII() || () {
+        if operator(I).getOpcode() == self.TII.getCallFrameDestroyOpcode() || operator(I).isCall(AnyInBundle) {
             break;
         }
-        LiveUnits.stepBackward(operator*());
+        LiveUnits.stepBackward(operator(I));
         let mut CurrentPhysLiveRegs: LiveRegs = getPhysLiveRegs(LiveUnits);
-        if !(CurrentPhysLiveRegs & NZCV) {
-            BestCandidate() = void { , CurrentPhysLiveRegs };
+        if operator((CurrentPhysLiveRegs & NZCV)) {
+            BestCandidate = LiveRegs> { I, CurrentPhysLiveRegs };
         }
         if CurrentPhysLiveRegs == None {
             break;
         }
     }
-    return ;
+    return BestCandidate;
 }
 
-fn MachineSMEABI::insertStateChanges(self, Context: *mut EmitContext, FnInfo: *FunctionInfo, Bundles: *EdgeBundles, BundleStates: ArrayRef<ZAState>) {}
+fn MachineSMEABI::insertStateChanges(self, Context: *mut EmitContext, FnInfo: *FunctionInfo, Bundles: *EdgeBundles, BundleStates: ArrayRef<ZAState>) {
+    for MBB in *self.MF {
+        let mut Block: *BlockInfo = FnInfo.Blocks[MBB.getNumber()];
+        let mut InState: ZAState = BundleStates[Bundles.getBundle(MBB.getNumber(), false)];
+        let mut CurrentState: ZAState = Block.FixedEntryState;
+        if CurrentState == ANY {
+            CurrentState = InState;
+        }
+        for Inst in Block.Insts {
+            if CurrentState != Inst.NeededState {
+                self.emitStateChange(Context, MBB, InsertPt, CurrentState, Inst.NeededState, PhysLiveRegs);
+                CurrentState = Inst.NeededState;
+            }
+        }
+        if MBB.succ_empty() {
+            continue;
+        }
+        let mut OutState: ZAState = BundleStates[Bundles.getBundle(MBB.getNumber(), true)];
+        if CurrentState != OutState {
+            self.emitStateChange(Context, MBB, InsertPt, CurrentState, OutState, PhysLiveRegs);
+        }
+    }
+}
 
-fn getDebugLoc(MBB: *mut MachineBasicBlock, MBBI: i32) -> DebugLoc {
+fn getDebugLoc(MBB: *mut MachineBasicBlock, MBBI: iterator) -> DebugLoc {
     if MBB.is_empty() {
         return DebugLoc { Loc: null };
     }
-    return if  != MBB()() { () } else { MBB.back().getDebugLoc() };
+    return if MBBI != MBB.end() { operator(MBBI).getDebugLoc() } else { MBB.back().getDebugLoc() };
 }
 
-fn findMarkedCall(MBB: *MachineBasicBlock, MBBI: i32, Calls: *SmallVectorImpl<const MachineInstr *>, Marker: u32, CallDestroyOpcode: u32) -> bool {
+fn findMarkedCall(MBB: *MachineBasicBlock, MBBI: const_iterator, Calls: *SmallVectorImpl<const MachineInstr *>, Marker: u32, CallDestroyOpcode: u32) -> bool {
     let mut IsMarker: Closure_2 = Closure_2 { Marker: &mut Marker };
-    let mut MarkerInst: auto = find_if(MBB()(), IsMarker);
-    if MarkerInst() == MBB()() {
+    let mut MarkerInst: MachineInstr> = find_if(MBBI, MBB.end(), IsMarker);
+    if MarkerInst == MBB.end() {
         return false;
     }
-    let mut I: i32 = ;
-    while  += 1 != MBB()() {
-        if I()() || () == CallDestroyOpcode {
+    let mut I: const_iterator = MarkerInst;
+    while operator(I) != MBB.end() {
+        if operator(I).isCall(AnyInBundle) || operator(I).getOpcode() == CallDestroyOpcode {
             break;
         }
     }
-    if I() != MBB()() && () {
-        Calls()(operator&(operator*()));
+    if I != MBB.end() && operator(I).isCall(AnyInBundle) {
+        Calls.push(&mut operator(I));
     }
     return true;
 }
 
-fn MachineSMEABI::collectReachableMarkedCalls(self: *MachineSMEABI, StartMBB: *MachineBasicBlock, StartInst: i32, Calls: *SmallVectorImpl<const MachineInstr *>, Marker: u32) {
-    let mut CallDestroyOpcode: u32 = self.TII();
-    if findMarkedCall(StartMBB, Calls, Marker, CallDestroyOpcode) {
+fn MachineSMEABI::collectReachableMarkedCalls(self: *MachineSMEABI, StartMBB: *MachineBasicBlock, StartInst: const_iterator, Calls: *SmallVectorImpl<const MachineInstr *>, Marker: u32) {
+    assert!(Marker == InOutZAUsePseudo || Marker == RequiresZASavePseudo || Marker == RequiresZT0SavePseudo);
+    let mut CallDestroyOpcode: u32 = self.TII.getCallFrameDestroyOpcode();
+    if findMarkedCall(StartMBB, StartInst, Calls, Marker, CallDestroyOpcode) {
         return;
     }
-    let mut Visited: SmallPtrSet<const MachineBasicBlock *, 4> = zeroed();
-    let mut Worklist: i32 = StartMBB()();
-    while operator!() {
-        let mut MBB: *MachineBasicBlock = ();
-        if operator!() {
+    let mut Visited: SmallPtrSet<const MachineBasicBlock *, 4> = SmallPtrSet<const MachineBasicBlock *, 4> {};
+    let mut Worklist: SmallVector<const MachineBasicBlock *> = SmallVector<const MachineBasicBlock *> { StartMBB.succ_rbegin(), StartMBB.succ_rend() };
+    while !Worklist.is_empty() {
+        let mut MBB: *MachineBasicBlock = Worklist.pop_back_val();
+        if !Inserted {
             continue;
         }
-        if  {
-            Worklist()(MBB()(), MBB()());
+        if !findMarkedCall(*MBB, MBB.begin(), Calls, Marker, CallDestroyOpcode) {
+            Worklist.append(MBB.succ_rbegin(), MBB.succ_rend());
         }
     }
 }
 
 fn getCalleeName(CallInst: *MachineInstr) -> str {
     assert!(CallInst.isCall(AnyInBundle), "expected a call");
+    for MO in CallInst.operands() {
+        if MO.isSymbol() {
+            return MO.getSymbolName();
+        }
+        if MO.isGlobal() {
+            return MO.getGlobal().getName();
+        }
+    }
     return "";
 }
 
-fn MachineSMEABI::emitCallSaveRemarks(self: *MachineSMEABI, MBB: *MachineBasicBlock, MBBI: i32, DL: DebugLoc, Marker: u32, RemarkName: str, SaveName: str) {
+fn MachineSMEABI::emitCallSaveRemarks(self: *MachineSMEABI, MBB: *MachineBasicBlock, MBBI: const_iterator, DL: DebugLoc, Marker: u32, RemarkName: str, SaveName: str) {
     let mut SaveRemark: Closure_3 = Closure_3 { RemarkName: &mut RemarkName };
-    let mut StateName: str = zeroed();
-    self.ORE;
+    let mut StateName: str = if Marker == RequiresZT0SavePseudo { "ZT0" } else { "ZA" };
+    self.ORE.emit(Closure_4 { SaveRemark: &mut SaveRemark, DL: &mut DL, MBB: &mut MBB, SaveName: &mut SaveName, StateName: &mut StateName, cap_5: self }, null);
     if !self.ORE.allowExtraAnalysis("sme") {
         return;
     }
-    let mut CallsRequiringSaves: i32 = 0;
+    let mut CallsRequiringSaves: SmallVector<const MachineInstr *> = SmallVector<const MachineInstr *> {};
+    self.collectReachableMarkedCalls(MBB, MBBI, CallsRequiringSaves, Marker);
+    for CallInst in CallsRequiringSaves {
+        let mut R: MachineOptimizationRemarkAnalysis = SaveRemark.call(CallInst.getDebugLoc(), *CallInst.getParent());
+        R << "call";
+        let mut CalleeName: str = getCalleeName(*CallInst);
+        if !CalleeName.is_empty() {
+            R << " to '" << CalleeName << "'";
+        }
+        R << " requires " << StateName << " save";
+        self.ORE.emit(R);
+    }
 }
 
-fn MachineSMEABI::emitSetupLazySave(self, Context: *mut EmitContext, MBB: *mut MachineBasicBlock, MBBI: i32) {
-    let mut DL: DebugLoc = zeroed();
-    let mut TPIDR2: Register = self.MRI;
-    let mut TPIDR2Ptr: Register = self.MRI;
-    BuildMI(MBB, DL, self.TII, TPIDR2)(Context.getTPIDR2Block(*self.MF))(0)(0);
-    BuildMI(MBB, DL, self.TII(COPY), TPIDR2Ptr)(TPIDR2);
-    BuildMI(MBB, DL, self.TII)(TPIDR2Ptr);
+fn MachineSMEABI::emitSetupLazySave(self, Context: *mut EmitContext, MBB: *mut MachineBasicBlock, MBBI: iterator) {
+    let mut DL: DebugLoc = getDebugLoc(MBB, MBBI);
+    self.emitCallSaveRemarks(MBB, const_iterator { MBBI, null }, DL, RequiresZASavePseudo, "SMELazySaveZA", "lazy save");
+    let mut TPIDR2: Register = self.MRI.createVirtualRegister(&mut GPR64spRegClass, "");
+    let mut TPIDR2Ptr: Register = self.MRI.createVirtualRegister(&mut GPR64RegClass, "");
+    BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ADDXri), TPIDR2).addFrameIndex(Context.getTPIDR2Block(*self.MF)).addImm(0).addImm(0);
+    BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(COPY), TPIDR2Ptr).addReg(TPIDR2, RegState {}, 0);
+    BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MSR)).addImm(TPIDR2_EL0).addReg(TPIDR2Ptr, RegState {}, 0);
 }
 
-fn MachineSMEABI::createPhysRegSave(self, PhysLiveRegs: LiveRegs, MBB: *mut MachineBasicBlock, MBBI: i32, DL: DebugLoc) -> PhysRegSave {
+fn MachineSMEABI::createPhysRegSave(self, PhysLiveRegs: LiveRegs, MBB: *mut MachineBasicBlock, MBBI: iterator, DL: DebugLoc) -> PhysRegSave {
     let mut RegSave: PhysRegSave = PhysRegSave { PhysLiveRegs: PhysLiveRegs, StatusFlags: Register { Reg: 0 }, X0Save: Register { Reg: 0 } };
     if PhysLiveRegs & NZCV {
-        RegSave.StatusFlags = self.MRI;
-        BuildMI(MBB, DL, self.TII, RegSave.StatusFlags)(2);
+        RegSave.StatusFlags = self.MRI.createVirtualRegister(&mut GPR64RegClass, "");
+        BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MRS), RegSave.StatusFlags).addImm(NZCV).addReg(NZCV, Implicit, 0).setOperandDead(2);
     }
     if PhysLiveRegs & W0 {
-        RegSave.X0Save = self.MRI;
-        BuildMI(MBB, DL, self.TII(COPY), RegSave.X0Save);
+        RegSave.X0Save = self.MRI.createVirtualRegister(if PhysLiveRegs & W0_HI { &mut GPR64RegClass } else { &mut GPR32RegClass }, "");
+        BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(COPY), RegSave.X0Save).addReg(if PhysLiveRegs & W0_HI { X0 } else { W0 }, RegState {}, 0);
     }
     return RegSave;
 }
 
-fn MachineSMEABI::restorePhyRegSave(self, RegSave: *PhysRegSave, MBB: *mut MachineBasicBlock, MBBI: i32, DL: DebugLoc) {
+fn MachineSMEABI::restorePhyRegSave(self, RegSave: *PhysRegSave, MBB: *mut MachineBasicBlock, MBBI: iterator, DL: DebugLoc) {
     if RegSave.StatusFlags.isValid() {
-        BuildMI(MBB, DL, self.TII)(RegSave.StatusFlags);
+        BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MSR)).addImm(NZCV).addReg(RegSave.StatusFlags, RegState {}, 0).addReg(NZCV, ImplicitDefine, 0);
     }
     if RegSave.X0Save.isValid() {
-        BuildMI(MBB, DL, self.TII(COPY))(RegSave.X0Save);
+        BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(COPY), if RegSave.PhysLiveRegs & W0_HI { X0 } else { W0 }).addReg(RegSave.X0Save, RegState {}, 0);
     }
 }
 
@@ -396,121 +536,130 @@ fn MachineSMEABI::addSMELibCall(self, MIB: *mut MachineInstrBuilder, LC: Libcall
     if CC != ExpectedCC {
         self.emitError("invalid calling convention for SME routine: '" + ImplName + "'");
     }
-    MIB()(ImplName.ptr);
-    MIB()(self.TRI.getCallPreservedMask(*self.MF, CC));
+    MIB.addExternalSymbol(ImplName.ptr, 0);
+    MIB.addRegMask(self.TRI.getCallPreservedMask(*self.MF, CC));
 }
 
-fn MachineSMEABI::emitRestoreLazySave(self, Context: *mut EmitContext, MBB: *mut MachineBasicBlock, MBBI: i32, PhysLiveRegs: LiveRegs) {
-    let mut DL: DebugLoc = zeroed();
-    let mut TPIDR2EL0: Register = self.MRI;
-    let mut TPIDR2: Register = zeroed();
-    let mut RegSave: PhysRegSave = zeroed();
-    BuildMI(MBB, DL, self.TII)(1);
-    BuildMI(MBB, DL, self.TII, TPIDR2EL0)(2);
-    BuildMI(MBB, DL, self.TII, TPIDR2)(Context.getTPIDR2Block(*self.MF))(0)(0);
-    let mut RestoreZA: auto = BuildMI(MBB, DL, self.TII)(TPIDR2EL0)(TPIDR2);
-    self.addSMELibCall(SMEABI_TPIDR2_RESTORE, AArch64_SME_ABI_Support_Routines_PreserveMost_From_X0);
-    BuildMI(MBB, DL, self.TII);
+fn MachineSMEABI::emitRestoreLazySave(self, Context: *mut EmitContext, MBB: *mut MachineBasicBlock, MBBI: iterator, PhysLiveRegs: LiveRegs) {
+    let mut DL: DebugLoc = getDebugLoc(MBB, MBBI);
+    let mut TPIDR2EL0: Register = self.MRI.createVirtualRegister(&mut GPR64RegClass, "");
+    let mut TPIDR2: Register = X0;
+    let mut RegSave: PhysRegSave = self.createPhysRegSave(PhysLiveRegs, MBB, MBBI, DL);
+    BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MSRpstatesvcrImm1)).addImm(SVCRZA).addImm(1);
+    BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MRS), TPIDR2EL0).addImm(TPIDR2_EL0).setOperandDead(2);
+    BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ADDXri), TPIDR2).addFrameIndex(Context.getTPIDR2Block(*self.MF)).addImm(0).addImm(0);
+    let mut RestoreZA: MachineInstrBuilder = BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(RestoreZAPseudo)).addReg(TPIDR2EL0, RegState {}, 0).addReg(TPIDR2, RegState {}, 0);
+    self.addSMELibCall(RestoreZA, SMEABI_TPIDR2_RESTORE, AArch64_SME_ABI_Support_Routines_PreserveMost_From_X0);
+    BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MSR)).addImm(TPIDR2_EL0).addReg(XZR, RegState {}, 0);
+    self.restorePhyRegSave(RegSave, MBB, MBBI, DL);
 }
 
-fn MachineSMEABI::emitZAMode(self, MBB: *mut MachineBasicBlock, MBBI: i32, ClearTPIDR2: bool, On: bool) {
-    let mut DL: DebugLoc = zeroed();
+fn MachineSMEABI::emitZAMode(self, MBB: *mut MachineBasicBlock, MBBI: iterator, ClearTPIDR2: bool, On: bool) {
+    let mut DL: DebugLoc = getDebugLoc(MBB, MBBI);
     if ClearTPIDR2 {
-        BuildMI(MBB, DL, self.TII);
+        BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MSR)).addImm(TPIDR2_EL0).addReg(XZR, RegState {}, 0);
     }
-    BuildMI(MBB, DL, self.TII)(if On { 1 } else { 0 });
+    BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MSRpstatesvcrImm1)).addImm(SVCRZA).addImm(if On { 1 } else { 0 });
 }
 
-fn MachineSMEABI::emitAllocateLazySaveBuffer(self, Context: *mut EmitContext, MBB: *mut MachineBasicBlock, MBBI: i32) {
+fn MachineSMEABI::emitAllocateLazySaveBuffer(self, Context: *mut EmitContext, MBB: *mut MachineBasicBlock, MBBI: iterator) {
     let mut MFI: *mut MachineFrameInfo = self.MF.getFrameInfo();
-    let mut DL: DebugLoc = zeroed();
-    let mut SP: Register = self.MRI;
-    let mut SVL: Register = self.MRI;
+    let mut DL: DebugLoc = getDebugLoc(MBB, MBBI);
+    let mut SP: Register = self.MRI.createVirtualRegister(&mut GPR64RegClass, "");
+    let mut SVL: Register = self.MRI.createVirtualRegister(&mut GPR64RegClass, "");
     let mut Buffer: Register = self.AFI.getEarlyAllocSMESaveBuffer();
-    BuildMI(MBB, DL, self.TII, SVL)(1);
+    BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(RDSVLI_XI), SVL).addImm(1);
     if !Buffer.isValid() {
         assert!(!self.Subtarget.isTargetWindows(), "Lazy ZA save is not yet supported on Windows");
-        Buffer = self.MRI;
-        BuildMI(MBB, DL, self.TII(COPY), SP);
-        BuildMI(MBB, DL, self.TII, Buffer)(SVL)(SVL)(SP);
-        BuildMI(MBB, DL, self.TII(COPY))(Buffer);
+        Buffer = self.MRI.createVirtualRegister(&mut GPR64RegClass, "");
+        BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(COPY), SP).addReg(SP, RegState {}, 0);
+        BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MSUBXrrr), Buffer).addReg(SVL, RegState {}, 0).addReg(SVL, RegState {}, 0).addReg(SP, RegState {}, 0);
+        BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(COPY), SP).addReg(Buffer, RegState {}, 0);
         MFI.CreateVariableSizedObject(16, null);
     }
     {
         if !self.Subtarget.isLittleEndian() {
             reportFatalInternalError("TPIDR2 block initialization is not supported on big-endian targets");
         }
-        BuildMI(MBB, DL, self.TII)(Buffer)(SVL)(Context.getTPIDR2Block(*self.MF))(0);
+        BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(STPXi)).addReg(Buffer, RegState {}, 0).addReg(SVL, RegState {}, 0).addFrameIndex(Context.getTPIDR2Block(*self.MF)).addImm(0);
     }
 }
 
 const ZERO_ALL_ZA_MASK: u32 = 255;
 
-fn MachineSMEABI::emitSMEPrologue(self, MBB: *mut MachineBasicBlock, MBBI: i32) {
-    let mut DL: DebugLoc = zeroed();
+fn MachineSMEABI::emitSMEPrologue(self, MBB: *mut MachineBasicBlock, MBBI: iterator) {
+    let mut DL: DebugLoc = getDebugLoc(MBB, MBBI);
     let mut ZeroZA: bool = self.AFI.getSMEFnAttrs().isNewZA();
     let mut ZeroZT0: bool = self.AFI.getSMEFnAttrs().isNewZT0();
     if self.AFI.getSMEFnAttrs().hasPrivateZAInterface() {
-        let mut TPIDR2EL0: Register = self.MRI;
-        BuildMI(MBB, DL, self.TII)(TPIDR2EL0, Define)(2);
-        let mut CommitZASave: auto = BuildMI(MBB, DL, self.TII)(TPIDR2EL0)(ZeroZA)(ZeroZT0);
-        self.addSMELibCall(SMEABI_TPIDR2_SAVE, AArch64_SME_ABI_Support_Routines_PreserveMost_From_X0);
+        let mut TPIDR2EL0: Register = self.MRI.createVirtualRegister(&mut GPR64RegClass, "");
+        BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MRS)).addReg(TPIDR2EL0, Define, 0).addImm(TPIDR2_EL0).setOperandDead(2);
+        let mut CommitZASave: MachineInstrBuilder = BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(CommitZASavePseudo)).addReg(TPIDR2EL0, RegState {}, 0).addImm(ZeroZA).addImm(ZeroZT0);
+        self.addSMELibCall(CommitZASave, SMEABI_TPIDR2_SAVE, AArch64_SME_ABI_Support_Routines_PreserveMost_From_X0);
         if ZeroZA {
-            CommitZASave();
+            CommitZASave.addDef(ZAB0, ImplicitDefine, 0);
         }
         if ZeroZT0 {
-            CommitZASave();
+            CommitZASave.addDef(ZT0, ImplicitDefine, 0);
         }
-        BuildMI(MBB, DL, self.TII)(1);
+        BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MSRpstatesvcrImm1)).addImm(SVCRZA).addImm(1);
     } else if self.AFI.getSMEFnAttrs().hasSharedZAInterface() {
         if ZeroZA {
-            BuildMI(MBB, DL, self.TII)(ZERO_ALL_ZA_MASK);
+            BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ZERO_M)).addImm(ZERO_ALL_ZA_MASK).addDef(ZAB0, ImplicitDefine, 0);
         }
         if ZeroZT0 {
-            BuildMI(MBB, DL, self.TII);
+            BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ZERO_T)).addDef(ZT0, RegState {}, 0);
         }
     }
 }
 
-fn MachineSMEABI::emitFullZASaveRestore(self, Context: *mut EmitContext, MBB: *mut MachineBasicBlock, MBBI: i32, PhysLiveRegs: LiveRegs, IsSave: bool) {
-    let mut DL: DebugLoc = zeroed();
-    let mut RegSave: PhysRegSave = zeroed();
-    let mut BufferPtr: Register = zeroed();
-    BuildMI(MBB, DL, self.TII(COPY), BufferPtr)(Context.getAgnosticZABufferPtr(*self.MF));
-    let mut SaveRestoreZA: auto = BuildMI(MBB, DL, self.TII)(BufferPtr, Implicit);
-    self.addSMELibCall(if IsSave { SMEABI_SME_SAVE } else { SMEABI_SME_RESTORE }, AArch64_SME_ABI_Support_Routines_PreserveMost_From_X1);
+fn MachineSMEABI::emitFullZASaveRestore(self, Context: *mut EmitContext, MBB: *mut MachineBasicBlock, MBBI: iterator, PhysLiveRegs: LiveRegs, IsSave: bool) {
+    let mut DL: DebugLoc = getDebugLoc(MBB, MBBI);
+    if IsSave {
+        self.emitCallSaveRemarks(MBB, const_iterator { MBBI, null }, DL, RequiresZASavePseudo, "SMEFullZASave", "full save");
+    }
+    let mut RegSave: PhysRegSave = self.createPhysRegSave(PhysLiveRegs, MBB, MBBI, DL);
+    let mut BufferPtr: Register = X0;
+    BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(COPY), BufferPtr).addReg(Context.getAgnosticZABufferPtr(*self.MF), RegState {}, 0);
+    let mut SaveRestoreZA: MachineInstrBuilder = BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(BL)).addReg(BufferPtr, Implicit, 0);
+    self.addSMELibCall(SaveRestoreZA, if IsSave { SMEABI_SME_SAVE } else { SMEABI_SME_RESTORE }, AArch64_SME_ABI_Support_Routines_PreserveMost_From_X1);
+    self.restorePhyRegSave(RegSave, MBB, MBBI, DL);
 }
 
-fn MachineSMEABI::emitZT0SaveRestore(self, Context: *mut EmitContext, MBB: *mut MachineBasicBlock, MBBI: i32, IsSave: bool) {
-    let mut DL: DebugLoc = zeroed();
-    let mut ZT0Save: Register = self.MRI;
-    BuildMI(MBB, DL, self.TII, ZT0Save)(Context.getZT0SaveSlot(*self.MF))(0)(0);
+fn MachineSMEABI::emitZT0SaveRestore(self, Context: *mut EmitContext, MBB: *mut MachineBasicBlock, MBBI: iterator, IsSave: bool) {
+    let mut DL: DebugLoc = getDebugLoc(MBB, MBBI);
     if IsSave {
-        BuildMI(MBB, DL, self.TII)(ZT0Save);
+        self.emitCallSaveRemarks(MBB, const_iterator { MBBI, null }, DL, RequiresZT0SavePseudo, "SMEZT0Save", "spill");
+    }
+    let mut ZT0Save: Register = self.MRI.createVirtualRegister(&mut GPR64spRegClass, "");
+    BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ADDXri), ZT0Save).addFrameIndex(Context.getZT0SaveSlot(*self.MF)).addImm(0).addImm(0);
+    if IsSave {
+        BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(STR_TX)).addReg(ZT0, RegState {}, 0).addReg(ZT0Save, RegState {}, 0);
     } else {
-        BuildMI(MBB, DL, self.TII)(ZT0Save);
+        BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(LDR_TX), ZT0).addReg(ZT0Save, RegState {}, 0);
     }
 }
 
-fn MachineSMEABI::emitAllocateFullZASaveBuffer(self, Context: *mut EmitContext, MBB: *mut MachineBasicBlock, MBBI: i32, PhysLiveRegs: LiveRegs) {
+fn MachineSMEABI::emitAllocateFullZASaveBuffer(self, Context: *mut EmitContext, MBB: *mut MachineBasicBlock, MBBI: iterator, PhysLiveRegs: LiveRegs) {
     if self.AFI.getEarlyAllocSMESaveBuffer().operator unsigned int() {
         return;
     }
-    let mut DL: DebugLoc = zeroed();
+    let mut DL: DebugLoc = getDebugLoc(MBB, MBBI);
     let mut BufferPtr: Register = Context.getAgnosticZABufferPtr(*self.MF);
-    let mut BufferSize: Register = self.MRI;
-    let mut RegSave: PhysRegSave = zeroed();
+    let mut BufferSize: Register = self.MRI.createVirtualRegister(&mut GPR64RegClass, "");
+    let mut RegSave: PhysRegSave = self.createPhysRegSave(PhysLiveRegs, MBB, MBBI, DL);
     {
-        let mut SMEStateSize: auto = BuildMI(MBB, DL, self.TII);
-        self.addSMELibCall(SMEABI_SME_STATE_SIZE, AArch64_SME_ABI_Support_Routines_PreserveMost_From_X1);
-        BuildMI(MBB, DL, self.TII(COPY), BufferSize);
+        let mut SMEStateSize: MachineInstrBuilder = BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(BL)).addReg(X0, ImplicitDefine, 0);
+        self.addSMELibCall(SMEStateSize, SMEABI_SME_STATE_SIZE, AArch64_SME_ABI_Support_Routines_PreserveMost_From_X1);
+        BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(COPY), BufferSize).addReg(X0, RegState {}, 0);
     }
     {
         let mut MFI: *mut MachineFrameInfo = self.MF.getFrameInfo();
-        BuildMI(MBB, DL, self.TII)(BufferSize)(getArithExtendImm(UXTX, 0));
-        BuildMI(MBB, DL, self.TII(COPY), BufferPtr);
+        BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SUBXrx64), SP).addReg(SP, RegState {}, 0).addReg(BufferSize, RegState {}, 0).addImm(getArithExtendImm(UXTX, 0));
+        BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(COPY), BufferPtr).addReg(SP, RegState {}, 0);
         MFI.CreateVariableSizedObject(16, null);
     }
+    self.restorePhyRegSave(RegSave, MBB, MBBI, DL);
 }
 
 struct FromState {
@@ -525,7 +674,7 @@ fn transitionFrom(From: ZAState) -> FromState {
     return FromState { From: From };
 }
 
-fn MachineSMEABI::emitStateChange(self, Context: *mut EmitContext, MBB: *mut MachineBasicBlock, InsertPt: i32, From: ZAState, To: ZAState, PhysLiveRegs: LiveRegs) {
+fn MachineSMEABI::emitStateChange(self, Context: *mut EmitContext, MBB: *mut MachineBasicBlock, InsertPt: iterator, From: ZAState, To: ZAState, PhysLiveRegs: LiveRegs) {
     if From == ANY || To == ANY {
         return;
     }
@@ -534,6 +683,7 @@ fn MachineSMEABI::emitStateChange(self, Context: *mut EmitContext, MBB: *mut Mac
     }
     if From == ENTRY {
         assert!(&mut MBB == &mut MBB.getParent().front(), "ENTRY state only valid in entry block");
+        self.emitSMEPrologue(MBB, MBB.getFirstNonPHI());
         if To == ACTIVE {
             return;
         }
@@ -545,10 +695,10 @@ fn MachineSMEABI::emitStateChange(self, Context: *mut EmitContext, MBB: *mut Mac
     let mut HasZAState: bool = IsAgnosticZA || SMEFnAttrs.hasZAState();
     match transitionFrom(From).to(To) {
         transitionFrom(ACTIVE).to(ACTIVE_ZT0_SAVED) => {
-            
+            self.emitZT0SaveRestore(Context, MBB, InsertPt, true);
         },
         transitionFrom(ACTIVE_ZT0_SAVED).to(ACTIVE) => {
-            
+            self.emitZT0SaveRestore(Context, MBB, InsertPt, false);
         },
         transitionFrom(ACTIVE).to(LOCAL_SAVED) => {
             transitionFrom(ACTIVE_ZT0_SAVED).to(LOCAL_SAVED);
@@ -572,39 +722,48 @@ fn MachineSMEABI::emitStateChange(self, Context: *mut EmitContext, MBB: *mut Mac
 }
 
 fn canElidePrivateZASetup(FnInfo: *FunctionInfo) -> bool {
+    for BlockInfo in FnInfo.Blocks {
+        for InstInfo in BlockInfo.Insts {
+            if InstInfo.NeededState == ACTIVE || InstInfo.NeededState == ACTIVE_ZT0_SAVED {
+                return false;
+            }
+        }
+    }
     return true;
 }
 
 fn MachineSMEABI::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
-    self.AFI = MF;
+    self.AFI = MF.getInfo();
     let mut SMEFnAttrs: SMEAttrs = self.AFI.getSMEFnAttrs();
     if !SMEFnAttrs.hasZAState() && !SMEFnAttrs.hasZT0State() && !SMEFnAttrs.hasAgnosticZAInterface() {
         return false;
     }
-    self.Subtarget = operator&(MF);
-    if operator!(self.Subtarget()) && !SMEFnAttrs.hasAgnosticZAInterface() {
+    self.Subtarget = &mut MF.getSubtarget();
+    if !self.Subtarget.hasSME() && !SMEFnAttrs.hasAgnosticZAInterface() {
         return false;
     }
     assert!(MF.getRegInfo().isSSA(), "Expected to be run on SSA form!");
     self.MF = &mut MF;
-    self.ORE = operator&();
-    self.LLI = operator&((operator*(MF.getFunction()), *self.Subtarget));
+    self.ORE = &mut self.getAnalysis().getORE();
+    self.LLI = &mut self.getAnalysis().getLibcallLowering(*MF.getFunction().getParent(), *self.Subtarget);
     self.TII = self.Subtarget.getInstrInfo();
     self.TRI = self.Subtarget.getRegisterInfo();
     self.MRI = &mut MF.getRegInfo();
-    let mut Bundles: *EdgeBundles = ();
+    let mut Bundles: *EdgeBundles = self.getAnalysis().getEdgeBundles();
     let mut FnInfo: FunctionInfo = self.collectNeededZAStates(SMEFnAttrs);
     if SMEFnAttrs.hasPrivateZAInterface() && canElidePrivateZASetup(FnInfo) {
         return false;
     }
-    let mut BundleStates: i32 = 0;
+    let mut BundleStates: SmallVector<ZAState> = self.assignBundleZAStates(Bundles, FnInfo);
     let mut Context: EmitContext = EmitContext {};
-    self.insertStateChanges(Context, FnInfo, Bundles);
+    self.insertStateChanges(Context, FnInfo, Bundles, BundleStates);
     if Context.needsSaveBuffer() {
-        if FnInfo() {
-            let mut MBBI: i32 = operator*(FnInfo());
+        if FnInfo.AfterSMEProloguePt {
+            let mut MBBI: iterator = operator(FnInfo.AfterSMEProloguePt);
+            self.emitAllocateZASaveBuffer(Context, *operator(MBBI).getParent(), MBBI, FnInfo.PhysLiveRegsAfterSMEPrologue);
         } else {
             let mut EntryBlock: *mut MachineBasicBlock = MF.front();
+            self.emitAllocateZASaveBuffer(Context, EntryBlock, EntryBlock.getFirstNonPHI(), FnInfo.Blocks[EntryBlock.getNumber()].PhysLiveRegsAtEntry);
         }
     }
     return true;
@@ -616,14 +775,16 @@ fn createMachineSMEABIPass(OptLevel: CodeGenOptLevel) -> *mut FunctionPass {
 
 struct Closure_1 {}
 
-fn Closure_1::call(self: *Closure_1, SR: *MCPhysReg) {}
+fn Closure_1::call(self: *Closure_1, SR: *MCPhysReg) -> bool {
+        return MPR128RegClass.contains(SR) || ZTRRegClass.contains(SR);
+    }
 
 struct Closure_2 {
     Marker: *mut u32,
 }
 
 unsafe fn Closure_2::call(self: *mut Closure_2) {
-        return MI() == (*self.Marker);
+        return MI.getOpcode() == (*self.Marker);
     }
 
 struct Closure_3 {
@@ -632,4 +793,17 @@ struct Closure_3 {
 
 unsafe fn Closure_3::call(self: *mut Closure_3, DL: DebugLoc, MBB: *MachineBasicBlock) -> MachineOptimizationRemarkAnalysis {
         return MachineOptimizationRemarkAnalysis { "sme", (*self.RemarkName), DL, &mut MBB };
+    }
+
+struct Closure_4 {
+    SaveRemark: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\AArch64\MachineSMEABIPass.cpp:716:21),
+    DL: *mut DebugLoc,
+    MBB: *mut MachineBasicBlock,
+    SaveName: *mut str,
+    StateName: *mut str,
+    cap_5: *MachineSMEABI,
+}
+
+unsafe fn Closure_4::call(self: *mut Closure_4) -> auto {
+        return (*self.SaveRemark).call((*self.DL), (*self.MBB)) << (*self.SaveName) << " of " << (*self.StateName) << " emitted in '" << self.MF.getName() << "'";
     }

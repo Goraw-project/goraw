@@ -1,6 +1,6 @@
-static mut DisableX86AvoidStoreForwardBlocks: i32 = "x86-disable-avoid-SFB";
+static mut DisableX86AvoidStoreForwardBlocks: opt<bool> = opt<bool> { "x86-disable-avoid-SFB", Hidden, "X86: Disable Store Forwarding Blocks fixup.", init(false) };
 
-static mut X86AvoidSFBInspectionLimit: i32 = "x86-sfb-inspection-limit";
+static mut X86AvoidSFBInspectionLimit: opt<unsigned int> = opt<unsigned int> { "x86-sfb-inspection-limit", "X86: Number of instructions backward to inspect for store forwarding blocks.", init(20), Hidden };
 
 struct X86AvoidSFBImpl {
     MRI: *mut MachineRegisterInfo,
@@ -26,8 +26,8 @@ fn X86AvoidSFBLegacy::getPassName(self: *X86AvoidSFBLegacy) -> str {
 
 fn X86AvoidSFBLegacy::getAnalysisUsage(self: *X86AvoidSFBLegacy, AU: *mut AnalysisUsage) {
     self.getAnalysisUsage(AU);
-    AU;
-    AU;
+    AU.addRequired();
+    AU.addPreserved();
 }
 
 fn X86AvoidSFBLegacy::getPassKind(self: *X86AvoidSFBLegacy) -> PassKind {
@@ -70,9 +70,13 @@ fn createX86AvoidStoreForwardingBlocksLegacyPass() -> *mut FunctionPass {
     return X86AvoidSFBLegacy {};
 }
 
-fn isXMMLoadOpcode(Opcode: u32) -> bool {}
+fn isXMMLoadOpcode(Opcode: u32) -> bool {
+    return Opcode == MOVUPSrm || Opcode == MOVAPSrm || Opcode == VMOVUPSrm || Opcode == VMOVAPSrm || Opcode == VMOVUPDrm || Opcode == VMOVAPDrm || Opcode == VMOVDQUrm || Opcode == VMOVDQArm || Opcode == VMOVUPSZ128rm || Opcode == VMOVAPSZ128rm || Opcode == VMOVUPDZ128rm || Opcode == VMOVAPDZ128rm || Opcode == VMOVDQU64Z128rm || Opcode == VMOVDQA64Z128rm || Opcode == VMOVDQU32Z128rm || Opcode == VMOVDQA32Z128rm;
+}
 
-fn isYMMLoadOpcode(Opcode: u32) -> bool {}
+fn isYMMLoadOpcode(Opcode: u32) -> bool {
+    return Opcode == VMOVUPSYrm || Opcode == VMOVAPSYrm || Opcode == VMOVUPDYrm || Opcode == VMOVAPDYrm || Opcode == VMOVDQUYrm || Opcode == VMOVDQAYrm || Opcode == VMOVUPSZ256rm || Opcode == VMOVAPSZ256rm || Opcode == VMOVUPDZ256rm || Opcode == VMOVAPDZ256rm || Opcode == VMOVDQU64Z256rm || Opcode == VMOVDQA64Z256rm || Opcode == VMOVDQU32Z256rm || Opcode == VMOVDQA32Z256rm;
+}
 
 fn isPotentialBlockedMemCpyLd(Opcode: u32) -> bool {
     return isXMMLoadOpcode(Opcode) || isYMMLoadOpcode(Opcode);
@@ -80,6 +84,51 @@ fn isPotentialBlockedMemCpyLd(Opcode: u32) -> bool {
 
 fn isPotentialBlockedMemCpyPair(LdOpcode: u32, StOpcode: u32) -> bool {
     match LdOpcode {
+        MOVUPSrm => {
+            MOVAPSrm;
+        },
+        VMOVUPSrm => {
+            VMOVAPSrm;
+        },
+        VMOVUPDrm => {
+            VMOVAPDrm;
+        },
+        VMOVDQUrm => {
+            VMOVDQArm;
+        },
+        VMOVUPSZ128rm => {
+            VMOVAPSZ128rm;
+        },
+        VMOVUPDZ128rm => {
+            VMOVAPDZ128rm;
+        },
+        VMOVUPSYrm => {
+            VMOVAPSYrm;
+        },
+        VMOVUPDYrm => {
+            VMOVAPDYrm;
+        },
+        VMOVDQUYrm => {
+            VMOVDQAYrm;
+        },
+        VMOVUPSZ256rm => {
+            VMOVAPSZ256rm;
+        },
+        VMOVUPDZ256rm => {
+            VMOVAPDZ256rm;
+        },
+        VMOVDQU64Z128rm => {
+            VMOVDQA64Z128rm;
+        },
+        VMOVDQU32Z128rm => {
+            VMOVDQA32Z128rm;
+        },
+        VMOVDQU64Z256rm => {
+            VMOVDQA64Z256rm;
+        },
+        VMOVDQU32Z256rm => {
+            VMOVDQA32Z256rm;
+        },
         _ => {
             return false;
         },
@@ -88,6 +137,10 @@ fn isPotentialBlockedMemCpyPair(LdOpcode: u32, StOpcode: u32) -> bool {
 
 fn isPotentialBlockingStoreInst(Opcode: u32, LoadOpcode: u32) -> bool {
     let mut PBlock: bool = false;
+    PBlock |= Opcode == MOV64mr || Opcode == MOV64mi32 || Opcode == MOV32mr || Opcode == MOV32mi || Opcode == MOV16mr || Opcode == MOV16mi || Opcode == MOV8mr || Opcode == MOV8mi;
+    if isYMMLoadOpcode(LoadOpcode) {
+        PBlock |= Opcode == VMOVUPSmr || Opcode == VMOVAPSmr || Opcode == VMOVUPDmr || Opcode == VMOVAPDmr || Opcode == VMOVDQUmr || Opcode == VMOVDQAmr || Opcode == VMOVUPSZ128mr || Opcode == VMOVAPSZ128mr || Opcode == VMOVUPDZ128mr || Opcode == VMOVAPDZ128mr || Opcode == VMOVDQU64Z128mr || Opcode == VMOVDQA64Z128mr || Opcode == VMOVDQU32Z128mr || Opcode == VMOVDQA32Z128mr;
+    }
     return PBlock;
 }
 
@@ -103,8 +156,29 @@ const MOV8SZ: i32 = 1;
 
 fn getYMMtoXMMLoadOpcode(LoadOpcode: u32) -> u32 {
     match LoadOpcode {
+        VMOVUPSYrm => {
+            VMOVAPSYrm;
+        },
+        VMOVUPDYrm => {
+            VMOVAPDYrm;
+        },
+        VMOVDQUYrm => {
+            VMOVDQAYrm;
+        },
+        VMOVUPSZ256rm => {
+            VMOVAPSZ256rm;
+        },
+        VMOVUPDZ256rm => {
+            VMOVAPDZ256rm;
+        },
+        VMOVDQU64Z256rm => {
+            VMOVDQA64Z256rm;
+        },
+        VMOVDQU32Z256rm => {
+            VMOVDQA32Z256rm;
+        },
         _ => {
-            llvm_unreachable_internal("Unexpected Load Instruction Opcode", "llvm\\lib\\Target\\X86\\X86AvoidStoreForwardingBlocks.cpp", 262);
+            llvm_unreachable_internal("Unexpected Load Instruction Opcode", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86AvoidStoreForwardingBlocks.cpp", 262);
         },
     }
     return 0;
@@ -112,8 +186,29 @@ fn getYMMtoXMMLoadOpcode(LoadOpcode: u32) -> u32 {
 
 fn getYMMtoXMMStoreOpcode(StoreOpcode: u32) -> u32 {
     match StoreOpcode {
+        VMOVUPSYmr => {
+            VMOVAPSYmr;
+        },
+        VMOVUPDYmr => {
+            VMOVAPDYmr;
+        },
+        VMOVDQUYmr => {
+            VMOVDQAYmr;
+        },
+        VMOVUPSZ256mr => {
+            VMOVAPSZ256mr;
+        },
+        VMOVUPDZ256mr => {
+            VMOVAPDZ256mr;
+        },
+        VMOVDQU64Z256mr => {
+            VMOVDQA64Z256mr;
+        },
+        VMOVDQU32Z256mr => {
+            VMOVDQA32Z256mr;
+        },
         _ => {
-            llvm_unreachable_internal("Unexpected Load Instruction Opcode", "llvm\\lib\\Target\\X86\\X86AvoidStoreForwardingBlocks.cpp", 291);
+            llvm_unreachable_internal("Unexpected Load Instruction Opcode", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86AvoidStoreForwardingBlocks.cpp", 291);
         },
     }
     return 0;
@@ -142,7 +237,7 @@ fn isRelevantAddressingMode(MI: *mut MachineInstr) -> bool {
     let mut Scale: *MachineOperand = MI.getOperand(AddrOffset + AddrScaleAmt);
     let mut Index: *MachineOperand = MI.getOperand(AddrOffset + AddrIndexReg);
     let mut Segment: *MachineOperand = MI.getOperand(AddrOffset + AddrSegmentReg);
-    if  {
+    if !((Base.isReg() && Base.getReg() != NoRegister) || Base.isFI()) {
         return false;
     }
     if !Disp.isImm() {
@@ -151,42 +246,55 @@ fn isRelevantAddressingMode(MI: *mut MachineInstr) -> bool {
     if Scale.getImm() != 1 {
         return false;
     }
-    if  {
+    if !(Index.isReg() && Index.getReg() == NoRegister) {
         return false;
     }
-    if  {
+    if !(Segment.isReg() && Segment.getReg() == NoRegister) {
         return false;
     }
     return true;
 }
 
 fn findPotentialBlockers(LoadInst: *mut MachineInstr) -> SmallVector<MachineInstr *, 2> {
-    let mut PotentialBlockers: SmallVector<MachineInstr *, 2> = zeroed();
+    let mut PotentialBlockers: SmallVector<MachineInstr *, 2> = SmallVector<MachineInstr *, 2> {};
     let mut BlockCount: u32 = 0;
-    let mut InspectionLimit: u32 = ;
-    for let mut PBInst: auto = next(reverse_iterator { LoadInst });
-let mut E: reverse_iterator = LoadInst.getParent().rend(); PBInst() != E;  += 1 {
-        if PBInst()() {
+    let mut InspectionLimit: u32 = X86AvoidSFBInspectionLimit.operator unsigned int();
+    for let mut PBInst: MachineInstr, true> = next(LoadInst, 1);
+let mut E: reverse_iterator = LoadInst.getParent().rend(); PBInst != E; operator(PBInst) {
+        if operator(PBInst).isMetaInstruction(IgnoreBundle) {
             continue;
         }
         BlockCount += 1;
         if BlockCount >= InspectionLimit {
             break;
         }
-        let mut MI: *mut MachineInstr = operator*();
+        let mut MI: *mut MachineInstr = operator(PBInst);
         if MI.getDesc().isCall() {
-            return ;
+            return PotentialBlockers;
         }
-        PotentialBlockers()(&mut MI);
+        PotentialBlockers.push(&mut MI);
     }
     if BlockCount < InspectionLimit {
         let mut MBB: *mut MachineBasicBlock = LoadInst.getParent();
         let mut LimitLeft: i32 = InspectionLimit - BlockCount;
         for PMBB in MBB.predecessors() {
             let mut PredCount: i32 = 0;
+            for PBInst in reverse(*PMBB) {
+                if PBInst.isMetaInstruction(IgnoreBundle) {
+                    continue;
+                }
+                PredCount += 1;
+                if PredCount >= LimitLeft {
+                    break;
+                }
+                if PBInst.getDesc().isCall() {
+                    break;
+                }
+                PotentialBlockers.push(&mut PBInst);
+            }
         }
     }
-    return ;
+    return PotentialBlockers;
 }
 
 fn X86AvoidSFBImpl::buildCopy(self, LoadInst: *mut MachineInstr, NLoadOpcode: u32, LoadDisp: i64, StoreInst: *mut MachineInstr, NStoreOpcode: u32, StoreDisp: i64, Size: u32, Offset: i64) {
@@ -195,8 +303,8 @@ fn X86AvoidSFBImpl::buildCopy(self, LoadInst: *mut MachineInstr, NLoadOpcode: u3
     let mut MBB: *mut MachineBasicBlock = LoadInst.getParent();
     let mut LMMO: *mut MachineMemOperand = *LoadInst.memoperands_begin();
     let mut SMMO: *mut MachineMemOperand = *StoreInst.memoperands_begin();
-    let mut Reg1: Register = self.MRI(self.TII.getRegClass(self.TII(NLoadOpcode), 0));
-    let mut NewLoad: *mut MachineInstr = BuildMI(*MBB, LoadInst, LoadInst.getDebugLoc(), self.TII(NLoadOpcode), Reg1)(LoadBase)(1)(LoadDisp)(MBB.getParent().getMachineMemOperand(LMMO, Offset, Size));
+    let mut Reg1: Register = self.MRI.createVirtualRegister(self.TII.getRegClass(self.TII.get(NLoadOpcode), 0), "");
+    let mut NewLoad: *mut MachineInstr = BuildMI(*MBB, LoadInst, MIMetadata { DL: LoadInst.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NLoadOpcode), Reg1).add(LoadBase).addImm(1).addReg(NoRegister, RegState {}, 0).addImm(LoadDisp).addReg(NoRegister, RegState {}, 0).addMemOperand(MBB.getParent().getMachineMemOperand(LMMO, Offset, Size)).operator llvm::MachineInstr *();
     if LoadBase.isReg() {
         getBaseOperand(NewLoad).setIsKill(false);
     }
@@ -209,11 +317,11 @@ fn X86AvoidSFBImpl::buildCopy(self, LoadInst: *mut MachineInstr, NLoadOpcode: u3
         if !(false) { break; }
     }
     let mut StInst: *mut MachineInstr = StoreInst;
-    let mut PrevInstrIt: auto = prev_nodbg(instr_iterator { StoreInst }, MBB.instr_begin());
-    if PrevInstrIt()() == LoadInst {
+    let mut PrevInstrIt: MachineInstr, true, true, void, false, void>, false, false> = prev_nodbg(StoreInst, MBB.instr_begin(), true);
+    if PrevInstrIt.getNodePtr() == LoadInst {
         StInst = LoadInst;
     }
-    let mut NewStore: *mut MachineInstr = BuildMI(*MBB, StInst, StInst.getDebugLoc(), self.TII(NStoreOpcode))(StoreBase)(1)(StoreDisp)(Reg1)(MBB.getParent().getMachineMemOperand(SMMO, Offset, Size));
+    let mut NewStore: *mut MachineInstr = BuildMI(*MBB, StInst, MIMetadata { DL: StInst.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NStoreOpcode)).add(StoreBase).addImm(1).addReg(NoRegister, RegState {}, 0).addImm(StoreDisp).addReg(NoRegister, RegState {}, 0).addReg(Reg1, RegState {}, 0).addMemOperand(MBB.getParent().getMachineMemOperand(SMMO, Offset, Size)).operator llvm::MachineInstr *();
     if StoreBase.isReg() {
         getBaseOperand(NewStore).setIsKill(false);
     }
@@ -244,7 +352,7 @@ fn X86AvoidSFBImpl::buildCopies(self, Size: i32, LoadInst: *mut MachineInstr, Ld
         }
         if Size - MOV64SZ >= 0 {
             Size = Size - MOV64SZ;
-            self.buildCopy;
+            self.buildCopy(LoadInst, MOV64rm, LdDisp, StoreInst, MOV64mr, StDisp, MOV64SZ, Offset);
             LdDisp += MOV64SZ;
             StDisp += MOV64SZ;
             Offset += MOV64SZ;
@@ -252,7 +360,7 @@ fn X86AvoidSFBImpl::buildCopies(self, Size: i32, LoadInst: *mut MachineInstr, Ld
         }
         if Size - MOV32SZ >= 0 {
             Size = Size - MOV32SZ;
-            self.buildCopy;
+            self.buildCopy(LoadInst, MOV32rm, LdDisp, StoreInst, MOV32mr, StDisp, MOV32SZ, Offset);
             LdDisp += MOV32SZ;
             StDisp += MOV32SZ;
             Offset += MOV32SZ;
@@ -260,7 +368,7 @@ fn X86AvoidSFBImpl::buildCopies(self, Size: i32, LoadInst: *mut MachineInstr, Ld
         }
         if Size - MOV16SZ >= 0 {
             Size = Size - MOV16SZ;
-            self.buildCopy;
+            self.buildCopy(LoadInst, MOV16rm, LdDisp, StoreInst, MOV16mr, StDisp, MOV16SZ, Offset);
             LdDisp += MOV16SZ;
             StDisp += MOV16SZ;
             Offset += MOV16SZ;
@@ -268,7 +376,7 @@ fn X86AvoidSFBImpl::buildCopies(self, Size: i32, LoadInst: *mut MachineInstr, Ld
         }
         if Size - MOV8SZ >= 0 {
             Size = Size - MOV8SZ;
-            self.buildCopy;
+            self.buildCopy(LoadInst, MOV8rm, LdDisp, StoreInst, MOV8mr, StDisp, MOV8SZ, Offset);
             LdDisp += MOV8SZ;
             StDisp += MOV8SZ;
             Offset += MOV8SZ;
@@ -281,17 +389,17 @@ fn X86AvoidSFBImpl::buildCopies(self, Size: i32, LoadInst: *mut MachineInstr, Ld
 fn updateKillStatus(LoadInst: *mut MachineInstr, StoreInst: *mut MachineInstr) {
     let mut LoadBase: *mut MachineOperand = getBaseOperand(LoadInst);
     let mut StoreBase: *mut MachineOperand = getBaseOperand(StoreInst);
-    let mut StorePrevNonDbgInstr: *mut auto = prev_nodbg(instr_iterator { StoreInst }, LoadInst.getParent().instr_begin())();
+    let mut StorePrevNonDbgInstr: *mut MachineInstr, true, true, void, false, void>> = prev_nodbg(StoreInst, LoadInst.getParent().instr_begin(), true).getNodePtr();
     if LoadBase.isReg() {
         let mut LastLoad: *mut MachineInstr = LoadInst.getPrevNode();
-        if StorePrevNonDbgInstr() == LoadInst {
+        if StorePrevNonDbgInstr == LoadInst {
             LastLoad = LoadInst.getPrevNode().getPrevNode();
         }
         getBaseOperand(LastLoad).setIsKill(LoadBase.isKill());
     }
     if StoreBase.isReg() {
         let mut StInst: *mut MachineInstr = StoreInst;
-        if StorePrevNonDbgInstr() == LoadInst {
+        if StorePrevNonDbgInstr == LoadInst {
             StInst = LoadInst;
         }
         getBaseOperand(StInst.getPrevNode()).setIsKill(StoreBase.isKill());
@@ -302,7 +410,7 @@ fn X86AvoidSFBImpl::alias(self: *X86AvoidSFBImpl, Op1: *MachineMemOperand, Op2: 
     if !Op1.getValue() || !Op2.getValue() {
         return true;
     }
-    let mut MinOffset: i64 = min(Op1.getOffset(), Op2.getOffset());
+    let mut MinOffset: i64 = if Op1.getOffset() < Op2.getOffset() { Op1.getOffset() } else { Op2.getOffset() };
     let mut Overlapa: i64 = Op1.getSize().getValue().operator unsigned long long() + Op1.getOffset() - MinOffset;
     let mut Overlapb: i64 = Op2.getSize().getValue().operator unsigned long long() + Op2.getOffset() - MinOffset;
     return !self.AA.isNoAlias(MemoryLocation { Ptr: Op1.getValue(), Size: Overlapa, AATags: Op1.getAAInfo() }, MemoryLocation { Ptr: Op2.getValue(), Size: Overlapb, AATags: Op2.getAAInfo() });
@@ -318,16 +426,29 @@ fn X86AvoidSFBImpl::findPotentiallylBlockedCopies(self, MF: *mut MachineFunction
             if !self.MRI.hasOneNonDBGUse(DefVR) {
                 continue;
             }
+            for StoreMO in make_early_inc_range(self.MRI.use_nodbg_operands(DefVR)) {
+                let mut StoreMI: *mut MachineInstr = *StoreMO.getParent();
+                if StoreMI.getParent() == MI.getParent() && isPotentialBlockedMemCpyPair(MI.getOpcode(), StoreMI.getOpcode()) && isRelevantAddressingMode(&mut MI) && isRelevantAddressingMode(&mut StoreMI) && MI.hasOneMemOperand() && StoreMI.hasOneMemOperand() {
+                    let mut LMMO: *MachineMemOperand = *MI.memoperands_begin();
+                    let mut SMMO: *MachineMemOperand = *StoreMI.memoperands_begin();
+                    if LMMO.isVolatile() || LMMO.isAtomic() || SMMO.isVolatile() || SMMO.isAtomic() {
+                        continue;
+                    }
+                    if !self.alias(*LMMO, *SMMO) {
+                        self.BlockedLoadsStoresPairs.push(make_pair(&mut MI, &mut StoreMI));
+                    }
+                }
+            }
         }
     }
 }
 
 fn X86AvoidSFBImpl::getRegSizeInBytes(self, LoadInst: *mut MachineInstr) -> u32 {
-    let mut TRC: *auto = self.TII.getRegClass(self.TII(LoadInst.getOpcode()), 0);
-    return self.TRI(operator*()) / 8;
+    let mut TRC: *TargetRegisterClass = self.TII.getRegClass(self.TII.get(LoadInst.getOpcode()), 0);
+    return self.TRI.getRegSizeInBits(*TRC).operator unsigned long long() / 8;
 }
 
-fn X86AvoidSFBImpl::breakBlockedCopies(self, LoadInst: *mut MachineInstr, StoreInst: *mut MachineInstr, BlockingStoresDispSizeMap: i32) {
+fn X86AvoidSFBImpl::breakBlockedCopies(self, LoadInst: *mut MachineInstr, StoreInst: *mut MachineInstr, BlockingStoresDispSizeMap: *DisplacementSizeMap) {
     let mut LdDispImm: i64 = getDispOperand(LoadInst).getImm();
     let mut StDispImm: i64 = getDispOperand(StoreInst).getImm();
     let mut Offset: i64 = 0;
@@ -338,6 +459,23 @@ fn X86AvoidSFBImpl::breakBlockedCopies(self, LoadInst: *mut MachineInstr, StoreI
     let mut Size1: u32 = 0;
     let mut Size2: u32 = 0;
     let mut LdStDelta: i64 = StDispImm - LdDispImm;
+    for DispSizePair in BlockingStoresDispSizeMap {
+        LdDisp2 = DispSizePair.first;
+        StDisp2 = DispSizePair.first + LdStDelta;
+        Size2 = DispSizePair.second;
+        if LdDisp2 < LdDisp1 {
+            let mut OverlapDelta: i32 = LdDisp1 - LdDisp2;
+            LdDisp2 += OverlapDelta;
+            StDisp2 += OverlapDelta;
+            Size2 -= OverlapDelta;
+        }
+        Size1 = LdDisp2 - LdDisp1;
+        self.buildCopies(Size1, LoadInst, LdDisp1, StoreInst, StDisp1, Offset);
+        self.buildCopies(Size2, LoadInst, LdDisp2, StoreInst, StDisp2, Offset + Size1);
+        LdDisp1 = LdDisp2 + Size2;
+        StDisp1 = StDisp2 + Size2;
+        Offset += Size1 + Size2;
+    }
     let mut Size3: u32 = (LdDispImm + self.getRegSizeInBytes(LoadInst)) - LdDisp1;
     self.buildCopies(Size3, LoadInst, LdDisp1, StoreInst, StDisp1, Offset);
 }
@@ -358,25 +496,45 @@ fn isBlockingStore(LoadDispImm: i64, LoadSize: u32, StoreDispImm: i64, StoreSize
     return ((StoreDispImm >= LoadDispImm) && (StoreDispImm <= LoadDispImm + (LoadSize - StoreSize)));
 }
 
-fn updateBlockingStoresDispSizeMap(BlockingStoresDispSizeMap: *mut i32, DispImm: i64, Size: u32) {}
+fn updateBlockingStoresDispSizeMap(BlockingStoresDispSizeMap: *mut DisplacementSizeMap, DispImm: i64, Size: u32) {
+    if !Inserted && operator(It).second > Size {
+        operator(It).second = Size;
+    }
+}
 
-fn removeRedundantBlockingStores(BlockingStoresDispSizeMap: *mut i32) {
-    if BlockingStoresDispSizeMap()() <= 1 {
+fn removeRedundantBlockingStores(BlockingStoresDispSizeMap: *mut DisplacementSizeMap) {
+    if BlockingStoresDispSizeMap.len <= 1 {
         return;
     }
-    let mut DispSizeStack: pair<int64_t, unsigned int>, 0> = zeroed();
-    BlockingStoresDispSizeMap()();
+    let mut DispSizeStack: pair<int64_t, unsigned int>, 0> = pair<int64_t, unsigned int>, 0> {};
+    for DispSizePair in BlockingStoresDispSizeMap {
+        let mut CurrDisp: i64 = DispSizePair.first;
+        let mut CurrSize: u32 = DispSizePair.second;
+        while DispSizeStack.len {
+            let mut PrevDisp: i64 = DispSizeStack.back().first;
+            let mut PrevSize: u32 = DispSizeStack.back().second;
+            if CurrDisp + CurrSize > PrevDisp + PrevSize {
+                break;
+            }
+            DispSizeStack.pop();
+        }
+        DispSizeStack.push(DispSizePair);
+    }
+    BlockingStoresDispSizeMap.clear();
+    for Disp in DispSizeStack {
+        BlockingStoresDispSizeMap.insert(Disp);
+    }
 }
 
 fn X86AvoidSFBImpl::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
     let mut Changed: bool = false;
-    if DisableX86AvoidStoreForwardBlocks() || operator!(MF()) {
+    if DisableX86AvoidStoreForwardBlocks || !MF.getSubtarget().is64Bit() {
         return false;
     }
     self.MRI = &mut MF.getRegInfo();
     assert!(self.MRI.isSSA(), "Expected MIR to be in SSA form");
-    self.TII = MF();
-    self.TRI = MF();
+    self.TII = MF.getSubtarget().getInstrInfo();
+    self.TRI = MF.getSubtarget().getRegisterInfo();
     while true {
         {
         if DebugFlag && isCurrentDebugType("x86-avoid-sfb", 1) {
@@ -386,6 +544,68 @@ fn X86AvoidSFBImpl::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool
         if !(false) { break; }
     }
     self.findPotentiallylBlockedCopies(MF);
+    for LoadStoreInstPair in self.BlockedLoadsStoresPairs {
+        let mut LoadInst: *mut MachineInstr = LoadStoreInstPair.first;
+        let mut LdDispImm: i64 = getDispOperand(LoadInst).getImm();
+        let mut BlockingStoresDispSizeMap: DisplacementSizeMap = DisplacementSizeMap {};
+        let mut PotentialBlockers: SmallVector<MachineInstr *, 2> = findPotentialBlockers(LoadInst);
+        for PBInst in PotentialBlockers {
+            if !isPotentialBlockingStoreInst(PBInst.getOpcode(), LoadInst.getOpcode()) || !isRelevantAddressingMode(PBInst) || !PBInst.hasOneMemOperand() {
+                continue;
+            }
+            let mut PBstDispImm: i64 = getDispOperand(PBInst).getImm();
+            let mut PBstSize: u32 = (*PBInst.memoperands_begin()).getSize().getValue().operator unsigned long long();
+            if hasSameBaseOpValue(LoadInst, PBInst) && isBlockingStore(LdDispImm, self.getRegSizeInBytes(LoadInst), PBstDispImm, PBstSize) {
+                updateBlockingStoresDispSizeMap(BlockingStoresDispSizeMap, PBstDispImm, PBstSize);
+            }
+        }
+        if BlockingStoresDispSizeMap.is_empty() {
+            continue;
+        }
+        let mut StoreInst: *mut MachineInstr = LoadStoreInstPair.second;
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-avoid-sfb", 1) {
+                dbgs() << "Blocked load and store instructions: \n";
+            }
+        }
+            if !(false) { break; }
+        }
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-avoid-sfb", 1) {
+                LoadInst.dump();
+            }
+        }
+            if !(false) { break; }
+        }
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-avoid-sfb", 1) {
+                StoreInst.dump();
+            }
+        }
+            if !(false) { break; }
+        }
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-avoid-sfb", 1) {
+                dbgs() << "Replaced with:\n";
+            }
+        }
+            if !(false) { break; }
+        }
+        removeRedundantBlockingStores(BlockingStoresDispSizeMap);
+        self.breakBlockedCopies(LoadInst, StoreInst, BlockingStoresDispSizeMap);
+        updateKillStatus(LoadInst, StoreInst);
+        self.ForRemoval.push(LoadInst);
+        self.ForRemoval.push(StoreInst);
+    }
+    for RemovedInst in self.ForRemoval {
+        RemovedInst.eraseFromParent();
+    }
+    self.ForRemoval.clear();
+    self.BlockedLoadsStoresPairs.clear();
     while true {
         {
         if DebugFlag && isCurrentDebugType("x86-avoid-sfb", 1) {
@@ -401,14 +621,14 @@ fn X86AvoidSFBLegacy::runOnMachineFunction(self, MF: *mut MachineFunction) -> bo
     if self.skipFunction(MF.getFunction()) {
         return false;
     }
-    let mut AA: *mut AliasAnalysis = operator&();
-    let mut Impl: X86AvoidSFBImpl = X86AvoidSFBImpl { AA };
+    let mut AA: *mut AliasAnalysis = &mut self.getAnalysis().getAAResults();
+    let mut Impl: X86AvoidSFBImpl = AA;
     return Impl.runOnMachineFunction(MF);
 }
 
 fn X86AvoidStoreForwardingBlocksPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
-    let mut AA: *mut AliasAnalysis = operator&(MFAM()(MF.getFunction()));
-    let mut Impl: X86AvoidSFBImpl = X86AvoidSFBImpl { AA };
+    let mut AA: *mut AliasAnalysis = &mut MFAM.getResult(MF).getManager().getResult(MF.getFunction());
+    let mut Impl: X86AvoidSFBImpl = AA;
     let mut Changed: bool = Impl.runOnMachineFunction(MF);
     return if Changed { getMachineFunctionPassPreservedAnalyses() } else { all() };
 }

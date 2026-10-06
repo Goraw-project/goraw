@@ -35,9 +35,13 @@ fn FAddendCoef::insaneIntVal(self, V: i32) -> bool {
     return V > 4 || V < -4;
 }
 
-fn FAddendCoef::getFpValPtr(self) -> *mut APFloat {}
+fn FAddendCoef::getFpValPtr(self) -> *mut APFloat {
+    return &mut self.FpValBuf as *mut APFloat;
+}
 
-fn FAddendCoef::getFpValPtr(self: *FAddendCoef) -> *APFloat {}
+fn FAddendCoef::getFpValPtr(self: *FAddendCoef) -> *APFloat {
+    return &mut self.FpValBuf as *APFloat;
+}
 
 fn FAddendCoef::getFpVal(self: *FAddendCoef) -> *APFloat {
     assert!(self.IsFp && self.BufHasFpVal, "Incorrect state");
@@ -60,35 +64,53 @@ struct FAddend {
 
 fn FAddend::operator+=(self, T: *FAddend) {
     assert!((self.Val == T.Val), "Symbolic-values disagree");
+    operator(self.Coeff, T.Coeff);
 }
 
 fn FAddend::getSymVal(self: *FAddend) -> *mut Value {
     return self.Val;
 }
 
-fn FAddend::getCoef(self: *FAddend) -> *FAddendCoef {}
+fn FAddend::getCoef(self: *FAddend) -> *FAddendCoef {
+    return self.Coeff;
+}
 
 fn FAddend::isConstant(self: *FAddend) -> bool {
     return self.Val == null;
 }
 
-fn FAddend::isZero(self: *FAddend) -> bool {}
+fn FAddend::isZero(self: *FAddend) -> bool {
+    return self.Coeff.isZero();
+}
 
 fn FAddend::set(self, Coefficient: i16, V: *mut Value) {
+    self.Coeff.set(Coefficient);
     self.Val = V;
 }
 
 fn FAddend::set(self, Coefficient: *APFloat, V: *mut Value) {
+    self.Coeff.set(Coefficient);
     self.Val = V;
 }
 
 fn FAddend::set(self, Coefficient: *ConstantFP, V: *mut Value) {
+    self.Coeff.set(Coefficient.getValueAPF());
     self.Val = V;
 }
 
-fn FAddend::negate(self) {}
+fn FAddend::negate(self) {
+    self.Coeff.negate();
+}
 
-fn FAddend::Scale(self, ScaleAmt: *FAddendCoef) {}
+fn FAddend::Scale(self, ScaleAmt: *FAddendCoef) {
+    operator(self.Coeff, ScaleAmt);
+}
+
+fn FAddend::operator=(self, arg: *FAddend) -> *mut FAddend {
+    self.Val = .Val;
+    self.Coeff.operator=(.Coeff);
+    return *self;
+}
 
 struct FAddCombine {
     CreateInstrNum: u32,
@@ -211,15 +233,15 @@ fn FAddendCoef::getValue(self: *FAddendCoef, Ty: *mut Type) -> *mut Value {
 
 fn FAddend::drillValueDownOneStep(self, Val: *mut Value, Addend0: *mut FAddend, Addend1: *mut FAddend) -> u32 {
     let mut I: *mut Instruction = null;
-    if !Val || operator!((I = dyn_cast(Val))) {
+    if !Val || !(I = dyn_cast(Val)) {
         return 0;
     }
     let mut Opcode: u32 = I.getOpcode();
     if Opcode == FAdd || Opcode == FSub {
         let mut C0: *mut ConstantFP = null;
         let mut C1: *mut ConstantFP = null;
-        let mut Opnd0: *mut Value = I.getOperand;
-        let mut Opnd1: *mut Value = I.getOperand;
+        let mut Opnd0: *mut Value = I.getOperand(0);
+        let mut Opnd1: *mut Value = I.getOperand(1);
         if (C0 = dyn_cast(Opnd0)) && C0.isZero() {
             Opnd0 = null;
         }
@@ -251,8 +273,8 @@ fn FAddend::drillValueDownOneStep(self, Val: *mut Value, Addend0: *mut FAddend, 
         return 1;
     }
     if I.getOpcode() == FMul {
-        let mut V0: *mut Value = I.getOperand;
-        let mut V1: *mut Value = I.getOperand;
+        let mut V0: *mut Value = I.getOperand(0);
+        let mut V1: *mut Value = I.getOperand(1);
         if dyn_cast(V0) {
             C;
         } else {
@@ -274,19 +296,19 @@ fn FAddend::drillAddendDownOneStep(self: *FAddend, Addend0: *mut FAddend, Addend
         return 0;
     }
     let mut BreakNum: u32 = drillValueDownOneStep(self.Val, Addend0, Addend1);
-    if  {
+    if !BreakNum || self.Coeff.isOne() {
         return BreakNum;
     }
-    Addend0.Scale;
+    Addend0.Scale(self.Coeff);
     if BreakNum == 2 {
-        Addend1.Scale;
+        Addend1.Scale(self.Coeff);
     }
     return BreakNum;
 }
 
 fn FAddCombine::simplify(self, I: *mut Instruction) -> *mut Value {
     assert!(I.hasAllowReassoc() && I.hasNoSignedZeros(), "Expected 'reassoc'+'nsz' instruction");
-    if I.getType() {
+    if I.getType().isVectorTy() {
         return null;
     }
     assert!((I.getOpcode() == FAdd || I.getOpcode() == FSub), "Expect add/sub");
@@ -307,20 +329,20 @@ fn FAddCombine::simplify(self, I: *mut Instruction) -> *mut Value {
         Opnd1_ExpNum = Opnd1.drillAddendDownOneStep(Opnd1_0, Opnd1_1);
     }
     if Opnd0_ExpNum && Opnd1_ExpNum {
-        let mut AllOpnds: AddendVect = zeroed();
-        AllOpnds()(&mut Opnd0_0);
-        AllOpnds()(&mut Opnd1_0);
+        let mut AllOpnds: AddendVect = AddendVect {};
+        AllOpnds.push(&mut Opnd0_0);
+        AllOpnds.push(&mut Opnd1_0);
         if Opnd0_ExpNum == 2 {
-            AllOpnds()(&mut Opnd0_1);
+            AllOpnds.push(&mut Opnd0_1);
         }
         if Opnd1_ExpNum == 2 {
-            AllOpnds()(&mut Opnd1_1);
+            AllOpnds.push(&mut Opnd1_1);
         }
         let mut InstQuota: u32 = 0;
-        let mut V0: *mut Value = I.getOperand;
-        let mut V1: *mut Value = I.getOperand;
+        let mut V0: *mut Value = I.getOperand(0);
+        let mut V1: *mut Value = I.getOperand(1);
         InstQuota = if ((!isa(V0) && V0.hasOneUse()) && (!isa(V1) && V1.hasOneUse())) { 2 } else { 1 };
-        if self.simplifyFAdd(InstQuota) {
+        if self.simplifyFAdd(AllOpnds, InstQuota) {
             R;
         } else {
             return R;
@@ -331,26 +353,26 @@ fn FAddCombine::simplify(self, I: *mut Instruction) -> *mut Value {
         return if CE.isOne() { Opnd0.getSymVal() } else { null };
     }
     if Opnd1_ExpNum {
-        let mut AllOpnds: AddendVect = zeroed();
-        AllOpnds()(&mut Opnd0);
-        AllOpnds()(&mut Opnd1_0);
+        let mut AllOpnds: AddendVect = AddendVect {};
+        AllOpnds.push(&mut Opnd0);
+        AllOpnds.push(&mut Opnd1_0);
         if Opnd1_ExpNum == 2 {
-            AllOpnds()(&mut Opnd1_1);
+            AllOpnds.push(&mut Opnd1_1);
         }
-        if self.simplifyFAdd(1) {
+        if self.simplifyFAdd(AllOpnds, 1) {
             R;
         } else {
             return R;
         }
     }
     if Opnd0_ExpNum {
-        let mut AllOpnds: AddendVect = zeroed();
-        AllOpnds()(&mut Opnd1);
-        AllOpnds()(&mut Opnd0_0);
+        let mut AllOpnds: AddendVect = AddendVect {};
+        AllOpnds.push(&mut Opnd1);
+        AllOpnds.push(&mut Opnd0_0);
         if Opnd0_ExpNum == 2 {
-            AllOpnds()(&mut Opnd0_1);
+            AllOpnds.push(&mut Opnd0_1);
         }
-        if self.simplifyFAdd(1) {
+        if self.simplifyFAdd(AllOpnds, 1) {
             R;
         } else {
             return R;
@@ -360,49 +382,50 @@ fn FAddCombine::simplify(self, I: *mut Instruction) -> *mut Value {
 }
 
 fn FAddCombine::simplifyFAdd(self, Addends: *mut AddendVect, InstrQuota: u32) -> *mut Value {
-    let mut AddendNum: u32 = Addends()();
+    let mut AddendNum: u32 = Addends.len;
     assert!(AddendNum <= 4, "Too many addends");
     let mut NextTmpIdx: u32 = 0;
     let mut TmpResult: [3]FAddend = [3]FAddend {};
-    let mut SimpVect: AddendVect = zeroed();
+    let mut SimpVect: AddendVect = AddendVect {};
     for let mut SymIdx: u32 = 0; SymIdx < AddendNum; SymIdx += 1 {
-        let mut ThisAddend: *FAddend = null;
+        let mut ThisAddend: *FAddend = Addends[SymIdx];
         if !ThisAddend {
             continue;
         }
         let mut Val: *mut Value = ThisAddend.getSymVal();
-        let mut StartIdx: u32 = ();
-        SimpVect()(ThisAddend);
+        let mut StartIdx: u32 = SimpVect.len;
+        SimpVect.push(ThisAddend);
         for let mut SameSymIdx: u32 = SymIdx + 1; SameSymIdx < AddendNum; SameSymIdx += 1 {
-            let mut T: *FAddend = null;
+            let mut T: *FAddend = Addends[SameSymIdx];
             if T && T.getSymVal() == Val {
-                SimpVect()(T);
+                Addends[SameSymIdx] = null;
+                SimpVect.push(T);
             }
         }
-        if StartIdx + 1 != () {
+        if StartIdx + 1 != SimpVect.len {
             let mut R: *mut FAddend = TmpResult[NextTmpIdx += 1];
-            R = operator*([StartIdx]);
-            for let mut Idx: u32 = StartIdx + 1; Idx < SimpVect()(); Idx += 1 {
-                operator+=(R, operator*([Idx]));
+            R = *SimpVect[StartIdx];
+            for let mut Idx: u32 = StartIdx + 1; Idx < SimpVect.len; Idx += 1 {
+                operator(R, *SimpVect[Idx]);
             }
-            SimpVect()(StartIdx);
+            SimpVect.resize(StartIdx);
             if !R.isZero() {
-                SimpVect()(&mut R);
+                SimpVect.push(&mut R);
             }
         }
     }
-    (((operator!(operator!(((NextTmpIdx <= size(TmpResult) + 1) && "out-of-bound access")))) || (_wassert(L"(NextTmpIdx <= std::size(TmpResult) + 1) && \"out-of-bound access\"", L"llvm\\lib\\Transforms\\InstCombine\\InstCombineAddSub.cpp", (580) as u32) , 0)) as void);
+    assert!((NextTmpIdx <= size(TmpResult) + 1), "out-of-bound access");
     let mut Result: *mut Value = null;
-    if operator!() {
-        Result = self.createNaryFAdd(InstrQuota);
+    if !SimpVect.is_empty() {
+        Result = self.createNaryFAdd(SimpVect, InstrQuota);
     } else {
-        Result = get(self.Instr.getType, 0.0);
+        Result = get(self.Instr.getType(), 0.0);
     }
     return Result;
 }
 
 fn FAddCombine::createNaryFAdd(self, Opnds: *AddendVect, InstrQuota: u32) -> *mut Value {
-    (((operator!(operator!((operator!(Opnds()()) && "Expect at least one addend")))) || (_wassert(L"!Opnds.empty() && \"Expect at least one addend\"", L"llvm\\lib\\Transforms\\InstCombine\\InstCombineAddSub.cpp", (595) as u32) , 0)) as void);
+    assert!(!Opnds.is_empty(), "Expect at least one addend");
     let mut InstrNeeded: u32 = self.calcInstrNumber(Opnds);
     if InstrNeeded > InstrQuota {
         return null;
@@ -410,6 +433,25 @@ fn FAddCombine::createNaryFAdd(self, Opnds: *AddendVect, InstrQuota: u32) -> *mu
     self.initCreateInstNum();
     let mut LastVal: *mut Value = null;
     let mut LastValNeedNeg: bool = false;
+    for Opnd in Opnds {
+        let mut NeedNeg: bool = false;
+        let mut V: *mut Value = self.createAddendVal(*Opnd, NeedNeg);
+        if !LastVal {
+            LastVal = V;
+            LastValNeedNeg = NeedNeg;
+            continue;
+        }
+        if LastValNeedNeg == NeedNeg {
+            LastVal = self.createFAdd(LastVal, V);
+            continue;
+        }
+        if LastValNeedNeg {
+            LastVal = self.createFSub(V, LastVal);
+        } else {
+            LastVal = self.createFSub(LastVal, V);
+        }
+        LastValNeedNeg = false;
+    }
     if LastValNeedNeg {
         LastVal = self.createFNeg(LastVal);
     }
@@ -418,7 +460,7 @@ fn FAddCombine::createNaryFAdd(self, Opnds: *AddendVect, InstrQuota: u32) -> *mu
 }
 
 fn FAddCombine::createFSub(self, Opnd0: *mut Value, Opnd1: *mut Value) -> *mut Value {
-    let mut V: *mut Value = self.Builder(Opnd0, Opnd1);
+    let mut V: *mut Value = self.Builder.CreateFSub(Opnd0, Opnd1, "", null);
     if dyn_cast(V) {
         I;
     } else {
@@ -428,7 +470,7 @@ fn FAddCombine::createFSub(self, Opnd0: *mut Value, Opnd1: *mut Value) -> *mut V
 }
 
 fn FAddCombine::createFNeg(self, V: *mut Value) -> *mut Value {
-    let mut NewV: *mut Value = self.Builder(V);
+    let mut NewV: *mut Value = self.Builder.CreateFNeg(V, "", null);
     if dyn_cast(NewV) {
         I;
     } else {
@@ -438,7 +480,7 @@ fn FAddCombine::createFNeg(self, V: *mut Value) -> *mut Value {
 }
 
 fn FAddCombine::createFAdd(self, Opnd0: *mut Value, Opnd1: *mut Value) -> *mut Value {
-    let mut V: *mut Value = self.Builder(Opnd0, Opnd1);
+    let mut V: *mut Value = self.Builder.CreateFAdd(Opnd0, Opnd1, "", null);
     if dyn_cast(V) {
         I;
     } else {
@@ -448,7 +490,7 @@ fn FAddCombine::createFAdd(self, Opnd0: *mut Value, Opnd1: *mut Value) -> *mut V
 }
 
 fn FAddCombine::createFMul(self, Opnd0: *mut Value, Opnd1: *mut Value) -> *mut Value {
-    let mut V: *mut Value = self.Builder(Opnd0, Opnd1);
+    let mut V: *mut Value = self.Builder.CreateFMul(Opnd0, Opnd1, "", null);
     if dyn_cast(V) {
         I;
     } else {
@@ -466,8 +508,20 @@ fn FAddCombine::createInstPostProc(self, NewInstr: *mut Instruction, NoNumber: b
 }
 
 fn FAddCombine::calcInstrNumber(self, Opnds: *AddendVect) -> u32 {
-    let mut OpndNum: u32 = Opnds()();
+    let mut OpndNum: u32 = Opnds.len;
     let mut InstrNeeded: u32 = OpndNum - 1;
+    for Opnd in Opnds {
+        if Opnd.isConstant() {
+            continue;
+        }
+        if isa(Opnd.getSymVal()) {
+            continue;
+        }
+        let mut CE: *FAddendCoef = Opnd.getCoef();
+        if !CE.isMinusOne() && !CE.isOne() {
+            InstrNeeded += 1;
+        }
+    }
     return InstrNeeded;
 }
 
@@ -475,7 +529,7 @@ fn FAddCombine::createAddendVal(self, Opnd: *FAddend, NeedNeg: *mut bool) -> *mu
     let mut Coeff: *FAddendCoef = Opnd.getCoef();
     if Opnd.isConstant() {
         NeedNeg = false;
-        return Coeff.getValue(self.Instr.getType);
+        return Coeff.getValue(self.Instr.getType());
     }
     let mut OpndVal: *mut Value = Opnd.getSymVal();
     if Coeff.isMinusOne() || Coeff.isOne() {
@@ -487,7 +541,7 @@ fn FAddCombine::createAddendVal(self, Opnd: *FAddend, NeedNeg: *mut bool) -> *mu
         return self.createFAdd(OpndVal, OpndVal);
     }
     NeedNeg = false;
-    return self.createFMul(OpndVal, Coeff.getValue(self.Instr.getType));
+    return self.createFMul(OpndVal, Coeff.getValue(self.Instr.getType()));
 }
 
 fn checkForNegativeOperand(I: *mut BinaryOperator, Builder: *mut BuilderTy) -> *mut Value {
@@ -501,33 +555,33 @@ fn checkForNegativeOperand(I: *mut BinaryOperator, Builder: *mut BuilderTy) -> *
     let mut Z: *mut Value = null;
     let mut C1: *APInt = null;
     let mut C2: *APInt = null;
-    if match(RHS, m_Add(m_Value(X))) {
+    if match(RHS, m_Add(m_Value(X), m_One())) {
         swap(LHS, RHS);
     }
-    if match(LHS, m_Add(m_Value(X))) {
-        if match(RHS, m_Xor(m_Value(Y))) {
+    if match(LHS, m_Add(m_Value(X), m_One())) {
+        if match(RHS, m_Xor(m_Value(Y), m_APInt(C1))) {
             swap(X, RHS);
         }
-        if match(X, m_Xor(m_Value(Y))) {
-            if match(Y, m_Or(m_Value(Z))) && (*C2 == operator((*C1))) {
-                let mut NewAnd: *mut Value = Builder()(Z, *C1);
-                return Builder()(RHS, NewAnd, "sub");
-            } else if match(Y, m_And(m_Value(Z))) && (*C1 == *C2) {
-                let mut NewOr: *mut Value = Builder()(Z, operator((*C1)));
-                return Builder()(RHS, NewOr, "sub");
+        if match(X, m_Xor(m_Value(Y), m_APInt(C1))) {
+            if match(Y, m_Or(m_Value(Z), m_APInt(C2))) && (*C2 == operator((*C1))) {
+                let mut NewAnd: *mut Value = Builder.CreateAnd(Z, *C1, "");
+                return Builder.CreateSub(RHS, NewAnd, "sub", false, false);
+            } else if match(Y, m_And(m_Value(Z), m_APInt(C2))) && (*C1 == *C2) {
+                let mut NewOr: *mut Value = Builder.CreateOr(Z, operator((*C1)), "");
+                return Builder.CreateSub(RHS, NewOr, "sub", false, false);
             }
         }
     }
     LHS = I.getOperand(0);
     RHS = I.getOperand(1);
-    if match(RHS, m_Xor(m_Value(Y))) {
+    if match(RHS, m_Xor(m_Value(Y), m_APInt(C1))) {
         swap(LHS, RHS);
     }
-    if match(LHS, m_Xor(m_Value(Y))) {
+    if match(LHS, m_Xor(m_Value(Y), m_APInt(C1))) {
         if C1.countr_zero() == 0 {
-            if match(Y, m_And(m_Value(Z))) && *C1 == (*C2 + 1) {
-                let mut NewOr: *mut Value = Builder()(Z, operator((*C2)));
-                return Builder()(RHS, NewOr, "sub");
+            if match(Y, m_And(m_Value(Z), m_APInt(C2))) && *C1 == (*C2 + 1) {
+                let mut NewOr: *mut Value = Builder.CreateOr(Z, operator((*C2)), "");
+                return Builder.CreateSub(RHS, NewOr, "sub", false, false);
             }
         }
     }
@@ -537,34 +591,34 @@ fn checkForNegativeOperand(I: *mut BinaryOperator, Builder: *mut BuilderTy) -> *
 fn foldNoWrapAdd(Add: *mut BinaryOperator, Builder: *mut BuilderTy) -> *mut Instruction {
     let mut Op0: *mut Value = Add.getOperand(0);
     let mut Op1: *mut Value = Add.getOperand(1);
-    let mut Ty: *mut Type = Add.getType;
+    let mut Ty: *mut Type = Add.getType();
     let mut Op1C: *mut Constant = null;
-    if operator!(match(Op1)) {
+    if !match(Op1, m_Constant(Op1C)) {
         return null;
     }
     let mut X: *mut Value = null;
     let mut C1: *APInt = null;
     let mut C2: *APInt = null;
-    if match(Op1) && match(Op0, m_ZExt(m_NUWAddLike(m_Value(X)))) && C1.isNegative() && C1.sge(operator(C2.sext(C1.getBitWidth()))) {
+    if match(Op1, m_APInt(C1)) && match(Op0, m_ZExt(m_NUWAddLike(m_Value(X), m_APInt(C2)))) && C1.isNegative() && C1.sge(operator(C2.sext(C1.getBitWidth()))) {
         let mut NewC: APInt = *C2 + C1.trunc(C2.getBitWidth());
         if NewC.isZero() {
             return ZExtInst { X, Ty, "", null };
         }
         if Op0.hasOneUse() {
-            return Builder()(X, get(X.getType(), NewC));
+            return ZExtInst { Builder.CreateNUWAdd(X, get(X.getType(), NewC), ""), Ty, "", null };
         }
     }
     let mut NarrowC: *mut Constant = null;
-    if match(Op0, m_OneUse(m_SExtLike(m_NSWAddLike(m_Value(X))))) {
-        let mut WideC: *mut Value = Builder()(NarrowC, Ty);
-        let mut NewC: *mut Value = Builder()(WideC, Op1C);
-        let mut WideX: *mut Value = Builder()(X, Ty);
+    if match(Op0, m_OneUse(m_SExtLike(m_NSWAddLike(m_Value(X), m_Constant(NarrowC))))) {
+        let mut WideC: *mut Value = Builder.CreateSExt(NarrowC, Ty, "");
+        let mut NewC: *mut Value = Builder.CreateAdd(WideC, Op1C, "", false, false);
+        let mut WideX: *mut Value = Builder.CreateSExt(X, Ty, "");
         return CreateAdd(WideX, NewC, "");
     }
-    if match(Op0, m_OneUse(m_ZExt(m_NUWAddLike(m_Value(X))))) {
-        let mut WideC: *mut Value = Builder()(NarrowC, Ty);
-        let mut NewC: *mut Value = Builder()(WideC, Op1C);
-        let mut WideX: *mut Value = Builder()(X, Ty);
+    if match(Op0, m_OneUse(m_ZExt(m_NUWAddLike(m_Value(X), m_Constant(NarrowC))))) {
+        let mut WideC: *mut Value = Builder.CreateZExt(NarrowC, Ty, "", false);
+        let mut NewC: *mut Value = Builder.CreateAdd(WideC, Op1C, "", false, false);
+        let mut WideX: *mut Value = Builder.CreateZExt(X, Ty, "", false);
         return CreateAdd(WideX, NewC, "");
     }
     return null;
@@ -573,7 +627,7 @@ fn foldNoWrapAdd(Add: *mut BinaryOperator, Builder: *mut BuilderTy) -> *mut Inst
 fn InstCombinerImpl::foldAddWithConstant(self, Add: *mut BinaryOperator) -> *mut Instruction {
     let mut Op0: *mut Value = Add.getOperand(0);
     let mut Op1: *mut Value = Add.getOperand(1);
-    let mut Ty: *mut Type = Add.getType;
+    let mut Ty: *mut Type = Add.getType();
     let mut Op1C: *mut Constant = null;
     if !match(Op1, m_ImmConstant(Op1C)) {
         return null;
@@ -590,12 +644,12 @@ fn InstCombinerImpl::foldAddWithConstant(self, Add: *mut BinaryOperator) -> *mut
     }
     let mut X: *mut Value = null;
     let mut Op00C: *mut Constant = null;
-    if match(Op0, m_Sub(m_Value(X))) {
+    if match(Op0, m_Sub(m_Constant(Op00C), m_Value(X))) {
         return CreateSub(getAdd(Op00C, Op1C, false, false), X, "");
     }
     let mut Y: *mut Value = null;
-    if match(Op0, m_OneUse(m_Sub(m_Value(X), m_Value(Y)))) && match(Op1) {
-        return CreateAdd(X);
+    if match(Op0, m_OneUse(m_Sub(m_Value(X), m_Value(Y)))) && match(Op1, m_AllOnes()) {
+        return CreateAdd(self.Builder.CreateNot(Y, ""), X, "");
     }
     if match(Op0, m_ZExt(m_Value(X))) && X.getType().getScalarSizeInBits() == 1 {
         return self.createSelectInstWithUnknownProfile(X, AddOne(Op1C), Op1, "", null);
@@ -605,41 +659,44 @@ fn InstCombinerImpl::foldAddWithConstant(self, Add: *mut BinaryOperator) -> *mut
     }
     if match(Op0, m_Not(m_Value(X))) {
         let mut COne: *mut Constant = get(Op1C.getType(), 1, false, false);
-        let mut WillNotSOV: bool = self.willNotOverflowSignedSub;
+        let mut WillNotSOV: bool = self.willNotOverflowSignedSub(Op1C, COne, Add);
         let mut Res: *mut BinaryOperator = CreateSub(getSub(Op1C, COne, false, false), X, "");
-        Res.setHasNoSignedWrap(Add.hasNoSignedWrap && WillNotSOV);
+        Res.setHasNoSignedWrap(Add.hasNoSignedWrap() && WillNotSOV);
         return Res;
     }
     let mut C: *APInt = null;
     let mut BitWidth: u32 = Ty.getScalarSizeInBits();
-    if operator!(match(Op1)) {
+    if match(Op0, m_OneUse(m_AShr(m_Value(X), m_SpecificIntAllowPoison(BitWidth - 1)))) && match(Op1, m_One()) {
+        return ZExtInst { self.Builder.CreateIsNotNeg(X, "isnotneg"), Ty, "", null };
+    }
+    if !match(Op1, m_APInt(C)) {
         return null;
     }
     let mut Op01C: *mut Constant = null;
     if match(Op0, m_DisjointOr(m_Value(X), m_ImmConstant(Op01C))) {
         let mut NewAdd: *mut BinaryOperator = CreateAdd(X, getAdd(Op01C, Op1C, false, false), "");
-        NewAdd.setHasNoSignedWrap(Add.hasNoSignedWrap && self.willNotOverflowSignedAdd);
-        NewAdd.setHasNoUnsignedWrap(Add.hasNoUnsignedWrap);
+        NewAdd.setHasNoSignedWrap(Add.hasNoSignedWrap() && self.willNotOverflowSignedAdd(Op01C, Op1C, Add));
+        NewAdd.setHasNoUnsignedWrap(Add.hasNoUnsignedWrap());
         return NewAdd;
     }
     let mut C2: *APInt = null;
-    if match(Op0, m_Or(m_Value())) && *C2 == operator(*C) {
-        return CreateXor(Op0, get(Add.getType, *C2));
+    if match(Op0, m_Or(m_Value(), m_APInt(C2))) && *C2 == operator(*C) {
+        return CreateXor(Op0, get(Add.getType(), *C2), "");
     }
     if C.isSignMask() {
-        if Add.hasNoSignedWrap || Add.hasNoUnsignedWrap {
+        if Add.hasNoSignedWrap() || Add.hasNoUnsignedWrap() {
             return CreateDisjointOr(Op0, Op1, "");
         }
         return CreateXor(Op0, Op1, "");
     }
-    if match(Op0, m_ZExt(m_Xor(m_Value(X)))) && C2.isMinSignedValue() && C2.sext(Ty.getScalarSizeInBits()) == *C {
+    if match(Op0, m_ZExt(m_Xor(m_Value(X), m_APInt(C2)))) && C2.isMinSignedValue() && C2.sext(Ty.getScalarSizeInBits()) == *C {
         return Create(SExt, X, Ty, "", null);
     }
-    if match(Op0, m_Xor(m_Value(X))) {
+    if match(Op0, m_Xor(m_Value(X), m_APInt(C2))) {
         if C2.isSignMask() {
             return CreateAdd(X, get(Ty, *C2 ^ *C), "");
         }
-        let mut LHSKnown: KnownBits = ;
+        let mut LHSKnown: KnownBits = self.computeKnownBits(X, &mut Add, 0);
         if (*C2 | LHSKnown.Zero).isAllOnes() {
             return CreateSub(get(Ty, *C2 + *C), X, "");
         }
@@ -651,37 +708,40 @@ fn InstCombinerImpl::foldAddWithConstant(self, Add: *mut BinaryOperator) -> *mut
             } else if C2.isPowerOf2() {
                 ShAmt = BitWidth - C2.logBase2() - 1;
             }
-            if ShAmt && self.MaskedValueIsZero {
+            if ShAmt && self.MaskedValueIsZero(X, getHighBitsSet(BitWidth, ShAmt), &mut Add, 0) {
                 let mut ShAmtC: *mut Constant = get(Ty, ShAmt, false, false);
-                let mut NewShl: *mut Value = null;
+                let mut NewShl: *mut Value = self.Builder.CreateShl(X, ShAmtC, "sext", false, false);
                 return CreateAShr(NewShl, ShAmtC, "");
             }
         }
     }
     if C.isOne() && Op0.hasOneUse() {
+        if match(Op0, m_SExt(m_Value(X))) && X.getType().getScalarSizeInBits() == 1 {
+            return ZExtInst { self.Builder.CreateNot(X, ""), Ty, "", null };
+        }
         let mut C3: *APInt = null;
-        if match(Op0, m_AShr(m_Shl(m_Value(X)))) && C2 == C3 && *C2 == Ty.getScalarSizeInBits() - 1 {
-            let mut NotX: *mut Value = null;
+        if match(Op0, m_AShr(m_Shl(m_Value(X), m_APInt(C2)), m_APInt(C3))) && C2 == C3 && *C2 == Ty.getScalarSizeInBits() - 1 {
+            let mut NotX: *mut Value = self.Builder.CreateNot(X, "");
             return CreateAnd(NotX, get(Ty, 1, false, false), "");
         }
     }
-    if match(Op0, m_OneUse(m_UMax(m_Value(X)))) {
-        return self.replaceInstUsesWith;
+    if match(Op0, m_OneUse(m_UMax(m_Value(X), m_SpecificInt(operator(*C))))) {
+        return self.replaceInstUsesWith(Add, self.Builder.CreateBinaryIntrinsic(usub_sat, X, get(Add.getType(), operator(*C)), FMFSource {}, ""));
     }
     {
         let mut SatC: APInt = operator(*C);
-        if match(Op0, m_OneUse(m_Intrinsic(m_Value(X)))) {
-            return self.replaceInstUsesWith;
+        if match(Op0, m_OneUse(m_Intrinsic(m_Value(X), m_SpecificInt(SatC)))) {
+            return self.replaceInstUsesWith(Add, self.Builder.CreateBinaryIntrinsic(umin, X, get(Ty, operator(SatC)), FMFSource {}, ""));
         }
     }
     {
         let mut InnerC: *APInt = null;
-        if match(Op0, m_ZExt(m_Add(m_Value(X)))) {
+        if match(Op0, m_ZExt(m_Add(m_Value(X), m_APIntAllowPoison(InnerC)))) {
             let mut NarrowBW: u32 = InnerC.getBitWidth();
             if C.isIntN(NarrowBW) {
                 let mut NarrowC: APInt = C.trunc(NarrowBW);
-                let mut Q: SimplifyQuery = zeroed();
-                if *InnerC == operator(NarrowC) && (if NarrowC.isOne() { isKnownNonZero(X, Q, 0) } else { ()(NarrowC) }) {
+                let mut Q: SimplifyQuery = self.SQ.getWithInstruction(&mut Add);
+                if *InnerC == operator(NarrowC) && (if NarrowC.isOne() { isKnownNonZero(X, Q, 0) } else { self.computeKnownBits(X, &mut Add, 0).getMinValue().uge(NarrowC) }) {
                     return ZExtInst { X, Ty, "", null };
                 }
             }
@@ -693,45 +753,45 @@ fn InstCombinerImpl::foldAddWithConstant(self, Add: *mut BinaryOperator) -> *mut
 // ========================================================
 // [C++ Template - Неинстанциированный шаблон функции: matchesSquareSum]
 // template <typename FP, typename Mul2Rhs>
-// fn matchesSquareSum(I: *mut BinaryOperator, M2Rhs: Mul2Rhs, A: *mut *mut Value, B: *mut *mut Value) -> bool {
-//     let mut MulOp: u32 = if FP { FMul } else { Mul };
-//     let mut AddOp: u32 = if FP { FAdd } else { Add };
-//     let mut Mul2Op: u32 = if FP { FMul } else { Shl };
-//     if match(&mut I, m_c_BinOp(AddOp, m_BinOp(MulOp, m_Value(A)), m_OneUse(m_c_BinOp(MulOp, m_c_BinOp(AddOp, m_BinOp(Mul2Op, M2Rhs), m_Value(B)))))) {
+// fn matchesSquareSum(I: *mut BinaryOperator, M2Rhs: specific_fpval, A: *mut *mut Value, B: *mut *mut Value) -> bool {
+//     let mut MulOp: u32 = if  { FMul } else { Mul };
+//     let mut AddOp: u32 = if  { FAdd } else { Add };
+//     let mut Mul2Op: u32 = if  { FMul } else { Shl };
+//     if match(&mut I, m_c_BinOp(AddOp, m_BinOp(MulOp, m_Value(A), m_Deferred(A)), m_OneUse(m_c_BinOp(MulOp, m_c_BinOp(AddOp, m_BinOp(Mul2Op, m_Deferred(A), M2Rhs), m_Value(B)), m_Deferred(B))))) {
 //         return true;
 //     }
-//     return match(&mut I, m_c_BinOp(AddOp, m_CombineOr(m_OneUse(m_BinOp(Mul2Op, m_BinOp(MulOp, m_Value(A), m_Value(B)), M2Rhs)), m_OneUse(m_c_BinOp(MulOp, m_BinOp(Mul2Op, m_Value(A), M2Rhs), m_Value(B)))), m_OneUse(m_c_BinOp(AddOp, m_BinOp(MulOp), m_BinOp(MulOp)))));
+//     return match(&mut I, m_c_BinOp(AddOp, m_CombineOr(m_OneUse(m_BinOp(Mul2Op, m_BinOp(MulOp, m_Value(A), m_Value(B)), M2Rhs)), m_OneUse(m_c_BinOp(MulOp, m_BinOp(Mul2Op, m_Value(A), M2Rhs), m_Value(B)))), m_OneUse(m_c_BinOp(AddOp, m_BinOp(MulOp, m_Deferred(A), m_Deferred(A)), m_BinOp(MulOp, m_Deferred(B), m_Deferred(B))))));
 // }
 // ========================================================
 
 fn InstCombinerImpl::foldSquareSumInt(self, I: *mut BinaryOperator) -> *mut Instruction {
     let mut A: *mut Value = null;
     let mut B: *mut Value = null;
-    if matchesSquareSum(I, A, B) {
-        let mut AB: *mut Value = null;
+    if matchesSquareSum(I, m_SpecificInt(1), A, B) {
+        let mut AB: *mut Value = self.Builder.CreateAdd(A, B, "", false, false);
         return CreateMul(AB, AB, "");
     }
     return null;
 }
 
 fn InstCombinerImpl::foldSquareSumFP(self, I: *mut BinaryOperator) -> *mut Instruction {
-    (((operator!(operator!((I.hasAllowReassoc && I.hasNoSignedZeros && "Assumption mismatch")))) || (_wassert(L"I.hasAllowReassoc() && I.hasNoSignedZeros() && \"Assumption mismatch\"", L"llvm\\lib\\Transforms\\InstCombine\\InstCombineAddSub.cpp", (1093) as u32) , 0)) as void);
+    assert!(I.hasAllowReassoc() && I.hasNoSignedZeros(), "Assumption mismatch");
     let mut A: *mut Value = null;
     let mut B: *mut Value = null;
     if matchesSquareSum(I, m_SpecificFP(2.0), A, B) {
-        let mut AB: *mut Value = null;
-        return CreateFMulFMF(AB, AB, &mut I);
+        let mut AB: *mut Value = self.Builder.CreateFAddFMF(A, B, &mut I, "", null);
+        return CreateFMulFMF(AB, AB, &mut I, "");
     }
     return null;
 }
 
 fn MatchMul(E: *mut Value, Op: *mut *mut Value, C: *mut APInt) -> bool {
     let mut AI: *APInt = null;
-    if match(E, m_Mul(m_Value(Op))) {
+    if match(E, m_Mul(m_Value(Op), m_APInt(AI))) {
         C = *AI;
         return true;
     }
-    if match(E, m_Shl(m_Value(Op))) {
+    if match(E, m_Shl(m_Value(Op), m_APInt(AI))) {
         C = APInt { AI.getBitWidth(), 1, false, false };
         operator(C, *AI);
         return true;
@@ -742,16 +802,16 @@ fn MatchMul(E: *mut Value, Op: *mut *mut Value, C: *mut APInt) -> bool {
 fn MatchRem(E: *mut Value, Op: *mut *mut Value, C: *mut APInt, IsSigned: *mut bool) -> bool {
     let mut AI: *APInt = null;
     IsSigned = false;
-    if match(E, m_SRem(m_Value(Op))) {
+    if match(E, m_SRem(m_Value(Op), m_APInt(AI))) {
         IsSigned = true;
         C = *AI;
         return true;
     }
-    if match(E, m_URem(m_Value(Op))) {
+    if match(E, m_URem(m_Value(Op), m_APInt(AI))) {
         C = *AI;
         return true;
     }
-    if match(E, m_And(m_Value(Op))) && (*AI + 1).isPowerOf2() {
+    if match(E, m_And(m_Value(Op), m_APInt(AI))) && (*AI + 1).isPowerOf2() {
         C = *AI + 1;
         return true;
     }
@@ -760,16 +820,16 @@ fn MatchRem(E: *mut Value, Op: *mut *mut Value, C: *mut APInt, IsSigned: *mut bo
 
 fn MatchDiv(E: *mut Value, Op: *mut *mut Value, C: *mut APInt, IsSigned: bool) -> bool {
     let mut AI: *APInt = null;
-    if IsSigned && match(E, m_SDiv(m_Value(Op))) {
+    if IsSigned && match(E, m_SDiv(m_Value(Op), m_APInt(AI))) {
         C = *AI;
         return true;
     }
     if !IsSigned {
-        if match(E, m_UDiv(m_Value(Op))) {
+        if match(E, m_UDiv(m_Value(Op), m_APInt(AI))) {
             C = *AI;
             return true;
         }
-        if match(E, m_LShr(m_Value(Op))) {
+        if match(E, m_LShr(m_Value(Op), m_APInt(AI))) {
             C = APInt { AI.getBitWidth(), 1, false, false };
             operator(C, *AI);
             return true;
@@ -805,6 +865,7 @@ fn InstCombinerImpl::SimplifyAddWithRemainder(self, I: *mut BinaryOperator) -> *
             let mut DivOpC: APInt = APInt {};
             if MatchDiv(RemOpV, DivOpV, DivOpC, IsSigned) && X == DivOpV && C0 == DivOpC && !MulWillOverflow(C0, C1, IsSigned) {
                 let mut NewDivisor: *mut Value = get(X.getType(), C0 * C1);
+                return if IsSigned { self.Builder.CreateSRem(X, NewDivisor, "srem") } else { self.Builder.CreateURem(X, NewDivisor, "urem") };
             }
         }
     }
@@ -824,31 +885,33 @@ fn InstCombinerImpl::SimplifyAddWithRemainder(self, I: *mut BinaryOperator) -> *
 
 fn canonicalizeLowbitMask(I: *mut BinaryOperator, Builder: *mut BuilderTy) -> *mut Instruction {
     let mut NBits: *mut Value = null;
-    if operator!(match(&mut I, m_Add(m_OneUse(m_Shl(m_Value(NBits)))))) {
+    if !match(&mut I, m_Add(m_OneUse(m_Shl(m_One(), m_Value(NBits))), m_AllOnes())) {
         return null;
     }
     let mut MinusOne: *mut Constant = getAllOnesValue(NBits.getType());
-    let mut NotMask: *mut Value = Builder()(MinusOne, NBits, "notmask");
-    if  {
-        BOp()();
-        BOp()(I.hasNoUnsignedWrap);
+    let mut NotMask: *mut Value = Builder.CreateShl(MinusOne, NBits, "notmask", false, false);
+    if dyn_cast(NotMask) {
+        BOp;
+    } else {
+        BOp.setHasNoSignedWrap(true);
+        BOp.setHasNoUnsignedWrap(I.hasNoUnsignedWrap());
     }
-    return CreateNot(NotMask, I.getName);
+    return CreateNot(NotMask, I.getName(), null);
 }
 
 fn foldToUnsignedSaturatedAdd(I: *mut BinaryOperator) -> *mut Instruction {
     assert!(I.getOpcode() == Add, "Expecting add instruction");
-    let mut Ty: *mut Type = I.getType;
+    let mut Ty: *mut Type = I.getType();
     let mut getUAddSat: Closure_2 = Closure_2 { I: &mut I, Ty: &mut Ty };
     let mut X: *mut Value = null;
     let mut Y: *mut Value = null;
-    if match(&mut I, m_c_Add(m_c_UMin(m_Value(X), m_Not(m_Value(Y))))) {
-        return Create(getUAddSat(), void { X, Y });
+    if match(&mut I, m_c_Add(m_c_UMin(m_Value(X), m_Not(m_Value(Y))), m_Deferred(Y))) {
+        return Create(getUAddSat.call(), [X, Y], ArrayRef<OperandBundleDef> {}, "", null);
     }
     let mut C: *APInt = null;
     let mut NotC: *APInt = null;
-    if match(&mut I, m_Add(m_UMin(m_Value(X)))) && *C == operator(*NotC) {
-        return Create(getUAddSat(), void { X, get(Ty, *C) });
+    if match(&mut I, m_Add(m_UMin(m_Value(X), m_APInt(NotC)), m_APInt(C))) && *C == operator(*NotC) {
+        return Create(getUAddSat.call(), [X, get(Ty, *C)], ArrayRef<OperandBundleDef> {}, "", null);
     }
     return null;
 }
@@ -858,7 +921,7 @@ fn combineAddSubWithShlAddSub(Builder: *mut BuilderTy, I: *BinaryOperator) -> *m
     let mut B: *mut Value = null;
     let mut Cnt: *mut Value = null;
     if match(&mut I, m_c_Add(m_OneUse(m_Shl(m_OneUse(m_Neg(m_Value(B))), m_Value(Cnt))), m_Value(A))) {
-        let mut NewShl: *mut Value = Builder()(B, Cnt);
+        let mut NewShl: *mut Value = Builder.CreateShl(B, Cnt, "", false, false);
         return CreateSub(A, NewShl, "");
     }
     return null;
@@ -867,24 +930,24 @@ fn combineAddSubWithShlAddSub(Builder: *mut BuilderTy, I: *BinaryOperator) -> *m
 fn foldAddToAshr(Add: *mut BinaryOperator) -> *mut Instruction {
     let mut X: *mut Value = null;
     let mut DivC: *APInt = null;
-    if operator!(match(Add.getOperand(0), m_SDiv(m_Value(X)))) || DivC.isNegative() {
+    if !match(Add.getOperand(0), m_SDiv(m_Value(X), m_Power2(DivC))) || DivC.isNegative() {
         return null;
     }
     let mut MaskC: *APInt = null;
     let mut MaskCCmp: *APInt = null;
     let mut Pred: CmpPredicate = CmpPredicate {};
-    if operator!(match(Add.getOperand(1), m_SExt(m_ICmp(Pred, m_And(m_Specific(X)))))) {
+    if !match(Add.getOperand(1), m_SExt(m_ICmp(Pred, m_And(m_Specific(X), m_APInt(MaskC)), m_APInt(MaskCCmp)))) {
         return null;
     }
     if (Pred != ICMP_UGT || !MaskCCmp.isSignMask()) && (Pred != ICMP_EQ || *MaskCCmp != *MaskC) {
         return null;
     }
-    let mut SMin: APInt = getSignedMinValue(Add.getType());
+    let mut SMin: APInt = getSignedMinValue(Add.getType().getScalarSizeInBits());
     let mut IsMaskValid: bool = if Pred == ICMP_UGT { (*MaskC == (SMin | (*DivC - 1))) } else { (*DivC == 2 && *MaskC == SMin + 1) };
     if !IsMaskValid {
         return null;
     }
-    return CreateAShr(X, get(Add.getType, DivC.exactLogBase2()));
+    return CreateAShr(X, get(Add.getType(), DivC.exactLogBase2(), false, false), "");
 }
 
 fn InstCombinerImpl::foldAddLikeCommutative(self, LHS: *mut Value, RHS: *mut Value, NSW: bool, NUW: bool) -> *mut Instruction {
@@ -901,7 +964,7 @@ fn InstCombinerImpl::foldAddLikeCommutative(self, LHS: *mut Value, RHS: *mut Val
     }
     let mut C1: *APInt = null;
     let mut C2: *APInt = null;
-    if match(LHS, m_Shl(m_SDiv(m_Specific(RHS)))) {
+    if match(LHS, m_Shl(m_SDiv(m_Specific(RHS), m_APInt(C1)), m_APInt(C2))) {
         let mut One: APInt = APInt { C2.getBitWidth(), 1, false, false };
         let mut MinusC1: APInt = operator((*C1));
         if MinusC1 == (One << *C2) {
@@ -909,13 +972,13 @@ fn InstCombinerImpl::foldAddLikeCommutative(self, LHS: *mut Value, RHS: *mut Val
             return CreateSRem(RHS, NewRHS, "");
         }
     }
-    if match(LHS, m_c_Add(m_Value(A))) && match(RHS, m_c_And(m_Value(B))) {
+    if match(LHS, m_c_Add(m_Value(A), m_APInt(C1))) && match(RHS, m_c_And(m_Value(B), m_SpecificInt(operator(*C1)))) {
         if !LHS.hasOneUse() && !RHS.hasOneUse() {
             return null;
         }
         let mut NSWOut: bool = NSW && match(LHS, m_NSWAdd(m_Value(), m_Value()));
         let mut NUWOut: bool = NUW && match(LHS, m_NUWAdd(m_Value(), m_Value()));
-        let mut NewOr: *mut Value = null;
+        let mut NewOr: *mut Value = self.Builder.CreateOr(B, getIntegerValue(LHS.getType(), *C1), "", false);
         let mut NewAdd: *mut Instruction = CreateAdd(A, NewOr, "");
         NewAdd.setHasNoSignedWrap(NSWOut);
         NewAdd.setHasNoUnsignedWrap(NUWOut);
@@ -930,19 +993,19 @@ fn InstCombinerImpl::canonicalizeCondSignextOfHighBitExtractToSignextHighBitExtr
     let mut Select: *mut Value = null;
     let mut LowBitsToSkip: *mut Instruction = null;
     let mut Extract: *mut Instruction = null;
-    if operator!(match(&mut I, m_c_BinOp(m_TruncOrSelf(m_Instruction(Extract, m_LShr(m_Value(X), m_Instruction(LowBitsToSkip)))), m_Value(Select)))) {
+    if !match(&mut I, m_c_BinOp(m_TruncOrSelf(m_Instruction(Extract, m_LShr(m_Value(X), m_Instruction(LowBitsToSkip)))), m_Value(Select))) {
         return null;
     }
     if I.getOpcode() == Sub && I.getOperand(1) != Select {
         return null;
     }
     let mut XTy: *mut Type = X.getType();
-    let mut HadTrunc: bool = I.getType != XTy;
-    if HadTrunc && operator!(match(&mut I, m_c_BinOp(m_OneUse(m_Value()), m_Value()))) {
+    let mut HadTrunc: bool = I.getType() != XTy;
+    if HadTrunc && !match(&mut I, m_c_BinOp(m_OneUse(m_Value()), m_Value())) {
         return null;
     }
     let mut NBits: *mut Value = null;
-    if operator!(match(LowBitsToSkip, m_ZExtOrSelf(m_Sub(m_ZExtOrSelf(m_Value(NBits)))))) {
+    if !match(LowBitsToSkip, m_ZExtOrSelf(m_Sub(m_SpecificInt(XTy.getScalarSizeInBits()), m_ZExtOrSelf(m_Value(NBits))))) {
         return null;
     }
     let mut SkipExtInMagic: Closure_3 = Closure_3 { I: &mut I };
@@ -952,7 +1015,7 @@ fn InstCombinerImpl::canonicalizeCondSignextOfHighBitExtractToSignextHighBitExtr
     let mut SignExtendingValue: *mut Value = null;
     let mut Zero: *mut Value = null;
     let mut ShouldSignext: bool = false;
-    if operator!(match(Select, m_Select(m_ICmp(Pred, m_Specific(X)), m_Value(SignExtendingValue), m_Value(Zero)))) || !isSignBitCheck(Pred.operator llvm::CmpInst::Predicate(), *Thr, ShouldSignext) {
+    if !match(Select, m_Select(m_ICmp(Pred, m_Specific(X), m_APInt(Thr)), m_Value(SignExtendingValue), m_Value(Zero))) || !isSignBitCheck(Pred.operator llvm::CmpInst::Predicate(), *Thr, ShouldSignext) {
         return null;
     }
     if !ShouldSignext {
@@ -963,48 +1026,51 @@ fn InstCombinerImpl::canonicalizeCondSignextOfHighBitExtractToSignextHighBitExtr
     }
     SkipExtInMagic.call(SignExtendingValue);
     let mut SignExtendingValueBaseConstant: *mut Constant = null;
-    if operator!(match(SignExtendingValue, m_Shl(m_ZExtOrSelf(m_Specific(NBits))))) {
+    if !match(SignExtendingValue, m_Shl(m_Constant(SignExtendingValueBaseConstant), m_ZExtOrSelf(m_Specific(NBits)))) {
         return null;
     }
-    if if I.getOpcode() == Sub { operator!(match(SignExtendingValueBaseConstant)) } else { operator!(match(SignExtendingValueBaseConstant)) } {
+    if if I.getOpcode() == Sub { !match(SignExtendingValueBaseConstant, m_One()) } else { !match(SignExtendingValueBaseConstant, m_AllOnes()) } {
         return null;
     }
-    let mut NewAShr: *mut auto = CreateAShr(X, LowBitsToSkip, Extract.getName + ".sext");
-    NewAShr()(Extract);
+    let mut NewAShr: *mut BinaryOperator = CreateAShr(X, LowBitsToSkip, Extract.getName() + ".sext");
+    NewAShr.copyIRFlags(Extract, true);
     if !HadTrunc {
-        return ;
+        return NewAShr;
     }
-    return CreateTruncOrBitCast(I.getType);
+    self.Builder.Insert(NewAShr, "");
+    return CreateTruncOrBitCast(NewAShr, I.getType(), "", null);
 }
 
 fn factorizeMathWithShlOps(I: *mut BinaryOperator, Builder: *mut BuilderTy) -> *mut Instruction {
     assert!((I.getOpcode() == Add || I.getOpcode() == Sub), "Expected add/sub");
-    let mut Op0: *mut auto = dyn_cast(I.getOperand(0));
-    let mut Op1: *mut auto = dyn_cast(I.getOperand(1));
-    if operator!() || operator!() || operator!((Op0()() || ())) {
+    let mut Op0: *mut BinaryOperator = dyn_cast(I.getOperand(0));
+    let mut Op1: *mut BinaryOperator = dyn_cast(I.getOperand(1));
+    if !Op0 || !Op1 || !(Op0.hasOneUse() || Op1.hasOneUse()) {
         return null;
     }
     let mut X: *mut Value = null;
     let mut Y: *mut Value = null;
     let mut ShAmt: *mut Value = null;
-    if operator!(match(m_Shl(m_Value(X), m_Value(ShAmt)))) || operator!(match(m_Shl(m_Value(Y), m_Specific(ShAmt)))) {
+    if !match(Op0, m_Shl(m_Value(X), m_Value(ShAmt))) || !match(Op1, m_Shl(m_Value(Y), m_Specific(ShAmt))) {
         return null;
     }
-    let mut HasNSW: bool = I.hasNoSignedWrap && () && ();
-    let mut HasNUW: bool = I.hasNoUnsignedWrap && () && ();
-    let mut NewMath: *mut Value = Builder()(I.getOpcode(), X, Y);
-    if  {
-        NewI()(HasNSW);
-        NewI()(HasNUW);
+    let mut HasNSW: bool = I.hasNoSignedWrap() && Op0.hasNoSignedWrap() && Op1.hasNoSignedWrap();
+    let mut HasNUW: bool = I.hasNoUnsignedWrap() && Op0.hasNoUnsignedWrap() && Op1.hasNoUnsignedWrap();
+    let mut NewMath: *mut Value = Builder.CreateBinOp(I.getOpcode(), X, Y, "", null);
+    if dyn_cast(NewMath) {
+        NewI;
+    } else {
+        NewI.setHasNoSignedWrap(HasNSW);
+        NewI.setHasNoUnsignedWrap(HasNUW);
     }
-    let mut NewShl: *mut auto = CreateShl(NewMath, ShAmt, "");
-    NewShl()(HasNSW);
-    NewShl()(HasNUW);
-    return ;
+    let mut NewShl: *mut BinaryOperator = CreateShl(NewMath, ShAmt, "");
+    NewShl.setHasNoSignedWrap(HasNSW);
+    NewShl.setHasNoUnsignedWrap(HasNUW);
+    return NewShl;
 }
 
 fn foldBoxMultiply(I: *mut BinaryOperator) -> *mut Instruction {
-    let mut BitWidth: u32 = I.getType();
+    let mut BitWidth: u32 = I.getType().getScalarSizeInBits();
     if (BitWidth & 1) {
         return null;
     }
@@ -1013,15 +1079,15 @@ fn foldBoxMultiply(I: *mut BinaryOperator) -> *mut Instruction {
     let mut XLo: *mut Value = null;
     let mut YLo: *mut Value = null;
     let mut CrossSum: *mut Value = null;
-    if operator!(match(&mut I, m_c_Add(m_Shl(m_Value(CrossSum)), m_OneUse(m_Mul(m_Value(YLo), m_Value(XLo)))))) {
+    if !match(&mut I, m_c_Add(m_Shl(m_Value(CrossSum), m_SpecificInt(HalfBits)), m_OneUse(m_Mul(m_Value(YLo), m_Value(XLo))))) {
         return null;
     }
     let mut X: *mut Value = null;
     let mut Y: *mut Value = null;
-    if operator!(match(XLo, m_And(m_Value(X)))) || operator!(match(YLo, m_And(m_Value(Y)))) {
+    if !match(XLo, m_And(m_Value(X), m_SpecificInt(HalfMask))) || !match(YLo, m_And(m_Value(Y), m_SpecificInt(HalfMask))) {
         return null;
     }
-    if match(CrossSum, m_c_Add(m_c_Mul(m_LShr(m_Specific(Y)), m_CombineOr(m_Specific(X), m_Specific(XLo))), m_c_Mul(m_LShr(m_Specific(X)), m_CombineOr(m_Specific(Y), m_Specific(YLo))))) {
+    if match(CrossSum, m_c_Add(m_c_Mul(m_LShr(m_Specific(Y), m_SpecificInt(HalfBits)), m_CombineOr(m_Specific(X), m_Specific(XLo))), m_c_Mul(m_LShr(m_Specific(X), m_SpecificInt(HalfBits)), m_CombineOr(m_Specific(Y), m_Specific(YLo))))) {
         return CreateMul(X, Y, "");
     }
     return null;
@@ -1039,28 +1105,28 @@ fn checkDivCeilNUW(X: *mut Value, Y: *mut Value, SQ: *SimplifyQuery) -> bool {
 fn InstCombinerImpl::foldDivCeil(self, I: *mut BinaryOperator) -> *mut Instruction {
     let mut X: *mut Value = null;
     let mut Y: *mut Value = null;
-    let mut UDivPat: auto = m_OneUse(m_UDiv(m_Value(X), m_Value(Y)));
-    let mut URemPat: auto = m_OneUse(m_URem());
-    let mut ICmpPat: auto = m_OneUse(m_SpecificICmp(ICMP_NE, m_Zero()));
-    let mut DivPat: auto = m_OneUse(m_ZExtOrSelf());
-    let mut ZExtCmpPat: auto = m_OneUse(m_ZExt());
-    if operator!(match(&mut I, m_c_Add())) || operator!(checkDivCeilNUW(X, Y)) {
+    let mut UDivPat: Value>, 20, false>> = m_OneUse(m_UDiv(m_Value(X), m_Value(Y)));
+    let mut URemPat: Value>, 23, false>> = m_OneUse(m_URem(m_Deferred(X), m_Deferred(Y)));
+    let mut ICmpPat: ICmpInst, false>> = m_OneUse(m_SpecificICmp(CmpPredicate { Pred: ICMP_NE, HasSameSign: false }, URemPat, m_Zero()));
+    let mut DivPat: Value>, 20, false>>>> = m_OneUse(m_ZExtOrSelf(UDivPat));
+    let mut ZExtCmpPat: ZExtInst>> = m_OneUse(m_ZExt(ICmpPat));
+    if !match(&mut I, m_c_Add(DivPat, ZExtCmpPat)) || !checkDivCeilNUW(X, Y, self.SQ.getWithInstruction(&mut I)) {
         return null;
     }
-    let mut YMinusOne: *mut Value = null;
-    let mut NUWAdd: *mut Value = null;
-    if X.getType() != I.getType {
-        let mut Div: *mut Value = null;
-        return Div;
+    let mut YMinusOne: *mut Value = self.Builder.CreateAdd(Y, getAllOnesValue(Y.getType()), "", false, false);
+    let mut NUWAdd: *mut Value = self.Builder.CreateNUWAdd(X, YMinusOne, "");
+    if X.getType() != I.getType() {
+        let mut Div: *mut Value = self.Builder.CreateUDiv(NUWAdd, Y, "", false);
+        return ZExtInst { Div, I.getType(), "", null };
     }
     return CreateUDiv(NUWAdd, Y, "");
 }
 
 fn InstCombinerImpl::visitAdd(self, I: *mut BinaryOperator) -> *mut Instruction {
-    if simplifyAddInst(I.getOperand(0), I.getOperand(1), I.hasNoSignedWrap, I.hasNoUnsignedWrap) {
+    if simplifyAddInst(I.getOperand(0), I.getOperand(1), I.hasNoSignedWrap(), I.hasNoUnsignedWrap(), self.SQ.getWithInstruction(&mut I)) {
         V;
     } else {
-        return self.replaceInstUsesWith;
+        return self.replaceInstUsesWith(I, V);
     }
     if self.SimplifyAssociativeOrCommutative(I) {
         return &mut I;
@@ -1078,14 +1144,14 @@ fn InstCombinerImpl::visitAdd(self, I: *mut BinaryOperator) -> *mut Instruction 
     if self.foldUsingDistributiveLaws(I) {
         V;
     } else {
-        return self.replaceInstUsesWith;
+        return self.replaceInstUsesWith(I, V);
     }
     if foldBoxMultiply(I) {
         R;
     } else {
         return R;
     }
-    if factorizeMathWithShlOps(I) {
+    if factorizeMathWithShlOps(I, self.Builder) {
         R;
     } else {
         return R;
@@ -1095,7 +1161,7 @@ fn InstCombinerImpl::visitAdd(self, I: *mut BinaryOperator) -> *mut Instruction 
     } else {
         return X;
     }
-    if foldNoWrapAdd(I) {
+    if foldNoWrapAdd(I, self.Builder) {
         X;
     } else {
         return X;
@@ -1105,113 +1171,113 @@ fn InstCombinerImpl::visitAdd(self, I: *mut BinaryOperator) -> *mut Instruction 
     } else {
         return R;
     }
-    if combineAddSubWithShlAddSub(I) {
+    if combineAddSubWithShlAddSub(self.Builder, I) {
         R;
     } else {
         return R;
     }
     let mut LHS: *mut Value = I.getOperand(0);
     let mut RHS: *mut Value = I.getOperand(1);
-    if self.foldAddLikeCommutative(LHS, RHS, I.hasNoSignedWrap, I.hasNoUnsignedWrap) {
+    if self.foldAddLikeCommutative(LHS, RHS, I.hasNoSignedWrap(), I.hasNoUnsignedWrap()) {
         R;
     } else {
         return R;
     }
-    if self.foldAddLikeCommutative(RHS, LHS, I.hasNoSignedWrap, I.hasNoUnsignedWrap) {
+    if self.foldAddLikeCommutative(RHS, LHS, I.hasNoSignedWrap(), I.hasNoUnsignedWrap()) {
         R;
     } else {
         return R;
     }
-    let mut Ty: *mut Type = I.getType;
+    let mut Ty: *mut Type = I.getType();
     if Ty.isIntOrIntVectorTy(1) {
         return CreateXor(LHS, RHS, "");
     }
     if LHS == RHS {
-        let mut Shl: *mut auto = CreateShl(LHS, get(Ty, 1, false, false), "");
-        Shl()(I.hasNoSignedWrap);
-        Shl()(I.hasNoUnsignedWrap);
-        return ;
+        let mut Shl: *mut BinaryOperator = CreateShl(LHS, get(Ty, 1, false, false), "");
+        Shl.setHasNoSignedWrap(I.hasNoSignedWrap());
+        Shl.setHasNoUnsignedWrap(I.hasNoUnsignedWrap());
+        return Shl;
     }
     let mut A: *mut Value = null;
     let mut B: *mut Value = null;
     if match(LHS, m_Neg(m_Value(A))) {
         if match(RHS, m_Neg(m_Value(B))) {
-            return CreateNeg();
+            return CreateNeg(self.Builder.CreateAdd(A, B, "", false, false), "", null);
         }
         let mut Sub: *mut BinaryOperator = CreateSub(RHS, A, "");
-        let mut OB0: *mut auto = cast(LHS);
-        Sub.setHasNoSignedWrap(I.hasNoSignedWrap && ());
+        let mut OB0: *mut OverflowingBinaryOperator = cast(LHS);
+        Sub.setHasNoSignedWrap(I.hasNoSignedWrap() && OB0.hasNoSignedWrap());
         return Sub;
     }
     if match(RHS, m_Neg(m_Value(B))) {
         let mut Sub: *mut BinaryOperator = CreateSub(LHS, B, "");
-        let mut OBO: *mut auto = cast(RHS);
-        Sub.setHasNoSignedWrap(I.hasNoSignedWrap && ());
+        let mut OBO: *mut OverflowingBinaryOperator = cast(RHS);
+        Sub.setHasNoSignedWrap(I.hasNoSignedWrap() && OBO.hasNoSignedWrap());
         return Sub;
     }
-    if checkForNegativeOperand(I) {
+    if checkForNegativeOperand(I, self.Builder) {
         V;
     } else {
-        return self.replaceInstUsesWith;
+        return self.replaceInstUsesWith(I, V);
     }
-    if match(&mut I, m_c_BinOp(m_Add(m_Value(A)), m_Not(m_Value(B)))) || match(&mut I, m_BinOp(m_c_Add(m_Not(m_Value(B)), m_Value(A)))) {
+    if match(&mut I, m_c_BinOp(m_Add(m_Value(A), m_One()), m_Not(m_Value(B)))) || match(&mut I, m_BinOp(m_c_Add(m_Not(m_Value(B)), m_Value(A)), m_One())) {
         return CreateSub(A, B, "");
     }
     {
         let mut C: *APInt = null;
-        if match(&mut I, m_c_BinOp(m_OneUse(m_Add(m_Value(A))), m_Not(m_Value(B)))) || match(&mut I, m_BinOp(m_OneUse(m_c_Add(m_Not(m_Value(B)), m_Value(A))))) {
-            let mut Sub: *mut Value = null;
+        if match(&mut I, m_c_BinOp(m_OneUse(m_Add(m_Value(A), m_APIntAllowPoison(C))), m_Not(m_Value(B)))) || match(&mut I, m_BinOp(m_OneUse(m_c_Add(m_Not(m_Value(B)), m_Value(A))), m_APIntAllowPoison(C))) {
+            let mut Sub: *mut Value = self.Builder.CreateSub(A, B, "", false, false);
             return CreateAdd(Sub, get(Ty, *C - 1), "");
         }
     }
     if match(LHS, m_OneUse(m_c_Add(m_Value(A), m_Specific(RHS)))) {
-        return CreateAdd(A);
+        return CreateAdd(A, self.Builder.CreateShl(RHS, 1, "reass.add", false, false), "");
     }
     if match(RHS, m_OneUse(m_c_Add(m_Value(A), m_Specific(LHS)))) {
-        return CreateAdd(A);
+        return CreateAdd(A, self.Builder.CreateShl(LHS, 1, "reass.add", false, false), "");
     }
     {
         let mut C1: *mut Constant = null;
         let mut C2: *mut Constant = null;
         if match(&mut I, m_c_Add(m_Add(m_Value(A), m_ImmConstant(C1)), m_Sub(m_ImmConstant(C2), m_Value(B)))) && (LHS.hasOneUse() || RHS.hasOneUse()) {
-            let mut Sub: *mut Value = null;
+            let mut Sub: *mut Value = self.Builder.CreateSub(A, B, "", false, false);
             return CreateAdd(Sub, getAdd(C1, C2, false, false), "");
         }
         if match(&mut I, m_c_Add(m_OneUse(m_Sub(m_ImmConstant(C1), m_Value(A))), m_Value(B))) {
-            let mut Sub: *mut Value = null;
+            let mut Sub: *mut Value = self.Builder.CreateSub(B, A, "reass.sub", false, false);
             return CreateAdd(Sub, C1, "");
         }
     }
     if self.SimplifyAddWithRemainder(I) {
         V;
     } else {
-        return self.replaceInstUsesWith;
+        return self.replaceInstUsesWith(I, V);
     }
     let mut C1: *APInt = null;
-    if match(&mut I, m_c_Add(m_And(m_Value(A)))) && C1.isPowerOf2() && (self.ComputeNumSignBits > C1.countl_zero()) {
+    if match(&mut I, m_c_Add(m_And(m_Value(A), m_APInt(C1)), m_Deferred(A))) && C1.isPowerOf2() && (self.ComputeNumSignBits(A, null, 0) > C1.countl_zero()) {
         let mut NewMask: *mut Constant = get(RHS.getType(), *C1 - 1);
         return CreateAnd(A, NewMask, "");
     }
     if (match(RHS, m_ZExt(m_Value(A))) && match(LHS, m_ZExt(m_NUWSub(m_Value(B), m_Specific(A))))) || (match(LHS, m_ZExt(m_Value(A))) && match(RHS, m_ZExt(m_NUWSub(m_Value(B), m_Specific(A))))) {
         return ZExtInst { B, LHS.getType(), "", null };
     }
-    if match(&mut I, m_c_BinOp(m_ZExt(m_Value(A)), m_SExt())) && A.getType().isIntOrIntVectorTy(1) {
-        return self.replaceInstUsesWith(I, getNullValue(I.getType));
+    if match(&mut I, m_c_BinOp(m_ZExt(m_Value(A)), m_SExt(m_Deferred(A)))) && A.getType().isIntOrIntVectorTy(1) {
+        return self.replaceInstUsesWith(I, getNullValue(I.getType()));
     }
     let mut LTPred: CmpPredicate = CmpPredicate {};
     let mut GTPred: CmpPredicate = CmpPredicate {};
-    if match(&mut I, m_c_Add(m_SExt(m_c_ICmp(LTPred, m_Value(A), m_Value(B))), m_ZExt(m_c_ICmp(GTPred)))) && A.getType().isIntOrIntVectorTy() {
+    if match(&mut I, m_c_Add(m_SExt(m_c_ICmp(LTPred, m_Value(A), m_Value(B))), m_ZExt(m_c_ICmp(GTPred, m_Deferred(A), m_Deferred(B))))) && A.getType().isIntOrIntVectorTy() {
         if isGT(LTPred.operator llvm::CmpInst::Predicate()) {
             swap(LTPred, GTPred);
             swap(A, B);
         }
         if isLT(LTPred.operator llvm::CmpInst::Predicate()) && isGT(GTPred.operator llvm::CmpInst::Predicate()) && isSigned(LTPred.operator llvm::CmpInst::Predicate()) == isSigned(GTPred.operator llvm::CmpInst::Predicate()) {
-            return self.replaceInstUsesWith;
+            return self.replaceInstUsesWith(I, self.Builder.CreateIntrinsic(Ty, if isSigned(LTPred.operator llvm::CmpInst::Predicate()) { scmp } else { ucmp }, [A, B], FMFSource {}, "", function_ref<void (CallInst *)> { Closure_4 {}, null, null }));
         }
     }
-    let mut LHSCache: WithCache<const Value *> = zeroed();
-    let mut RHSCache: WithCache<const Value *> = zeroed();
-    match getNoCommonBitsSetResult() {
+    let mut LHSCache: WithCache<const Value *> = LHS;
+    let mut RHSCache: WithCache<const Value *> = RHS;
+    match getNoCommonBitsSetResult(LHSCache, RHSCache, self.SQ.getWithInstruction(&mut I)) {
         Known => {
             return CreateDisjointOr(LHS, RHS, "");
         },
@@ -1227,63 +1293,63 @@ fn InstCombinerImpl::visitAdd(self, I: *mut BinaryOperator) -> *mut Instruction 
     } else {
         return Ext;
     }
-    if match(&mut I, m_c_BinOp(m_Xor(m_Value(A), m_Value(B)), m_c_And())) {
+    if match(&mut I, m_c_BinOp(m_Xor(m_Value(A), m_Value(B)), m_c_And(m_Deferred(A), m_Deferred(B)))) {
         return CreateOr(A, B, "");
     }
-    if match(&mut I, m_c_BinOp(m_Or(m_Value(A), m_Value(B)), m_c_And())) {
-        self.replaceOperand;
-        self.replaceOperand;
+    if match(&mut I, m_c_BinOp(m_Or(m_Value(A), m_Value(B)), m_c_And(m_Deferred(A), m_Deferred(B)))) {
+        self.replaceOperand(I, 0, A);
+        self.replaceOperand(I, 1, B);
         return &mut I;
     }
-    if match(&mut I, m_c_BinOp(m_Value(A), m_OneUse(m_c_Or(m_Neg())))) {
-        let mut Add: *mut Value = null;
+    if match(&mut I, m_c_BinOp(m_Value(A), m_OneUse(m_c_Or(m_Neg(m_Deferred(A)), m_Deferred(A))))) {
+        let mut Add: *mut Value = self.Builder.CreateAdd(A, getAllOnesValue(A.getType()), "", I.hasNoUnsignedWrap(), I.hasNoSignedWrap());
         return CreateAnd(Add, A, "");
     }
     {
         let mut LowMask: *APInt = null;
-        if match(&mut I, m_c_Add(m_OneUse(m_And(m_Neg(m_Value(A)))))) || match(&mut I, m_Add(m_OneUse(m_Or(m_Add(m_Value(A)))))) {
-            let mut NewAdd: *mut Value = null;
+        if match(&mut I, m_c_Add(m_OneUse(m_And(m_Neg(m_Value(A)), m_LowBitMask(LowMask))), m_Deferred(A))) || match(&mut I, m_Add(m_OneUse(m_Or(m_Add(m_Value(A), m_AllOnes()), m_LowBitMask(LowMask))), m_One())) {
+            let mut NewAdd: *mut Value = self.Builder.CreateAdd(A, get(Ty, *LowMask), "", false, false);
             return CreateAnd(NewAdd, get(Ty, operator(*LowMask)), "");
         }
     }
-    if match(&mut I, m_Add(m_OneUse(m_c_And(m_Value(A), m_OneUse(m_Neg()))))) {
+    if match(&mut I, m_Add(m_OneUse(m_c_And(m_Value(A), m_OneUse(m_Neg(m_Deferred(A))))), m_AllOnes())) {
         let mut AllOnes: *mut Constant = getAllOnesValue(RHS.getType());
-        let mut Dec: *mut Value = null;
-        let mut Not: *mut Value = null;
+        let mut Dec: *mut Value = self.Builder.CreateAdd(A, AllOnes, "", false, false);
+        let mut Not: *mut Value = self.Builder.CreateXor(A, AllOnes, "");
         return CreateAnd(Dec, Not, "");
     }
-    if match(&mut I, m_c_Add(m_OneUse(m_Not(m_OneUse(m_Mul(m_Value(A))))))) {
-        let mut Ty: *mut Type = I.getType;
+    if match(&mut I, m_c_Add(m_OneUse(m_Not(m_OneUse(m_Mul(m_Value(A), m_APInt(C1))))), m_Deferred(A))) {
+        let mut Ty: *mut Type = I.getType();
         let mut NewMulC: *mut Constant = get(Ty, 1 - *C1);
-        let mut NewMul: *mut Value = null;
+        let mut NewMul: *mut Value = self.Builder.CreateMul(A, NewMulC, "", false, false);
         return CreateAdd(NewMul, getAllOnesValue(Ty), "");
     }
     let mut NegPow2C: *APInt = null;
-    if match(&mut I, m_c_Add(m_OneUse(m_Mul(m_Value(A))), m_Value(B))) {
+    if match(&mut I, m_c_Add(m_OneUse(m_Mul(m_Value(A), m_NegatedPower2(NegPow2C))), m_Value(B))) {
         let mut ShiftAmtC: *mut Constant = get(Ty, NegPow2C.countr_zero(), false, false);
-        let mut Shl: *mut Value = null;
+        let mut Shl: *mut Value = self.Builder.CreateShl(A, ShiftAmtC, "", false, false);
         return CreateSub(B, Shl, "");
     }
     let mut BitWidth: u64 = Ty.getScalarSizeInBits();
-    if match(LHS, m_AShr(m_Value(A))) && match(RHS, m_OneUse(m_ZExt(m_OneUse(m_SpecificICmp(ICMP_SGT, m_Specific(A)))))) {
-        let mut NotZero: *mut Value = null;
-        let mut Zext: *mut Value = null;
+    if match(LHS, m_AShr(m_Value(A), m_SpecificIntAllowPoison(BitWidth - 1))) && match(RHS, m_OneUse(m_ZExt(m_OneUse(m_SpecificICmp(CmpPredicate { Pred: ICMP_SGT, HasSameSign: false }, m_Specific(A), m_ZeroInt()))))) {
+        let mut NotZero: *mut Value = self.Builder.CreateIsNotNull(A, "isnotnull");
+        let mut Zext: *mut Value = self.Builder.CreateZExt(NotZero, Ty, "isnotnull.zext", false);
         return CreateOr(LHS, Zext, "");
     }
     {
         let mut Cond: *mut Value = null;
         let mut Ext: *mut Value = null;
         let mut C: *mut Constant = null;
-        let mut CondMatcher: auto = m_Value(Cond, m_SpecificICmp(ICMP_EQ, m_ImmConstant(C)));
-        if match(&mut I, m_c_Add(m_Value(A), m_Value(Ext, m_ZExtOrSExt()))) && Ext.hasOneUse() {
+        let mut CondMatcher: Value>> = m_Value(Cond, m_SpecificICmp(CmpPredicate { Pred: ICMP_EQ, HasSameSign: false }, m_Deferred(A), m_ImmConstant(C)));
+        if match(&mut I, m_c_Add(m_Value(A), m_Value(Ext, m_ZExtOrSExt(CondMatcher)))) && Ext.hasOneUse() {
             let mut Add: *mut Value = if isa(Ext) { AddOne(C) } else { SubOne(C) };
-            return self.replaceInstUsesWith;
+            return self.replaceInstUsesWith(I, self.Builder.CreateSelect(Cond, Add, A, "", null));
         }
     }
-    if match(LHS, m_Add(m_Value(A))) && match(RHS, m_OneUse(m_SExt(m_OneUse(m_SpecificICmp(ICMP_NE, m_Specific(A)))))) {
+    if match(LHS, m_Add(m_Value(A), m_One())) && match(RHS, m_OneUse(m_SExt(m_OneUse(m_SpecificICmp(CmpPredicate { Pred: ICMP_NE, HasSameSign: false }, m_Specific(A), m_ZeroInt()))))) {
         let mut OneConst: *mut Value = get(A.getType(), 1, false, false);
-        let mut UMax: *mut Value = null;
-        return self.replaceInstUsesWith;
+        let mut UMax: *mut Value = self.Builder.CreateBinaryIntrinsic(umax, A, OneConst, FMFSource {}, "");
+        return self.replaceInstUsesWith(I, UMax);
     }
     if foldAddToAshr(I) {
         Ashr;
@@ -1295,13 +1361,16 @@ fn InstCombinerImpl::visitAdd(self, I: *mut BinaryOperator) -> *mut Instruction 
         let mut ShiftAmt: *APInt = null;
         let mut Mask: *APInt = null;
         let mut Pred: CmpPredicate = CmpPredicate {};
-        if match(&mut I, m_c_Add(m_ZExt(m_SpecificICmp(ICMP_NE, m_And(m_Value(X)))), m_OneUse(m_ZExtOrSelf(m_OneUse(m_LShr()))))) && Mask.popcount() == *ShiftAmt {
+        if match(&mut I, m_c_Add(m_ZExt(m_SpecificICmp(CmpPredicate { Pred: ICMP_NE, HasSameSign: false }, m_And(m_Value(X), m_LowBitMask(Mask)), m_ZeroInt())), m_OneUse(m_ZExtOrSelf(m_OneUse(m_LShr(m_Deferred(X), m_APInt(ShiftAmt))))))) && Mask.popcount() == *ShiftAmt {
             let mut Xbits: u32 = X.getType().getScalarSizeInBits();
             let mut Ibits: u32 = Ty.getScalarSizeInBits();
             let mut NeedZext: bool = Ibits > Xbits;
             let mut MaskC: *mut Constant = get(Ty, Mask.zext(Ibits));
-            if NeedZext || self.willNotOverflowUnsignedAdd {
-                let mut Add: *mut Value = null;
+            if NeedZext || self.willNotOverflowUnsignedAdd(X, MaskC, I) {
+                if NeedZext {
+                    X = self.Builder.CreateZExt(X, Ty, "", false);
+                }
+                let mut Add: *mut Value = self.Builder.CreateNUWAdd(X, MaskC, "");
                 return CreateLShr(Add, get(Ty, ShiftAmt.zext(Ibits)), "");
             }
         }
@@ -1309,29 +1378,29 @@ fn InstCombinerImpl::visitAdd(self, I: *mut BinaryOperator) -> *mut Instruction 
     {
         let mut ConsumesLHS: bool = false;
         let mut ConsumesRHS: bool = false;
-        if  && ConsumesLHS &&  && ConsumesRHS {
-            let mut NotLHS: *mut Value = ;
-            let mut NotRHS: *mut Value = ;
+        if self.isFreeToInvert(LHS, LHS.hasOneUse(), ConsumesLHS) && ConsumesLHS && self.isFreeToInvert(RHS, RHS.hasOneUse(), ConsumesRHS) && ConsumesRHS {
+            let mut NotLHS: *mut Value = self.getFreelyInverted(LHS, LHS.hasOneUse(), &mut self.Builder);
+            let mut NotRHS: *mut Value = self.getFreelyInverted(RHS, RHS.hasOneUse(), &mut self.Builder);
             assert!(NotLHS != null && NotRHS != null, "isFreeToInvert desynced with getFreelyInverted");
-            let mut LHSPlusRHS: *mut Value = null;
+            let mut LHSPlusRHS: *mut Value = self.Builder.CreateAdd(NotLHS, NotRHS, "", false, false);
             return CreateSub(getSigned(RHS.getType(), -2, false), LHSPlusRHS, "");
         }
     }
-    if self.tryFoldInstWithCtpopWithNot {
+    if self.tryFoldInstWithCtpopWithNot(&mut I) {
         R;
     } else {
         return R;
     }
     let mut Changed: bool = false;
-    if operator!(I.hasNoSignedWrap) && self.willNotOverflowSignedAdd(I) {
+    if !I.hasNoSignedWrap() && self.willNotOverflowSignedAdd(LHSCache, RHSCache, I) {
         Changed = true;
-        I.setHasNoSignedWrap;
+        I.setHasNoSignedWrap(true);
     }
-    if operator!(I.hasNoUnsignedWrap) && self.willNotOverflowUnsignedAdd(I) {
+    if !I.hasNoUnsignedWrap() && self.willNotOverflowUnsignedAdd(LHSCache, RHSCache, I) {
         Changed = true;
-        I.setHasNoUnsignedWrap;
+        I.setHasNoUnsignedWrap(true);
     }
-    if canonicalizeLowbitMask(I) {
+    if canonicalizeLowbitMask(I, self.Builder) {
         V;
     } else {
         return V;
@@ -1346,19 +1415,19 @@ fn InstCombinerImpl::visitAdd(self, I: *mut BinaryOperator) -> *mut Instruction 
     } else {
         return SatAdd;
     }
-    if match(&mut I, m_c_BinOp(m_OneUse(m_Intrinsic(m_Value(A), m_Value(B))))) {
-        return self.replaceInstUsesWith;
+    if match(&mut I, m_c_BinOp(m_OneUse(m_Intrinsic(m_Value(A), m_Value(B))), m_Deferred(B))) {
+        return self.replaceInstUsesWith(I, self.Builder.CreateIntrinsic(umax, [I.getType()], [A, B], FMFSource {}, "", ArrayRef<OperandBundleDef> {}, function_ref<void (CallInst *)> { Closure_5 {}, null, null }));
     }
-    if match(LHS, m_OneUse(m_Ctpop(m_Value(A)))) && match(RHS, m_OneUse(m_Ctpop(m_Value(B)))) && haveNoCommonBitsSet(A, B) {
-        return self.replaceInstUsesWith;
+    if match(LHS, m_OneUse(m_Ctpop(m_Value(A)))) && match(RHS, m_OneUse(m_Ctpop(m_Value(B)))) && haveNoCommonBitsSet(A, B, self.SQ.getWithInstruction(&mut I)) {
+        return self.replaceInstUsesWith(I, self.Builder.CreateIntrinsic(ctpop, [I.getType()], [self.Builder.CreateDisjointOr(A, B, "")], FMFSource {}, "", ArrayRef<OperandBundleDef> {}, function_ref<void (CallInst *)> { Closure_6 {}, null, null }));
     }
     let mut XorC: *APInt = null;
     let mut Pred: CmpPredicate = CmpPredicate {};
-    if match(&mut I, m_c_Add(m_ZExt(m_ICmp(Pred, m_Ctpop(m_Value(A)))), m_OneUse(m_ZExtOrSelf(m_OneUse(m_Xor(m_OneUse(m_TruncOrSelf(m_OneUse(m_Ctlz()))))))))) && (Pred == ICMP_UGT || Pred == ICMP_NE) && *XorC == A.getType().getScalarSizeInBits() - 1 {
-        let mut Sub: *mut Value = null;
-        let mut Ctlz: *mut Value = null;
-        let mut Ret: *mut Value = null;
-        return self.replaceInstUsesWith;
+    if match(&mut I, m_c_Add(m_ZExt(m_ICmp(Pred, m_Ctpop(m_Value(A)), m_One())), m_OneUse(m_ZExtOrSelf(m_OneUse(m_Xor(m_OneUse(m_TruncOrSelf(m_OneUse(m_Ctlz(m_Deferred(A), m_One())))), m_APInt(XorC))))))) && (Pred == ICMP_UGT || Pred == ICMP_NE) && *XorC == A.getType().getScalarSizeInBits() - 1 {
+        let mut Sub: *mut Value = self.Builder.CreateAdd(A, getAllOnesValue(A.getType()), "", false, false);
+        let mut Ctlz: *mut Value = self.Builder.CreateIntrinsic(ctlz, [A.getType()], [Sub, self.Builder.getFalse()], FMFSource {}, "", ArrayRef<OperandBundleDef> {}, function_ref<void (CallInst *)> { Closure_7 {}, null, null });
+        let mut Ret: *mut Value = self.Builder.CreateSub(get(A.getType(), A.getType().getScalarSizeInBits(), false, false), Ctlz, "", true, true);
+        return self.replaceInstUsesWith(I, self.Builder.CreateZExtOrTrunc(Ret, I.getType(), ""));
     }
     if self.foldSquareSumInt(I) {
         Res;
@@ -1384,6 +1453,9 @@ fn InstCombinerImpl::visitAdd(self, I: *mut BinaryOperator) -> *mut Instruction 
         let mut PHI: *mut PHINode = null;
         let mut Start: *mut Value = null;
         let mut Step: *mut Value = null;
+        if matchSimpleRecurrence(&mut I, PHI, Start, Step) {
+            self.Worklist.pushUsersToWorkList(*PHI);
+        }
     }
     return if Changed { &mut I } else { null };
 }
@@ -1392,17 +1464,17 @@ fn factorizeLerp(I: *mut BinaryOperator, Builder: *mut BuilderTy) -> *mut Instru
     let mut X: *mut Value = null;
     let mut Y: *mut Value = null;
     let mut Z: *mut Value = null;
-    if operator!(match(&mut I, m_c_FAdd(m_OneUse(m_c_FMul(m_Value(Y), m_OneUse(m_FSub(m_FPOne(), m_Value(Z))))), m_OneUse(m_c_FMul(m_Value(X)))))) {
+    if !match(&mut I, m_c_FAdd(m_OneUse(m_c_FMul(m_Value(Y), m_OneUse(m_FSub(m_FPOne(), m_Value(Z))))), m_OneUse(m_c_FMul(m_Value(X), m_Deferred(Z))))) {
         return null;
     }
-    let mut XY: *mut Value = Builder()(X, Y, &mut I);
-    let mut MulZ: *mut Value = Builder()(Z, XY, &mut I);
-    return CreateFAddFMF(Y, MulZ, &mut I);
+    let mut XY: *mut Value = Builder.CreateFSubFMF(X, Y, &mut I, "", null);
+    let mut MulZ: *mut Value = Builder.CreateFMulFMF(Z, XY, &mut I, "", null);
+    return CreateFAddFMF(Y, MulZ, &mut I, "");
 }
 
 fn factorizeFAddFSub(I: *mut BinaryOperator, Builder: *mut BuilderTy) -> *mut Instruction {
     assert!((I.getOpcode() == FAdd || I.getOpcode() == FSub), "Expecting fadd/fsub");
-    (((operator!(operator!((I.hasAllowReassoc && I.hasNoSignedZeros && "FP factorization requires FMF")))) || (_wassert(L"I.hasAllowReassoc() && I.hasNoSignedZeros() && \"FP factorization requires FMF\"", L"llvm\\lib\\Transforms\\InstCombine\\InstCombineAddSub.cpp", (2083) as u32) , 0)) as void);
+    assert!(I.hasAllowReassoc() && I.hasNoSignedZeros(), "FP factorization requires FMF");
     if factorizeLerp(I, Builder) {
         Lerp;
     } else {
@@ -1425,19 +1497,19 @@ fn factorizeFAddFSub(I: *mut BinaryOperator, Builder: *mut BuilderTy) -> *mut In
         return null;
     }
     let mut IsFAdd: bool = I.getOpcode() == FAdd;
-    let mut XY: *mut Value = if IsFAdd { Builder()(X, Y, &mut I) } else { Builder()(X, Y, &mut I) };
+    let mut XY: *mut Value = if IsFAdd { Builder.CreateFAddFMF(X, Y, &mut I, "", null) } else { Builder.CreateFSubFMF(X, Y, &mut I, "", null) };
     let mut C: *APFloat = null;
-    if match(XY) && !C.isNormal() {
+    if match(XY, m_APFloat(C)) && !C.isNormal() {
         return null;
     }
-    return if IsFMul { CreateFMulFMF(XY, Z, &mut I) } else { CreateFDivFMF(XY, Z, &mut I) };
+    return if IsFMul { CreateFMulFMF(XY, Z, &mut I, "") } else { CreateFDivFMF(XY, Z, &mut I, "") };
 }
 
 fn InstCombinerImpl::visitFAdd(self, I: *mut BinaryOperator) -> *mut Instruction {
-    if simplifyFAddInst(I.getOperand(0), I.getOperand(1), I.getFastMathFlags) {
+    if simplifyFAddInst(I.getOperand(0), I.getOperand(1), I.getFastMathFlags(), self.SQ.getWithInstruction(&mut I), ebIgnore, NearestTiesToEven) {
         V;
     } else {
-        return self.replaceInstUsesWith;
+        return self.replaceInstUsesWith(I, V);
     }
     if self.SimplifyAssociativeOrCommutative(I) {
         return &mut I;
@@ -1458,22 +1530,22 @@ fn InstCombinerImpl::visitFAdd(self, I: *mut BinaryOperator) -> *mut Instruction
         return FoldedFAdd;
     }
     let mut A: *mut Value = null;
-    if match(&mut I, m_OneUse(m_FAdd(m_Value(A)))) && canIgnoreSignBitOfZero(operator*(I()())) {
-        return self.replaceInstUsesWith;
+    if match(&mut I, m_OneUse(m_FAdd(m_Value(A), m_AnyZeroFP()))) && canIgnoreSignBitOfZero(operator(I.use_begin())) {
+        return self.replaceInstUsesWith(I, A);
     }
     let mut X: *mut Value = null;
     let mut Y: *mut Value = null;
     if match(&mut I, m_c_FAdd(m_FNeg(m_Value(X)), m_Value(Y))) {
-        return CreateFSubFMF(Y, X, &mut I);
+        return CreateFSubFMF(Y, X, &mut I, "");
     }
     let mut Z: *mut Value = null;
     if match(&mut I, m_c_FAdd(m_OneUse(m_c_FMul(m_FNeg(m_Value(X)), m_Value(Y))), m_Value(Z))) {
-        let mut XY: *mut Value = null;
-        return CreateFSubFMF(Z, XY, &mut I);
+        let mut XY: *mut Value = self.Builder.CreateFMulFMF(X, Y, &mut I, "", null);
+        return CreateFSubFMF(Z, XY, &mut I, "");
     }
     if match(&mut I, m_c_FAdd(m_OneUse(m_FDiv(m_FNeg(m_Value(X)), m_Value(Y))), m_Value(Z))) || match(&mut I, m_c_FAdd(m_OneUse(m_FDiv(m_Value(X), m_FNeg(m_Value(Y)))), m_Value(Z))) {
-        let mut XY: *mut Value = null;
-        return CreateFSubFMF(Z, XY, &mut I);
+        let mut XY: *mut Value = self.Builder.CreateFDivFMF(X, Y, &mut I, "", null);
+        return CreateFSubFMF(Z, XY, &mut I, "");
     }
     if self.foldFBinOpOfIntCasts(I) {
         R;
@@ -1485,10 +1557,10 @@ fn InstCombinerImpl::visitFAdd(self, I: *mut BinaryOperator) -> *mut Instruction
     if self.SimplifySelectsFeedingBinaryOp(I, LHS, RHS) {
         V;
     } else {
-        return self.replaceInstUsesWith;
+        return self.replaceInstUsesWith(I, V);
     }
-    if I.hasAllowReassoc && I.hasNoSignedZeros {
-        if factorizeFAddFSub(I) {
+    if I.hasAllowReassoc() && I.hasNoSignedZeros() {
+        if factorizeFAddFSub(I, self.Builder) {
             F;
         } else {
             return F;
@@ -1498,38 +1570,38 @@ fn InstCombinerImpl::visitFAdd(self, I: *mut BinaryOperator) -> *mut Instruction
         } else {
             return F;
         }
-        if match(&mut I, m_c_FAdd(m_OneUse(m_Intrinsic(m_Value(X))), m_Value(Y))) {
-            return self.replaceInstUsesWith;
+        if match(&mut I, m_c_FAdd(m_OneUse(m_Intrinsic(m_AnyZeroFP(), m_Value(X))), m_Value(Y))) {
+            return self.replaceInstUsesWith(I, self.Builder.CreateIntrinsic(vector_reduce_fadd, [X.getType()], [Y, X], &mut I, "", ArrayRef<OperandBundleDef> {}, function_ref<void (CallInst *)> { Closure_8 {}, null, null }));
         }
         let mut StartC: *APFloat = null;
         let mut C: *APFloat = null;
-        if match(LHS, m_OneUse(m_Intrinsic(m_Value(X)))) && match(RHS) {
-            let mut NewStartC: *mut Constant = get(I.getType, *C + *StartC);
-            return self.replaceInstUsesWith;
+        if match(LHS, m_OneUse(m_Intrinsic(m_APFloat(StartC), m_Value(X)))) && match(RHS, m_APFloat(C)) {
+            let mut NewStartC: *mut Constant = get(I.getType(), *C + *StartC);
+            return self.replaceInstUsesWith(I, self.Builder.CreateIntrinsic(vector_reduce_fadd, [X.getType()], [NewStartC, X], &mut I, "", ArrayRef<OperandBundleDef> {}, function_ref<void (CallInst *)> { Closure_9 {}, null, null }));
         }
         let mut MulC: *mut Constant = null;
-        if match(&mut I, m_c_FAdd(m_FMul(m_Value(X), m_ImmConstant(MulC)))) {
-            if ConstantFoldBinaryOpOperands(FAdd, MulC, get(I.getType, 1.0)) {
+        if match(&mut I, m_c_FAdd(m_FMul(m_Value(X), m_ImmConstant(MulC)), m_Deferred(X))) {
+            if ConstantFoldBinaryOpOperands(FAdd, MulC, get(I.getType(), 1.0), self.DL) {
                 NewMulC;
             } else {
-                return CreateFMulFMF(X, NewMulC, &mut I);
+                return CreateFMulFMF(X, NewMulC, &mut I, "");
             }
         }
-        if match(&mut I, m_c_FAdd(m_FSub(m_FNeg(m_Value(X)), m_Value(Y)), m_c_FAdd(m_Value(Z)))) {
-            return CreateFSubFMF(Z, Y, &mut I);
+        if match(&mut I, m_c_FAdd(m_FSub(m_FNeg(m_Value(X)), m_Value(Y)), m_c_FAdd(m_Deferred(X), m_Value(Z)))) {
+            return CreateFSubFMF(Z, Y, &mut I, "");
         }
-        if  {
+        if self.Builder.simplify(&mut I) {
             V;
         } else {
-            return self.replaceInstUsesWith;
+            return self.replaceInstUsesWith(I, V);
         }
     }
-    if match(&mut I, m_c_FAdd(m_Intrinsic(m_Value(X), m_Value(Y)), m_c_Intrinsic())) {
-        let mut Result: *mut BinaryOperator = CreateFAddFMF(X, Y, &mut I);
-        if operator!(Result.hasNoNaNs) {
-            Result.setHasNoInfs;
+    if match(&mut I, m_c_FAdd(m_Intrinsic(m_Value(X), m_Value(Y)), m_c_Intrinsic(m_Deferred(X), m_Deferred(Y)))) {
+        let mut Result: *mut BinaryOperator = CreateFAddFMF(X, Y, &mut I, "");
+        if !Result.hasNoNaNs() {
+            Result.setHasNoInfs(false);
         }
-        return Result();
+        return Result;
     }
     return null;
 }
@@ -1539,33 +1611,33 @@ fn CommonPointerBase::compute(self, LHS: *mut Value, RHS: *mut Value) -> CommonP
     if LHS.getType() != RHS.getType() {
         return Base;
     }
-    let mut Ptrs: SmallPtrSet<Value *, 16> = zeroed();
+    let mut Ptrs: SmallPtrSet<Value *, 16> = SmallPtrSet<Value *, 16> {};
     let mut Ptr: *mut Value = LHS;
     while true {
-        Ptrs()(Ptr);
-        if  {
-            Ptr = ();
+        Ptrs.insert(Ptr);
+        if dyn_cast(Ptr) {
+            GEP;
         } else {
-            break;
+            Ptr = GEP.getPointerOperand();
         }
     }
     let mut First: bool = true;
     while true {
-        if Ptrs()(RHS) {
+        if Ptrs.contains(RHS) {
             Base.Ptr = RHS;
             break;
         }
-        if  {
-            Base()();
+        if dyn_cast(RHS) {
+            GEP;
+        } else {
+            Base.RHSGEPs.push(GEP);
             if First {
                 First = false;
-                Base.RHSNW = ();
+                Base.RHSNW = GEP.getNoWrapFlags();
             } else {
-                Base.RHSNW = Base.RHSNW.intersectForOffsetAdd();
+                Base.RHSNW = Base.RHSNW.intersectForOffsetAdd(GEP.getNoWrapFlags());
             }
-            RHS = ();
-        } else {
-            return Base;
+            RHS = GEP.getPointerOperand();
         }
     }
     First = true;
@@ -1573,24 +1645,24 @@ fn CommonPointerBase::compute(self, LHS: *mut Value, RHS: *mut Value) -> CommonP
         if LHS == Base.Ptr {
             break;
         }
-        let mut GEP: *mut auto = cast(LHS);
-        Base()();
+        let mut GEP: *mut GEPOperator = cast(LHS);
+        Base.LHSGEPs.push(GEP);
         if First {
             First = false;
-            Base.LHSNW = ();
+            Base.LHSNW = GEP.getNoWrapFlags();
         } else {
-            Base.LHSNW = Base.LHSNW.intersectForOffsetAdd();
+            Base.LHSNW = Base.LHSNW.intersectForOffsetAdd(GEP.getNoWrapFlags());
         }
-        LHS = ();
+        LHS = GEP.getPointerOperand();
     }
     return Base;
 }
 
 fn CommonPointerBase::isExpensive(self: *CommonPointerBase) -> bool {
     let mut NumGEPs: u32 = 0;
-    let mut ProcessGEPs: Closure_4 = Closure_4 { NumGEPs: &mut NumGEPs };
-    ProcessGEPs();
-    ProcessGEPs();
+    let mut ProcessGEPs: Closure_10 = Closure_10 { NumGEPs: &mut NumGEPs };
+    ProcessGEPs.call(self.LHSGEPs);
+    ProcessGEPs.call(self.RHSGEPs);
     return NumGEPs > 2;
 }
 
@@ -1599,57 +1671,60 @@ fn InstCombinerImpl::OptimizePointerDifference(self, LHS: *mut Value, RHS: *mut 
     if !Base.Ptr || Base.isExpensive() {
         return null;
     }
-    let mut RewriteGEPs: bool = operator!(Base()()) && operator!(Base()());
-    let mut IdxTy: *mut Type = null;
-    let mut Result: *mut Value = self.EmitGEPOffsets(Base(), Base.LHSNW, IdxTy, RewriteGEPs);
-    let mut Offset2: *mut Value = self.EmitGEPOffsets(Base(), Base.RHSNW, IdxTy, RewriteGEPs);
-    if  {
-        if IsNUW && match(Offset2, m_Zero()) && Base.LHSNW.isInBounds() && (I()() || ()) && () && operator!() && ((I()() == Mul && match((1))) || () == Shl) {
-            cast()();
-        }
+    let mut RewriteGEPs: bool = !Base.LHSGEPs.is_empty() && !Base.RHSGEPs.is_empty();
+    let mut IdxTy: *mut Type = self.DL.getIndexType(LHS.getType());
+    let mut Result: *mut Value = self.EmitGEPOffsets(Base.LHSGEPs, Base.LHSNW, IdxTy, RewriteGEPs);
+    let mut Offset2: *mut Value = self.EmitGEPOffsets(Base.RHSGEPs, Base.RHSNW, IdxTy, RewriteGEPs);
+    if dyn_cast(Result) {
+        I;
+    } else if IsNUW && match(Offset2, m_Zero()) && Base.LHSNW.isInBounds() && (I.use_empty() || I.hasOneUse()) && I.hasNoSignedWrap() && !I.hasNoUnsignedWrap() && ((I.getOpcode() == Mul && match(I.getOperand(1), m_NonNegative())) || I.getOpcode() == Shl) {
+        cast(I).setHasNoUnsignedWrap(true);
     }
-    if !match(Offset2, m_Zero()) {}
+    if !match(Offset2, m_Zero()) {
+        Result = self.Builder.CreateSub(Result, Offset2, "gepdiff", IsNUW && Base.LHSNW.hasNoUnsignedWrap() && Base.RHSNW.hasNoUnsignedWrap(), Base.LHSNW.isInBounds() && Base.RHSNW.isInBounds());
+    }
+    return self.Builder.CreateIntCast(Result, Ty, true, "");
 }
 
 fn foldSubOfMinMax(I: *mut BinaryOperator, Builder: *mut BuilderTy) -> *mut Instruction {
     let mut Op0: *mut Value = I.getOperand(0);
     let mut Op1: *mut Value = I.getOperand(1);
-    let mut Ty: *mut Type = I.getType;
-    let mut MinMax: *mut auto = dyn_cast(Op1);
-    if operator!() {
+    let mut Ty: *mut Type = I.getType();
+    let mut MinMax: *mut MinMaxIntrinsic = dyn_cast(Op1);
+    if !MinMax {
         return null;
     }
-    let mut X: *mut Value = ();
-    let mut Y: *mut Value = ();
+    let mut X: *mut Value = MinMax.getLHS();
+    let mut Y: *mut Value = MinMax.getRHS();
     if match(Op0, m_c_Add(m_Specific(X), m_Specific(Y))) && (Op0.hasOneUse() || Op1.hasOneUse()) {
-        let mut InvID: ID = getInverseMinMaxIntrinsic();
-        let mut F: *mut Function = getOrInsertDeclaration(I, InvID, Ty);
-        return Create(F, void { X, Y });
+        let mut InvID: ID = getInverseMinMaxIntrinsic(MinMax.getIntrinsicID());
+        let mut F: *mut Function = getOrInsertDeclaration(I.getModule(), InvID, Ty);
+        return Create(F, [X, Y], ArrayRef<OperandBundleDef> {}, "", null);
     }
     let mut Z: *mut Value = null;
     if match(Op1, m_OneUse(m_UMin(m_Value(Y), m_Value(Z)))) {
         if match(Op0, m_OneUse(m_c_Add(m_Specific(Y), m_Value(X)))) {
-            let mut USub: *mut Value = Builder()(usub_sat, Ty, void { Y, Z });
+            let mut USub: *mut Value = Builder.CreateIntrinsic(usub_sat, Ty, [Y, Z], FMFSource {}, "", ArrayRef<OperandBundleDef> {}, function_ref<void (CallInst *)> { Closure_11 {}, null, null });
             return CreateAdd(X, USub, "");
         }
         if match(Op0, m_OneUse(m_c_Add(m_Specific(Z), m_Value(X)))) {
-            let mut USub: *mut Value = Builder()(usub_sat, Ty, void { Z, Y });
+            let mut USub: *mut Value = Builder.CreateIntrinsic(usub_sat, Ty, [Z, Y], FMFSource {}, "", ArrayRef<OperandBundleDef> {}, function_ref<void (CallInst *)> { Closure_12 {}, null, null });
             return CreateAdd(X, USub, "");
         }
     }
-    if MinMax()() && match(Y) && match(X, m_NSWSub(m_Specific(Op0), m_Value(Z))) {
-        let mut InvID: ID = getInverseMinMaxIntrinsic();
-        let mut F: *mut Function = getOrInsertDeclaration(I, InvID, Ty);
-        return Create(F, void { Op0, Z });
+    if MinMax.isSigned() && match(Y, m_ZeroInt()) && match(X, m_NSWSub(m_Specific(Op0), m_Value(Z))) {
+        let mut InvID: ID = getInverseMinMaxIntrinsic(MinMax.getIntrinsicID());
+        let mut F: *mut Function = getOrInsertDeclaration(I.getModule(), InvID, Ty);
+        return Create(F, [Op0, Z], ArrayRef<OperandBundleDef> {}, "", null);
     }
     return null;
 }
 
 fn InstCombinerImpl::visitSub(self, I: *mut BinaryOperator) -> *mut Instruction {
-    if simplifySubInst(I.getOperand(0), I.getOperand(1), I.hasNoSignedWrap, I.hasNoUnsignedWrap) {
+    if simplifySubInst(I.getOperand(0), I.getOperand(1), I.hasNoSignedWrap(), I.hasNoUnsignedWrap(), self.SQ.getWithInstruction(&mut I)) {
         V;
     } else {
-        return self.replaceInstUsesWith;
+        return self.replaceInstUsesWith(I, V);
     }
     if self.foldVectorBinop(I) {
         X;
@@ -1667,19 +1742,17 @@ fn InstCombinerImpl::visitSub(self, I: *mut BinaryOperator) -> *mut Instruction 
         V;
     } else {
         let mut Res: *mut BinaryOperator = CreateAdd(Op0, V, "");
-        if  {
-            (((operator!(operator!((BO()() == Sub && "Expected a subtraction operator!")))) || (_wassert(L"BO->getOpcode() == Instruction::Sub && \"Expected a subtraction operator!\"", L"llvm\\lib\\Transforms\\InstCombine\\InstCombineAddSub.cpp", (2436) as u32) , 0)) as void);
-            if BO()() && I.hasNoSignedWrap {
-                Res.setHasNoSignedWrap;
-            }
+        if dyn_cast(Op1) {
+            BO;
         } else {
-            if cast(Op1)() && I.hasNoSignedWrap {
-                Res.setHasNoSignedWrap;
+            assert!(BO.getOpcode() == Sub, "Expected a subtraction operator!");
+            if BO.hasNoSignedWrap() && I.hasNoSignedWrap() {
+                Res.setHasNoSignedWrap(true);
             }
         }
         return Res;
     }
-    if factorizeMathWithShlOps(I) {
+    if factorizeMathWithShlOps(I, self.Builder) {
         R;
     } else {
         return R;
@@ -1689,23 +1762,25 @@ fn InstCombinerImpl::visitSub(self, I: *mut BinaryOperator) -> *mut Instruction 
         let mut X: *mut Value = null;
         let mut C2: *mut Constant = null;
         if match(Op1, m_AddLike(m_Value(X), m_ImmConstant(C2))) {
-            let mut WillNotSOV: bool = self.willNotOverflowSignedSub;
+            let mut WillNotSOV: bool = self.willNotOverflowSignedSub(C, C2, I);
             let mut Res: *mut BinaryOperator = CreateSub(getSub(C, C2, false, false), X, "");
             let mut Op1NSW: bool = true;
             let mut Op1NUW: bool = true;
-            if  {
-                Op1NSW = ();
-                Op1NUW = ();
+            if dyn_cast(Op1) {
+                OBO1;
+            } else {
+                Op1NSW = OBO1.hasNoSignedWrap();
+                Op1NUW = OBO1.hasNoUnsignedWrap();
             }
-            Res.setHasNoSignedWrap(I.hasNoSignedWrap && Op1NSW && WillNotSOV);
-            Res.setHasNoUnsignedWrap(I.hasNoUnsignedWrap && Op1NUW);
+            Res.setHasNoSignedWrap(I.hasNoSignedWrap() && Op1NSW && WillNotSOV);
+            Res.setHasNoUnsignedWrap(I.hasNoUnsignedWrap() && Op1NUW);
             return Res;
         }
     }
-    let mut TryToNarrowDeduceFlags: Closure_5 = Closure_5 { cap_0: self, I: &mut I, Op0: &mut Op0, Op1: &mut Op1 };
-    let mut IsNegation: bool = match(Op0);
-    if !IsNegation || none_of(I()(), match_fn(m_c_Select(m_Specific(Op1), m_Specific(&mut I)))) {
-        if Negate(IsNegation, IsNegation && I.hasNoSignedWrap, Op1, *self) {
+    let mut TryToNarrowDeduceFlags: Closure_13 = Closure_13 { cap_0: self, I: &mut I, Op0: &mut Op0, Op1: &mut Op1 };
+    let mut IsNegation: bool = match(Op0, m_ZeroInt());
+    if !IsNegation || none_of(I.users(), match_fn(m_c_Select(m_Specific(Op1), m_Specific(&mut I)))) {
+        if Negate(IsNegation, IsNegation && I.hasNoSignedWrap(), Op1, *self) {
             NegOp1;
         } else {
             return CreateAdd(NegOp1, Op0, "");
@@ -1717,18 +1792,18 @@ fn InstCombinerImpl::visitSub(self, I: *mut BinaryOperator) -> *mut Instruction 
     if self.foldUsingDistributiveLaws(I) {
         V;
     } else {
-        return self.replaceInstUsesWith;
+        return self.replaceInstUsesWith(I, V);
     }
-    if I.getType(1) {
+    if I.getType().isIntOrIntVectorTy(1) {
         return CreateXor(Op0, Op1, "");
     }
-    if match(Op0) {
+    if match(Op0, m_AllOnes()) {
         return CreateNot(Op1, "", null);
     }
     let mut X: *mut Value = null;
     let mut Y: *mut Value = null;
-    if match(Op0, m_OneUse(m_Add(m_Value(X)))) {
-        return CreateAdd(X);
+    if match(Op0, m_OneUse(m_Add(m_Value(X), m_AllOnes()))) {
+        return CreateAdd(self.Builder.CreateNot(Op1, ""), X, "");
     }
     let mut C1: *mut Constant = null;
     let mut C2: *mut Constant = null;
@@ -1740,25 +1815,25 @@ fn InstCombinerImpl::visitSub(self, I: *mut BinaryOperator) -> *mut Instruction 
     }
     let mut Z: *mut Value = null;
     if match(Op0, m_OneUse(m_c_Add(m_OneUse(m_Sub(m_Value(X), m_Value(Y))), m_Value(Z)))) {
-        let mut XZ: *mut Value = null;
-        let mut YW: *mut Value = null;
+        let mut XZ: *mut Value = self.Builder.CreateAdd(X, Z, "", false, false);
+        let mut YW: *mut Value = self.Builder.CreateAdd(Y, Op1, "", false, false);
         return CreateSub(XZ, YW, "");
     }
     if match(Op0, m_OneUse(m_Sub(m_Value(X), m_Value(Y)))) {
         let mut LHSSub: *mut OverflowingBinaryOperator = cast(Op0);
-        let mut HasNUW: bool = I.hasNoUnsignedWrap && LHSSub.hasNoUnsignedWrap();
-        let mut HasNSW: bool = HasNUW && I.hasNoSignedWrap && LHSSub.hasNoSignedWrap();
-        let mut Add: *mut Value = null;
+        let mut HasNUW: bool = I.hasNoUnsignedWrap() && LHSSub.hasNoUnsignedWrap();
+        let mut HasNSW: bool = HasNUW && I.hasNoSignedWrap() && LHSSub.hasNoSignedWrap();
+        let mut Add: *mut Value = self.Builder.CreateAdd(Y, Op1, "", HasNUW, HasNSW);
         let mut Sub: *mut BinaryOperator = CreateSub(X, Add, "");
-        Sub.setHasNoUnsignedWrap;
-        Sub.setHasNoSignedWrap;
+        Sub.setHasNoUnsignedWrap(HasNUW);
+        Sub.setHasNoSignedWrap(HasNSW);
         return Sub;
     }
     {
         let mut CX: *mut Constant = null;
         let mut CY: *mut Constant = null;
         if match(Op0, m_OneUse(m_Add(m_Value(X), m_ImmConstant(CX)))) && match(Op1, m_OneUse(m_Add(m_Value(Y), m_ImmConstant(CY)))) {
-            let mut OpsSub: *mut Value = null;
+            let mut OpsSub: *mut Value = self.Builder.CreateSub(X, Y, "", false, false);
             let mut ConstsSub: *mut Constant = getSub(CX, CY, false, false);
             return CreateAdd(OpsSub, ConstsSub, "");
         }
@@ -1769,17 +1844,17 @@ fn InstCombinerImpl::visitSub(self, I: *mut BinaryOperator) -> *mut Instruction 
         if match(Op0, m_AddLike(m_Value(W), m_Value(X))) && match(Op1, m_AddLike(m_Value(Y), m_Value(Z))) {
             let mut R: *mut Instruction = null;
             if W == Y {
-                R(CreateSub(X, Z, ""));
+                R = CreateSub(X, Z, "");
             } else if W == Z {
-                R(CreateSub(X, Y, ""));
+                R = CreateSub(X, Y, "");
             } else if X == Y {
-                R(CreateSub(W, Z, ""));
+                R = CreateSub(W, Z, "");
             } else if X == Z {
-                R(CreateSub(W, Y, ""));
+                R = CreateSub(W, Y, "");
             }
             if R {
-                let mut NSW: bool = I.hasNoSignedWrap && match(Op0, m_NSWAddLike(m_Value(), m_Value())) && match(Op1, m_NSWAddLike(m_Value(), m_Value()));
-                let mut NUW: bool = I.hasNoUnsignedWrap && match(Op1, m_NUWAddLike(m_Value(), m_Value()));
+                let mut NSW: bool = I.hasNoSignedWrap() && match(Op0, m_NSWAddLike(m_Value(), m_Value())) && match(Op1, m_NSWAddLike(m_Value(), m_Value()));
+                let mut NUW: bool = I.hasNoUnsignedWrap() && match(Op1, m_NUWAddLike(m_Value(), m_Value()));
                 R.setHasNoSignedWrap(NSW);
                 R.setHasNoUnsignedWrap(NUW);
                 return R;
@@ -1789,20 +1864,20 @@ fn InstCombinerImpl::visitSub(self, I: *mut BinaryOperator) -> *mut Instruction 
     {
         let mut ConsumesOp0: bool = false;
         let mut ConsumesOp1: bool = false;
-        if  &&  && (ConsumesOp0 || ConsumesOp1) {
-            let mut NotOp0: *mut Value = ;
-            let mut NotOp1: *mut Value = ;
+        if self.isFreeToInvert(Op0, Op0.hasOneUse(), ConsumesOp0) && self.isFreeToInvert(Op1, Op1.hasOneUse(), ConsumesOp1) && (ConsumesOp0 || ConsumesOp1) {
+            let mut NotOp0: *mut Value = self.getFreelyInverted(Op0, Op0.hasOneUse(), &mut self.Builder);
+            let mut NotOp1: *mut Value = self.getFreelyInverted(Op1, Op1.hasOneUse(), &mut self.Builder);
             assert!(NotOp0 != null && NotOp1 != null, "isFreeToInvert desynced with getFreelyInverted");
             return CreateSub(NotOp1, NotOp0, "");
         }
     }
-    let mut m_AddRdx: Closure_6 = Closure_6 {};
+    let mut m_AddRdx: Closure_14 = Closure_14 {};
     let mut V0: *mut Value = null;
     let mut V1: *mut Value = null;
-    if match(Op0, m_AddRdx(V0)) && match(Op1, m_AddRdx(V1)) && V0.getType() == V1.getType() {
-        let mut Sub: *mut Value = null;
-        let mut Rdx: *mut Value = null;
-        return self.replaceInstUsesWith;
+    if match(Op0, m_AddRdx.call(V0)) && match(Op1, m_AddRdx.call(V1)) && V0.getType() == V1.getType() {
+        let mut Sub: *mut Value = self.Builder.CreateSub(V0, V1, "", false, false);
+        let mut Rdx: *mut Value = self.Builder.CreateIntrinsic(vector_reduce_add, [Sub.getType()], [Sub], FMFSource {}, "", ArrayRef<OperandBundleDef> {}, function_ref<void (CallInst *)> { Closure_15 {}, null, null });
+        return self.replaceInstUsesWith(I, Rdx);
     }
     if dyn_cast(Op0) {
         C;
@@ -1810,27 +1885,27 @@ fn InstCombinerImpl::visitSub(self, I: *mut BinaryOperator) -> *mut Instruction 
         let mut X: *mut Value = null;
         if match(Op1, m_ZExt(m_Value(X))) && X.getType().isIntOrIntVectorTy(1) {
             let mut SI: *mut SelectInst = Create(X, SubOne(C), C, "", null, null);
-            setExplicitlyUnknownBranchWeightsIfProfiled(*SI, "instcombine");
-            return SI();
+            setExplicitlyUnknownBranchWeightsIfProfiled(*SI, "instcombine", &mut self.F);
+            return SI;
         }
         if match(Op1, m_SExt(m_Value(X))) && X.getType().isIntOrIntVectorTy(1) {
             let mut SI: *mut SelectInst = Create(X, AddOne(C), C, "", null, null);
-            setExplicitlyUnknownBranchWeightsIfProfiled(*SI, "instcombine");
-            return SI();
+            setExplicitlyUnknownBranchWeightsIfProfiled(*SI, "instcombine", &mut self.F);
+            return SI;
         }
         if match(Op1, m_Not(m_Value(X))) {
             return CreateAdd(X, AddOne(C), "");
         }
         if dyn_cast(Op1) {
             SI;
-        } else if self.FoldOpIntoSelect {
+        } else if self.FoldOpIntoSelect(I, SI, false, false) {
             R;
         } else {
             return R;
         }
         if dyn_cast(Op1) {
             PN;
-        } else if self.foldOpIntoPhi {
+        } else if self.foldOpIntoPhi(I, PN, false) {
             R;
         } else {
             return R;
@@ -1841,9 +1916,9 @@ fn InstCombinerImpl::visitSub(self, I: *mut BinaryOperator) -> *mut Instruction 
         }
     }
     let mut Op0C: *APInt = null;
-    if match(Op0) {
+    if match(Op0, m_APInt(Op0C)) {
         if Op0C.isMask() {
-            let mut RHSKnown: KnownBits = computeKnownBits(Op1);
+            let mut RHSKnown: KnownBits = computeKnownBits(Op1, self.SQ.getWithInstruction(&mut I).getWithoutDomCondCache(), 0);
             if (*Op0C | RHSKnown.Zero).isAllOnes() {
                 return CreateXor(Op1, Op0, "");
             }
@@ -1851,13 +1926,13 @@ fn InstCombinerImpl::visitSub(self, I: *mut BinaryOperator) -> *mut Instruction 
         let mut C2: *APInt = null;
         let mut C3: *APInt = null;
         let mut InnerSub: *mut BinaryOperator = null;
-        if match(Op1, m_OneUse(m_And(m_BinOp(InnerSub)))) && match(InnerSub, m_Sub(m_Value(X))) && (InnerSub.hasNoUnsignedWrap || C2.isNegatedPowerOf2()) {
+        if match(Op1, m_OneUse(m_And(m_BinOp(InnerSub), m_APInt(C2)))) && match(InnerSub, m_Sub(m_APInt(C3), m_Value(X))) && (InnerSub.hasNoUnsignedWrap() || C2.isNegatedPowerOf2()) {
             let mut C2AndC3: APInt = *C2 & *C3;
             let mut C2AndC3Minus1: APInt = C2AndC3 - 1;
             let mut C2AddC3: APInt = *C2 + *C3;
             if (*C3 - C2AndC3Minus1).isPowerOf2() && C2AndC3Minus1.isSubsetOf(C2AddC3) {
-                let mut And: *mut Value = null;
-                return CreateAdd(And, get(I.getType, *Op0C - C2AndC3));
+                let mut And: *mut Value = self.Builder.CreateAnd(X, get(I.getType(), *C2), "");
+                return CreateAdd(And, get(I.getType(), *Op0C - C2AndC3), "");
             }
         }
     }
@@ -1895,7 +1970,7 @@ fn InstCombinerImpl::visitSub(self, I: *mut BinaryOperator) -> *mut Instruction 
         let mut A: *mut Value = null;
         let mut B: *mut Value = null;
         if match(Op0, m_And(m_Value(A), m_Value(B))) && match(Op1, m_c_Or(m_Specific(A), m_Specific(B))) && (Op0.hasOneUse() || Op1.hasOneUse()) {
-            return CreateNeg();
+            return CreateNeg(self.Builder.CreateXor(A, B, ""), "", null);
         }
     }
     {
@@ -1909,120 +1984,122 @@ fn InstCombinerImpl::visitSub(self, I: *mut BinaryOperator) -> *mut Instruction 
         let mut A: *mut Value = null;
         let mut B: *mut Value = null;
         if match(Op0, m_Xor(m_Value(A), m_Value(B))) && match(Op1, m_c_Or(m_Specific(A), m_Specific(B))) && (Op0.hasOneUse() || Op1.hasOneUse()) {
-            return CreateNeg();
+            return CreateNeg(self.Builder.CreateAnd(A, B, ""), "", null);
         }
     }
     {
         let mut Y: *mut Value = null;
         if match(Op0, m_OneUse(m_c_Or(m_Value(Y), m_Specific(Op1)))) {
-            return CreateAnd(Y);
+            return CreateAnd(Y, self.Builder.CreateNot(Op1, Op1.getName() + ".not"), "");
         }
     }
     {
         let mut X: *mut Value = null;
         if match(Op0, m_OneUse(m_c_And(m_Specific(Op1), m_OneUse(m_Neg(m_Value(X)))))) {
-            return CreateNeg();
+            return CreateNeg(self.Builder.CreateAnd(Op1, self.Builder.CreateAdd(X, getAllOnesValue(I.getType()), "", false, false), ""), "", null);
         }
     }
     {
         let mut C: *mut Constant = null;
-        if match(Op0, m_OneUse(m_And(m_Specific(Op1)))) {
-            return CreateNeg();
+        if match(Op0, m_OneUse(m_And(m_Specific(Op1), m_Constant(C)))) {
+            return CreateNeg(self.Builder.CreateAnd(Op1, self.Builder.CreateNot(C, ""), ""), "", null);
         }
     }
     {
         let mut C: *mut Value = null;
         let mut X: *mut Value = null;
-        let mut m_SubXorCmp: Closure_7 = Closure_7 { C: &mut C, X: &mut X };
-        if m_SubXorCmp(Op0, Op1) {
-            return self.createSelectInstWithUnknownProfile;
+        let mut m_SubXorCmp: Closure_16 = Closure_16 { C: &mut C, X: &mut X };
+        if m_SubXorCmp.call(Op0, Op1) {
+            return self.createSelectInstWithUnknownProfile(C, self.Builder.CreateNeg(X, "", false), X, "", null);
         }
-        if m_SubXorCmp(Op1, Op0) {
-            return self.createSelectInstWithUnknownProfile;
+        if m_SubXorCmp.call(Op1, Op0) {
+            return self.createSelectInstWithUnknownProfile(C, X, self.Builder.CreateNeg(X, "", false), "", null);
         }
     }
-    if self.tryFoldInstWithCtpopWithNot {
+    if self.tryFoldInstWithCtpopWithNot(&mut I) {
         R;
     } else {
         return R;
     }
-    if foldSubOfMinMax(I) {
+    if foldSubOfMinMax(I, self.Builder) {
         R;
     } else {
         return R;
     }
     {
-        let mut SinkSubIntoSelect: Closure_8 = Closure_8 {};
-        if SinkSubIntoSelect(Op0, Op1, Closure_9 { Op1: Op1 }) {
+        let mut SinkSubIntoSelect: Closure_17 = Closure_17 { cap_0: I.getType() };
+        if SinkSubIntoSelect.call(Op0, Op1, Closure_18 { cap_0: &mut self.Builder, Op1: Op1 }) {
             NewSel;
         } else {
             return NewSel;
         }
-        if SinkSubIntoSelect(Op1, Op0, Closure_10 { Op0: Op0 }) {
+        if SinkSubIntoSelect.call(Op1, Op0, Closure_19 { cap_0: &mut self.Builder, Op0: Op0 }) {
             NewSel;
         } else {
             return NewSel;
         }
     }
     if match(Op1, m_c_And(m_Specific(Op0), m_Value(Y))) && (Op1.hasOneUse() || isa(Y)) {
-        return CreateAnd(Op0);
+        return CreateAnd(Op0, self.Builder.CreateNot(Y, Y.getName() + ".not"), "");
     }
-    if match(Op0, m_Not(m_Value(X))) && match(Op1, m_c_MaxOrMin(m_Specific(Op0), m_Value(Y))) && !Op0.hasNUsesOrMore(3) &&  {
-        let mut Not: *mut Value = null;
+    if match(Op0, m_Not(m_Value(X))) && match(Op1, m_c_MaxOrMin(m_Specific(Op0), m_Value(Y))) && !Op0.hasNUsesOrMore(3) && self.isFreeToInvert(Y, Y.hasOneUse()) {
+        let mut Not: *mut Value = self.Builder.CreateNot(Op1, "");
         return CreateSub(Not, X, "");
     }
-    if match(Op1, m_Not(m_Value(X))) && match(Op0, m_c_MaxOrMin(m_Specific(Op1), m_Value(Y))) && !Op1.hasNUsesOrMore(3) &&  {
-        let mut Not: *mut Value = null;
+    if match(Op1, m_Not(m_Value(X))) && match(Op0, m_c_MaxOrMin(m_Specific(Op1), m_Value(Y))) && !Op1.hasNUsesOrMore(3) && self.isFreeToInvert(Y, Y.hasOneUse()) {
+        let mut Not: *mut Value = self.Builder.CreateNot(Op0, "");
         return CreateSub(X, Not, "");
     }
-    if match(Op0, m_c_SMin(m_NSWAddLike(m_Value(X)), m_Value(Y))) && match(Op1, m_c_SMin(m_Specific(X), m_Specific(Y))) && I.getType() != 1 && (Op0.hasOneUse() || Op1.hasOneUse()) {
-        let mut Cond: *mut Value = null;
-        return Cond;
+    if match(Op0, m_c_SMin(m_NSWAddLike(m_Value(X), m_One()), m_Value(Y))) && match(Op1, m_c_SMin(m_Specific(X), m_Specific(Y))) && I.getType().getScalarSizeInBits() != 1 && (Op0.hasOneUse() || Op1.hasOneUse()) {
+        let mut Cond: *mut Value = self.Builder.CreateICmpSLT(X, Y, "");
+        return ZExtInst { Cond, I.getType(), "", null };
     }
-    if match(Op0, m_c_UMin(m_NUWAddLike(m_Value(X)), m_Value(Y))) && match(Op1, m_c_UMin(m_Specific(X), m_Specific(Y))) && I.getType() != 1 && (Op0.hasOneUse() || Op1.hasOneUse()) {
-        let mut Cond: *mut Value = null;
-        return Cond;
+    if match(Op0, m_c_UMin(m_NUWAddLike(m_Value(X), m_One()), m_Value(Y))) && match(Op1, m_c_UMin(m_Specific(X), m_Specific(Y))) && I.getType().getScalarSizeInBits() != 1 && (Op0.hasOneUse() || Op1.hasOneUse()) {
+        let mut Cond: *mut Value = self.Builder.CreateICmpULT(X, Y, "");
+        return ZExtInst { Cond, I.getType(), "", null };
     }
     let mut LHSOp: *mut Value = null;
     let mut RHSOp: *mut Value = null;
     if match(Op0, m_PtrToIntOrAddr(m_Value(LHSOp))) && match(Op1, m_PtrToIntOrAddr(m_Value(RHSOp))) {
-        if self.OptimizePointerDifference(LHSOp, RHSOp, I.getType, I.hasNoUnsignedWrap) {
+        if self.OptimizePointerDifference(LHSOp, RHSOp, I.getType(), I.hasNoUnsignedWrap()) {
             Res;
         } else {
-            return self.replaceInstUsesWith;
+            return self.replaceInstUsesWith(I, Res);
         }
     }
     if match(Op0, m_Trunc(m_PtrToIntOrAddr(m_Value(LHSOp)))) && match(Op1, m_Trunc(m_PtrToIntOrAddr(m_Value(RHSOp)))) {
-        if self.OptimizePointerDifference(LHSOp, RHSOp, I.getType, false) {
+        if self.OptimizePointerDifference(LHSOp, RHSOp, I.getType(), false) {
             Res;
         } else {
-            return self.replaceInstUsesWith;
+            return self.replaceInstUsesWith(I, Res);
         }
     }
-    let mut MatchSubOfZExtOfPtrToIntOrAddr: Closure_11 = Closure_11 { Op0: &mut Op0, cap_1: self, LHSOp: &mut LHSOp, Op1: &mut Op1, RHSOp: &mut RHSOp };
+    let mut MatchSubOfZExtOfPtrToIntOrAddr: Closure_20 = Closure_20 { Op0: &mut Op0, cap_1: self, LHSOp: &mut LHSOp, Op1: &mut Op1, RHSOp: &mut RHSOp };
     if MatchSubOfZExtOfPtrToIntOrAddr.call() {
-        if  {
-            if GEP()() == RHSOp {
-                if GEP()() || () {
-                    let mut Offset: *mut Value = self.EmitGEPOffset();
-                    let mut Res: *mut Value = null;
-                    return self.replaceInstUsesWith;
+        if dyn_cast(LHSOp) {
+            GEP;
+        } else {
+            if GEP.getPointerOperand() == RHSOp {
+                if GEP.hasNoUnsignedWrap() || GEP.hasNoUnsignedSignedWrap() {
+                    let mut Offset: *mut Value = self.EmitGEPOffset(GEP, false);
+                    let mut Res: *mut Value = if GEP.hasNoUnsignedWrap() { self.Builder.CreateZExt(Offset, I.getType(), "", GEP.hasNoUnsignedSignedWrap()) } else { self.Builder.CreateSExt(Offset, I.getType(), "") };
+                    return self.replaceInstUsesWith(I, Res);
                 }
             }
         }
     }
     let mut A: *mut Value = null;
     let mut ShAmt: *APInt = null;
-    let mut Ty: *mut Type = I.getType;
+    let mut Ty: *mut Type = I.getType();
     let mut BitWidth: u32 = Ty.getScalarSizeInBits();
-    if match(Op1, m_AShr(m_Value(A))) && Op1.hasNUses(2) && *ShAmt == BitWidth - 1 && match(Op0, m_OneUse(m_c_Xor(m_Specific(A), m_Specific(Op1)))) {
-        let mut IsNeg: *mut Value = null;
-        let mut NegA: *mut Value = null;
+    if match(Op1, m_AShr(m_Value(A), m_APInt(ShAmt))) && Op1.hasNUses(2) && *ShAmt == BitWidth - 1 && match(Op0, m_OneUse(m_c_Xor(m_Specific(A), m_Specific(Op1)))) {
+        let mut IsNeg: *mut Value = self.Builder.CreateIsNeg(A, "");
+        let mut NegA: *mut Value = if I.hasNoUnsignedWrap() { getNullValue(A.getType()) } else { self.Builder.CreateNeg(A, "", I.hasNoSignedWrap()) };
         return Create(IsNeg, NegA, A, "", null, null);
     }
     let mut AddC: *APInt = null;
     let mut AndC: *APInt = null;
-    if match(Op0, m_Add(m_Value(X))) && match(Op1, m_And(m_Specific(X))) {
+    if match(Op0, m_Add(m_Value(X), m_APInt(AddC))) && match(Op1, m_And(m_Specific(X), m_APInt(AndC))) {
         let mut Cttz: u32 = AddC.countr_zero();
         let mut HighMask: APInt = getHighBitsSet(BitWidth, BitWidth - Cttz);
         if (HighMask & *AndC).isZero() {
@@ -2035,40 +2112,40 @@ fn InstCombinerImpl::visitSub(self, I: *mut BinaryOperator) -> *mut Instruction 
         return V;
     }
     if match(Op1, m_OneUse(m_Intrinsic(m_Specific(Op0), m_Value(Y)))) {
-        return self.replaceInstUsesWith;
+        return self.replaceInstUsesWith(I, self.Builder.CreateIntrinsic(umin, [I.getType()], [Op0, Y], FMFSource {}, "", ArrayRef<OperandBundleDef> {}, function_ref<void (CallInst *)> { Closure_21 {}, null, null }));
     }
     if match(Op0, m_OneUse(m_c_UMax(m_Value(X), m_Specific(Op1)))) {
-        return self.replaceInstUsesWith;
+        return self.replaceInstUsesWith(I, self.Builder.CreateIntrinsic(usub_sat, [Ty], [X, Op1], FMFSource {}, "", ArrayRef<OperandBundleDef> {}, function_ref<void (CallInst *)> { Closure_22 {}, null, null }));
     }
     if match(Op1, m_OneUse(m_c_UMin(m_Value(X), m_Specific(Op0)))) {
-        return self.replaceInstUsesWith;
+        return self.replaceInstUsesWith(I, self.Builder.CreateIntrinsic(usub_sat, [Ty], [Op0, X], FMFSource {}, "", ArrayRef<OperandBundleDef> {}, function_ref<void (CallInst *)> { Closure_23 {}, null, null }));
     }
     if match(Op1, m_OneUse(m_c_UMax(m_Value(X), m_Specific(Op0)))) {
-        let mut USub: *mut Value = null;
+        let mut USub: *mut Value = self.Builder.CreateIntrinsic(usub_sat, [Ty], [X, Op0], FMFSource {}, "", ArrayRef<OperandBundleDef> {}, function_ref<void (CallInst *)> { Closure_24 {}, null, null });
         return CreateNeg(USub, "", null);
     }
     if match(Op0, m_OneUse(m_c_UMin(m_Value(X), m_Specific(Op1)))) {
-        let mut USub: *mut Value = null;
+        let mut USub: *mut Value = self.Builder.CreateIntrinsic(usub_sat, [Ty], [Op1, X], FMFSource {}, "", ArrayRef<OperandBundleDef> {}, function_ref<void (CallInst *)> { Closure_25 {}, null, null });
         return CreateNeg(USub, "", null);
     }
-    if match(Op0) && match(Op1, m_OneUse(m_Ctpop(m_Value(X)))) {
-        return self.replaceInstUsesWith;
+    if match(Op0, m_SpecificInt(BitWidth)) && match(Op1, m_OneUse(m_Ctpop(m_Value(X)))) {
+        return self.replaceInstUsesWith(I, self.Builder.CreateIntrinsic(ctpop, [I.getType()], [self.Builder.CreateNot(X, "")], FMFSource {}, "", ArrayRef<OperandBundleDef> {}, function_ref<void (CallInst *)> { Closure_26 {}, null, null }));
     }
-    if match(Op0, m_OneUse(m_Mul(m_Value(X)))) && match(Op1, m_OneUse(m_Mul(m_Value(Y)))) {
-        let mut OBO0: *mut auto = cast(Op0);
-        let mut OBO1: *mut auto = cast(Op1);
-        let mut PropagateNSW: bool = I.hasNoSignedWrap && () && () && BitWidth > 2;
-        let mut PropagateNUW: bool = I.hasNoUnsignedWrap && () && () && BitWidth > 1;
-        let mut Add: *mut Value = null;
-        let mut Sub: *mut Value = null;
-        let mut Mul: *mut Value = null;
-        return self.replaceInstUsesWith;
+    if match(Op0, m_OneUse(m_Mul(m_Value(X), m_Deferred(X)))) && match(Op1, m_OneUse(m_Mul(m_Value(Y), m_Deferred(Y)))) {
+        let mut OBO0: *mut OverflowingBinaryOperator = cast(Op0);
+        let mut OBO1: *mut OverflowingBinaryOperator = cast(Op1);
+        let mut PropagateNSW: bool = I.hasNoSignedWrap() && OBO0.hasNoSignedWrap() && OBO1.hasNoSignedWrap() && BitWidth > 2;
+        let mut PropagateNUW: bool = I.hasNoUnsignedWrap() && OBO0.hasNoUnsignedWrap() && OBO1.hasNoUnsignedWrap() && BitWidth > 1;
+        let mut Add: *mut Value = self.Builder.CreateAdd(X, Y, "add", PropagateNUW, PropagateNSW);
+        let mut Sub: *mut Value = self.Builder.CreateSub(X, Y, "sub", PropagateNUW, PropagateNSW);
+        let mut Mul: *mut Value = self.Builder.CreateMul(Add, Sub, "", PropagateNUW, PropagateNSW);
+        return self.replaceInstUsesWith(I, Mul);
     }
     if match(Op0, m_OneUse(m_c_SMax(m_Value(X), m_Value(Y)))) && match(Op1, m_OneUse(m_c_SMin(m_Specific(X), m_Specific(Y)))) {
-        if I.hasNoUnsignedWrap || I.hasNoSignedWrap {
-            let mut Sub: *mut Value = null;
-            let mut Call: *mut Value = null;
-            return self.replaceInstUsesWith;
+        if I.hasNoUnsignedWrap() || I.hasNoSignedWrap() {
+            let mut Sub: *mut Value = self.Builder.CreateSub(X, Y, "sub", false, true);
+            let mut Call: *mut Value = self.Builder.CreateBinaryIntrinsic(abs, Sub, self.Builder.getTrue(), FMFSource {}, "");
+            return self.replaceInstUsesWith(I, Call);
         }
     }
     if self.foldBinOpOfSelectAndCastOfSelectCondition(I) {
@@ -2077,8 +2154,8 @@ fn InstCombinerImpl::visitSub(self, I: *mut BinaryOperator) -> *mut Instruction 
         return Res;
     }
     if match(Op1, m_SExtLike(m_Value(X))) && match(Op0, m_SExtLike(m_c_NSWAdd(m_Specific(X), m_Value(Y)))) {
-        let mut SExtY: *mut Value = null;
-        return self.replaceInstUsesWith;
+        let mut SExtY: *mut Value = self.Builder.CreateSExt(Y, I.getType(), "");
+        return self.replaceInstUsesWith(I, SExtY);
     }
     {
         let mut Z: *mut Value = null;
@@ -2098,10 +2175,10 @@ fn InstCombinerImpl::visitSub(self, I: *mut BinaryOperator) -> *mut Instruction 
                 NumOfDeadInstrs += if Add1.hasOneUse() { 1 } else { 0 };
             }
             if NumOfDeadInstrs >= NumOfNewInstrs {
-                let mut SExtY: *mut Value = null;
-                let mut SExtZ: *mut Value = null;
-                let mut Sub: *mut Value = null;
-                return self.replaceInstUsesWith;
+                let mut SExtY: *mut Value = self.Builder.CreateSExt(Y, I.getType(), "");
+                let mut SExtZ: *mut Value = self.Builder.CreateSExt(Z, I.getType(), "");
+                let mut Sub: *mut Value = self.Builder.CreateSub(SExtY, SExtZ, "", false, I.hasNoSignedWrap());
+                return self.replaceInstUsesWith(I, Sub);
             }
         }
     }
@@ -2110,12 +2187,12 @@ fn InstCombinerImpl::visitSub(self, I: *mut BinaryOperator) -> *mut Instruction 
 
 fn foldFNegIntoConstant(I: *mut Instruction, DL: *DataLayout) -> *mut Instruction {
     let mut FNegOp: *mut Instruction = null;
-    if operator!(match(&mut I, m_FNeg(m_OneUse(m_Instruction(FNegOp))))) {
+    if !match(&mut I, m_FNeg(m_OneUse(m_Instruction(FNegOp)))) {
         return null;
     }
     let mut X: *mut Value = null;
     let mut C: *mut Constant = null;
-    if match(FNegOp, m_FMul(m_Value(X))) {
+    if match(FNegOp, m_FMul(m_Value(X), m_Constant(C))) {
         if ConstantFoldUnaryOpOperand(FNeg, C, DL) {
             NegC;
         } else {
@@ -2126,7 +2203,7 @@ fn foldFNegIntoConstant(I: *mut Instruction, DL: *DataLayout) -> *mut Instructio
             return CreateFMulFMF(X, NegC, FMF, "");
         }
     }
-    if match(FNegOp, m_FDiv(m_Value(X))) {
+    if match(FNegOp, m_FDiv(m_Value(X), m_Constant(C))) {
         if ConstantFoldUnaryOpOperand(FNeg, C, DL) {
             NegC;
         } else {
@@ -2135,11 +2212,11 @@ fn foldFNegIntoConstant(I: *mut Instruction, DL: *DataLayout) -> *mut Instructio
             let mut OpFMF: FastMathFlags = FNegOp.getFastMathFlags();
             FDiv.setHasNoSignedZeros(FMF.noSignedZeros() && OpFMF.noSignedZeros());
             FDiv.setHasNoInfs(FMF.noInfs() && OpFMF.noInfs());
-            FDiv.copyMetadata(*FNegOp);
+            FDiv.copyMetadata(*FNegOp, ArrayRef<unsigned int> {});
             return FDiv;
         }
     }
-    if match(FNegOp, m_FDiv(m_Value(X))) {
+    if match(FNegOp, m_FDiv(m_Constant(C), m_Value(X))) {
         if ConstantFoldUnaryOpOperand(FNeg, C, DL) {
             NegC;
         } else {
@@ -2148,11 +2225,11 @@ fn foldFNegIntoConstant(I: *mut Instruction, DL: *DataLayout) -> *mut Instructio
             let mut OpFMF: FastMathFlags = FNegOp.getFastMathFlags();
             FDiv.setHasNoSignedZeros(FMF.noSignedZeros() && OpFMF.noSignedZeros());
             FDiv.setHasNoInfs(FMF.noInfs() && OpFMF.noInfs());
-            FDiv.copyMetadata(*FNegOp);
+            FDiv.copyMetadata(*FNegOp, ArrayRef<unsigned int> {});
             return FDiv;
         }
     }
-    if I.hasNoSignedZeros() && match(FNegOp, m_FAdd(m_Value(X))) {
+    if I.hasNoSignedZeros() && match(FNegOp, m_FAdd(m_Value(X), m_Constant(C))) {
         if ConstantFoldUnaryOpOperand(FNeg, C, DL) {
             NegC;
         } else {
@@ -2166,21 +2243,21 @@ fn InstCombinerImpl::hoistFNegAboveFMulFDiv(self, FNegOp: *mut Value, FMFSource:
     let mut X: *mut Value = null;
     let mut Y: *mut Value = null;
     if match(FNegOp, m_FMul(m_Value(X), m_Value(Y))) {
-        return cast();
+        return cast(self.Builder.CreateFMulFMF(X, self.Builder.CreateFNegFMF(Y, &mut FMFSource, "", null), &mut FMFSource, "", null));
     }
     if match(FNegOp, m_FDiv(m_Value(X), m_Value(Y))) {
-        let mut FDiv: *mut auto = cast();
-        FDiv()(operator*(cast(FNegOp)));
-        return ;
+        let mut FDiv: *mut Instruction = cast(self.Builder.CreateFDivFMF(self.Builder.CreateFNegFMF(X, &mut FMFSource, "", null), Y, &mut FMFSource, "", null));
+        FDiv.copyMetadata(*cast(FNegOp), ArrayRef<unsigned int> {});
+        return FDiv;
     }
     if dyn_cast(FNegOp) {
         II;
     } else {
         if II.getIntrinsicID() == ldexp {
-            let mut FMF: FastMathFlags = FMFSource.getFastMathFlags() | II.getFastMathFlags;
-            let mut New: *mut CallInst = null;
-            New.setFastMathFlags;
-            New.copyMetadata;
+            let mut FMF: FastMathFlags = FMFSource.getFastMathFlags() | II.getFastMathFlags();
+            let mut New: *mut CallInst = self.Builder.CreateCall(II.getCalledFunction(), [self.Builder.CreateFNegFMF(II.getArgOperand(0), FMF, "", null), II.getArgOperand(1)], "", null);
+            New.setFastMathFlags(FMF);
+            New.copyMetadata(*II, ArrayRef<unsigned int> {});
             return New;
         }
     }
@@ -2188,75 +2265,78 @@ fn InstCombinerImpl::hoistFNegAboveFMulFDiv(self, FNegOp: *mut Value, FMFSource:
 }
 
 fn InstCombinerImpl::visitFNeg(self, I: *mut UnaryOperator) -> *mut Instruction {
-    let mut Op: *mut Value = I.getOperand;
-    if simplifyFNegInst(Op, I.getFastMathFlags, self.getSimplifyQuery(&mut I)) {
+    let mut Op: *mut Value = I.getOperand(0);
+    if simplifyFNegInst(Op, I.getFastMathFlags(), self.getSimplifyQuery().getWithInstruction(&mut I)) {
         V;
     } else {
-        return self.replaceInstUsesWith;
+        return self.replaceInstUsesWith(I, V);
     }
-    if foldFNegIntoConstant(I) {
+    if foldFNegIntoConstant(I, self.DL) {
         X;
     } else {
         return X;
     }
     let mut X: *mut Value = null;
     let mut Y: *mut Value = null;
-    if I.hasNoSignedZeros && match(Op, m_OneUse(m_FSub(m_Value(X), m_Value(Y)))) {
-        return CreateFSubFMF(Y, X, &mut I);
+    if I.hasNoSignedZeros() && match(Op, m_OneUse(m_FSub(m_Value(X), m_Value(Y)))) {
+        return CreateFSubFMF(Y, X, &mut I, "");
     }
     let mut OneUse: *mut Value = null;
-    if operator!(match(Op, m_OneUse(m_Value(OneUse)))) {
+    if !match(Op, m_OneUse(m_Value(OneUse))) {
         return null;
     }
-    if self.hoistFNegAboveFMulFDiv {
+    if self.hoistFNegAboveFMulFDiv(OneUse, I) {
         R;
     } else {
-        return self.replaceInstUsesWith;
+        return self.replaceInstUsesWith(I, R);
     }
     let mut Cond: *mut Value = null;
     if match(OneUse, m_Select(m_Value(Cond), m_Value(X), m_Value(Y))) {
-        let mut propagateSelectFMF: Closure_12 = Closure_12 { I: &mut I, Op: &mut Op };
+        let mut propagateSelectFMF: Closure_27 = Closure_27 { I: &mut I, Op: &mut Op };
         let mut P: *mut Value = null;
         if match(X, m_FNeg(m_Value(P))) {
-            let mut NegY: *mut Value = null;
+            let mut NegY: *mut Value = self.Builder.CreateFNegFMF(Y, &mut I, Y.getName() + ".neg", null);
             let mut NewSel: *mut SelectInst = Create(Cond, P, NegY, "", null, null);
             propagateSelectFMF.call(NewSel, P == Y);
             return NewSel;
         }
         if match(Y, m_FNeg(m_Value(P))) {
-            let mut NegX: *mut Value = null;
+            let mut NegX: *mut Value = self.Builder.CreateFNegFMF(X, &mut I, X.getName() + ".neg", null);
             let mut NewSel: *mut SelectInst = Create(Cond, NegX, P, "", null, null);
             propagateSelectFMF.call(NewSel, P == X);
             return NewSel;
         }
         if match(X, m_ImmConstant()) || match(Y, m_ImmConstant()) {
-            let mut NegX: *mut Value = null;
-            let mut NegY: *mut Value = null;
+            let mut NegX: *mut Value = self.Builder.CreateFNegFMF(X, &mut I, X.getName() + ".neg", null);
+            let mut NegY: *mut Value = self.Builder.CreateFNegFMF(Y, &mut I, Y.getName() + ".neg", null);
             let mut NewSel: *mut SelectInst = Create(Cond, NegX, NegY, "", null, null);
             propagateSelectFMF.call(NewSel, true);
             return NewSel;
         }
     }
     if match(OneUse, m_CopySign(m_Value(X), m_Value(Y))) {
-        let mut FMF: FastMathFlags = I.getFastMathFlags;
-        operator&=(FMF, cast(OneUse)());
-        let mut NegY: *mut Value = null;
-        let mut NewCopySign: *mut Value = null;
-        return self.replaceInstUsesWith;
+        let mut FMF: FastMathFlags = I.getFastMathFlags();
+        operator(FMF, cast(OneUse).getFastMathFlags());
+        let mut NegY: *mut Value = self.Builder.CreateFNegFMF(Y, FMF, "", null);
+        let mut NewCopySign: *mut Value = self.Builder.CreateCopySign(X, NegY, FMF, "");
+        return self.replaceInstUsesWith(I, NewCopySign);
     }
-    let mut Mask: ArrayRef<int> = zeroed();
+    let mut Mask: ArrayRef<int> = ArrayRef<int> {};
+    if match(OneUse, m_Shuffle(m_Value(X), m_Poison(), Mask)) {
+        return ShuffleVectorInst { self.Builder.CreateFNegFMF(X, &mut I, "", null), Mask, "", null };
+    }
     if match(OneUse, m_VecReverse(m_Value(X))) {
-        let mut Reverse: *mut Value = null;
-        return self.replaceInstUsesWith;
+        let mut Reverse: *mut Value = self.Builder.CreateVectorReverse(self.Builder.CreateFNegFMF(X, &mut I, "", null), "");
+        return self.replaceInstUsesWith(I, Reverse);
     }
     return null;
 }
 
 fn InstCombinerImpl::visitFSub(self, I: *mut BinaryOperator) -> *mut Instruction {
-    if simplifyFSubInst(I.getOperand(0), I.getOperand(1), I.getFastMathFlags, self.getSimplifyQuery(&mut I)) {
+    if simplifyFSubInst(I.getOperand(0), I.getOperand(1), I.getFastMathFlags(), self.getSimplifyQuery().getWithInstruction(&mut I), ebIgnore, NearestTiesToEven) {
         V;
     } else {
-        return self.replaceInstUsesWith;
+        return self.replaceInstUsesWith(I, V);
     }
     if self.foldVectorBinop(I) {
         X;
@@ -2270,9 +2350,9 @@ fn InstCombinerImpl::visitFSub(self, I: *mut BinaryOperator) -> *mut Instruction
     }
     let mut Op: *mut Value = null;
     if match(&mut I, m_FNeg(m_Value(Op))) {
-        return CreateFNegFMF(Op, &mut I);
+        return CreateFNegFMF(Op, &mut I, "", null);
     }
-    if foldFNegIntoConstant(I) {
+    if foldFNegIntoConstant(I, self.DL) {
         X;
     } else {
         return X;
@@ -2287,105 +2367,105 @@ fn InstCombinerImpl::visitFSub(self, I: *mut BinaryOperator) -> *mut Instruction
     let mut C: *mut Constant = null;
     let mut Op0: *mut Value = I.getOperand(0);
     let mut Op1: *mut Value = I.getOperand(1);
-    if I.hasNoSignedZeros || cannotBeNegativeZero(Op0, self.getSimplifyQuery(&mut I)) {
+    if I.hasNoSignedZeros() || cannotBeNegativeZero(Op0, self.getSimplifyQuery().getWithInstruction(&mut I), 0) {
         if match(Op1, m_OneUse(m_FSub(m_Value(X), m_Value(Y)))) {
-            let mut NewSub: *mut Value = null;
-            return CreateFAddFMF(Op0, NewSub, &mut I);
+            let mut NewSub: *mut Value = self.Builder.CreateFSubFMF(Y, X, &mut I, "", null);
+            return CreateFAddFMF(Op0, NewSub, &mut I, "");
         }
     }
-    if I.hasNoSignedZeros && !isa(Op0) && match(Op0, m_OneUse(m_FNeg(m_Value(X)))) {
-        let mut FAdd: *mut Value = null;
-        return CreateFNegFMF(FAdd, &mut I);
+    if I.hasNoSignedZeros() && !isa(Op0) && match(Op0, m_OneUse(m_FNeg(m_Value(X)))) {
+        let mut FAdd: *mut Value = self.Builder.CreateFAddFMF(X, Op1, &mut I, "", null);
+        return CreateFNegFMF(FAdd, &mut I, "", null);
     }
     if isa(Op0) {
         if dyn_cast(Op1) {
             SI;
-        } else if self.FoldOpIntoSelect {
+        } else if self.FoldOpIntoSelect(I, SI, false, false) {
             NV;
         } else {
             return NV;
         }
     }
     if match(Op1, m_ImmConstant(C)) {
-        if ConstantFoldUnaryOpOperand(FNeg, C) {
+        if ConstantFoldUnaryOpOperand(FNeg, C, self.DL) {
             NegC;
         } else {
-            return CreateFAddFMF(Op0, NegC, &mut I);
+            return CreateFAddFMF(Op0, NegC, &mut I, "");
         }
     }
     if match(Op1, m_FNeg(m_Value(Y))) {
-        return CreateFAddFMF(Op0, Y, &mut I);
+        return CreateFAddFMF(Op0, Y, &mut I, "");
     }
-    let mut Ty: *mut Type = I.getType;
+    let mut Ty: *mut Type = I.getType();
     if match(Op1, m_OneUse(m_FPTrunc(m_FNeg(m_Value(Y))))) {
-        return CreateFAddFMF(Op0, &mut I);
+        return CreateFAddFMF(Op0, self.Builder.CreateFPTrunc(Y, Ty, "", null), &mut I, "");
     }
     if match(Op1, m_OneUse(m_FPExt(m_FNeg(m_Value(Y))))) {
-        return CreateFAddFMF(Op0, &mut I);
+        return CreateFAddFMF(Op0, self.Builder.CreateFPExt(Y, Ty, "", null), &mut I, "");
     }
     if match(Op1, m_OneUse(m_c_FMul(m_FNeg(m_Value(X)), m_Value(Y)))) {
-        let mut FMul: *mut Value = null;
-        return CreateFAddFMF(Op0, FMul, &mut I);
+        let mut FMul: *mut Value = self.Builder.CreateFMulFMF(X, Y, &mut I, "", null);
+        return CreateFAddFMF(Op0, FMul, &mut I, "");
     }
     if match(Op1, m_OneUse(m_FDiv(m_FNeg(m_Value(X)), m_Value(Y)))) || match(Op1, m_OneUse(m_FDiv(m_Value(X), m_FNeg(m_Value(Y))))) {
-        let mut FDiv: *mut Value = null;
-        return CreateFAddFMF(Op0, FDiv, &mut I);
+        let mut FDiv: *mut Value = self.Builder.CreateFDivFMF(X, Y, &mut I, "", null);
+        return CreateFAddFMF(Op0, FDiv, &mut I, "");
     }
     if self.SimplifySelectsFeedingBinaryOp(I, Op0, Op1) {
         V;
     } else {
-        return self.replaceInstUsesWith;
+        return self.replaceInstUsesWith(I, V);
     }
-    if I.hasAllowReassoc && I.hasNoSignedZeros {
+    if I.hasAllowReassoc() && I.hasNoSignedZeros() {
         if match(Op0, m_FSub(m_Specific(Op1), m_Value(X))) {
-            return CreateFNegFMF(X, &mut I);
+            return CreateFNegFMF(X, &mut I, "", null);
         }
         if match(Op1, m_c_FAdd(m_Specific(Op0), m_Value(X))) {
-            return CreateFNegFMF(X, &mut I);
+            return CreateFNegFMF(X, &mut I, "", null);
         }
-        if match(Op0, m_FMul(m_Specific(Op1))) {
-            if ConstantFoldBinaryOpOperands(FSub, C, get(Ty, 1.0)) {
+        if match(Op0, m_FMul(m_Specific(Op1), m_Constant(C))) {
+            if ConstantFoldBinaryOpOperands(FSub, C, get(Ty, 1.0), self.DL) {
                 CSubOne;
             } else {
-                return CreateFMulFMF(Op1, CSubOne, &mut I);
+                return CreateFMulFMF(Op1, CSubOne, &mut I, "");
             }
         }
-        if match(Op1, m_FMul(m_Specific(Op0))) {
-            if ConstantFoldBinaryOpOperands(FSub, get(Ty, 1.0), C) {
+        if match(Op1, m_FMul(m_Specific(Op0), m_Constant(C))) {
+            if ConstantFoldBinaryOpOperands(FSub, get(Ty, 1.0), C, self.DL) {
                 OneSubC;
             } else {
-                return CreateFMulFMF(Op0, OneSubC, &mut I);
+                return CreateFMulFMF(Op0, OneSubC, &mut I, "");
             }
         }
         let mut Z: *mut Value = null;
         if match(Op0, m_OneUse(m_c_FAdd(m_OneUse(m_FSub(m_Value(X), m_Value(Y))), m_Value(Z)))) {
-            let mut XZ: *mut Value = null;
-            let mut YW: *mut Value = null;
-            return CreateFSubFMF(XZ, YW, &mut I);
+            let mut XZ: *mut Value = self.Builder.CreateFAddFMF(X, Z, &mut I, "", null);
+            let mut YW: *mut Value = self.Builder.CreateFAddFMF(Y, Op1, &mut I, "", null);
+            return CreateFSubFMF(XZ, YW, &mut I, "");
         }
-        let mut m_FaddRdx: Closure_13 = Closure_13 {};
+        let mut m_FaddRdx: Closure_28 = Closure_28 {};
         let mut A0: *mut Value = null;
         let mut A1: *mut Value = null;
         let mut V0: *mut Value = null;
         let mut V1: *mut Value = null;
-        if match(Op0, m_FaddRdx(A0, V0)) && match(Op1, m_FaddRdx(A1, V1)) && V0.getType() == V1.getType() {
-            let mut Sub: *mut Value = null;
-            let mut Rdx: *mut Value = null;
-            return CreateFSubFMF(Rdx, A1, &mut I);
+        if match(Op0, m_FaddRdx.call(A0, V0)) && match(Op1, m_FaddRdx.call(A1, V1)) && V0.getType() == V1.getType() {
+            let mut Sub: *mut Value = self.Builder.CreateFSubFMF(V0, V1, &mut I, "", null);
+            let mut Rdx: *mut Value = self.Builder.CreateIntrinsic(vector_reduce_fadd, [Sub.getType()], [A0, Sub], &mut I, "", ArrayRef<OperandBundleDef> {}, function_ref<void (CallInst *)> { Closure_29 {}, null, null });
+            return CreateFSubFMF(Rdx, A1, &mut I, "");
         }
-        if factorizeFAddFSub(I) {
+        if factorizeFAddFSub(I, self.Builder) {
             F;
         } else {
             return F;
         }
-        if  {
+        if self.Builder.simplify(&mut I) {
             V;
         } else {
-            return self.replaceInstUsesWith;
+            return self.replaceInstUsesWith(I, V);
         }
         if match(Op0, m_OneUse(m_FSub(m_Value(X), m_Value(Y)))) {
-            let mut FAdd: *mut Value = null;
-            return CreateFSubFMF(X, FAdd, &mut I);
+            let mut FAdd: *mut Value = self.Builder.CreateFAddFMF(Y, Op1, &mut I, "", null);
+            return CreateFSubFMF(X, FAdd, &mut I, "");
         }
     }
     return null;
@@ -2405,10 +2485,10 @@ unsafe fn Closure_1::call(self: *mut Closure_1, DivSide: *mut Value, RemSide: *m
         let mut C1: APInt = APInt {};
         let mut C2: APInt = APInt {};
         if !DivSide.hasOneUse() || !MatchMul(DivSide, Div, C1) {
-            Div = DivSide , C1 = (*self.I).getType();
+            Div = DivSide , C1 = APInt { (*self.I).getType().getScalarSizeInBits(), 1, false, false };
         }
         if !RemSide.hasOneUse() || !MatchMul(RemSide, Rem, C2) {
-            Rem = RemSide , C2 = (*self.I).getType();
+            Rem = RemSide , C2 = APInt { (*self.I).getType().getScalarSizeInBits(), 1, false, false };
         }
         let mut DivOpV: *mut Value = null;
         let mut DivOpC: APInt = APInt {};
@@ -2417,13 +2497,14 @@ unsafe fn Closure_1::call(self: *mut Closure_1, DivSide: *mut Value, RemSide: *m
             if !NewC.isZero() && !Rem.hasOneUse() {
                 return null;
             }
-            if operator!(isGuaranteedNotToBeUndef((*self.X), &mut (*self.I))) {
+            if !isGuaranteedNotToBeUndef((*self.X), &mut self.AC, &mut (*self.I), &mut self.DT, 0) {
                 return null;
             }
-            let mut MulXC2: *mut Value = null;
+            let mut MulXC2: *mut Value = self.Builder.CreateMul((*self.X), get((*self.X).getType(), C2), "", false, false);
             if NewC.isZero() {
                 return MulXC2;
             }
+            return self.Builder.CreateAdd(self.Builder.CreateMul(Div, get((*self.X).getType(), NewC), "", false, false), MulXC2, "", false, false);
         }
         return null;
     }
@@ -2433,7 +2514,9 @@ struct Closure_2 {
     Ty: *mut *mut Type,
 }
 
-unsafe fn Closure_2::call(self: *mut Closure_2) -> auto {}
+unsafe fn Closure_2::call(self: *mut Closure_2) -> *mut Function {
+        return getOrInsertDeclaration((*self.I).getModule(), uadd_sat, (*self.Ty));
+    }
 
 struct Closure_3 {
     I: *mut BinaryOperator,
@@ -2447,56 +2530,107 @@ unsafe fn Closure_3::call(self: *mut Closure_3, V: *mut *mut Value) {
         }
     }
 
-struct Closure_4 {
+struct Closure_4 {}
+
+fn Closure_4::call(self: *Closure_4, arg: *mut CallInst) {}
+
+struct Closure_5 {}
+
+fn Closure_5::call(self: *Closure_5, arg: *mut CallInst) {}
+
+struct Closure_6 {}
+
+fn Closure_6::call(self: *Closure_6, arg: *mut CallInst) {}
+
+struct Closure_7 {}
+
+fn Closure_7::call(self: *Closure_7, arg: *mut CallInst) {}
+
+struct Closure_8 {}
+
+fn Closure_8::call(self: *Closure_8, arg: *mut CallInst) {}
+
+struct Closure_9 {}
+
+fn Closure_9::call(self: *Closure_9, arg: *mut CallInst) {}
+
+struct Closure_10 {
     NumGEPs: *mut u32,
 }
 
-unsafe fn Closure_4::call(self: *mut Closure_4, GEPs: ArrayRef<GEPOperator *>) {
+unsafe fn Closure_10::call(self: *mut Closure_10, GEPs: ArrayRef<GEPOperator *>) {
         let mut SeenMultiUse: bool = false;
+        for GEP in GEPs {
+            if !GEP.hasOneUse() {
+                if SeenMultiUse {
+                    (*self.NumGEPs) += 1;
+                }
+                SeenMultiUse = true;
+            }
+        }
     }
 
-struct Closure_5 {
+struct Closure_11 {}
+
+fn Closure_11::call(self: *Closure_11, arg: *mut CallInst) {}
+
+struct Closure_12 {}
+
+fn Closure_12::call(self: *Closure_12, arg: *mut CallInst) {}
+
+struct Closure_13 {
     cap_0: *mut InstCombinerImpl,
     I: *mut BinaryOperator,
     Op0: *mut *mut Value,
     Op1: *mut *mut Value,
 }
 
-unsafe fn Closure_5::call(self: *mut Closure_5) -> auto {
+unsafe fn Closure_13::call(self: *mut Closure_13) -> auto {
         if self.narrowMathIfNoOverflow((*self.I)) {
             Ext;
         } else {
             return Ext;
         }
         let mut Changed: bool = false;
-        if operator!((*self.I).hasNoSignedWrap) && self.willNotOverflowSignedSub {
+        if !(*self.I).hasNoSignedWrap() && self.willNotOverflowSignedSub((*self.Op0), (*self.Op1), (*self.I)) {
             Changed = true;
-            (*self.I).setHasNoSignedWrap;
+            (*self.I).setHasNoSignedWrap(true);
         }
-        if operator!((*self.I).hasNoUnsignedWrap) && self.willNotOverflowUnsignedSub {
+        if !(*self.I).hasNoUnsignedWrap() && self.willNotOverflowUnsignedSub((*self.Op0), (*self.Op1), (*self.I)) {
             Changed = true;
-            (*self.I).setHasNoUnsignedWrap;
+            (*self.I).setHasNoUnsignedWrap(true);
         }
+        return if Changed { &mut (*self.I) } else { null };
     }
 
-struct Closure_6 {}
+struct Closure_14 {}
 
-fn Closure_6::call(self: *Closure_6, Vec: *mut *mut Value) -> auto {}
+fn Closure_14::call(self: *Closure_14, Vec: *mut *mut Value) -> Value>>>> {
+        return m_OneUse(m_Intrinsic(m_Value(Vec)));
+    }
 
-struct Closure_7 {
+struct Closure_15 {}
+
+fn Closure_15::call(self: *Closure_15, arg: *mut CallInst) {}
+
+struct Closure_16 {
     C: *mut *mut Value,
     X: *mut *mut Value,
 }
 
-unsafe fn Closure_7::call(self: *mut Closure_7, LHS: *mut Value, RHS: *mut Value) -> auto {}
+unsafe fn Closure_16::call(self: *mut Closure_16, LHS: *mut Value, RHS: *mut Value) -> bool {
+            return match(LHS, m_OneUse(m_c_Xor(m_Value((*self.X)), m_Specific(RHS)))) && match(RHS, m_SExt(m_Value((*self.C)))) && ((*self.C).getType().getScalarSizeInBits() == 1);
+        }
 
-struct Closure_8 {}
+struct Closure_17 {
+    cap_0: *mut Type,
+}
 
-fn Closure_8::call(self: *Closure_8) {
+fn Closure_17::call(self: *Closure_17) {
             let mut Cond: *mut Value = null;
             let mut TrueVal: *mut Value = null;
             let mut FalseVal: *mut Value = null;
-            if operator!(match(Select, m_OneUse(m_Select(m_Value(Cond), m_Value(TrueVal), m_Value(FalseVal))))) {
+            if !match(Select, m_OneUse(m_Select(m_Value(Cond), m_Value(TrueVal), m_Value(FalseVal)))) {
                 return null;
             }
             if OtherHandOfSub != TrueVal && OtherHandOfSub != FalseVal {
@@ -2504,24 +2638,31 @@ fn Closure_8::call(self: *Closure_8) {
             }
             let mut OtherHandOfSubIsTrueVal: bool = OtherHandOfSub == TrueVal;
             let mut NewSub: *mut Value = SubBuilder(if OtherHandOfSubIsTrueVal { FalseVal } else { TrueVal });
-            let mut Zero: *mut Constant = getNullValue();
+            let mut Zero: *mut Constant = getNullValue(Ty);
             let mut NewSel: *mut SelectInst = Create(Cond, if OtherHandOfSubIsTrueVal { Zero } else { NewSub }, if OtherHandOfSubIsTrueVal { NewSub } else { Zero }, "", null, null);
-            NewSel.copyMetadata(cast(*Select));
+            NewSel.copyMetadata(cast(*Select), ArrayRef<unsigned int> {});
+            return NewSel;
         }
 
-struct Closure_9 {
+struct Closure_18 {
+    cap_0: *mut BuilderTy,
     Op1: *mut Value,
 }
 
-fn Closure_9::call(self: *Closure_9, OtherHandOfSelect: *mut Value) -> auto {}
+fn Closure_18::call(self: *Closure_18, OtherHandOfSelect: *mut Value) -> *mut Value {
+            return Builder.CreateSub(OtherHandOfSelect, self.Op1, "", false, false);
+        }
 
-struct Closure_10 {
+struct Closure_19 {
+    cap_0: *mut BuilderTy,
     Op0: *mut Value,
 }
 
-fn Closure_10::call(self: *Closure_10, OtherHandOfSelect: *mut Value) -> auto {}
+fn Closure_19::call(self: *Closure_19, OtherHandOfSelect: *mut Value) -> *mut Value {
+            return Builder.CreateSub(self.Op0, OtherHandOfSelect, "", false, false);
+        }
 
-struct Closure_11 {
+struct Closure_20 {
     Op0: *mut *mut Value,
     cap_1: *mut InstCombinerImpl,
     LHSOp: *mut *mut Value,
@@ -2529,35 +2670,67 @@ struct Closure_11 {
     RHSOp: *mut *mut Value,
 }
 
-unsafe fn Closure_11::call(self: *mut Closure_11) -> bool {
-        if match((*self.Op0), m_ZExt(m_PtrToIntSameSize(m_Value((*self.LHSOp))))) && match((*self.Op1), m_ZExt(m_PtrToIntSameSize(m_Value((*self.RHSOp))))) {
+unsafe fn Closure_20::call(self: *mut Closure_20) -> bool {
+        if match((*self.Op0), m_ZExt(m_PtrToIntSameSize(self.DL, m_Value((*self.LHSOp))))) && match((*self.Op1), m_ZExt(m_PtrToIntSameSize(self.DL, m_Value((*self.RHSOp))))) {
             return true;
         }
         if match((*self.Op0), m_ZExt(m_PtrToAddr(m_Value((*self.LHSOp))))) && match((*self.Op1), m_ZExt(m_PtrToAddr(m_Value((*self.RHSOp))))) {
             return true;
         }
-        if match((*self.Op0), m_ZExt(m_PtrToIntSameSize(m_Value((*self.LHSOp))))) && match((*self.Op1), m_PtrToInt(m_Value((*self.RHSOp)))) {
+        if match((*self.Op0), m_ZExt(m_PtrToIntSameSize(self.DL, m_Value((*self.LHSOp))))) && match((*self.Op1), m_PtrToInt(m_Value((*self.RHSOp)))) {
             return true;
         }
         return false;
     }
 
-struct Closure_12 {
+struct Closure_21 {}
+
+fn Closure_21::call(self: *Closure_21, arg: *mut CallInst) {}
+
+struct Closure_22 {}
+
+fn Closure_22::call(self: *Closure_22, arg: *mut CallInst) {}
+
+struct Closure_23 {}
+
+fn Closure_23::call(self: *Closure_23, arg: *mut CallInst) {}
+
+struct Closure_24 {}
+
+fn Closure_24::call(self: *Closure_24, arg: *mut CallInst) {}
+
+struct Closure_25 {}
+
+fn Closure_25::call(self: *Closure_25, arg: *mut CallInst) {}
+
+struct Closure_26 {}
+
+fn Closure_26::call(self: *Closure_26, arg: *mut CallInst) {}
+
+struct Closure_27 {
     I: *mut UnaryOperator,
     Op: *mut *mut Value,
 }
 
-unsafe fn Closure_12::call(self: *mut Closure_12, S: *mut SelectInst, CommonOperand: bool) {
-            S;
-            if  {
-                let mut FMF: FastMathFlags = (*self.I).getFastMathFlags | ();
-                S.setFastMathFlags;
-                if operator!() && !CommonOperand && operator!(isGuaranteedNotToBeUndefOrPoison()) {
-                    S.setHasNoSignedZeros;
+unsafe fn Closure_27::call(self: *mut Closure_27, S: *mut SelectInst, CommonOperand: bool) {
+            S.copyFastMathFlags(&mut (*self.I));
+            if dyn_cast((*self.Op)) {
+                OldSel;
+            } else {
+                let mut FMF: FastMathFlags = (*self.I).getFastMathFlags() | OldSel.getFastMathFlags();
+                S.setFastMathFlags(FMF);
+                if !OldSel.hasNoSignedZeros() && !CommonOperand && !isGuaranteedNotToBeUndefOrPoison(OldSel.getCondition(), null, null, null, 0) {
+                    S.setHasNoSignedZeros(false);
                 }
             }
         }
 
-struct Closure_13 {}
+struct Closure_28 {}
 
-fn Closure_13::call(self: *Closure_13, Sum: *mut *mut Value, Vec: *mut *mut Value) -> auto {}
+fn Closure_28::call(self: *Closure_28, Sum: *mut *mut Value, Vec: *mut *mut Value) -> Value>>>> {
+            return m_OneUse(m_Intrinsic(m_Value(Sum), m_Value(Vec)));
+        }
+
+struct Closure_29 {}
+
+fn Closure_29::call(self: *Closure_29, arg: *mut CallInst) {}

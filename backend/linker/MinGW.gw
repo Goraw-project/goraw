@@ -1,18 +1,18 @@
-fn AutoExporter::AutoExporter(self, symtab: *mut SymbolTable, manualExcludeSymbols: i32) {
-    self.excludeLibs = StringSet<> { ["libgcc", "libgcc_s", "libstdc++", "libmingw32", "libmingwex", "libg2c", "libsupc++", "libobjc", "libgcj", "libclang_rt.builtins", "libclang_rt.builtins-aarch64", "libclang_rt.builtins-arm", "libclang_rt.builtins-i386", "libclang_rt.builtins-x86_64", "libclang_rt.profile", "libclang_rt.profile-aarch64", "libclang_rt.profile-arm", "libclang_rt.profile-i386", "libclang_rt.profile-x86_64", "libcygwin", "libmsys-2.0", "libc++", "libc++abi", "libflang_rt.runtime", "libunwind", "libmsvcrt", "libmsvcrt-os", "libucrtbase", "libucrt", "libucrtapp", "libpthread", "libwinpthread"] };
-    self.excludeObjects = StringSet<> { ["crt0.o", "crt1.o", "crt1u.o", "crt2.o", "crt2u.o", "dllcrt1.o", "dllcrt2.o", "gcrt0.o", "gcrt1.o", "gcrt2.o", "crtbegin.o", "crtend.o"] };
-    self.excludeSymbolPrefixes = StringSet<> { ["__imp_", "__IMPORT_DESCRIPTOR_", "__nm_", "__rtti_", "__builtin_", ".", "__profc_", "__profd_", "__profvp_"] };
-    self.excludeSymbolSuffixes = StringSet<> { ["_iname", "_NULL_THUNK_DATA"] };
+fn AutoExporter::AutoExporter(self, symtab: *mut SymbolTable, manualExcludeSymbols: *DenseSet<StringRef>) {
+    self.excludeLibs = ["libgcc", "libgcc_s", "libstdc++", "libmingw32", "libmingwex", "libg2c", "libsupc++", "libobjc", "libgcj", "libclang_rt.builtins", "libclang_rt.builtins-aarch64", "libclang_rt.builtins-arm", "libclang_rt.builtins-i386", "libclang_rt.builtins-x86_64", "libclang_rt.profile", "libclang_rt.profile-aarch64", "libclang_rt.profile-arm", "libclang_rt.profile-i386", "libclang_rt.profile-x86_64", "libcygwin", "libmsys-2.0", "libc++", "libc++abi", "libflang_rt.runtime", "libunwind", "libmsvcrt", "libmsvcrt-os", "libucrtbase", "libucrt", "libucrtapp", "libpthread", "libwinpthread"];
+    self.excludeObjects = ["crt0.o", "crt1.o", "crt1u.o", "crt2.o", "crt2u.o", "dllcrt1.o", "dllcrt2.o", "gcrt0.o", "gcrt1.o", "gcrt2.o", "crtbegin.o", "crtend.o"];
+    self.excludeSymbolPrefixes = ["__imp_", "__IMPORT_DESCRIPTOR_", "__nm_", "__rtti_", "__builtin_", ".", "__profc_", "__profd_", "__profvp_"];
+    self.excludeSymbolSuffixes = ["_iname", "_NULL_THUNK_DATA"];
     if symtab.machine == I386 {
-        self.excludeSymbols = StringSet<> { ["__NULL_IMPORT_DESCRIPTOR", "__pei386_runtime_relocator", "_do_pseudo_reloc", "_impure_ptr", "__impure_ptr", "__fmode", "_environ", "___dso_handle", "__load_config_used", "_DllMain@12", "_DllEntryPoint@12", "_DllMainCRTStartup@12"] };
-        self.excludeSymbolPrefixes.insert;
+        self.excludeSymbols = ["__NULL_IMPORT_DESCRIPTOR", "__pei386_runtime_relocator", "_do_pseudo_reloc", "_impure_ptr", "__impure_ptr", "__fmode", "_environ", "___dso_handle", "__load_config_used", "_DllMain@12", "_DllEntryPoint@12", "_DllMainCRTStartup@12"];
+        self.excludeSymbolPrefixes.insert("__head_");
     } else {
-        self.excludeSymbols = StringSet<> { ["__NULL_IMPORT_DESCRIPTOR", "_pei386_runtime_relocator", "do_pseudo_reloc", "impure_ptr", "_impure_ptr", "_fmode", "environ", "__dso_handle", "_load_config_used", "DllMain", "DllEntryPoint", "DllMainCRTStartup"] };
-        self.excludeSymbolPrefixes.insert;
+        self.excludeSymbols = ["__NULL_IMPORT_DESCRIPTOR", "_pei386_runtime_relocator", "do_pseudo_reloc", "impure_ptr", "_impure_ptr", "_fmode", "environ", "__dso_handle", "_load_config_used", "DllMain", "DllEntryPoint", "DllMainCRTStartup"];
+        self.excludeSymbolPrefixes.insert("_head_");
     }
     if symtab.isEC() {
-        self.excludeSymbols.insert;
-        self.excludeSymbolPrefixes.insert;
+        self.excludeSymbols.insert("__chpe_metadata");
+        self.excludeSymbolPrefixes.insert("__os_arm64x_");
     }
 }
 
@@ -23,7 +23,7 @@ fn AutoExporter::addWholeArchive(self, path: str) {
 }
 
 fn AutoExporter::addExcludedSymbol(self, symbol: str) {
-    self.excludeSymbols.insert;
+    self.excludeSymbols.insert(symbol);
 }
 
 fn AutoExporter::shouldExport(self: *AutoExporter, sym: *mut Defined) -> bool {
@@ -35,6 +35,16 @@ fn AutoExporter::shouldExport(self: *AutoExporter, sym: *mut Defined) -> bool {
     }
     if self.excludeSymbols.contains(sym.getName()) || self.manualExcludeSymbols.contains(sym.getName()) {
         return false;
+    }
+    for prefix in self.excludeSymbolPrefixes.keys() {
+        if sym.getName().starts_with(prefix) {
+            return false;
+        }
+    }
+    for suffix in self.excludeSymbolSuffixes.keys() {
+        if sym.getName().ends_with(suffix) {
+            return false;
+        }
     }
     if self.symtab.find(("__imp_" + sym.getName())) {
         return false;
@@ -51,14 +61,25 @@ fn AutoExporter::shouldExport(self: *AutoExporter, sym: *mut Defined) -> bool {
     return !self.excludeObjects.contains(fileName);
 }
 
-fn writeDefFile(ctx: *mut COFFLinkerContext, name: str, exports: i32) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Write .def file" };
+fn writeDefFile(ctx: *mut COFFLinkerContext, name: str, exports: *[]Export) {
+    let mut timeScope: TimeTraceScope = "Write .def file";
     let mut ec: error_code = error_code {};
     let mut os: raw_fd_ostream = raw_fd_ostream { name, ec, OF_None };
     if ec {
-        Fatal(ctx) << "cannot open " << ": " << ec.message();
+        Fatal(ctx) << "cannot open " << name << ": " << ec.message();
     }
     os << "EXPORTS\n";
+    for e in exports {
+        os << "    " << e.exportName << " " << "@" << e.ordinal;
+        if dyn_cast_or_null(e.sym) {
+            def;
+        } else {
+            if def && def.getChunk() && !(def.getChunk().getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE) {
+                os << " DATA";
+            }
+        }
+        os << "\n";
+    }
 }
 
 fn mangle(sym: str, machine: MachineTypes) -> str {
@@ -70,22 +91,61 @@ fn mangle(sym: str, machine: MachineTypes) -> str {
 }
 
 fn addWrappedSymbols(symtab: *mut SymbolTable, args: *mut InputArgList) {
-    let mut v: i32 = 0;
-    let mut seen: i32 = 0;
-    symtab.wrapped = move();
+    let mut v: []WrappedSymbol = []WrappedSymbol {};
+    let mut seen: DenseSet<StringRef> = DenseSet<StringRef> {};
+    for arg in args.filtered(OPT_wrap) {
+        let mut name: str = arg.getValue(0);
+        if !seen.insert(name).second {
+            continue;
+        }
+        let mut sym: *mut Symbol = symtab.findUnderscore(name);
+        if !sym {
+            continue;
+        }
+        let mut real: *mut Symbol = symtab.addUndefined(mangle("__real_" + name, symtab.machine));
+        let mut wrap: *mut Symbol = symtab.addUndefined(mangle("__wrap_" + name, symtab.machine));
+        v.push(WrappedSymbol { sym: sym, real: real, wrap: wrap });
+        sym.deferUndefined = true;
+        real.deferUndefined = true;
+        real.canInline = false;
+        sym.canInline = false;
+        sym.isUsedInRegularObj = true;
+        if !isa(wrap) {
+            wrap.isUsedInRegularObj = true;
+        }
+    }
+    symtab.wrapped = move(v);
 }
 
 fn wrapSymbols(symtab: *mut SymbolTable) {
-    let mut map: i32 = 0;
-    parallelForEach(symtab.ctx, Closure_1 {});
+    let mut map: DenseMap<Symbol *, Symbol *> = DenseMap<Symbol *, Symbol *> {};
+    for w in symtab.wrapped {
+        map[w.sym] = w.wrap;
+        map[w.real] = w.sym;
+        if dyn_cast(w.wrap) {
+            d;
+        } else {
+            let mut imp: *mut Symbol = symtab.find(("__imp_" + w.sym.getName()));
+            if imp {
+                if symtab.find(("__imp_" + w.wrap.getName())) {
+                    wrapimp;
+                } else {
+                    map[imp] = wrapimp;
+                }
+            }
+        }
+    }
+    parallelForEach(symtab.ctx.objFileInstances, Closure_1 { map: &mut map });
 }
 
-struct Closure_1 {}
+struct Closure_1 {
+    map: *mut DenseMap<Symbol *, Symbol *>,
+}
 
-fn Closure_1::call(self: *Closure_1, file: *mut ObjFile) {
+unsafe fn Closure_1::call(self: *mut Closure_1, file: *mut ObjFile) {
         let mut syms: MutableArrayRef<Symbol *> = file.getMutableSymbols();
         for sym in syms {
-            if (sym) {
+            if (*self.map).lookup(sym) {
                 s;
             } else {
                 sym = s;

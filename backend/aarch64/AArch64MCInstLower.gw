@@ -1,4 +1,4 @@
-static mut EnableAArch64ELFLocalDynamicTLSGeneration: i32 = 0;
+static mut EnableAArch64ELFLocalDynamicTLSGeneration: opt<bool> = zeroed();
 
 fn AArch64MCInstLower::GetGlobalAddressSymbol(self: *AArch64MCInstLower, MO: *MachineOperand) -> *mut MCSymbol {
     return self.GetGlobalValueSymbol(MO.getGlobal(), MO.getTargetFlags());
@@ -16,7 +16,7 @@ fn AArch64MCInstLower::GetGlobalValueSymbol(self: *AArch64MCInstLower, GV: *Glob
             return self.Printer.getSymbol(GV);
         }
         let mut Name: str = self.Printer.getSymbol(GV).getName();
-        let mut ExcludedFns: []StringLiteral = ["__os_arm64x_check_icall_cfg", "__os_arm64x_dispatch_call_no_redirect", "__os_arm64x_check_icall"];
+        let mut ExcludedFns: [3]StringLiteral = ["__os_arm64x_check_icall_cfg", "__os_arm64x_dispatch_call_no_redirect", "__os_arm64x_check_icall"];
         if is_contained(ExcludedFns, Name) {
             return self.Printer.getSymbol(GV);
         }
@@ -24,11 +24,11 @@ fn AArch64MCInstLower::GetGlobalValueSymbol(self: *AArch64MCInstLower, GV: *Glob
             MangledName;
         } else {
             let mut MangledSym: *mut MCSymbol = self.Ctx.getOrCreateSymbol(MangledName.value());
-            if operator!(cast(GV)("arm64ec_hasguestexit")) {
-                self.Printer(self.Printer.getSymbol(GV), MCSA_WeakAntiDep);
-                self.Printer(self.Printer.getSymbol(GV), create(MangledSym, self.Ctx, SMLoc {}));
-                self.Printer(MangledSym, MCSA_WeakAntiDep);
-                self.Printer(MangledSym, create(self.Printer.getSymbol(GV), self.Ctx, SMLoc {}));
+            if !cast(GV).hasMetadata("arm64ec_hasguestexit") {
+                operator(self.Printer.OutStreamer).emitSymbolAttribute(self.Printer.getSymbol(GV), MCSA_WeakAntiDep);
+                operator(self.Printer.OutStreamer).emitAssignment(self.Printer.getSymbol(GV), create(MangledSym, self.Ctx, SMLoc {}));
+                operator(self.Printer.OutStreamer).emitSymbolAttribute(MangledSym, MCSA_WeakAntiDep);
+                operator(self.Printer.OutStreamer).emitAssignment(MangledSym, create(self.Printer.getSymbol(GV), self.Ctx, SMLoc {}));
             }
             if TargetFlags & MO_ARM64EC_CALLMANGLE {
                 return MangledSym;
@@ -36,23 +36,26 @@ fn AArch64MCInstLower::GetGlobalValueSymbol(self: *AArch64MCInstLower, GV: *Glob
         }
         return self.Printer.getSymbol(GV);
     }
-    let mut Name: str = zeroed();
+    let mut Name: str = "";
     if (TargetFlags & MO_DLLIMPORT) && TheTriple.isWindowsArm64EC() && !(TargetFlags & MO_ARM64EC_CALLMANGLE) && isa(GV) {
-        Name() = "__imp_";
-        self.Printer.TM.getNameWithPrefix(GV, self.Printer.getObjFileLowering().getMangler());
-        let mut ExtraSym: *mut MCSymbol = self.Ctx.getOrCreateSymbol();
-        self.Printer(ExtraSym, MCSA_Global);
-        Name() = "__imp_aux_";
+        Name = "__imp_";
+        self.Printer.TM.getNameWithPrefix(Name, GV, self.Printer.getObjFileLowering().getMangler(), false);
+        let mut ExtraSym: *mut MCSymbol = self.Ctx.getOrCreateSymbol(Name);
+        operator(self.Printer.OutStreamer).emitSymbolAttribute(ExtraSym, MCSA_Global);
+        Name = "__imp_aux_";
     } else if TargetFlags & MO_DLLIMPORT {
-        Name() = "__imp_";
+        Name = "__imp_";
     } else if TargetFlags & MO_COFFSTUB {
-        Name() = ".refptr.";
+        Name = ".refptr.";
     }
-    self.Printer.TM.getNameWithPrefix(GV, self.Printer.getObjFileLowering().getMangler());
-    let mut MCSym: *mut MCSymbol = self.Ctx.getOrCreateSymbol();
+    self.Printer.TM.getNameWithPrefix(Name, GV, self.Printer.getObjFileLowering().getMangler(), false);
+    let mut MCSym: *mut MCSymbol = self.Ctx.getOrCreateSymbol(Name);
     if TargetFlags & MO_COFFSTUB {
-        let mut MMICOFF: *mut MachineModuleInfoCOFF = self.Printer.MMI;
-        let mut StubSym: *mut i32 = MMICOFF()(MCSym);
+        let mut MMICOFF: *mut MachineModuleInfoCOFF = self.Printer.MMI.getObjFileInfo();
+        let mut StubSym: *mut StubValueTy = MMICOFF.getGVStubEntry(MCSym);
+        if !StubSym.getPointer() {
+            StubSym = StubValueTy { self.Printer.getSymbol(GV), true };
+        }
     }
     return MCSym;
 }
@@ -69,7 +72,7 @@ fn AArch64MCInstLower::lowerSymbolOperandMachO(self: *AArch64MCInstLower, MO: *M
         } else if (MO.getTargetFlags() & MO_FRAGMENT) == MO_PAGEOFF {
             Spec = S_MACHO_GOTPAGEOFF;
         } else {
-            llvm_unreachable_internal("Unexpected target flags with MO_GOT on GV operand", "llvm\\lib\\Target\\AArch64\\AArch64MCInstLower.cpp", 158);
+            llvm_unreachable_internal("Unexpected target flags with MO_GOT on GV operand", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64MCInstLower.cpp", 158);
         }
     } else if (MO.getTargetFlags() & MO_TLS) != 0 {
         if (MO.getTargetFlags() & MO_FRAGMENT) == MO_PAGE {
@@ -77,7 +80,7 @@ fn AArch64MCInstLower::lowerSymbolOperandMachO(self: *AArch64MCInstLower, MO: *M
         } else if (MO.getTargetFlags() & MO_FRAGMENT) == MO_PAGEOFF {
             Spec = S_MACHO_TLVPPAGEOFF;
         } else {
-            llvm_unreachable_internal("Unexpected target flags with MO_TLS on GV operand", "llvm\\lib\\Target\\AArch64\\AArch64MCInstLower.cpp", 166);
+            llvm_unreachable_internal("Unexpected target flags with MO_TLS on GV operand", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64MCInstLower.cpp", 166);
         }
     } else {
         if (MO.getTargetFlags() & MO_FRAGMENT) == MO_PAGE {
@@ -97,17 +100,17 @@ fn AArch64MCInstLower::lowerSymbolOperandELF(self: *AArch64MCInstLower, MO: *Mac
     let mut RefFlags: u32 = 0;
     if MO.getTargetFlags() & MO_GOT {
         let mut MF: *MachineFunction = self.Printer.MF;
-        operator|=(RefFlags, (if MF() { S_GOT_AUTH } else { S_GOT }));
+        RefFlags |= (if MF.getInfo().hasELFSignedGOT() { S_GOT_AUTH } else { S_GOT });
     } else if MO.getTargetFlags() & MO_TLS {
         let mut Model: Model = zeroed();
         if MO.isGlobal() {
             let mut MF: *MachineFunction = self.Printer.MF;
-            if MF() {
+            if MF.getInfo().hasELFSignedGOT() {
                 Model = GeneralDynamic;
             } else {
                 let mut GV: *GlobalValue = MO.getGlobal();
                 Model = self.Printer.TM.getTLSModel(GV);
-                if operator!() && Model == LocalDynamic {
+                if !EnableAArch64ELFLocalDynamicTLSGeneration && Model == LocalDynamic {
                     Model = GeneralDynamic;
                 }
             }
@@ -127,7 +130,7 @@ fn AArch64MCInstLower::lowerSymbolOperandELF(self: *AArch64MCInstLower, MO: *Mac
             },
             GeneralDynamic => {
                 let mut MF: *MachineFunction = self.Printer.MF;
-                operator|=(RefFlags, if MF() { S_TLSDESC_AUTH } else { S_TLSDESC });
+                RefFlags |= if MF.getInfo().hasELFSignedGOT() { S_TLSDESC_AUTH } else { S_TLSDESC };
                 break;
             },
         }
@@ -217,7 +220,7 @@ fn AArch64MCInstLower::LowerSymbolOperand(self: *AArch64MCInstLower, MO: *Machin
 fn AArch64MCInstLower::lowerOperand(self: *AArch64MCInstLower, MO: *MachineOperand, MCOp: *mut MCOperand) -> bool {
     match MO.getType() {
         _ => {
-            llvm_unreachable_internal("unknown operand type", "llvm\\lib\\Target\\AArch64\\AArch64MCInstLower.cpp", 336);
+            llvm_unreachable_internal("unknown operand type", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64MCInstLower.cpp", 336);
         },
         MO_Register => {
             if MO.isImplicit() {
@@ -264,6 +267,11 @@ fn AArch64MCInstLower::Lower(self: *AArch64MCInstLower, MI: *MachineInstr, OutMI
         }
     }
     match OutMI.getOpcode() {
-
+        CATCHRET => {
+            OutMI = MCInst {};
+        },
+        CLEANUPRET => {
+            OutMI = MCInst {};
+        },
     }
 }

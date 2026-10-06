@@ -6,13 +6,13 @@ fn AArch64RegisterInfo::AArch64RegisterInfo(self, TT: *Triple, HwMode: u32) {
 }
 
 fn AArch64RegisterInfo::regNeedsCFI(self: *AArch64RegisterInfo, Reg: MCRegister, RegToUseForCFI: *mut MCRegister) -> bool {
-    if  {
+    if PPRRegClass.contains(Reg) {
         return false;
     }
-    if  {
-        RegToUseForCFI = getSubReg(Reg);
-        for let mut I: i32 = 0; ; I += 1 {
-            if  {
+    if ZPRRegClass.contains(Reg) {
+        RegToUseForCFI = self.getSubReg(Reg, dsub);
+        for let mut I: i32 = 0; CSR_AArch64_AAPCS_SaveList[I]; I += 1 {
+            if CSR_AArch64_AAPCS_SaveList[I] == RegToUseForCFI.operator unsigned int() {
                 return true;
             }
         }
@@ -24,30 +24,42 @@ fn AArch64RegisterInfo::regNeedsCFI(self: *AArch64RegisterInfo, Reg: MCRegister,
 
 fn AArch64RegisterInfo::getCalleeSavedRegs(self: *AArch64RegisterInfo, MF: *MachineFunction) -> *MCPhysReg {
     assert!(MF, "Invalid MachineFunction pointer.");
-    let mut AFI: *mut auto = operator*(MF);
+    let mut AFI: *AArch64FunctionInfo = *MF.getInfo();
     let mut F: *Function = MF.getFunction();
-    let mut TLI: *auto = MF();
-    let mut Darwin: bool = MF();
-    let mut Windows: bool = MF();
-    if TLI()() && F.getAttributes().hasAttrSomewhere(SwiftError, null) {}
+    let mut TLI: *AArch64TargetLowering = MF.getSubtarget().getTargetLowering();
+    let mut Darwin: bool = MF.getSubtarget().isTargetDarwin();
+    let mut Windows: bool = MF.getSubtarget().isTargetWindows();
+    if TLI.supportSwiftError() && F.getAttributes().hasAttrSomewhere(SwiftError, null) {
+        if Darwin {
+            return CSR_Darwin_AArch64_AAPCS_SwiftError_SaveList;
+        }
+        if Windows {
+            return CSR_Win_AArch64_AAPCS_SwiftError_SaveList;
+        }
+        return CSR_AArch64_AAPCS_SwiftError_SaveList;
+    }
     match F.getCallingConv() {
         GHC => {
-            
+            return CSR_AArch64_NoRegs_SaveList;
         },
         PreserveNone => {
-            
+            return CSR_AArch64_NoneRegs_SaveList;
         },
         AnyReg => {
-            
+            return CSR_AArch64_AllRegs_SaveList;
         },
         ARM64EC_Thunk_X64 => {
-            
+            return CSR_Win_AArch64_Arm64EC_Thunk_SaveList;
         },
         PreserveMost => {
-            
+            if Darwin {
+                return CSR_Darwin_AArch64_RT_MostRegs_SaveList;
+            }
         },
         PreserveAll => {
-            
+            if Darwin {
+                return CSR_Darwin_AArch64_RT_AllRegs_SaveList;
+            }
         },
         CFGuard_Check => {
             if Darwin {
@@ -55,10 +67,14 @@ fn AArch64RegisterInfo::getCalleeSavedRegs(self: *AArch64RegisterInfo, MF: *Mach
             }
         },
         SwiftTail => {
-            
+            if Darwin {
+                return CSR_Darwin_AArch64_AAPCS_SwiftTail_SaveList;
+            }
         },
         AArch64_VectorCall => {
-            
+            if Darwin {
+                return CSR_Darwin_AArch64_AAVPCS_SaveList;
+            }
         },
         AArch64_SVE_VectorCall => {
             if Darwin {
@@ -75,216 +91,336 @@ fn AArch64RegisterInfo::getCalleeSavedRegs(self: *AArch64RegisterInfo, MF: *Mach
             report_fatal_error("Calling convention AArch64_SME_ABI_Support_Routines_PreserveMost_From_X2 is only supported to improve calls to SME ACLE __arm_sme_state and is not intended to be used beyond that scope.", true);
         },
         Win64 => {
-            
+            if Darwin {
+                return CSR_Darwin_AArch64_AAPCS_Win64_SaveList;
+            }
         },
         CXX_FAST_TLS => {
-            
+            if Darwin {
+                return if AFI.isSplitCSR() { CSR_Darwin_AArch64_CXX_TLS_PE_SaveList } else { CSR_Darwin_AArch64_CXX_TLS_SaveList };
+            }
         },
         _ => {
-            
+            if Darwin {
+                return if AFI.hasSVE_AAPCS(*MF) { CSR_Darwin_AArch64_SVE_AAPCS_SaveList } else { CSR_Darwin_AArch64_AAPCS_SaveList };
+            }
         },
     }
 }
 
 fn AArch64RegisterInfo::getCalleeSavedRegsViaCopy(self: *AArch64RegisterInfo, MF: *MachineFunction) -> *MCPhysReg {
     assert!(MF, "Invalid MachineFunction pointer.");
+    if MF.getFunction().getCallingConv() == CXX_FAST_TLS && MF.getInfo().isSplitCSR() {
+        return CSR_Darwin_AArch64_CXX_TLS_ViaCopy_SaveList;
+    }
     return null;
 }
 
 fn AArch64RegisterInfo::UpdateCustomCalleeSavedRegs(self: *AArch64RegisterInfo, MF: *mut MachineFunction) {
-    let mut CSRs: *MCPhysReg = null;
-    let mut UpdatedCSRs: SmallVector<MCPhysReg, 32> = zeroed();
+    let mut CSRs: *MCPhysReg = self.getCalleeSavedRegs(&mut MF);
+    let mut UpdatedCSRs: SmallVector<MCPhysReg, 32> = SmallVector<MCPhysReg, 32> {};
     for let mut I: *MCPhysReg = CSRs; *I; I += 1 {
-        UpdatedCSRs()(*I);
+        UpdatedCSRs.push(*I);
     }
-    for let mut i: u64 = 0; ; i += 1 {
-        if MF(i) {
-            UpdatedCSRs();
+    for let mut i: u64 = 0; i < GPR64commonRegClass.getNumRegs(); i += 1 {
+        if MF.getSubtarget().isXRegCustomCalleeSaved(i) {
+            UpdatedCSRs.push(GPR64commonRegClass.getRegister(i).operator unsigned int());
         }
     }
-    UpdatedCSRs()(0);
-    MF.getRegInfo().setCalleeSavedRegs();
+    UpdatedCSRs.push(0);
+    MF.getRegInfo().setCalleeSavedRegs(UpdatedCSRs);
 }
 
-fn AArch64RegisterInfo::getSubClassWithSubReg(self: *AArch64RegisterInfo, RC: *TargetRegisterClass, Idx: u32) -> *TargetRegisterClass {}
+fn AArch64RegisterInfo::getSubClassWithSubReg(self: *AArch64RegisterInfo, RC: *TargetRegisterClass, Idx: u32) -> *TargetRegisterClass {
+    if RC == &mut GPR32allRegClass && Idx == hsub {
+        return &mut FPR32RegClass;
+    } else if RC == &mut GPR64allRegClass && Idx == hsub {
+        return &mut FPR64RegClass;
+    }
+    return self.getSubClassWithSubReg(RC, Idx);
+}
 
 fn AArch64RegisterInfo::getDarwinCallPreservedMask(self: *AArch64RegisterInfo, MF: *MachineFunction, CC: ID) -> *u32 {
-    (((operator!(operator!((MF() && "Invalid subtarget for getDarwinCallPreservedMask")))) || (_wassert(L"MF.getSubtarget<AArch64Subtarget>().isTargetDarwin() && \"Invalid subtarget for getDarwinCallPreservedMask\"", L"llvm\\lib\\Target\\AArch64\\AArch64RegisterInfo.cpp", (238) as u32) , 0)) as void);
+    assert!(MF.getSubtarget().isTargetDarwin(), "Invalid subtarget for getDarwinCallPreservedMask");
+    if CC == CXX_FAST_TLS {
+        return CSR_Darwin_AArch64_CXX_TLS_RegMask;
+    }
+    if CC == AArch64_VectorCall {
+        return CSR_Darwin_AArch64_AAVPCS_RegMask;
+    }
+    if CC == AArch64_SVE_VectorCall {
+        return CSR_Darwin_AArch64_SVE_AAPCS_RegMask;
+    }
+    if CC == AArch64_SME_ABI_Support_Routines_PreserveMost_From_X0 {
+        return CSR_AArch64_SME_ABI_Support_Routines_PreserveMost_From_X0_RegMask;
+    }
+    if CC == AArch64_SME_ABI_Support_Routines_PreserveMost_From_X1 {
+        return CSR_AArch64_SME_ABI_Support_Routines_PreserveMost_From_X1_RegMask;
+    }
+    if CC == AArch64_SME_ABI_Support_Routines_PreserveMost_From_X2 {
+        return CSR_AArch64_SME_ABI_Support_Routines_PreserveMost_From_X2_RegMask;
+    }
     if CC == CFGuard_Check {
         report_fatal_error("Calling convention CFGuard_Check is unsupported on Darwin.", true);
     }
+    if MF.getSubtarget().getTargetLowering().supportSwiftError() && MF.getFunction().getAttributes().hasAttrSomewhere(SwiftError, null) {
+        return CSR_Darwin_AArch64_AAPCS_SwiftError_RegMask;
+    }
+    if CC == SwiftTail {
+        return CSR_Darwin_AArch64_AAPCS_SwiftTail_RegMask;
+    }
+    if CC == PreserveMost {
+        return CSR_Darwin_AArch64_RT_MostRegs_RegMask;
+    }
+    if CC == PreserveAll {
+        return CSR_Darwin_AArch64_RT_AllRegs_RegMask;
+    }
+    return CSR_Darwin_AArch64_AAPCS_RegMask;
 }
 
 fn AArch64RegisterInfo::getCallPreservedMask(self: *AArch64RegisterInfo, MF: *MachineFunction, CC: ID) -> *u32 {
     let mut SCS: bool = MF.getFunction().hasFnAttribute(ShadowCallStack);
-    if MF() {
+    if CC == GHC {
+        return if SCS { CSR_AArch64_NoRegs_SCS_RegMask } else { CSR_AArch64_NoRegs_RegMask };
+    }
+    if CC == PreserveNone {
+        return if SCS { CSR_AArch64_NoneRegs_SCS_RegMask } else { CSR_AArch64_NoneRegs_RegMask };
+    }
+    if CC == AnyReg {
+        return if SCS { CSR_AArch64_AllRegs_SCS_RegMask } else { CSR_AArch64_AllRegs_RegMask };
+    }
+    if MF.getSubtarget().isTargetDarwin() {
         if SCS {
             report_fatal_error("ShadowCallStack attribute not supported on Darwin.", true);
         }
+        return self.getDarwinCallPreservedMask(MF, CC);
+    }
+    if CC == AArch64_VectorCall {
+        return if SCS { CSR_AArch64_AAVPCS_SCS_RegMask } else { CSR_AArch64_AAVPCS_RegMask };
+    }
+    if CC == AArch64_SVE_VectorCall {
+        return if SCS { CSR_AArch64_SVE_AAPCS_SCS_RegMask } else { CSR_AArch64_SVE_AAPCS_RegMask };
+    }
+    if CC == AArch64_SME_ABI_Support_Routines_PreserveMost_From_X0 {
+        return CSR_AArch64_SME_ABI_Support_Routines_PreserveMost_From_X0_RegMask;
+    }
+    if CC == AArch64_SME_ABI_Support_Routines_PreserveMost_From_X1 {
+        return CSR_AArch64_SME_ABI_Support_Routines_PreserveMost_From_X1_RegMask;
+    }
+    if CC == AArch64_SME_ABI_Support_Routines_PreserveMost_From_X2 {
+        return CSR_AArch64_SME_ABI_Support_Routines_PreserveMost_From_X2_RegMask;
+    }
+    if CC == CFGuard_Check {
+        return CSR_Win_AArch64_CFGuard_Check_RegMask;
+    }
+    if MF.getSubtarget().getTargetLowering().supportSwiftError() && MF.getFunction().getAttributes().hasAttrSomewhere(SwiftError, null) {
+        return if SCS { CSR_AArch64_AAPCS_SwiftError_SCS_RegMask } else { CSR_AArch64_AAPCS_SwiftError_RegMask };
     }
     if CC == SwiftTail {
         if SCS {
             report_fatal_error("ShadowCallStack attribute not supported with swifttail", true);
         }
+        return CSR_AArch64_AAPCS_SwiftTail_RegMask;
     }
+    if CC == PreserveMost {
+        return if SCS { CSR_AArch64_RT_MostRegs_SCS_RegMask } else { CSR_AArch64_RT_MostRegs_RegMask };
+    }
+    if CC == PreserveAll {
+        return if SCS { CSR_AArch64_RT_AllRegs_SCS_RegMask } else { CSR_AArch64_RT_AllRegs_RegMask };
+    }
+    return if SCS { CSR_AArch64_AAPCS_SCS_RegMask } else { CSR_AArch64_AAPCS_RegMask };
 }
 
 fn AArch64RegisterInfo::getCustomEHPadPreservedMask(self: *AArch64RegisterInfo, MF: *MachineFunction) -> *u32 {
+    if MF.getSubtarget().isTargetLinux() {
+        return CSR_AArch64_AAPCS_RegMask;
+    }
     return null;
 }
 
 fn AArch64RegisterInfo::getTLSCallPreservedMask(self: *AArch64RegisterInfo) -> *u32 {
+    if self.TT.isOSDarwin() {
+        return CSR_Darwin_AArch64_TLS_RegMask;
+    }
     assert!(self.TT.isOSBinFormatELF(), "Invalid target");
+    return CSR_AArch64_TLS_ELF_RegMask;
 }
 
 fn AArch64RegisterInfo::UpdateCustomCallPreservedMask(self: *AArch64RegisterInfo, MF: *mut MachineFunction, Mask: **mut u32) {
     let mut UpdatedMask: *mut u32 = MF.allocateRegMask();
-    let mut RegMaskSize: u32 = getRegMaskSize(getNumRegs());
+    let mut RegMaskSize: u32 = getRegMaskSize(self.getNumRegs());
     memcpy(UpdatedMask, *Mask, (UpdatedMask[0]) * RegMaskSize);
-    for let mut i: u64 = 0; ; i += 1 {
-        if MF(i) {}
+    for let mut i: u64 = 0; i < GPR64commonRegClass.getNumRegs(); i += 1 {
+        if MF.getSubtarget().isXRegCustomCalleeSaved(i) {
+            for SubReg in self.subregs_inclusive(GPR64commonRegClass.getRegister(i)) {
+                UpdatedMask[SubReg / 32] |= 1 << (SubReg % 32);
+            }
+        }
     }
     *Mask = UpdatedMask;
 }
 
-fn AArch64RegisterInfo::getSMStartStopCallPreservedMask(self: *AArch64RegisterInfo) -> *u32 {}
+fn AArch64RegisterInfo::getSMStartStopCallPreservedMask(self: *AArch64RegisterInfo) -> *u32 {
+    return CSR_AArch64_SMStartStop_RegMask;
+}
 
-fn AArch64RegisterInfo::SMEABISupportRoutinesCallPreservedMaskFromX0(self: *AArch64RegisterInfo) -> *u32 {}
+fn AArch64RegisterInfo::SMEABISupportRoutinesCallPreservedMaskFromX0(self: *AArch64RegisterInfo) -> *u32 {
+    return CSR_AArch64_SME_ABI_Support_Routines_PreserveMost_From_X0_RegMask;
+}
 
-fn AArch64RegisterInfo::getNoPreservedMask(self: *AArch64RegisterInfo) -> *u32 {}
+fn AArch64RegisterInfo::getNoPreservedMask(self: *AArch64RegisterInfo) -> *u32 {
+    return CSR_AArch64_NoRegs_RegMask;
+}
 
 fn AArch64RegisterInfo::getThisReturnPreservedMask(self: *AArch64RegisterInfo, MF: *MachineFunction, CC: ID) -> *u32 {
     assert!(CC != GHC, "should not be GHC calling convention.");
+    if MF.getSubtarget().isTargetDarwin() {
+        return CSR_Darwin_AArch64_AAPCS_ThisReturn_RegMask;
+    }
+    return CSR_AArch64_AAPCS_ThisReturn_RegMask;
 }
 
-fn AArch64RegisterInfo::getWindowsStackProbePreservedMask(self: *AArch64RegisterInfo) -> *u32 {}
+fn AArch64RegisterInfo::getWindowsStackProbePreservedMask(self: *AArch64RegisterInfo) -> *u32 {
+    return CSR_AArch64_StackProbe_Windows_RegMask;
+}
 
 fn AArch64RegisterInfo::explainReservedReg(self: *AArch64RegisterInfo, MF: *MachineFunction, PhysReg: MCRegister) -> string> {
-    if  {
+    if self.hasBasePointer(MF) && self.regsOverlap(PhysReg, X19) {
         return "X19 is used as the frame base pointer register.";
     }
-    if MF() {
+    if MF.getSubtarget().isWindowsArm64EC() {
         let mut warn: bool = false;
-        if  {
+        if self.regsOverlap(PhysReg, X13) || self.regsOverlap(PhysReg, X14) || self.regsOverlap(PhysReg, X23) || self.regsOverlap(PhysReg, X24) || self.regsOverlap(PhysReg, X28) {
             warn = true;
         }
-        for let mut i: u32 = 0; ; i += 1 {
-            if  {
+        for let mut i: u32 = B16; i <= B31; i += 1 {
+            if self.regsOverlap(PhysReg, i) {
                 warn = true;
             }
         }
         if warn {
-            return getRegisterName(PhysReg) + " is clobbered by asynchronous signals when using Arm64EC.";
+            return getRegisterName(PhysReg, NoRegAltName) + " is clobbered by asynchronous signals when using Arm64EC.";
         }
     }
-    return void {};
+    return string> {};
 }
 
 fn AArch64RegisterInfo::getStrictlyReservedRegs(self: *AArch64RegisterInfo, MF: *MachineFunction) -> BitVector {
     let mut TFI: *AArch64FrameLowering = getFrameLowering(MF);
-    let mut Reserved: BitVector = getNumRegs();
-    markSuperRegs(Reserved);
-    markSuperRegs(Reserved);
+    let mut Reserved: BitVector = BitVector { Bits: self.getNumRegs(), Size: false };
+    self.markSuperRegs(Reserved, WSP);
+    self.markSuperRegs(Reserved, WZR);
     if TFI.isFPReserved(MF) {
-        markSuperRegs(Reserved);
+        self.markSuperRegs(Reserved, W29);
     }
-    if MF() {
-        markSuperRegs(Reserved);
-        markSuperRegs(Reserved);
-        markSuperRegs(Reserved);
-        markSuperRegs(Reserved);
-        markSuperRegs(Reserved);
-        for let mut i: u32 = 0; ; i += 1 {
-            markSuperRegs(Reserved, i);
+    if MF.getSubtarget().isWindowsArm64EC() {
+        self.markSuperRegs(Reserved, W13);
+        self.markSuperRegs(Reserved, W14);
+        self.markSuperRegs(Reserved, W23);
+        self.markSuperRegs(Reserved, W24);
+        self.markSuperRegs(Reserved, W28);
+        for let mut i: u32 = B16; i <= B31; i += 1 {
+            self.markSuperRegs(Reserved, i);
         }
     }
-    if MF() {
-        markSuperRegs(Reserved);
-        markSuperRegs(Reserved);
-        markSuperRegs(Reserved);
-        markSuperRegs(Reserved);
+    if MF.getSubtarget().isLFI() {
+        self.markSuperRegs(Reserved, W28);
+        self.markSuperRegs(Reserved, W27);
+        self.markSuperRegs(Reserved, W26);
+        self.markSuperRegs(Reserved, W25);
         if !MF.getProperties().hasNoVRegs() {
-            markSuperRegs(Reserved);
-            markSuperRegs(Reserved);
+            self.markSuperRegs(Reserved, LR);
+            self.markSuperRegs(Reserved, W30);
         }
     }
-    for let mut i: u64 = 0; ; i += 1 {
-        if MF(i) {
-            markSuperRegs(Reserved);
+    for let mut i: u64 = 0; i < GPR32commonRegClass.getNumRegs(); i += 1 {
+        if MF.getSubtarget().isXRegisterReserved(i) {
+            self.markSuperRegs(Reserved, GPR32commonRegClass.getRegister(i));
         }
     }
     if self.hasBasePointer(MF) {
-        markSuperRegs(Reserved);
+        self.markSuperRegs(Reserved, W19);
     }
     if MF.getFunction().hasFnAttribute(SpeculativeLoadHardening) {
-        markSuperRegs(Reserved);
+        self.markSuperRegs(Reserved, W16);
     }
-    if MF() {
-        Reserved;
+    if MF.getSubtarget().hasSVE() {
+        Reserved.set(FFR);
     }
-    if MF() {}
-    Reserved;
-    if MF() {
-        for let mut SubReg: MCSubRegIterator = zeroed(); SubReg.isValid(); operator(SubReg) {
+    if MF.getSubtarget().hasSME() {
+        for SubReg in self.subregs_inclusive(ZA) {
+            Reserved.set(SubReg);
+        }
+    }
+    Reserved.set(VG);
+    if MF.getSubtarget().hasSME2() {
+        for let mut SubReg: MCSubRegIterator = MCSubRegIterator { ZT0, self, true }; SubReg.isValid(); operator(SubReg) {
             Reserved.set(operator(SubReg));
         }
     }
-    markSuperRegs(Reserved);
-    markSuperRegs(Reserved);
-    markSuperRegs(Reserved);
+    self.markSuperRegs(Reserved, FPCR);
+    self.markSuperRegs(Reserved, FPMR);
+    self.markSuperRegs(Reserved, FPSR);
     if MF.getFunction().getCallingConv() == GRAAL {
-        markSuperRegs(Reserved);
-        markSuperRegs(Reserved);
-        markSuperRegs(Reserved);
-        markSuperRegs(Reserved);
+        self.markSuperRegs(Reserved, X27);
+        self.markSuperRegs(Reserved, X28);
+        self.markSuperRegs(Reserved, W27);
+        self.markSuperRegs(Reserved, W28);
     }
-    (((operator!(operator!((checkAllSuperRegsMarked(Reserved))))) || (_wassert(L"checkAllSuperRegsMarked(Reserved)", L"llvm\\lib\\Target\\AArch64\\AArch64RegisterInfo.cpp", (493) as u32) , 0)) as void);
-    Reserved;
-    Reserved;
-    Reserved;
-    Reserved;
-    Reserved;
-    Reserved;
-    Reserved;
-    Reserved;
+    assert!(self.checkAllSuperRegsMarked(Reserved, ArrayRef<MCPhysReg> {});
+    Reserved.set(WSP_HI);
+    Reserved.set(WZR_HI);
+    Reserved.set(W0_HI, W30_HI + 1);
+    Reserved.set(B0_HI, B31_HI + 1);
+    Reserved.set(H0_HI, H31_HI + 1);
+    Reserved.set(S0_HI, S31_HI + 1);
+    Reserved.set(D0_HI, D31_HI + 1);
+    Reserved.set(Q0_HI, Q31_HI + 1);
     return Reserved;
 }
 
 fn AArch64RegisterInfo::getUserReservedRegs(self: *AArch64RegisterInfo, MF: *MachineFunction) -> BitVector {
-    let mut Reserved: BitVector = getNumRegs();
-    for let mut i: u64 = 0; ; i += 1 {
-        if MF(i) {
-            markSuperRegs(Reserved);
+    let mut Reserved: BitVector = BitVector { Bits: self.getNumRegs(), Size: false };
+    for let mut i: u64 = 0; i < GPR32commonRegClass.getNumRegs(); i += 1 {
+        if MF.getSubtarget().isXRegisterReserved(i) {
+            self.markSuperRegs(Reserved, GPR32commonRegClass.getRegister(i));
         }
     }
     return Reserved;
 }
 
 fn AArch64RegisterInfo::getReservedRegs(self: *AArch64RegisterInfo, MF: *MachineFunction) -> BitVector {
-    let mut Reserved: BitVector = getNumRegs();
-    for let mut i: u64 = 0; ; i += 1 {
-        if MF(i) {
-            markSuperRegs(Reserved);
+    let mut Reserved: BitVector = BitVector { Bits: self.getNumRegs(), Size: false };
+    for let mut i: u64 = 0; i < GPR32commonRegClass.getNumRegs(); i += 1 {
+        if MF.getSubtarget().isXRegisterReservedForRA(i) {
+            self.markSuperRegs(Reserved, GPR32commonRegClass.getRegister(i));
         }
     }
-    if MF() {
+    if MF.getSubtarget().isLRReservedForRA() {
         if !MF.getProperties().hasNoVRegs() {
-            markSuperRegs(Reserved);
+            self.markSuperRegs(Reserved, W30);
         }
     }
-    (((operator!(operator!((checkAllSuperRegsMarked(Reserved))))) || (_wassert(L"checkAllSuperRegsMarked(Reserved)", L"llvm\\lib\\Target\\AArch64\\AArch64RegisterInfo.cpp", (553) as u32) , 0)) as void);
+    assert!(self.checkAllSuperRegsMarked(Reserved, ArrayRef<MCPhysReg> {});
+    operator(Reserved, self.getStrictlyReservedRegs(MF));
     return Reserved;
 }
 
-fn AArch64RegisterInfo::isReservedReg(self: *AArch64RegisterInfo, MF: *MachineFunction, Reg: MCRegister) -> bool {}
+fn AArch64RegisterInfo::isReservedReg(self: *AArch64RegisterInfo, MF: *MachineFunction, Reg: MCRegister) -> bool {
+    return self.getReservedRegs(MF)[Reg.operator unsigned int()];
+}
 
-fn AArch64RegisterInfo::isUserReservedReg(self: *AArch64RegisterInfo, MF: *MachineFunction, Reg: MCRegister) -> bool {}
+fn AArch64RegisterInfo::isUserReservedReg(self: *AArch64RegisterInfo, MF: *MachineFunction, Reg: MCRegister) -> bool {
+    return self.getUserReservedRegs(MF)[Reg.operator unsigned int()];
+}
 
-fn AArch64RegisterInfo::isStrictlyReservedReg(self: *AArch64RegisterInfo, MF: *MachineFunction, Reg: MCRegister) -> bool {}
+fn AArch64RegisterInfo::isStrictlyReservedReg(self: *AArch64RegisterInfo, MF: *MachineFunction, Reg: MCRegister) -> bool {
+    return self.getStrictlyReservedRegs(MF)[Reg.operator unsigned int()];
+}
 
 fn AArch64RegisterInfo::isAnyArgRegReserved(self: *AArch64RegisterInfo, MF: *MachineFunction) -> bool {
     for let mut i: u64 = 0; i < 8; i += 1 {
-        if MF(i) {
+        if MF.getSubtarget().isXRegisterReserved(i) {
             return true;
         }
     }
@@ -297,34 +433,40 @@ fn AArch64RegisterInfo::emitReservedArgRegCallError(self: *AArch64RegisterInfo, 
 }
 
 fn AArch64RegisterInfo::isAsmClobberable(self: *AArch64RegisterInfo, MF: *MachineFunction, PhysReg: MCRegister) -> bool {
-    if  {
+    if MF.getFunction().hasFnAttribute(SpeculativeLoadHardening) && self.regsOverlap(PhysReg, X16) {
         return true;
     }
-    if  {
+    if PhysReg == ZA || PhysReg == ZT0 {
         return true;
     }
+    return !self.isReservedReg(MF, PhysReg);
 }
 
 fn AArch64RegisterInfo::getCrossCopyRegClass(self: *AArch64RegisterInfo, RC: *TargetRegisterClass) -> *TargetRegisterClass {
+    if RC == &mut CCRRegClass {
+        return &mut GPR64RegClass;
+    }
     return RC;
 }
 
-fn AArch64RegisterInfo::getBaseRegister(self: *AArch64RegisterInfo) -> MCRegister {}
+fn AArch64RegisterInfo::getBaseRegister(self: *AArch64RegisterInfo) -> MCRegister {
+    return X19;
+}
 
 fn AArch64RegisterInfo::hasBasePointer(self: *AArch64RegisterInfo, MF: *MachineFunction) -> bool {
     let mut MFI: *MachineFrameInfo = MF.getFrameInfo();
     if MFI.hasVarSizedObjects() || MF.hasEHFunclets() {
-        if hasStackRealignment(MF) {
+        if self.hasStackRealignment(MF) {
             return true;
         }
-        let mut ST: *mut auto = MF;
-        let mut AFI: *AArch64FunctionInfo = MF;
-        if ST()() || () {
+        let mut ST: *AArch64Subtarget = MF.getSubtarget();
+        let mut AFI: *AArch64FunctionInfo = MF.getInfo();
+        if ST.hasSVE() || ST.isStreaming() {
             if !AFI.hasCalculatedStackSizeSVE() || AFI.hasSVEStackSize() {
                 return true;
             }
         }
-        if ST()() && !AFI.getSMEFnAttrs().hasNonStreamingInterfaceAndBody() {
+        if ST.getStreamingHazardSize() && !AFI.getSMEFnAttrs().hasNonStreamingInterfaceAndBody() {
             return true;
         }
         return MFI.getLocalFrameSize() >= 256;
@@ -334,7 +476,7 @@ fn AArch64RegisterInfo::hasBasePointer(self: *AArch64RegisterInfo, MF: *MachineF
 
 fn AArch64RegisterInfo::isArgumentRegister(self: *AArch64RegisterInfo, MF: *MachineFunction, Reg: MCRegister) -> bool {
     let mut CC: ID = MF.getFunction().getCallingConv();
-    let mut STI: *AArch64Subtarget = MF;
+    let mut STI: *AArch64Subtarget = MF.getSubtarget();
     let mut IsVarArg: bool = STI.isCallingConvWin64(MF.getFunction().getCallingConv(), MF.getFunction().isVarArg());
     let mut HasReg: Closure_1 = Closure_1 {};
     match CC {
@@ -342,11 +484,11 @@ fn AArch64RegisterInfo::isArgumentRegister(self: *AArch64RegisterInfo, MF: *Mach
             report_fatal_error("Unsupported calling convention.", true);
         },
         GHC => {
-            return HasReg(Reg);
+            return HasReg.call(CC_AArch64_GHC_ArgRegs, Reg);
         },
         PreserveNone => {
             if !MF.getFunction().isVarArg() {
-                return HasReg(Reg);
+                return HasReg.call(CC_AArch64_Preserve_None_ArgRegs, Reg);
             }
         },
         C => {
@@ -354,11 +496,11 @@ fn AArch64RegisterInfo::isArgumentRegister(self: *AArch64RegisterInfo, MF: *Mach
         },
         Win64 => {
             if IsVarArg {
-                HasReg(Reg);
+                HasReg.call(CC_AArch64_Win64_VarArg_ArgRegs, Reg);
             }
         },
         CFGuard_Check => {
-            return HasReg(Reg);
+            return HasReg.call(CC_AArch64_Win64_CFGuard_Check_ArgRegs, Reg);
         },
         AArch64_VectorCall => {
             AArch64_SVE_VectorCall;
@@ -368,6 +510,7 @@ fn AArch64RegisterInfo::isArgumentRegister(self: *AArch64RegisterInfo, MF: *Mach
 
 fn AArch64RegisterInfo::getFrameRegister(self: *AArch64RegisterInfo, MF: *MachineFunction) -> Register {
     let mut TFI: *AArch64FrameLowering = getFrameLowering(MF);
+    return if TFI.hasFP(MF) { FP } else { SP };
 }
 
 fn AArch64RegisterInfo::requiresRegisterScavenging(self: *AArch64RegisterInfo, MF: *MachineFunction) -> bool {
@@ -379,10 +522,10 @@ fn AArch64RegisterInfo::requiresVirtualBaseRegisters(self: *AArch64RegisterInfo,
 }
 
 fn AArch64RegisterInfo::useFPForScavengingIndex(self: *AArch64RegisterInfo, MF: *MachineFunction) -> bool {
-    let mut TFI: *AArch64FrameLowering = operator*(getFrameLowering(MF));
-    let mut AFI: *AArch64FunctionInfo = MF;
-    (((operator!(operator!(((operator!(MF()) || AFI.hasCalculatedStackSizeSVE()) && "Expected SVE area to be calculated by this point")))) || (_wassert(L"(!MF.getSubtarget<AArch64Subtarget>().hasSVE() || AFI->hasCalculatedStackSizeSVE()) && \"Expected SVE area to be calculated by this point\"", L"llvm\\lib\\Target\\AArch64\\AArch64RegisterInfo.cpp", (776) as u32) , 0)) as void);
-    return TFI.hasFP(MF) && operator!(hasStackRealignment(MF)) && !AFI.hasSVEStackSize() && !AFI.hasStackHazardSlotIndex();
+    let mut TFI: *AArch64FrameLowering = *getFrameLowering(MF);
+    let mut AFI: *AArch64FunctionInfo = MF.getInfo();
+    assert!((!MF.getSubtarget().hasSVE() || AFI.hasCalculatedStackSizeSVE()), "Expected SVE area to be calculated by this point");
+    return TFI.hasFP(MF) && !self.hasStackRealignment(MF) && !AFI.hasSVEStackSize() && !AFI.hasStackHazardSlotIndex();
 }
 
 fn AArch64RegisterInfo::requiresFrameIndexScavenging(self: *AArch64RegisterInfo, MF: *MachineFunction) -> bool {
@@ -410,13 +553,13 @@ fn AArch64RegisterInfo::needsFrameBaseReg(self: *AArch64RegisterInfo, MI: *mut M
     let mut FPOffset: i64 = Offset - 16 * 20;
     Offset += MFI.getLocalFrameSize();
     Offset += 128;
-    if  {
+    if TFI.hasFP(MF) && self.isFrameOffsetLegal(MI, FP, FPOffset) {
         return false;
     }
-    if  {
+    if self.isFrameOffsetLegal(MI, SP, Offset) {
         return false;
     }
-    if  {
+    if !self.isFrameOffsetLegal(MI, SP, 0) {
         return false;
     }
     return true;
@@ -429,19 +572,19 @@ fn AArch64RegisterInfo::isFrameOffsetLegal(self: *AArch64RegisterInfo, MI: *Mach
 }
 
 fn AArch64RegisterInfo::materializeFrameBaseRegister(self: *AArch64RegisterInfo, MBB: *mut MachineBasicBlock, FrameIdx: i32, Offset: i64) -> Register {
-    let mut Ins: i32 = MBB()();
+    let mut Ins: iterator = MBB.begin();
     let mut DL: DebugLoc = null;
-    if Ins() != MBB()() {
-        DL = ();
+    if Ins != MBB.end() {
+        DL = operator(Ins).getDebugLoc();
     }
     let mut MF: *MachineFunction = *MBB.getParent();
-    let mut TII: *AArch64InstrInfo = MF();
-    let mut MCID: *MCInstrDesc = TII();
+    let mut TII: *AArch64InstrInfo = MF.getSubtarget().getInstrInfo();
+    let mut MCID: *MCInstrDesc = TII.get(ADDXri);
     let mut MRI: *mut MachineRegisterInfo = MBB.getParent().getRegInfo();
-    let mut BaseReg: Register = MRI;
-    MRI.constrainRegClass(BaseReg, TII()(MCID, 0));
+    let mut BaseReg: Register = MRI.createVirtualRegister(&mut GPR64spRegClass, "");
+    MRI.constrainRegClass(BaseReg, TII.getRegClass(MCID, 0), 0);
     let mut Shifter: u32 = getShifterImm(LSL, 0);
-    BuildMI(*MBB, DL, MCID, BaseReg)(FrameIdx)(Offset)(Shifter);
+    BuildMI(*MBB, Ins, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, MCID, BaseReg).addFrameIndex(FrameIdx).addImm(Offset).addImm(Shifter);
     return BaseReg;
 }
 
@@ -453,7 +596,7 @@ fn AArch64RegisterInfo::resolveFrameIndex(self: *AArch64RegisterInfo, MI: *mut M
         assert!(i < MI.getNumOperands(), "Instr doesn't have FrameIndex operand!");
     }
     let mut MF: *MachineFunction = MI.getParent().getParent();
-    let mut TII: *AArch64InstrInfo = MF();
+    let mut TII: *AArch64InstrInfo = MF.getSubtarget().getInstrInfo();
     let mut Done: bool = rewriteAArch64FrameIndex(MI, i, BaseReg.operator unsigned int(), Off, TII);
     assert!(Done, "Unable to resolve frame index!");
     Done as void;
@@ -461,15 +604,15 @@ fn AArch64RegisterInfo::resolveFrameIndex(self: *AArch64RegisterInfo, MI: *mut M
 
 fn createScratchRegisterForInstruction(MI: *mut MachineInstr, FIOperandNum: u32, TII: *AArch64InstrInfo) -> Register {
     let mut ScratchReg: Register = 0;
-    if  {
+    if MI.getOpcode() == STGloop || MI.getOpcode() == STZGloop {
         assert!(FIOperandNum == 3, "Wrong frame index operand for STGloop/STZGloop");
-        let mut Op: u32 = 0;
+        let mut Op: u32 = if MI.getOpcode() == STGloop { STGloop_wback } else { STZGloop_wback };
         ScratchReg = MI.getOperand(1).getReg();
         MI.getOperand(3).ChangeToRegister(ScratchReg, false, false, true, false, false, false);
-        MI.setDesc(TII()(Op));
+        MI.setDesc(TII.get(Op));
         MI.tieOperands(1, 3);
     } else {
-        ScratchReg = MI.getMF().getRegInfo();
+        ScratchReg = MI.getMF().getRegInfo().createVirtualRegister(&mut GPR64RegClass, "");
         MI.getOperand(FIOperandNum).ChangeToRegister(ScratchReg, false, false, true, false, false, false);
     }
     return ScratchReg;
@@ -478,30 +621,30 @@ fn createScratchRegisterForInstruction(MI: *mut MachineInstr, FIOperandNum: u32,
 fn AArch64RegisterInfo::getOffsetOpcodes(self: *AArch64RegisterInfo, Offset: *StackOffset, Ops: *mut SmallVectorImpl<uint64_t>) {
     assert!(Offset.getScalable() % 2 == 0, "Invalid frame offset");
     appendOffset(Ops, Offset.getFixed());
-    let mut VG: u32 = getDwarfRegNum(true);
+    let mut VG: u32 = self.getDwarfRegNum(VG, true);
     let mut VGSized: i64 = Offset.getScalable() / 2;
     if VGSized > 0 {
-        Ops()(DW_OP_constu);
-        Ops()(VGSized);
-        Ops()(void { DW_OP_bregx, VG, 0 });
-        Ops()(DW_OP_mul);
-        Ops()(DW_OP_plus);
+        Ops.push(DW_OP_constu);
+        Ops.push(VGSized);
+        Ops.append([DW_OP_bregx, VG, 0]);
+        Ops.push(DW_OP_mul);
+        Ops.push(DW_OP_plus);
     } else if VGSized < 0 {
-        Ops()(DW_OP_constu);
-        Ops()(-VGSized);
-        Ops()(void { DW_OP_bregx, VG, 0 });
-        Ops()(DW_OP_mul);
-        Ops()(DW_OP_minus);
+        Ops.push(DW_OP_constu);
+        Ops.push(-VGSized);
+        Ops.append([DW_OP_bregx, VG, 0]);
+        Ops.push(DW_OP_mul);
+        Ops.push(DW_OP_minus);
     }
 }
 
-fn AArch64RegisterInfo::eliminateFrameIndex(self: *AArch64RegisterInfo, II: i32, SPAdj: i32, FIOperandNum: u32, RS: *mut RegScavenger) -> bool {
+fn AArch64RegisterInfo::eliminateFrameIndex(self: *AArch64RegisterInfo, II: iterator, SPAdj: i32, FIOperandNum: u32, RS: *mut RegScavenger) -> bool {
     assert!(SPAdj == 0, "Unexpected");
-    let mut MI: *mut MachineInstr = operator*();
+    let mut MI: *mut MachineInstr = operator(II);
     let mut MBB: *mut MachineBasicBlock = *MI.getParent();
     let mut MF: *mut MachineFunction = *MBB.getParent();
     let mut MFI: *MachineFrameInfo = MF.getFrameInfo();
-    let mut TII: *AArch64InstrInfo = MF();
+    let mut TII: *AArch64InstrInfo = MF.getSubtarget().getInstrInfo();
     let mut TFI: *AArch64FrameLowering = getFrameLowering(MF);
     let mut FrameIndex: i32 = MI.getOperand(FIOperandNum).getIndex();
     let mut Tagged: bool = MI.getOperand(FIOperandNum).getTargetFlags() & MO_TAGGED;
@@ -521,20 +664,21 @@ fn AArch64RegisterInfo::eliminateFrameIndex(self: *AArch64RegisterInfo, II: i32,
         return false;
     }
     let mut Offset: StackOffset = StackOffset {};
-    if  {
-        let mut AFI: *AArch64FunctionInfo = MF;
+    if MI.getOpcode() == TAGPstack {
+        let mut AFI: *AArch64FunctionInfo = MF.getInfo();
         FrameReg = MI.getOperand(3).getReg();
         Offset = getFixed(MFI.getObjectOffset(FrameIndex) + AFI.getTaggedBasePointerOffset());
     } else if Tagged {
         let mut SPOffset: StackOffset = getFixed(MFI.getObjectOffset(FrameIndex) + MFI.getStackSize() as i64);
         if MFI.hasVarSizedObjects() || isAArch64FrameOffsetLegal(MI, SPOffset, null, null, null) != (AArch64FrameOffsetCanUpdate | AArch64FrameOffsetIsLegal) {
             Offset = TFI.resolveFrameIndexReference(MF, FrameIndex, FrameReg, false, true);
-            let mut ScratchReg: Register = MF.getRegInfo();
-            emitFrameOffset(MBB, MI.getDebugLoc(), ScratchReg, FrameReg, Offset, TII);
-            BuildMI(MBB, MI, MI.getDebugLoc(), TII(), ScratchReg)(ScratchReg)(ScratchReg)(0);
+            let mut ScratchReg: Register = MF.getRegInfo().createVirtualRegister(&mut GPR64RegClass, "");
+            emitFrameOffset(MBB, II, MI.getDebugLoc(), ScratchReg.operator unsigned int(), FrameReg.operator unsigned int(), Offset, TII, NoFlags, false, false, null, false, StackOffset {}, SP);
+            BuildMI(MBB, MI, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(LDG), ScratchReg).addReg(ScratchReg, RegState {}, 0).addReg(ScratchReg, RegState {}, 0).addImm(0);
             MI.getOperand(FIOperandNum).ChangeToRegister(ScratchReg, false, false, true, false, false, false);
             return false;
         }
+        FrameReg = SP;
         Offset = getFixed(MFI.getObjectOffset(FrameIndex) + MFI.getStackSize() as i64);
     } else {
         Offset = TFI.resolveFrameIndexReference(MF, FrameIndex, FrameReg, false, true);
@@ -544,7 +688,7 @@ fn AArch64RegisterInfo::eliminateFrameIndex(self: *AArch64RegisterInfo, II: i32,
     }
     assert!((!RS || !RS.isScavengingFrameIndex(FrameIndex)), "Emergency spill slot is out of reach");
     let mut ScratchReg: Register = createScratchRegisterForInstruction(MI, FIOperandNum, TII);
-    emitFrameOffset(MBB, MI.getDebugLoc(), ScratchReg, FrameReg, Offset, TII);
+    emitFrameOffset(MBB, II, MI.getDebugLoc(), ScratchReg.operator unsigned int(), FrameReg.operator unsigned int(), Offset, TII, NoFlags, false, false, null, false, StackOffset {}, SP);
     return false;
 }
 
@@ -554,16 +698,34 @@ fn AArch64RegisterInfo::getRegPressureLimit(self: *AArch64RegisterInfo, RC: *Tar
         _ => {
             return 0;
         },
+        GPR32RegClassID => {
+            GPR32spRegClassID;
+        },
+        FPR8RegClassID => {
+            FPR16RegClassID;
+        },
+        MatrixIndexGPR32_8_11RegClassID => {
+            MatrixIndexGPR32_12_15RegClassID;
+        },
+        DDRegClassID => {
+            DDDRegClassID;
+        },
+        FPR128_loRegClassID => {
+            FPR64_loRegClassID;
+        },
+        FPR128_0to7RegClassID => {
+            return 8;
+        },
     }
 }
 
 fn HandleDestructivePredicateHint(VirtReg: Register, Order: ArrayRef<MCPhysReg>, Hints: *mut SmallSetVector<MCPhysReg, 16>, VRM: *VirtRegMap, MRI: *MachineRegisterInfo, TII: *TargetInstrInfo, ST: *AArch64Subtarget, Matrix: *LiveRegMatrix) -> bool {
     let mut RegRC: *TargetRegisterClass = MRI.getRegClass(VirtReg);
-    if  {
+    if !ST.useDistinctPredicateDstReg() || !PPRRegClass.hasSubClassEq(RegRC) || !MRI.hasOneDef(VirtReg) || Order.len < 2 {
         return false;
     }
     let mut DefInst: *MachineInstr = MRI.getOneDef(VirtReg).getParent();
-    if (TII.get & DestructiveInstTypeMask) != DestructivePredicate {
+    if (TII.get(DefInst.getOpcode()).TSFlags & DestructiveInstTypeMask) != DestructivePredicate {
         return false;
     }
     let mut Op1Reg: Register = DefInst.getOperand(1).getReg();
@@ -573,102 +735,275 @@ fn HandleDestructivePredicateHint(VirtReg: Register, Order: ArrayRef<MCPhysReg>,
     if !Op1Reg.isValid() {
         return false;
     }
-    let mut CSRs: i32 = 0;
+    let mut CSRs: DenseSet<unsigned int> = DenseSet<unsigned int> {};
     for let mut I: u32 = 0; ; I += 1 {
         let mut R: Register = MRI.getCalleeSavedRegs()[I];
         if !R.isValid() {
             break;
         }
-        if  {
-            CSRs()(R);
+        if PPRRegClass.contains(R.operator MCRegister()) {
+            CSRs.insert(R.operator unsigned int());
         }
     }
-    Hints()();
-    let mut CanUseReg: Closure_2 = Closure_2 { MRI: &mut MRI, Matrix: &mut Matrix };
-    let mut SortedHints: SmallVector<MCPhysReg, 16> = zeroed();
-    stable_sort(Closure_3 { Op1Reg: &mut Op1Reg, CanUseReg: &mut CanUseReg });
-    Hints()();
+    Hints.insert_range(Order);
+    let mut CanUseReg: Closure_2 = Closure_2 { CSRs: &mut CSRs, MRI: &mut MRI, Matrix: &mut Matrix };
+    let mut SortedHints: SmallVector<MCPhysReg, 16> = Hints.takeVector();
+    stable_sort(SortedHints, Closure_3 { Op1Reg: &mut Op1Reg, CanUseReg: &mut CanUseReg });
+    Hints.insert_range(SortedHints);
     return true;
 }
 
 fn AArch64RegisterInfo::getRegAllocationHints(self: *AArch64RegisterInfo, VirtReg: Register, Order: ArrayRef<MCPhysReg>, Hints: *mut SmallSetVector<MCPhysReg, 16>, MF: *MachineFunction, VRM: *VirtRegMap, Matrix: *LiveRegMatrix) -> bool {
-    let mut ST: *mut auto = MF;
-    let mut TII: *AArch64InstrInfo = MF();
+    let mut ST: *AArch64Subtarget = MF.getSubtarget();
+    let mut TII: *AArch64InstrInfo = MF.getSubtarget().getInstrInfo();
     let mut MRI: *MachineRegisterInfo = MF.getRegInfo();
-    let mut ConsiderOnlyHints: bool = false;
+    let mut ConsiderOnlyHints: bool = self.getRegAllocationHints(VirtReg, Order, Hints, MF, VRM, null);
     let mut RegRC: *TargetRegisterClass = MRI.getRegClass(VirtReg);
-    if  {
-        if Hints()() {
+    if ZPRRegClass.hasSubClassEq(RegRC) {
+        for DefOp in MRI.def_operands(VirtReg) {
+            let mut Def: *MachineInstr = *DefOp.getParent();
+            if DefOp.isImplicit() || (TII.get(Def.getOpcode()).TSFlags & FalseLanesMask) != FalseLanesUndef {
+                continue;
+            }
+            let mut InstFlags: u32 = TII.get(getSVEPseudoMap(Def.getOpcode())).TSFlags;
+            for R in Order {
+                let mut AddHintIfSuitable: Closure_4 = Closure_4 { VRM: &mut VRM, cap_1: self, Hints: &mut Hints };
+                match InstFlags & DestructiveInstTypeMask {
+                    _ => {
+                        break;
+                    },
+                    DestructiveTernaryCommWithRev => {
+                        AddHintIfSuitable.call(R, Def.getOperand(2)) || AddHintIfSuitable.call(R, Def.getOperand(3)) || AddHintIfSuitable.call(R, Def.getOperand(4));
+                    },
+                    DestructiveBinaryComm => {
+                        DestructiveBinaryCommWithRev;
+                    },
+                    DestructiveBinary => {
+                        DestructiveBinaryImm;
+                    },
+                    DestructiveUnaryPassthru => {
+                        AddHintIfSuitable.call(R, Def.getOperand(3));
+                    },
+                    DestructiveBinaryImmUnpred => {
+                        DestructiveBinaryShImmUnpred;
+                    },
+                }
+            }
+        }
+        if Hints.len {
             return ConsiderOnlyHints;
         }
     }
-    if HandleDestructivePredicateHint(VirtReg, Hints, VRM, MRI, *TII, Matrix) {
+    if HandleDestructivePredicateHint(VirtReg, Order, Hints, VRM, MRI, *TII, ST, Matrix) {
         return ConsiderOnlyHints;
     }
-    if operator!() || operator!() {
+    if !ST.hasSME() || !ST.isStreaming() {
         return ConsiderOnlyHints;
     }
     let mut RegID: u32 = RegRC.getID();
-    if  {}
+    if RegID == ZPR2StridedOrContiguousRegClassID || RegID == ZPR4StridedOrContiguousRegClassID {
+        for Use in MRI.use_nodbg_instructions(VirtReg) {
+            if Use.getOpcode() != COPY_INTO_TRANSPOSED_TUPLE {
+                continue;
+            }
+            let mut Src: *MachineOperand = Use.getOperand(1);
+            let mut Dst: *MachineOperand = Use.getOperand(0);
+            if !Src.getSubReg() || !Dst.getSubReg() {
+                continue;
+            }
+            let mut StridedRC: *TargetRegisterClass = null;
+            match RegID {
+                ZPR2StridedOrContiguousRegClassID => {
+                    StridedRC = &mut ZPR2StridedRegClass;
+                },
+                ZPR4StridedOrContiguousRegClassID => {
+                    StridedRC = &mut ZPR4StridedRegClass;
+                },
+                _ => {
+                    llvm_unreachable_internal("Unexpected RegID", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64RegisterInfo.cpp", 1299);
+                },
+            }
+            let mut StridedOrder: SmallVector<MCPhysReg, 4> = SmallVector<MCPhysReg, 4> {};
+            for Reg in Order {
+                if StridedRC.contains(Reg) {
+                    StridedOrder.push(Reg);
+                }
+            }
+            let mut TupleSize: u32 = Use.getOperand(2).getImm();
+            let mut TupIdx: u32 = Dst.getSubReg() - zsub0;
+            let mut TupleID: u32 = MRI.getRegClass(Dst.getReg()).getID();
+            let mut IsMulZPR: bool = TupleID == ZPR2Mul2RegClassID || TupleID == ZPR4Mul4RegClassID;
+            let mut Copies: defusechain_instr_iterator<false, true, false, true>> = MRI.def_instructions(Dst.getReg());
+            let mut CopyWithAssignedSrc: def_instr_iterator = find_if(Copies, Closure_5 { Use: &mut Use, VRM: &mut VRM });
+            if CopyWithAssignedSrc == Copies.end() {
+                for let mut I: u32 = 0; I < StridedOrder.len; I += 1 {
+                    let mut Reg: MCPhysReg = StridedOrder[I];
+                    let mut SubRegIdx: u32 = Src.getSubReg();
+                    if IsMulZPR && (self.getSubReg(Reg, SubRegIdx).operator unsigned int() - Z0) % TupleSize != TupIdx {
+                        continue;
+                    }
+                    let mut IsFreeConsecutiveReg: Closure_6 = Closure_6 { Reg: &mut Reg, TupIdx: &mut TupIdx, StridedRC: &mut StridedRC, cap_3: self, Matrix: &mut Matrix };
+                    if all_of(seq(0, TupleSize), IsFreeConsecutiveReg) {
+                        Hints.insert(Reg);
+                    }
+                }
+            } else {
+                let mut AssignedSrc: *mut MachineOperand = operator(CopyWithAssignedSrc).getOperand(1);
+                let mut AssignedDst: *mut MachineOperand = operator(CopyWithAssignedSrc).getOperand(0);
+                if !AssignedSrc.getSubReg() || !AssignedDst.getSubReg() {
+                    continue;
+                }
+                let mut AssignedTupIdx: u32 = AssignedDst.getSubReg() - zsub0;
+                let mut TargetStartReg: MCPhysReg = self.getSubReg(VRM.getPhys(AssignedSrc.getReg()), zsub0).operator unsigned int() + (TupIdx - AssignedTupIdx);
+                for let mut I: u32 = 0; I < StridedOrder.len; I += 1 {
+                    if self.getSubReg(StridedOrder[I], zsub0) == TargetStartReg {
+                        Hints.insert(StridedOrder[I]);
+                    }
+                }
+            }
+            if !Hints.is_empty() {
+                return ConsiderOnlyHints;
+            }
+        }
+    }
+    for Def in MRI.def_instructions(VirtReg) {
+        if Def.getOpcode() != COPY_INTO_TRANSPOSED_TUPLE {
+            continue;
+        }
+        let mut Src: *mut MachineOperand = Def.getOperand(1);
+        let mut Dst: *mut MachineOperand = Def.getOperand(0);
+        if !Src.getSubReg() || !Dst.getSubReg() {
+            continue;
+        }
+        if !VRM.hasPhys(Src.getReg()) {
+            continue;
+        }
+        let mut SrcZPR: MCPhysReg = self.getSubReg(VRM.getPhys(Src.getReg()), Src.getSubReg()).operator unsigned int();
+        for R in Order {
+            if self.getSubReg(R, Dst.getSubReg()) == SrcZPR {
+                Hints.insert(R);
+            }
+        }
+    }
     return ConsiderOnlyHints;
 }
 
 fn AArch64RegisterInfo::getLocalAddressRegister(self: *AArch64RegisterInfo, MF: *MachineFunction) -> u32 {
     let mut MFI: *MachineFrameInfo = MF.getFrameInfo();
+    if !MF.hasEHFunclets() && !MFI.hasVarSizedObjects() {
+        return SP;
+    } else if self.hasStackRealignment(MF) {
+        return self.getBaseRegister().operator unsigned int();
+    }
+    return self.getFrameRegister(MF).operator unsigned int();
 }
 
 fn AArch64RegisterInfo::shouldCoalesce(self: *AArch64RegisterInfo, MI: *mut MachineInstr, SrcRC: *TargetRegisterClass, SubReg: u32, DstRC: *TargetRegisterClass, DstSubReg: u32, NewRC: *TargetRegisterClass, LIS: *mut LiveIntervals) -> bool {
     let mut MF: *mut MachineFunction = *MI.getMF();
     let mut MRI: *mut MachineRegisterInfo = MF.getRegInfo();
-    if MI.isSubregToReg() && MRI.subRegLivenessEnabled() && operator!(MF()) {
+    if MI.isSubregToReg() && MRI.subRegLivenessEnabled() && !MF.getSubtarget().enableSRLTSubregToRegMitigation() {
         return false;
     }
-    if  {
+    if MI.isCopy() && ((DstRC.getID() == GPR64RegClassID) || (DstRC.getID() == GPR64commonRegClassID)) && MI.getOperand(0).getSubReg() && MI.getOperand(1).getSubReg() {
         return false;
     }
-    let mut IsCoalescerBarrier: Closure_4 = Closure_4 {};
-    if  {
+    let mut IsCoalescerBarrier: Closure_7 = Closure_7 {};
+    if MI.isCopy() && SubReg != DstSubReg && (ZPRRegClass.hasSubClassEq(DstRC) || ZPRRegClass.hasSubClassEq(SrcRC)) {
         let mut SrcReg: u32 = MI.getOperand(1).getReg().operator unsigned int();
-        if any_of(MRI()(SrcReg), IsCoalescerBarrier) {
+        if any_of(MRI.def_instructions(SrcReg), IsCoalescerBarrier) {
             return false;
         }
         let mut DstReg: u32 = MI.getOperand(0).getReg().operator unsigned int();
-        if any_of(MRI()(DstReg), IsCoalescerBarrier) {
+        if any_of(MRI.use_nodbg_instructions(DstReg), IsCoalescerBarrier) {
             return false;
         }
     }
     return true;
 }
 
-fn AArch64RegisterInfo::shouldAnalyzePhysregInMachineLoopInfo(self: *AArch64RegisterInfo, R: MCRegister) -> bool {}
+fn AArch64RegisterInfo::shouldAnalyzePhysregInMachineLoopInfo(self: *AArch64RegisterInfo, R: MCRegister) -> bool {
+    return R == VG;
+}
 
-fn AArch64RegisterInfo::isIgnoredCVReg(self: *AArch64RegisterInfo, LLVMReg: MCRegister) -> bool {}
+fn AArch64RegisterInfo::isIgnoredCVReg(self: *AArch64RegisterInfo, LLVMReg: MCRegister) -> bool {
+    return (LLVMReg.operator unsigned int() >= Z0 && LLVMReg.operator unsigned int() <= Z31) || (LLVMReg.operator unsigned int() >= P0 && LLVMReg.operator unsigned int() <= P15);
+}
 
 struct Closure_1 {}
 
-fn Closure_1::call(self: *Closure_1, RegList: ArrayRef<MCRegister>, Reg: MCRegister) -> auto {}
+fn Closure_1::call(self: *Closure_1, RegList: ArrayRef<MCRegister>, Reg: MCRegister) -> bool {
+        return is_contained(RegList, Reg);
+    }
 
 struct Closure_2 {
+    CSRs: *mut DenseSet<unsigned int>,
     MRI: *mut MachineRegisterInfo,
     Matrix: *mut *LiveRegMatrix,
 }
 
-unsafe fn Closure_2::call(self: *mut Closure_2, R: Register) -> auto {}
+unsafe fn Closure_2::call(self: *mut Closure_2, R: Register) -> bool {
+        return !(*self.CSRs).contains(R.operator unsigned int()) || !(*self.MRI).def_empty(R) || (*self.Matrix).isPhysRegUsed(R.operator MCRegister());
+    }
 
 struct Closure_3 {
     Op1Reg: *mut Register,
     CanUseReg: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\AArch64\AArch64RegisterInfo.cpp:1154:20),
 }
 
-unsafe fn Closure_3::call(self: *mut Closure_3, A: Register, B: Register) -> auto {
-        let mut PrefA: bool = (A != (*self.Op1Reg)) && (*self.CanUseReg)(A);
-        let mut PrefB: bool = (B != (*self.Op1Reg)) && (*self.CanUseReg)(B);
+unsafe fn Closure_3::call(self: *mut Closure_3, A: Register, B: Register) -> bool {
+        let mut PrefA: bool = (A != (*self.Op1Reg)) && (*self.CanUseReg).call(A);
+        let mut PrefB: bool = (B != (*self.Op1Reg)) && (*self.CanUseReg).call(B);
+        return PrefA && !PrefB;
     }
 
-struct Closure_4 {}
+struct Closure_4 {
+    VRM: *mut *VirtRegMap,
+    cap_1: *AArch64RegisterInfo,
+    Hints: *mut SmallSetVector<MCPhysReg, 16>,
+}
 
-fn Closure_4::call(self: *Closure_4, MI: *MachineInstr) -> bool {
+unsafe fn Closure_4::call(self: *mut Closure_4, R: MCPhysReg, MO: *MachineOperand) -> auto {
+                    let mut PhysReg: MCPhysReg = (*self.VRM).getPhys(MO.getReg()).operator unsigned int();
+                    if PhysReg && MO.getSubReg() {
+                        PhysReg = self.getSubReg(PhysReg, MO.getSubReg()).operator unsigned int();
+                    }
+                    if PhysReg != R {
+                        return false;
+                    }
+                    (*self.Hints).insert(R);
+                    return true;
+                }
+
+struct Closure_5 {
+    Use: *mut MachineInstr,
+    VRM: *mut *VirtRegMap,
+}
+
+unsafe fn Closure_5::call(self: *mut Closure_5, Def: *MachineInstr) -> bool {
+                let mut Src: *MachineOperand = Def.getOperand(1);
+                return Def.getOpcode() == (*self.Use).getOpcode() && (*self.VRM).hasPhys(Src.getReg());
+            }
+
+struct Closure_6 {
+    Reg: *mut MCPhysReg,
+    TupIdx: *mut u32,
+    StridedRC: *mut *TargetRegisterClass,
+    cap_3: *AArch64RegisterInfo,
+    Matrix: *mut *LiveRegMatrix,
+}
+
+unsafe fn Closure_6::call(self: *mut Closure_6, I: u32) -> bool {
+                        let mut R: u32 = (*self.Reg) - (*self.TupIdx) + I;
+                        return (*self.StridedRC).contains(R) && (I == 0 || ((self.getSubReg(R, zsub0).operator unsigned int() - Z0) == (self.getSubReg(R - 1, zsub0).operator unsigned int() - Z0) + 1)) && !(*self.Matrix).isPhysRegUsed(R);
+                    }
+
+struct Closure_7 {}
+
+fn Closure_7::call(self: *Closure_7, MI: *MachineInstr) -> bool {
         match MI.getOpcode() {
+            COALESCER_BARRIER_FPR16 => {
+                COALESCER_BARRIER_FPR32;
+            },
             _ => {
                 return false;
             },

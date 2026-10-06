@@ -62,6 +62,12 @@ fn classifyX87ControlInstruction(Opcode: u32) -> X87ControlKind {
         _ => {
             return NotControl;
         },
+        FNINIT => {
+            FNSTCW16m;
+        },
+        FLDCW16m => {
+            FLDENVm;
+        },
     }
 }
 
@@ -69,7 +75,7 @@ fn insertWaitInstruction(MF: *mut MachineFunction) -> bool {
     if !MF.getFunction().hasFnAttribute(StrictFP) {
         return false;
     }
-    let mut ST: *X86Subtarget = MF;
+    let mut ST: *X86Subtarget = MF.getSubtarget();
     let mut TII: *X86InstrInfo = ST.getInstrInfo();
     let mut Changed: bool = false;
     for MBB in MF {
@@ -80,15 +86,15 @@ fn insertWaitInstruction(MF: *mut MachineFunction) -> bool {
             if !(operator(MI).mayRaiseFPException() || operator(MI).mayLoadOrStore(AnyInBundle)) || classifyX87ControlInstruction(operator(MI).getOpcode()) != NotControl {
                 continue;
             }
-            let mut AfterMI: iterator = next(MI);
-            let mut NextMI: iterator = iterator { AfterMI };
+            let mut AfterMI: iterator = next(MI, 1);
+            let mut NextMI: iterator = AfterMI;
             while NextMI != MBB.end() && operator(NextMI).isMetaInstruction(IgnoreBundle) {
                 operator(NextMI);
             }
             if NextMI != MBB.end() && !operator(NextMI).isReturn(AnyInBundle) && isX87Instruction(operator(NextMI)) && classifyX87ControlInstruction(operator(NextMI).getOpcode()) != NonWaiting {
                 continue;
             }
-            BuildMI(MBB, AfterMI, operator(MI).getDebugLoc(), TII());
+            BuildMI(MBB, AfterMI, MIMetadata { DL: operator(MI).getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(WAIT));
             while true {
                 {
                 if DebugFlag && isCurrentDebugType("x86-insert-x87-wait", 1) {
@@ -109,5 +115,5 @@ fn X86InsertX87WaitLegacy::runOnMachineFunction(self, MF: *mut MachineFunction) 
 }
 
 fn X86InsertX87WaitPass::run(self, MF: *mut MachineFunction, arg: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
-    return if insertWaitInstruction(MF) { getMachineFunctionPassPreservedAnalyses() } else { all() };
+    return if insertWaitInstruction(MF) { getMachineFunctionPassPreservedAnalyses().preserveSet() } else { all() };
 }

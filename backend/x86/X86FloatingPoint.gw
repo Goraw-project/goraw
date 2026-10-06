@@ -18,9 +18,10 @@ fn FPS::calcLiveInMask(self, MBB: *mut MachineBasicBlock, RemoveFPs: bool) -> u3
     let mut Mask: u32 = 0;
     for let mut I: livein_iterator = MBB.livein_begin(); !I == MBB.livein_end();  {
         let mut Reg: MCPhysReg = operator(I).PhysReg.operator unsigned int();
-        if  {
+        if Reg >= FP0 && Reg <= FP6 {
+            Mask |= 1 << (Reg - FP0);
             if RemoveFPs {
-                I = MBB.removeLiveIn(livein_iterator { I });
+                I = MBB.removeLiveIn(I);
                 continue;
             }
         }
@@ -54,7 +55,9 @@ fn FPS::getStackEntry(self: *FPS, STi: u32) -> u32 {
     return self.Stack[self.StackTop - 1 - STi];
 }
 
-fn FPS::getSTReg(self: *FPS, RegNo: u32) -> u32 {}
+fn FPS::getSTReg(self: *FPS, RegNo: u32) -> u32 {
+    return self.StackTop - 1 - self.getSlot(RegNo) + ST0;
+}
 
 fn FPS::pushReg(self, Reg: u32) {
     assert!(Reg < NumFPRegs, "Register number out of range!");
@@ -88,7 +91,7 @@ fn FPS::moveToTop(self, RegNo: u32, I: iterator) {
         report_fatal_error("Access past stack top!", true);
     }
     swap(self.Stack[self.RegMap[RegOnTop]], self.Stack[self.StackTop - 1]);
-    BuildMI(*self.MBB, I, dl, self.TII.get)(STReg);
+    BuildMI(*self.MBB, I, MIMetadata { DL: dl, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(XCH_F)).addReg(STReg, RegState {}, 0);
     operator(NumFXCH);
 }
 
@@ -96,12 +99,13 @@ fn FPS::duplicateToTop(self, RegNo: u32, AsReg: u32, I: iterator) {
     let mut dl: DebugLoc = if I == self.MBB.end() { DebugLoc { Loc: null } } else { operator(I).getDebugLoc() };
     let mut STReg: u32 = self.getSTReg(RegNo);
     self.pushReg(AsReg);
-    BuildMI(*self.MBB, I, dl, self.TII.get)(STReg);
+    BuildMI(*self.MBB, I, MIMetadata { DL: dl, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(LD_Frr)).addReg(STReg, RegState {}, 0);
 }
 
 fn FPS::isFPCopy(self, MI: *mut MachineInstr) -> bool {
     let mut DstReg: Register = MI.getOperand(0).getReg();
     let mut SrcReg: Register = MI.getOperand(1).getReg();
+    return RFP80RegClass.contains(DstReg.operator MCRegister()) || RFP80RegClass.contains(SrcReg.operator MCRegister());
 }
 
 struct X86FPStackifierLegacy {
@@ -115,7 +119,7 @@ struct X86FPStackifierLegacy {
 
 fn X86FPStackifierLegacy::getAnalysisUsage(self: *X86FPStackifierLegacy, AU: *mut AnalysisUsage) {
     AU.setPreservesCFG();
-    AU;
+    AU.addRequired();
     AU.addPreservedID(MachineLoopInfoID);
     AU.addPreservedID(MachineDominatorsID);
     self.getAnalysisUsage(AU);
@@ -168,12 +172,14 @@ fn createX86FPStackifierLegacyPass() -> *mut FunctionPass {
 fn getFPReg(MO: *MachineOperand) -> u32 {
     assert!(MO.isReg(), "Expected an FP register!");
     let mut Reg: Register = MO.getReg();
+    assert!(Reg.operator unsigned int() >= FP0 && Reg.operator unsigned int() <= FP6, "Expected FP register!");
+    return Reg.operator unsigned int() - FP0;
 }
 
 fn FPS::shouldRun(self, MF: *mut MachineFunction) -> bool {
     let mut MRI: *MachineRegisterInfo = MF.getRegInfo();
     for let mut I: u32 = 0; I <= 6; I += 1 {
-        if operator!(MRI.reg_nodbg_empty) {
+        if !MRI.reg_nodbg_empty(FP0 + I) {
             return true;
         }
     }
@@ -185,32 +191,39 @@ fn FPS::run(self, MF: *mut MachineFunction, FunctionBundles: *mut EdgeBundles) -
     self.TII = MF.getSubtarget().getInstrInfo();
     self.bundleCFGRecomputeKillFlags(MF);
     self.StackTop = 0;
-    let mut Processed: i32 = 0;
+    let mut Processed: df_iterator_default_set<MachineBasicBlock *> = df_iterator_default_set<MachineBasicBlock *> {};
     let mut Entry: *mut MachineBasicBlock = &mut MF.front();
-    let mut Bundle: *mut LiveBundle = null;
+    let mut Bundle: *mut LiveBundle = self.LiveBundles[self.Bundles.getBundle(Entry.getNumber(), false)];
     if (Entry.getParent().getFunction().getCallingConv() == X86_RegCall) && (Bundle.Mask && !Bundle.FixCount) {
         assert!((Bundle.Mask & 254) == 0, "Only FP0 could be passed as an argument");
         Bundle.FixCount = 1;
         Bundle.FixStack[0] = 0;
     }
     let mut Changed: bool = false;
-    if MF.len != () {
+    for BB in depth_first_ext(Entry, Processed) {
+        Changed |= self.processBasicBlock(MF, *BB);
+    }
+    if MF.len != Processed.len {
         for BB in MF {
-            if Processed()(&mut BB) {
+            if Processed.insert(&mut BB).second {
                 Changed |= self.processBasicBlock(MF, BB);
             }
         }
     }
+    self.LiveBundles.clear();
     return Changed;
 }
 
 fn FPS::bundleCFGRecomputeKillFlags(self, MF: *mut MachineFunction) {
+    assert!(self.LiveBundles.is_empty(), "Stale data in LiveBundles");
+    self.LiveBundles.resize(self.Bundles.getNumBundles());
     for MBB in MF {
         self.setKillFlags(MBB);
         let mut Mask: u32 = calcLiveInMask(&mut MBB, false);
         if !Mask {
             continue;
         }
+        self.LiveBundles[self.Bundles.getBundle(MBB.getNumber(), false)].Mask |= Mask;
     }
 }
 
@@ -228,7 +241,7 @@ fn FPS::processBasicBlock(self, MF: *mut MachineFunction, BB: *mut MachineBasicB
         if MI.isCopy() && isFPCopy(MI) {
             FPInstClass = SpecialFP;
         }
-        if  {
+        if MI.isImplicitDef() && RFP80RegClass.contains(MI.getOperand(0).getReg().operator MCRegister()) {
             FPInstClass = SpecialFP;
         }
         if MI.isCall(AnyInBundle) {
@@ -236,7 +249,7 @@ fn FPS::processBasicBlock(self, MF: *mut MachineFunction, BB: *mut MachineBasicB
         }
         if MI.isFakeUse() {
             let mut MO: *MachineOperand = MI.getOperand(0);
-            if  {
+            if MO.isReg() && RFP80RegClass.contains(MO.getReg().operator MCRegister()) {
                 if MO.isKill() {
                     FPInstClass = SpecialFP;
                 } else {
@@ -249,7 +262,7 @@ fn FPS::processBasicBlock(self, MF: *mut MachineFunction, BB: *mut MachineBasicB
         }
         let mut PrevMI: *mut MachineInstr = null;
         if I != BB.begin() {
-            PrevMI = operator&(operator*(prev(I)));
+            PrevMI = &mut operator(prev(I, 1));
         }
         operator(NumFP);
         while true {
@@ -260,10 +273,10 @@ fn FPS::processBasicBlock(self, MF: *mut MachineFunction, BB: *mut MachineBasicB
         }
             if !(false) { break; }
         }
-        let mut DeadRegs: SmallVector<Register, 8> = zeroed();
+        let mut DeadRegs: SmallVector<Register, 8> = SmallVector<Register, 8> {};
         for MO in MI.operands() {
             if MO.isReg() && MO.isDead() {
-                DeadRegs()(MO.getReg());
+                DeadRegs.push(MO.getReg());
             }
         }
         match FPInstClass {
@@ -289,24 +302,37 @@ fn FPS::processBasicBlock(self, MF: *mut MachineFunction, BB: *mut MachineBasicB
                 self.handleSpecialFP(I);
             },
             _ => {
-                llvm_unreachable_internal("Unknown FP Type!", "llvm\\lib\\Target\\X86\\X86FloatingPoint.cpp", 502);
+                llvm_unreachable_internal("Unknown FP Type!", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86FloatingPoint.cpp", 502);
             },
+        }
+        for Reg in DeadRegs {
+            if Reg.operator unsigned int() >= FP0 && Reg.operator unsigned int() <= FP6 && self.isLive(Reg.operator unsigned int() - FP0) {
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
+                        dbgs() << "Register FP#" << Reg.operator unsigned int() - FP0 << " is dead!\n";
+                    }
+                }
+                    if !(false) { break; }
+                }
+                self.freeStackSlotAfter(I, Reg.operator unsigned int() - FP0);
+            }
         }
         while true {
             {
             if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
                 {
-                    let mut PrevI: iterator = iterator { PrevMI };
+                    let mut PrevI: iterator = PrevMI;
                     if I == PrevI {
                         dbgs() << "Just deleted pseudo instruction\n";
                     } else {
-                        let mut Start: iterator = iterator { I };
-                        while Start != BB.begin() && prev(Start) != PrevI {
+                        let mut Start: iterator = I;
+                        while Start != BB.begin() && prev(Start, 1) != PrevI {
                             operator(Start);
                         }
                         dbgs() << "Inserted instructions:\n\t";
                         operator(Start).print(dbgs(), true, false, false, true, null);
-                        while operator(Start) != next(I) {}
+                        while operator(Start) != next(I, 1) {}
                     }
                     self.dumpStack();
                 }
@@ -331,7 +357,7 @@ fn FPS::setupBlockStack(self) {
         if !(false) { break; }
     }
     self.StackTop = 0;
-    let mut Bundle: *LiveBundle = null;
+    let mut Bundle: *LiveBundle = self.LiveBundles[self.Bundles.getBundle(self.MBB.getNumber(), false)];
     if !Bundle.Mask {
         while true {
             {
@@ -380,9 +406,9 @@ fn FPS::finishBlockStack(self) {
         if !(false) { break; }
     }
     let mut BundleIdx: u32 = self.Bundles.getBundle(self.MBB.getNumber(), true);
-    let mut Bundle: *mut LiveBundle = null;
+    let mut Bundle: *mut LiveBundle = self.LiveBundles[BundleIdx];
     let mut Term: iterator = self.MBB.getFirstTerminator();
-    self.adjustLiveRegs(Bundle.Mask, iterator { Term });
+    self.adjustLiveRegs(Bundle.Mask, Term);
     if !Bundle.Mask {
         while true {
             {
@@ -411,7 +437,7 @@ fn FPS::finishBlockStack(self) {
         }
             if !(false) { break; }
         }
-        self.shuffleStackTop(Bundle.FixStack, Bundle.FixCount, iterator { Term });
+        self.shuffleStackTop(Bundle.FixStack, Bundle.FixCount, Term);
     } else {
         while true {
             {
@@ -438,18 +464,18 @@ fn TableEntry::operator<(self: *TableEntry, TE: *TableEntry) -> bool {
 }
 
 fn Lookup(Table: ArrayRef<TableEntry>, Opcode: u32) -> i32 {
-    let mut I: *TableEntry = lower_bound(Opcode);
-    if I != () && I.from == Opcode {
+    let mut I: *TableEntry = lower_bound(Table, Opcode);
+    if I != Table.end() && I.from == Opcode {
         return I.to;
     }
     return -1;
 }
 
-const OpcodeTable: []TableEntry = zeroed();
+const OpcodeTable: [162]TableEntry = [ABS_Fp32, ABS_F, ABS_Fp64, ABS_F, ABS_Fp80, ABS_F, ADD_Fp32m, ADD_F32m, ADD_Fp64m, ADD_F64m, ADD_Fp64m32, ADD_F32m, ADD_Fp80m32, ADD_F32m, ADD_Fp80m64, ADD_F64m, ADD_FpI16m32, ADD_FI16m, ADD_FpI16m64, ADD_FI16m, ADD_FpI16m80, ADD_FI16m, ADD_FpI32m32, ADD_FI32m, ADD_FpI32m64, ADD_FI32m, ADD_FpI32m80, ADD_FI32m, CHS_Fp32, CHS_F, CHS_Fp64, CHS_F, CHS_Fp80, CHS_F, CMOVBE_Fp32, CMOVBE_F, CMOVBE_Fp64, CMOVBE_F, CMOVBE_Fp80, CMOVBE_F, CMOVB_Fp32, CMOVB_F, CMOVB_Fp64, CMOVB_F, CMOVB_Fp80, CMOVB_F, CMOVE_Fp32, CMOVE_F, CMOVE_Fp64, CMOVE_F, CMOVE_Fp80, CMOVE_F, CMOVNBE_Fp32, CMOVNBE_F, CMOVNBE_Fp64, CMOVNBE_F, CMOVNBE_Fp80, CMOVNBE_F, CMOVNB_Fp32, CMOVNB_F, CMOVNB_Fp64, CMOVNB_F, CMOVNB_Fp80, CMOVNB_F, CMOVNE_Fp32, CMOVNE_F, CMOVNE_Fp64, CMOVNE_F, CMOVNE_Fp80, CMOVNE_F, CMOVNP_Fp32, CMOVNP_F, CMOVNP_Fp64, CMOVNP_F, CMOVNP_Fp80, CMOVNP_F, CMOVP_Fp32, CMOVP_F, CMOVP_Fp64, CMOVP_F, CMOVP_Fp80, CMOVP_F, COM_FpIr32, COM_FIr, COM_FpIr64, COM_FIr, COM_FpIr80, COM_FIr, COM_Fpr32, COM_FST0r, COM_Fpr64, COM_FST0r, COM_Fpr80, COM_FST0r, DIVR_Fp32m, DIVR_F32m, DIVR_Fp64m, DIVR_F64m, DIVR_Fp64m32, DIVR_F32m, DIVR_Fp80m32, DIVR_F32m, DIVR_Fp80m64, DIVR_F64m, DIVR_FpI16m32, DIVR_FI16m, DIVR_FpI16m64, DIVR_FI16m, DIVR_FpI16m80, DIVR_FI16m, DIVR_FpI32m32, DIVR_FI32m, DIVR_FpI32m64, DIVR_FI32m, DIVR_FpI32m80, DIVR_FI32m, DIV_Fp32m, DIV_F32m, DIV_Fp64m, DIV_F64m, DIV_Fp64m32, DIV_F32m, DIV_Fp80m32, DIV_F32m, DIV_Fp80m64, DIV_F64m, DIV_FpI16m32, DIV_FI16m, DIV_FpI16m64, DIV_FI16m, DIV_FpI16m80, DIV_FI16m, DIV_FpI32m32, DIV_FI32m, DIV_FpI32m64, DIV_FI32m, DIV_FpI32m80, DIV_FI32m, ILD_Fp16m32, ILD_F16m, ILD_Fp16m64, ILD_F16m, ILD_Fp16m80, ILD_F16m, ILD_Fp32m32, ILD_F32m, ILD_Fp32m64, ILD_F32m, ILD_Fp32m80, ILD_F32m, ILD_Fp64m32, ILD_F64m, ILD_Fp64m64, ILD_F64m, ILD_Fp64m80, ILD_F64m, ISTT_Fp16m32, ISTT_FP16m, ISTT_Fp16m64, ISTT_FP16m, ISTT_Fp16m80, ISTT_FP16m, ISTT_Fp32m32, ISTT_FP32m, ISTT_Fp32m64, ISTT_FP32m, ISTT_Fp32m80, ISTT_FP32m, ISTT_Fp64m32, ISTT_FP64m, ISTT_Fp64m64, ISTT_FP64m, ISTT_Fp64m80, ISTT_FP64m, IST_Fp16m32, IST_F16m, IST_Fp16m64, IST_F16m, IST_Fp16m80, IST_F16m, IST_Fp32m32, IST_F32m, IST_Fp32m64, IST_F32m, IST_Fp32m80, IST_F32m, IST_Fp64m32, IST_FP64m, IST_Fp64m64, IST_FP64m, IST_Fp64m80, IST_FP64m, LD_Fp032, LD_F0, LD_Fp064, LD_F0, LD_Fp080, LD_F0, LD_Fp132, LD_F1, LD_Fp164, LD_F1, LD_Fp180, LD_F1, LD_Fp32m, LD_F32m, LD_Fp32m64, LD_F32m, LD_Fp32m80, LD_F32m, LD_Fp64m, LD_F64m, LD_Fp64m80, LD_F64m, LD_Fp80m, LD_F80m, MUL_Fp32m, MUL_F32m, MUL_Fp64m, MUL_F64m, MUL_Fp64m32, MUL_F32m, MUL_Fp80m32, MUL_F32m, MUL_Fp80m64, MUL_F64m, MUL_FpI16m32, MUL_FI16m, MUL_FpI16m64, MUL_FI16m, MUL_FpI16m80, MUL_FI16m, MUL_FpI32m32, MUL_FI32m, MUL_FpI32m64, MUL_FI32m, MUL_FpI32m80, MUL_FI32m, SQRT_Fp32, SQRT_F, SQRT_Fp64, SQRT_F, SQRT_Fp80, SQRT_F, ST_Fp32m, ST_F32m, ST_Fp64m, ST_F64m, ST_Fp64m32, ST_F32m, ST_Fp80m32, ST_F32m, ST_Fp80m64, ST_F64m, ST_FpP80m, ST_FP80m, SUBR_Fp32m, SUBR_F32m, SUBR_Fp64m, SUBR_F64m, SUBR_Fp64m32, SUBR_F32m, SUBR_Fp80m32, SUBR_F32m, SUBR_Fp80m64, SUBR_F64m, SUBR_FpI16m32, SUBR_FI16m, SUBR_FpI16m64, SUBR_FI16m, SUBR_FpI16m80, SUBR_FI16m, SUBR_FpI32m32, SUBR_FI32m, SUBR_FpI32m64, SUBR_FI32m, SUBR_FpI32m80, SUBR_FI32m, SUB_Fp32m, SUB_F32m, SUB_Fp64m, SUB_F64m, SUB_Fp64m32, SUB_F32m, SUB_Fp80m32, SUB_F32m, SUB_Fp80m64, SUB_F64m, SUB_FpI16m32, SUB_FI16m, SUB_FpI16m64, SUB_FI16m, SUB_FpI16m80, SUB_FI16m, SUB_FpI32m32, SUB_FI32m, SUB_FpI32m64, SUB_FI32m, SUB_FpI32m80, SUB_FI32m, TST_Fp32, TST_F, TST_Fp64, TST_F, TST_Fp80, TST_F, UCOM_FpIr32, UCOM_FIr, UCOM_FpIr64, UCOM_FIr, UCOM_FpIr80, UCOM_FIr, UCOM_Fpr32, UCOM_Fr, UCOM_Fpr64, UCOM_Fr, UCOM_Fpr80, UCOM_Fr, XAM_Fp32, XAM_F, XAM_Fp64, XAM_F, XAM_Fp80, XAM_F];
 
 fn getConcreteOpcode(Opcode: u32) -> u32 {
     {
-        let mut OpcodeTableChecked: atomic<bool> = atomic<bool> { false };
+        let mut OpcodeTableChecked: atomic<bool> = false;
         if !OpcodeTableChecked.load(memory_order_relaxed) {
             assert!(is_sorted(OpcodeTable), "All lookup tables must be sorted for efficient access!");
             OpcodeTableChecked.store(true, memory_order_relaxed);
@@ -460,10 +486,10 @@ fn getConcreteOpcode(Opcode: u32) -> u32 {
     return Opc;
 }
 
-const PopTable: []TableEntry = zeroed();
+const PopTable: [17]TableEntry = [ADD_FrST0, ADD_FPrST0, COMP_FST0r, FCOMPP, COM_FIr, COM_FIPr, COM_FST0r, COMP_FST0r, DIVR_FrST0, DIVR_FPrST0, DIV_FrST0, DIV_FPrST0, IST_F16m, IST_FP16m, IST_F32m, IST_FP32m, MUL_FrST0, MUL_FPrST0, ST_F32m, ST_FP32m, ST_F64m, ST_FP64m, ST_Frr, ST_FPrr, SUBR_FrST0, SUBR_FPrST0, SUB_FrST0, SUB_FPrST0, UCOM_FIr, UCOM_FIPr, UCOM_FPr, UCOM_FPPr, UCOM_Fr, UCOM_FPr];
 
 fn doesInstructionSetFPSW(MI: *mut MachineInstr) -> bool {
-    if MI {
+    if MI.findRegisterDefOperand(FPSW, null, false, false) {
         MO;
     } else if !MO.isDead() {
         return true;
@@ -486,7 +512,7 @@ fn FPS::popStackAfter(self, I: *mut iterator) {
     let mut MI: *mut MachineInstr = operator(I);
     let mut dl: *DebugLoc = MI.getDebugLoc();
     {
-        let mut PopTableChecked: atomic<bool> = atomic<bool> { false };
+        let mut PopTableChecked: atomic<bool> = false;
         if !PopTableChecked.load(memory_order_relaxed) {
             assert!(is_sorted(PopTable), "All lookup tables must be sorted for efficient access!");
             PopTableChecked.store(true, memory_order_relaxed);
@@ -495,20 +521,20 @@ fn FPS::popStackAfter(self, I: *mut iterator) {
     self.popReg();
     let mut Opcode: i32 = Lookup(PopTable, operator(I).getOpcode());
     if Opcode != -1 {
-        operator(I).setDesc(self.TII.get);
-        if  {
+        operator(I).setDesc(self.TII.get(Opcode));
+        if Opcode == FCOMPP || Opcode == UCOM_FPPr {
             operator(I).removeOperand(0);
         }
         MI.dropDebugNumber();
     } else {
         if doesInstructionSetFPSW(MI) {
             let mut MBB: *mut MachineBasicBlock = *MI.getParent();
-            let mut Next: iterator = getNextFPInstruction(iterator { I });
-            if Next != MBB.end() && operator(Next).readsRegister {
+            let mut Next: iterator = getNextFPInstruction(I);
+            if Next != MBB.end() && operator(Next).readsRegister(FPSW, null) {
                 I = Next;
             }
         }
-        I = BuildMI(*self.MBB, operator(I), dl, self.TII.get);
+        I = BuildMI(*self.MBB, operator(I), MIMetadata { DL: dl, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ST_FPrr)).addReg(ST0, RegState {}, 0).operator MachineInstrBundleIterator();
     }
 }
 
@@ -517,7 +543,7 @@ fn FPS::freeStackSlotAfter(self, I: *mut iterator, FPRegNo: u32) {
         self.popStackAfter(I);
         return;
     }
-    I = self.freeStackSlotBefore(iterator { operator(I) }, FPRegNo);
+    I = self.freeStackSlotBefore(operator(I), FPRegNo);
 }
 
 fn FPS::freeStackSlotBefore(self, I: iterator, FPRegNo: u32) -> iterator {
@@ -528,7 +554,7 @@ fn FPS::freeStackSlotBefore(self, I: iterator, FPRegNo: u32) -> iterator {
     self.RegMap[TopReg] = OldSlot;
     self.RegMap[FPRegNo] = ~0;
     self.Stack[self.StackTop -= 1] = ~0;
-    return BuildMI(*self.MBB, I, DebugLoc { Loc: null }, self.TII.get)(STReg)();
+    return BuildMI(*self.MBB, I, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ST_FPrr)).addReg(STReg, RegState {}, 0).getInstr();
 }
 
 fn FPS::adjustLiveRegs(self, Mask: u32, I: iterator) {
@@ -560,7 +586,7 @@ fn FPS::adjustLiveRegs(self, Mask: u32, I: iterator) {
         Defs &= ~(1 << DReg);
     }
     if Kills && I != self.MBB.begin() {
-        let mut I2: iterator = prev(I);
+        let mut I2: iterator = prev(I, 1);
         while self.StackTop {
             let mut KReg: u32 = self.getStackEntry(0);
             if !(Kills & (1 << KReg)) {
@@ -588,7 +614,7 @@ fn FPS::adjustLiveRegs(self, Mask: u32, I: iterator) {
         }
             if !(false) { break; }
         }
-        self.freeStackSlotBefore(iterator { I }, KReg);
+        self.freeStackSlotBefore(I, KReg);
         Kills &= ~(1 << KReg);
     }
     while Defs {
@@ -601,7 +627,7 @@ fn FPS::adjustLiveRegs(self, Mask: u32, I: iterator) {
         }
             if !(false) { break; }
         }
-        BuildMI(*self.MBB, I, DebugLoc { Loc: null }, self.TII.get);
+        BuildMI(*self.MBB, I, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(LD_F0));
         self.pushReg(DReg);
         Defs &= ~(1 << DReg);
     }
@@ -623,9 +649,9 @@ fn FPS::shuffleStackTop(self, FixStack: *u8, FixCount: u32, I: iterator) {
         if Reg == OldReg {
             continue;
         }
-        self.moveToTop(Reg, iterator { I });
+        self.moveToTop(Reg, I);
         if FixCount > 0 {
-            self.moveToTop(OldReg, iterator { I });
+            self.moveToTop(OldReg, I);
         }
     }
     while true {
@@ -646,15 +672,15 @@ fn FPS::handleCall(self, I: *mut iterator) {
 let mut e: u32 = MI.getNumOperands(); i != e; i += 1 {
         let mut Op: *mut MachineOperand = MI.getOperand(i);
         if Op.isRegMask() {
-            let mut ClobbersFP0: bool = Op;
+            let mut ClobbersFP0: bool = Op.clobbersPhysReg(FP0);
             for let mut i: u32 = 1; i != 8; i += 1 {
-                (((operator!(operator!((Op == ClobbersFP0 && "Inconsistent FP register clobber")))) || (_wassert(L"Op.clobbersPhysReg(X86::FP0 + i) == ClobbersFP0 && \"Inconsistent FP register clobber\"", L"llvm\\lib\\Target\\X86\\X86FloatingPoint.cpp", (1052) as u32) , 0)) as void);
+                assert!(Op.clobbersPhysReg(FP0 + i) == ClobbersFP0, "Inconsistent FP register clobber");
             }
             if ClobbersFP0 {
                 ClobbersFPStack = true;
             }
         }
-        if  {
+        if !Op.isReg() || Op.getReg().operator unsigned int() < FP0 || Op.getReg().operator unsigned int() > FP6 {
             continue;
         }
         assert!(Op.isImplicit(), "Expected implicit def/use");
@@ -690,7 +716,7 @@ fn FPS::handleReturn(self, I: *mut iterator) {
     for let mut i: u32 = 0;
 let mut e: u32 = MI.getNumOperands(); i != e; i += 1 {
         let mut Op: *mut MachineOperand = MI.getOperand(i);
-        if  {
+        if !Op.isReg() || Op.getReg().operator unsigned int() < FP0 || Op.getReg().operator unsigned int() > FP6 {
             continue;
         }
         assert!(Op.isUse() && (Op.isKill() || getFPReg(Op) == FirstFPRegOp || MI.killsRegister(Op.getReg(), null)), "Ret only defs operands, and values aren't live beyond it");
@@ -706,12 +732,12 @@ let mut e: u32 = MI.getNumOperands(); i != e; i += 1 {
         e -= 1;
     }
     if FirstFPRegOp != ~0 {
-        MI(CreateReg(false, true));
+        MI.addOperand(CreateReg(ST0, false, true, false, false, false, false, 0, false, false, false));
     }
     if SecondFPRegOp != ~0 {
-        MI(CreateReg(false, true));
+        MI.addOperand(CreateReg(ST1, false, true, false, false, false, false, 0, false, false, false));
     }
-    self.adjustLiveRegs(LiveMask, iterator { MI });
+    self.adjustLiveRegs(LiveMask, MI);
     if !LiveMask {
         return;
     }
@@ -723,13 +749,13 @@ let mut e: u32 = MI.getNumOperands(); i != e; i += 1 {
     if self.StackTop == 1 {
         assert!(FirstFPRegOp == SecondFPRegOp && FirstFPRegOp == self.getStackEntry(0), "Stack misconfiguration for RET!");
         let mut NewReg: u32 = ScratchFPReg;
-        self.duplicateToTop(FirstFPRegOp, NewReg, iterator { MI });
+        self.duplicateToTop(FirstFPRegOp, NewReg, MI);
         FirstFPRegOp = NewReg;
     }
     assert!(self.StackTop == 2, "Must have two values live!");
     if self.getStackEntry(0) == SecondFPRegOp {
         assert!(self.getStackEntry(1) == FirstFPRegOp, "Unknown regs live");
-        self.moveToTop(FirstFPRegOp, iterator { MI });
+        self.moveToTop(FirstFPRegOp, MI);
     }
     assert!(self.getStackEntry(0) == FirstFPRegOp, "Unknown regs live");
     assert!(self.getStackEntry(1) == SecondFPRegOp, "Unknown regs live");
@@ -740,8 +766,8 @@ fn FPS::handleZeroArgFP(self, I: *mut iterator) {
     let mut MI: *mut MachineInstr = operator(I);
     let mut DestReg: u32 = getFPReg(MI.getOperand(0));
     MI.removeOperand(0);
-    MI.setDesc(self.TII.get);
-    MI(CreateReg(true, true));
+    MI.setDesc(self.TII.get(getConcreteOpcode(MI.getOpcode())));
+    MI.addOperand(CreateReg(ST0, true, true, false, false, false, false, 0, false, false, false));
     self.pushReg(DestReg);
     MI.dropDebugNumber();
 }
@@ -751,16 +777,16 @@ fn FPS::handleOneArgFP(self, I: *mut iterator) {
     let mut NumOps: u32 = MI.getDesc().getNumOperands();
     assert!((NumOps == AddrNumOperands + 1 || NumOps == 1), "Can only handle fst* & ftst instructions!");
     let mut Reg: u32 = getFPReg(MI.getOperand(NumOps - 1));
-    let mut KillsSrc: bool = MI.killsRegister;
-    if  {
-        self.duplicateToTop(Reg, ScratchFPReg, iterator { I });
+    let mut KillsSrc: bool = MI.killsRegister(FP0 + Reg, null);
+    if !KillsSrc && (MI.getOpcode() == IST_Fp64m32 || MI.getOpcode() == ISTT_Fp16m32 || MI.getOpcode() == ISTT_Fp32m32 || MI.getOpcode() == ISTT_Fp64m32 || MI.getOpcode() == IST_Fp64m64 || MI.getOpcode() == ISTT_Fp16m64 || MI.getOpcode() == ISTT_Fp32m64 || MI.getOpcode() == ISTT_Fp64m64 || MI.getOpcode() == IST_Fp64m80 || MI.getOpcode() == ISTT_Fp16m80 || MI.getOpcode() == ISTT_Fp32m80 || MI.getOpcode() == ISTT_Fp64m80 || MI.getOpcode() == ST_FpP80m) {
+        self.duplicateToTop(Reg, ScratchFPReg, I);
     } else {
-        self.moveToTop(Reg, iterator { I });
+        self.moveToTop(Reg, I);
     }
     MI.removeOperand(NumOps - 1);
-    MI.setDesc(self.TII.get);
-    MI(CreateReg(false, true));
-    if  {
+    MI.setDesc(self.TII.get(getConcreteOpcode(MI.getOpcode())));
+    MI.addOperand(CreateReg(ST0, false, true, false, false, false, false, 0, false, false, false));
+    if MI.getOpcode() == IST_FP64m || MI.getOpcode() == ISTT_FP16m || MI.getOpcode() == ISTT_FP32m || MI.getOpcode() == ISTT_FP64m || MI.getOpcode() == ST_FP80m {
         if self.StackTop == 0 {
             report_fatal_error("Stack empty??", true);
         }
@@ -776,55 +802,55 @@ fn FPS::handleOneArgFPRW(self, I: *mut iterator) {
     let mut NumOps: u32 = MI.getDesc().getNumOperands();
     assert!(NumOps >= 2, "FPRW instructions must have 2 ops!!");
     let mut Reg: u32 = getFPReg(MI.getOperand(1));
-    let mut KillsSrc: bool = MI.killsRegister;
+    let mut KillsSrc: bool = MI.killsRegister(FP0 + Reg, null);
     if KillsSrc {
-        self.moveToTop(Reg, iterator { I });
+        self.moveToTop(Reg, I);
         if self.StackTop == 0 {
             report_fatal_error("Stack cannot be empty!", true);
         }
         self.StackTop -= 1;
         self.pushReg(getFPReg(MI.getOperand(0)));
     } else {
-        self.duplicateToTop(Reg, getFPReg(MI.getOperand(0)), iterator { I });
+        self.duplicateToTop(Reg, getFPReg(MI.getOperand(0)), I);
     }
     MI.removeOperand(1);
     MI.removeOperand(0);
-    MI.setDesc(self.TII.get);
+    MI.setDesc(self.TII.get(getConcreteOpcode(MI.getOpcode())));
     MI.dropDebugNumber();
 }
 
-const ForwardST0Table: []TableEntry = zeroed();
+const ForwardST0Table: [12]TableEntry = [ADD_Fp32, ADD_FST0r, ADD_Fp64, ADD_FST0r, ADD_Fp80, ADD_FST0r, DIV_Fp32, DIV_FST0r, DIV_Fp64, DIV_FST0r, DIV_Fp80, DIV_FST0r, MUL_Fp32, MUL_FST0r, MUL_Fp64, MUL_FST0r, MUL_Fp80, MUL_FST0r, SUB_Fp32, SUB_FST0r, SUB_Fp64, SUB_FST0r, SUB_Fp80, SUB_FST0r];
 
-const ReverseST0Table: []TableEntry = zeroed();
+const ReverseST0Table: [12]TableEntry = [ADD_Fp32, ADD_FST0r, ADD_Fp64, ADD_FST0r, ADD_Fp80, ADD_FST0r, DIV_Fp32, DIVR_FST0r, DIV_Fp64, DIVR_FST0r, DIV_Fp80, DIVR_FST0r, MUL_Fp32, MUL_FST0r, MUL_Fp64, MUL_FST0r, MUL_Fp80, MUL_FST0r, SUB_Fp32, SUBR_FST0r, SUB_Fp64, SUBR_FST0r, SUB_Fp80, SUBR_FST0r];
 
-const ForwardSTiTable: []TableEntry = zeroed();
+const ForwardSTiTable: [12]TableEntry = [ADD_Fp32, ADD_FrST0, ADD_Fp64, ADD_FrST0, ADD_Fp80, ADD_FrST0, DIV_Fp32, DIVR_FrST0, DIV_Fp64, DIVR_FrST0, DIV_Fp80, DIVR_FrST0, MUL_Fp32, MUL_FrST0, MUL_Fp64, MUL_FrST0, MUL_Fp80, MUL_FrST0, SUB_Fp32, SUBR_FrST0, SUB_Fp64, SUBR_FrST0, SUB_Fp80, SUBR_FrST0];
 
-const ReverseSTiTable: []TableEntry = zeroed();
+const ReverseSTiTable: [12]TableEntry = [ADD_Fp32, ADD_FrST0, ADD_Fp64, ADD_FrST0, ADD_Fp80, ADD_FrST0, DIV_Fp32, DIV_FrST0, DIV_Fp64, DIV_FrST0, DIV_Fp80, DIV_FrST0, MUL_Fp32, MUL_FrST0, MUL_Fp64, MUL_FrST0, MUL_Fp80, MUL_FrST0, SUB_Fp32, SUB_FrST0, SUB_Fp64, SUB_FrST0, SUB_Fp80, SUB_FrST0];
 
 fn FPS::handleTwoArgFP(self, I: *mut iterator) {
     {
-        let mut ForwardST0TableChecked: atomic<bool> = atomic<bool> { false };
+        let mut ForwardST0TableChecked: atomic<bool> = false;
         if !ForwardST0TableChecked.load(memory_order_relaxed) {
             assert!(is_sorted(ForwardST0Table), "All lookup tables must be sorted for efficient access!");
             ForwardST0TableChecked.store(true, memory_order_relaxed);
         }
     }
     {
-        let mut ReverseST0TableChecked: atomic<bool> = atomic<bool> { false };
+        let mut ReverseST0TableChecked: atomic<bool> = false;
         if !ReverseST0TableChecked.load(memory_order_relaxed) {
             assert!(is_sorted(ReverseST0Table), "All lookup tables must be sorted for efficient access!");
             ReverseST0TableChecked.store(true, memory_order_relaxed);
         }
     }
     {
-        let mut ForwardSTiTableChecked: atomic<bool> = atomic<bool> { false };
+        let mut ForwardSTiTableChecked: atomic<bool> = false;
         if !ForwardSTiTableChecked.load(memory_order_relaxed) {
             assert!(is_sorted(ForwardSTiTable), "All lookup tables must be sorted for efficient access!");
             ForwardSTiTableChecked.store(true, memory_order_relaxed);
         }
     }
     {
-        let mut ReverseSTiTableChecked: atomic<bool> = atomic<bool> { false };
+        let mut ReverseSTiTableChecked: atomic<bool> = false;
         if !ReverseSTiTableChecked.load(memory_order_relaxed) {
             assert!(is_sorted(ReverseSTiTable), "All lookup tables must be sorted for efficient access!");
             ReverseSTiTableChecked.store(true, memory_order_relaxed);
@@ -836,49 +862,49 @@ fn FPS::handleTwoArgFP(self, I: *mut iterator) {
     let mut Dest: u32 = getFPReg(MI.getOperand(0));
     let mut Op0: u32 = getFPReg(MI.getOperand(NumOperands - 2));
     let mut Op1: u32 = getFPReg(MI.getOperand(NumOperands - 1));
-    let mut KillsOp0: bool = MI.killsRegister;
-    let mut KillsOp1: bool = MI.killsRegister;
+    let mut KillsOp0: bool = MI.killsRegister(FP0 + Op0, null);
+    let mut KillsOp1: bool = MI.killsRegister(FP0 + Op1, null);
     let mut dl: *DebugLoc = MI.getDebugLoc();
     let mut TOS: u32 = self.getStackEntry(0);
     if Op0 != TOS && Op1 != TOS {
         if KillsOp0 {
-            self.moveToTop(Op0, iterator { I });
+            self.moveToTop(Op0, I);
             TOS = Op0;
         } else if KillsOp1 {
-            self.moveToTop(Op1, iterator { I });
+            self.moveToTop(Op1, I);
             TOS = Op1;
         } else {
-            self.duplicateToTop(Op0, Dest, iterator { I });
+            self.duplicateToTop(Op0, Dest, I);
             Op0 = TOS = Dest;
             KillsOp0 = true;
         }
     } else if !KillsOp0 && !KillsOp1 {
-        self.duplicateToTop(Op0, Dest, iterator { I });
+        self.duplicateToTop(Op0, Dest, I);
         Op0 = TOS = Dest;
         KillsOp0 = true;
     }
     assert!((TOS == Op0 || TOS == Op1) && (KillsOp0 || KillsOp1), "Stack conditions not set up right!");
-    let mut InstTable: ArrayRef<TableEntry> = zeroed();
+    let mut InstTable: ArrayRef<TableEntry> = ArrayRef<TableEntry> {};
     let mut isForward: bool = TOS == Op0;
     let mut updateST0: bool = (TOS == Op0 && !KillsOp1) || (TOS == Op1 && !KillsOp0);
     if updateST0 {
         if isForward {
-            InstTable() = ForwardST0Table;
+            InstTable = ForwardST0Table;
         } else {
-            InstTable() = ReverseST0Table;
+            InstTable = ReverseST0Table;
         }
     } else {
         if isForward {
-            InstTable() = ForwardSTiTable;
+            InstTable = ForwardSTiTable;
         } else {
-            InstTable() = ReverseSTiTable;
+            InstTable = ReverseSTiTable;
         }
     }
-    let mut Opcode: i32 = Lookup(MI.getOpcode());
+    let mut Opcode: i32 = Lookup(InstTable, MI.getOpcode());
     assert!(Opcode != -1, "Unknown TwoArgFP pseudo instruction!");
     let mut NotTOS: u32 = if (TOS == Op0) { Op1 } else { Op0 };
     self.MBB.remove(&mut operator(operator(I, 0)));
-    I = BuildMI(*self.MBB, I, dl, self.TII.get)(self.getSTReg(NotTOS));
+    I = BuildMI(*self.MBB, I, MIMetadata { DL: dl, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(Opcode)).addReg(self.getSTReg(NotTOS), RegState {}, 0).operator MachineInstrBundleIterator();
     if !MI.mayRaiseFPException() {
         operator(I).setFlag(NoFPExcept);
     }
@@ -899,12 +925,12 @@ fn FPS::handleCompareFP(self, I: *mut iterator) {
     assert!(NumOperands == 2, "Illegal FUCOM* instruction!");
     let mut Op0: u32 = getFPReg(MI.getOperand(NumOperands - 2));
     let mut Op1: u32 = getFPReg(MI.getOperand(NumOperands - 1));
-    let mut KillsOp0: bool = MI.killsRegister;
-    let mut KillsOp1: bool = MI.killsRegister;
-    self.moveToTop(Op0, iterator { I });
-    MI.getOperand(0).setReg(Register { Reg: self.getSTReg(Op1) });
+    let mut KillsOp0: bool = MI.killsRegister(FP0 + Op0, null);
+    let mut KillsOp1: bool = MI.killsRegister(FP0 + Op1, null);
+    self.moveToTop(Op0, I);
+    MI.getOperand(0).setReg(self.getSTReg(Op1));
     MI.removeOperand(1);
-    MI.setDesc(self.TII.get);
+    MI.setDesc(self.TII.get(getConcreteOpcode(MI.getOpcode())));
     MI.dropDebugNumber();
     if KillsOp0 {
         self.freeStackSlotAfter(I, Op0);
@@ -918,12 +944,12 @@ fn FPS::handleCondMovFP(self, I: *mut iterator) {
     let mut MI: *mut MachineInstr = operator(I);
     let mut Op0: u32 = getFPReg(MI.getOperand(0));
     let mut Op1: u32 = getFPReg(MI.getOperand(2));
-    let mut KillsOp1: bool = MI.killsRegister;
-    self.moveToTop(Op0, iterator { I });
+    let mut KillsOp1: bool = MI.killsRegister(FP0 + Op1, null);
+    self.moveToTop(Op0, I);
     MI.removeOperand(0);
     MI.removeOperand(1);
-    MI.getOperand(0).setReg(Register { Reg: self.getSTReg(Op1) });
-    MI.setDesc(self.TII.get);
+    MI.getOperand(0).setReg(self.getSTReg(Op1));
+    MI.setDesc(self.TII.get(getConcreteOpcode(MI.getOpcode())));
     MI.dropDebugNumber();
     if Op0 != Op1 && KillsOp1 {
         self.freeStackSlotAfter(I, Op1);
@@ -942,7 +968,7 @@ fn FPS::handleSpecialFP(self, Inst: *mut iterator) {
     }
     match MI.getOpcode() {
         _ => {
-            llvm_unreachable_internal("Unknown SpecialFP instruction!", "llvm\\lib\\Target\\X86\\X86FloatingPoint.cpp", 1555);
+            llvm_unreachable_internal("Unknown SpecialFP instruction!", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86FloatingPoint.cpp", 1555);
         },
         COPY => {
             let mut MO1: *MachineOperand = MI.getOperand(1);
@@ -956,12 +982,12 @@ fn FPS::handleSpecialFP(self, Inst: *mut iterator) {
                 self.Stack[Slot] = DstFP;
                 self.RegMap[DstFP] = Slot;
             } else {
-                self.duplicateToTop(SrcFP, DstFP, iterator { Inst });
+                self.duplicateToTop(SrcFP, DstFP, Inst);
             }
             break;
         },
         IMPLICIT_DEF => {
-            let mut Reg: u32 = 0;
+            let mut Reg: u32 = MI.getOperand(0).getReg().operator unsigned int() - FP0;
             while true {
                 {
                 if DebugFlag && isCurrentDebugType("x86-fp-stackifier", 1) {
@@ -970,7 +996,7 @@ fn FPS::handleSpecialFP(self, Inst: *mut iterator) {
             }
                 if !(false) { break; }
             }
-            BuildMI(*self.MBB, Inst, MI.getDebugLoc(), self.TII.get);
+            BuildMI(*self.MBB, Inst, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(LD_F0));
             self.pushReg(Reg);
             break;
         },
@@ -980,13 +1006,13 @@ fn FPS::handleSpecialFP(self, Inst: *mut iterator) {
         FAKE_USE => {
             assert!(MI.getNumExplicitOperands() == 1, "FAKE_USE must have exactly one operand");
             if MI.getOperand(0).isKill() {
-                self.freeStackSlotBefore(iterator { Inst }, getFPReg(MI.getOperand(0)));
+                self.freeStackSlotBefore(Inst, getFPReg(MI.getOperand(0)));
             }
             MI.removeOperand(0);
             return;
         },
     }
-    Inst = self.MBB.erase(iterator { Inst });
+    Inst = self.MBB.erase(Inst);
     if Inst == self.MBB.begin() {
         while true {
             {
@@ -996,7 +1022,7 @@ fn FPS::handleSpecialFP(self, Inst: *mut iterator) {
         }
             if !(false) { break; }
         }
-        Inst = BuildMI(*self.MBB, Inst, DebugLoc { Loc: null }, self.TII.get);
+        Inst = BuildMI(*self.MBB, Inst, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(KILL)).operator MachineInstrBundleIterator();
     } else {
         operator(Inst);
     }
@@ -1004,8 +1030,38 @@ fn FPS::handleSpecialFP(self, Inst: *mut iterator) {
 
 fn FPS::setKillFlags(self: *FPS, MBB: *mut MachineBasicBlock) {
     let mut TRI: *TargetRegisterInfo = *MBB.getParent().getSubtarget().getRegisterInfo();
-    let mut LPR: LiveRegUnits = LiveRegUnits { TRI };
+    let mut LPR: LiveRegUnits = TRI;
     LPR.addLiveOuts(MBB);
+    for MI in reverse(MBB) {
+        if MI.isDebugInstr() {
+            continue;
+        }
+        let mut Defs: bitset<8> = bitset<8> {};
+        let mut Uses: SmallVector<MachineOperand *, 2> = SmallVector<MachineOperand *, 2> {};
+        for MO in MI.operands() {
+            if !MO.isReg() {
+                continue;
+            }
+            let mut Reg: u32 = MO.getReg().operator unsigned int() - FP0;
+            if Reg >= 8 {
+                continue;
+            }
+            if MO.isDef() {
+                Defs.set(Reg, true);
+                if LPR.available(MO.getReg().operator MCRegister()) {
+                    MO.setIsDead(true);
+                }
+            } else {
+                Uses.push(&mut MO);
+            }
+        }
+        for MO in Uses {
+            if Defs.test(getFPReg(*MO)) || LPR.available(MO.getReg().operator MCRegister()) {
+                MO.setIsKill(true);
+            }
+        }
+        LPR.stepBackward(MI);
+    }
 }
 
 fn X86FPStackifierLegacy::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
@@ -1013,7 +1069,7 @@ fn X86FPStackifierLegacy::runOnMachineFunction(self, MF: *mut MachineFunction) -
     if !Impl.shouldRun(MF) {
         return false;
     }
-    let mut Bundles: *mut EdgeBundles = operator&();
+    let mut Bundles: *mut EdgeBundles = &mut self.getAnalysis().getEdgeBundles();
     return FPS {}.run(MF, Bundles);
 }
 
@@ -1022,10 +1078,10 @@ fn X86FPStackifierPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFu
     if !Impl.shouldRun(MF) {
         return all();
     }
-    let mut Bundles: *mut EdgeBundles = operator&(MFAM);
+    let mut Bundles: *mut EdgeBundles = &mut MFAM.getResult(MF);
     let mut Changed: bool = Impl.run(MF, Bundles);
     if !Changed {
         return all();
     }
-    return getMachineFunctionPassPreservedAnalyses();
+    return getMachineFunctionPassPreservedAnalyses().preserveSet();
 }

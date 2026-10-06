@@ -4,9 +4,9 @@ enum UncheckedLdStMode {
     UncheckedAlways = 2,
 }
 
-static mut ClUncheckedLdSt: i32 = "stack-tagging-unchecked-ld-st";
+static mut ClUncheckedLdSt: opt<UncheckedLdStMode> = opt<UncheckedLdStMode> { "stack-tagging-unchecked-ld-st", Hidden, init(UncheckedSafe), "Unconditionally apply unchecked-ld-st optimization (even for large stack frames, or in the presence of variable sized allocas).", values(OptionEnumValue { Name: "never", Value: UncheckedNever, Description: "never apply unchecked-ld-st" }, OptionEnumValue { Name: "safe", Value: UncheckedSafe, Description: "apply unchecked-ld-st when the target is definitely within range" }, OptionEnumValue { Name: "always", Value: UncheckedAlways, Description: "always apply unchecked-ld-st" }) };
 
-static mut ClFirstSlot: i32 = "stack-tagging-first-slot-opt";
+static mut ClFirstSlot: opt<bool> = opt<bool> { "stack-tagging-first-slot-opt", Hidden, init(true), "Apply first slot optimization for stack tagging (eliminate ADDG Rt, Rn, 0, 0)." };
 
 struct AArch64StackTaggingPreRAImpl {
     MF: *mut MachineFunction,
@@ -28,7 +28,7 @@ struct AArch64StackTaggingPreRALegacy {
 }
 
 fn AArch64StackTaggingPreRALegacy::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
-    if self.skipFunction {
+    if self.skipFunction(MF.getFunction()) {
         return false;
     }
     return AArch64StackTaggingPreRAImpl {}.run(MF);
@@ -40,7 +40,7 @@ fn AArch64StackTaggingPreRALegacy::getPassName(self: *AArch64StackTaggingPreRALe
 
 fn AArch64StackTaggingPreRALegacy::getAnalysisUsage(self: *AArch64StackTaggingPreRALegacy, AU: *mut AnalysisUsage) {
     AU.setPreservesCFG();
-    self.getAnalysisUsage;
+    self.getAnalysisUsage(AU);
 }
 
 fn AArch64StackTaggingPreRALegacy::getPassKind(self: *AArch64StackTaggingPreRALegacy) -> PassKind {
@@ -86,7 +86,7 @@ fn createAArch64StackTaggingPreRALegacyPass() -> *mut FunctionPass {
 fn AArch64StackTaggingPreRAPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
     if AArch64StackTaggingPreRAImpl {}.run(MF) {
         let mut PA: PreservedAnalyses = getMachineFunctionPassPreservedAnalyses();
-        PA;
+        PA.preserveSet();
         return PA;
     }
     return all();
@@ -94,6 +94,9 @@ fn AArch64StackTaggingPreRAPass::run(self, MF: *mut MachineFunction, MFAM: *mut 
 
 fn isUncheckedLoadOrStoreOpcode(Opcode: u32) -> bool {
     match Opcode {
+        LDRBBui => {
+            LDRHHui;
+        },
         _ => {
             return false;
         },
@@ -101,9 +104,9 @@ fn isUncheckedLoadOrStoreOpcode(Opcode: u32) -> bool {
 }
 
 fn AArch64StackTaggingPreRAImpl::mayUseUncheckedLoadStore(self) -> bool {
-    if ClUncheckedLdSt() == UncheckedNever {
+    if ClUncheckedLdSt.operator UncheckedLdStMode() == UncheckedNever {
         return false;
-    } else if ClUncheckedLdSt() == UncheckedAlways {
+    } else if ClUncheckedLdSt.operator UncheckedLdStMode() == UncheckedAlways {
         return true;
     }
     let mut FrameSize: u32 = 0;
@@ -115,9 +118,27 @@ let mut e: u32 = self.MFI.getObjectIndexEnd(); i != e; i += 1 {
     return !self.MFI.hasVarSizedObjects() && EntireFrameReachableFromSP;
 }
 
-fn AArch64StackTaggingPreRAImpl::uncheckUsesOf(self, TaggedReg: u32, FI: i32) {}
+fn AArch64StackTaggingPreRAImpl::uncheckUsesOf(self, TaggedReg: u32, FI: i32) {
+    for UseI in make_early_inc_range(self.MRI.use_instructions(TaggedReg)) {
+        if isUncheckedLoadOrStoreOpcode(UseI.getOpcode()) {
+            let mut OpIdx: u32 = self.TII.getLoadStoreImmIdx(UseI.getOpcode()) - 1;
+            if UseI.getOperand(OpIdx).isReg() && UseI.getOperand(OpIdx).getReg() == TaggedReg {
+                UseI.getOperand(OpIdx).ChangeToFrameIndex(FI, 0);
+                UseI.getOperand(OpIdx).setTargetFlags(MO_TAGGED);
+            }
+        } else if UseI.isCopy() && UseI.getOperand(0).getReg().isVirtual() {
+            self.uncheckUsesOf(UseI.getOperand(0).getReg().operator unsigned int(), FI);
+        }
+    }
+}
 
-fn AArch64StackTaggingPreRAImpl::uncheckLoadsAndStores(self) {}
+fn AArch64StackTaggingPreRAImpl::uncheckLoadsAndStores(self) {
+    for I in self.ReTags {
+        let mut TaggedReg: Register = I.getOperand(0).getReg();
+        let mut FI: i32 = I.getOperand(1).getIndex();
+        self.uncheckUsesOf(TaggedReg.operator unsigned int(), FI);
+    }
+}
 
 struct SlotWithTag {
     FI: i32,
@@ -147,27 +168,89 @@ fn AArch64StackTaggingPreRAImpl::findFirstSlotCandidate(self) -> optional<int> {
     }
         if !(false) { break; }
     }
-    if operator!() {
-        return nullopt();
+    if !ClFirstSlot {
+        return nullopt;
     }
-    let mut RetagScore: i32 = 0;
+    let mut RetagScore: DenseMap<SlotWithTag, int> = DenseMap<SlotWithTag, int> {};
     let mut MaxScoreST: SlotWithTag = SlotWithTag { FI: -1, Tag: -1 };
     let mut MaxScore: i32 = -1;
+    for I in self.ReTags {
+        let mut ST: SlotWithTag = *I;
+        if isSlotPreAllocated(self.MFI, ST.FI) {
+            continue;
+        }
+        let mut RetagReg: Register = I.getOperand(0).getReg();
+        if !RetagReg.isVirtual() {
+            continue;
+        }
+        let mut Score: i32 = 0;
+        let mut WorkList: SmallVector<Register, 8> = SmallVector<Register, 8> {};
+        WorkList.push(RetagReg);
+        while !WorkList.is_empty() {
+            let mut UseReg: Register = WorkList.pop_back_val();
+            for UseI in self.MRI.use_instructions(UseReg) {
+                let mut Opcode: u32 = UseI.getOpcode();
+                if Opcode == STGi || Opcode == ST2Gi || Opcode == STZGi || Opcode == STZ2Gi || Opcode == STGPi || Opcode == STGloop || Opcode == STZGloop || Opcode == STGloop_wback || Opcode == STZGloop_wback {
+                    continue;
+                }
+                if UseI.isCopy() {
+                    let mut DstReg: Register = UseI.getOperand(0).getReg();
+                    if DstReg.isVirtual() {
+                        WorkList.push(DstReg);
+                    }
+                    continue;
+                }
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("aarch64-stack-tagging-pre-ra", 1) {
+                        dbgs() << "[" << ST.FI << ":" << ST.Tag << "] use of " << printReg(UseReg, null, 0, null) << " in " << UseI << "\n";
+                    }
+                }
+                    if !(false) { break; }
+                }
+                Score += 1;
+            }
+        }
+        let mut TotalScore: i32 = RetagScore[ST] += Score;
+        if TotalScore > MaxScore || (TotalScore == MaxScore && ST.FI > MaxScoreST.FI) {
+            MaxScore = TotalScore;
+            MaxScoreST = ST;
+        }
+    }
     if MaxScoreST.FI < 0 {
-        return nullopt();
+        return nullopt;
     }
     if MaxScoreST.Tag == 0 {
         return MaxScoreST.FI;
     }
     let mut SwapST: SlotWithTag = SlotWithTag { FI: -1, Tag: -1 };
+    for I in self.ReTags {
+        let mut ST: SlotWithTag = *I;
+        if ST.Tag == 0 {
+            SwapST = ST;
+            break;
+        }
+    }
+    for I in self.ReTags {
+        let mut ST: SlotWithTag = *I;
+        let mut TagOp: *mut MachineOperand = I.getOperand(4);
+        if ST == MaxScoreST {
+            TagOp.setImm(0);
+        } else if ST == SwapST {
+            TagOp.setImm(MaxScoreST.Tag);
+        }
+    }
     return MaxScoreST.FI;
 }
 
 fn AArch64StackTaggingPreRAImpl::run(self, Func: *mut MachineFunction) -> bool {
     self.MF = &mut Func;
     self.MRI = &mut self.MF.getRegInfo();
-    self.AFI = self.MF;
+    self.AFI = self.MF.getInfo();
+    self.TII = self.MF.getSubtarget().getInstrInfo() as *AArch64InstrInfo;
+    self.TRI = self.MF.getSubtarget().getRegisterInfo() as *AArch64RegisterInfo;
     self.MFI = &mut self.MF.getFrameInfo();
+    self.ReTags.clear();
     assert!(self.MRI.isSSA();
     while true {
         {
@@ -177,16 +260,38 @@ fn AArch64StackTaggingPreRAImpl::run(self, Func: *mut MachineFunction) -> bool {
     }
         if !(false) { break; }
     }
-    let mut TaggedSlots: SmallSetVector<int, 8> = zeroed();
-    if  {
+    let mut TaggedSlots: SmallSetVector<int, 8> = SmallSetVector<int, 8> {};
+    for BB in *self.MF {
+        for I in BB {
+            if I.getOpcode() == TAGPstack {
+                self.ReTags.push(&mut I);
+                let mut FI: i32 = I.getOperand(1).getIndex();
+                TaggedSlots.insert(FI);
+                assert!(I.getOperand(2).getImm() == 0);
+            }
+        }
+    }
+    for FI in TaggedSlots {
+        self.MFI.setObjectSSPLayout(FI, SSPLK_None);
+    }
+    if self.ReTags.is_empty() {
         return false;
     }
     if self.mayUseUncheckedLoadStore() {
         self.uncheckLoadsAndStores();
     }
-    let mut BaseSlot: optional<int> = zeroed();
-    if BaseSlot() {
-        self.AFI.setTaggedBasePointerIndex(operator*());
+    let mut BaseSlot: optional<int> = self.findFirstSlotCandidate();
+    if BaseSlot {
+        self.AFI.setTaggedBasePointerIndex(operator(BaseSlot));
+    }
+    for I in self.ReTags {
+        let mut FI: i32 = I.getOperand(1).getIndex();
+        let mut Tag: i32 = I.getOperand(4).getImm();
+        let mut Base: Register = I.getOperand(3).getReg();
+        if Tag == 0 && FI == BaseSlot {
+            BuildMI(*I.getParent(), I, MIMetadata {}, self.TII.get(COPY), I.getOperand(0).getReg()).addReg(Base, RegState {}, 0);
+            I.eraseFromParent();
+        }
     }
     return true;
 }

@@ -1,31 +1,101 @@
-fn evaluateDeinterleave(I: *mut IntrinsicInst, Candidates: *mut i32, L: *mut Loop, TL: *AArch64TargetLowering, DL: DataLayout) {
-    let mut VScaleRange: ConstantRange = getVScaleRange(I, 64);
-    let mut InputVT: EVT = TL.getValueType(DL, I.getOperand());
-    if !InputVT.isScalableVector() || (InputVT.getScalarSizeInBits() < 16 && (!VScaleRange.getUpper().ult(16) || VScaleRange.isUpperWrapped())) || TL.getTypeConversion(I.getContext, InputVT) != TypeLegal {
+fn evaluateDeinterleave(I: *mut IntrinsicInst, Candidates: *mut DeinterleaveMap, L: *mut Loop, TL: *AArch64TargetLowering, DL: DataLayout) {
+    assert!(I.getIntrinsicID() == vector_deinterleave4, "Only deinterleave4 supported currently");
+    let mut VScaleRange: ConstantRange = getVScaleRange(I.getFunction(), 64);
+    let mut InputVT: EVT = TL.getValueType(DL, I.getOperand(0).getType(), false);
+    if !InputVT.isScalableVector() || (InputVT.getScalarSizeInBits() < 16 && (!VScaleRange.getUpper().ult(16) || VScaleRange.isUpperWrapped())) || TL.getTypeConversion(I.getContext(), InputVT).first != TypeLegal {
         return;
     }
-    let mut Extends: array<CastInst *, 4> = zeroed();
+    let mut Extends: array<CastInst *, 4> = array<CastInst *, 4> {};
     let mut Opcode: u32 = 0;
     let mut DestTy: *mut Type = null;
-    if operator!(all_of(Closure_1 { DestTy: DestTy, Opcode: Opcode })) {
+    for U in I.users() {
+        let mut Extract: *mut ExtractValueInst = dyn_cast(U);
+        if !Extract || !Extract.hasOneUse() {
+            return;
+        }
+        let mut Extend: *mut CastInst = dyn_cast_if_present(operator(Extract.users().begin()));
+        if !Extend || (!isa(Extend) && !isa(Extend)) {
+            return;
+        }
+        if !L.contains(Extend) {
+            return;
+        }
+        Opcode = Extend.getOpcode();
+        DestTy = Extend.getDestTy();
+        if DestTy.getPrimitiveSizeInBits() != InputVT.getSizeInBits() {
+            return;
+        }
+        Extends[Extract.getIndices().front()] = Extend;
+    }
+    if !all_of(Extends, Closure_1 { DestTy: DestTy, Opcode: Opcode }) {
         return;
     }
-    Candidates()(I);
+    Candidates.try_emplace(I, Extends);
 }
 
-fn optimizeSVEDeinterleavedExtends(Deinterleaves: i32) {}
+fn optimizeSVEDeinterleavedExtends(Deinterleaves: DeinterleaveMap) {
+    for x in Deinterleaves {
+        let mut DestTy: *mut VectorType = cast(Extends[0].getDestTy());
+        let mut SrcTy: *mut VectorType = cast(Extends[0].getSrcTy());
+        let mut DstBits: u32 = DestTy.getScalarSizeInBits();
+        let mut SrcBits: u32 = SrcTy.getScalarSizeInBits();
+        let mut IsUIToFP: bool = isa(Extends[0]);
+        let mut StepVecTy: *mut VectorType = getInteger(DestTy);
+        let mut Input: *mut Value = Deinterleave.getOperand(0);
+        let mut InputTy: *mut Type = Input.getType();
+        let mut Invalid: APInt = getAllOnes(DstBits);
+        for x in enumerate(Extends) {
+            if !Extend {
+                continue;
+            }
+            let mut StartIdx: APInt = Invalid << SrcBits;
+            operator(StartIdx, Idx);
+            let mut Builder: IRBuilder<> = Extend;
+            let mut StepVector: *mut Value = Builder.CreateStepVector(StepVecTy, "");
+            let mut ScaledSteps: *mut Value = Builder.CreateNUWMul(StepVector, get(StepVecTy, 4, false, false), "");
+            let mut ZextTbl: *mut Value = Builder.CreateNUWAdd(ScaledSteps, get(StepVecTy, StartIdx), "");
+            let mut FinalMask: *mut Value = Builder.CreateBitCast(ZextTbl, InputTy, "");
+            let mut Tbl: *mut Value = Builder.CreateIntrinsic(aarch64_sve_tbl, [InputTy], [Input, FinalMask], FMFSource {}, "", ArrayRef<OperandBundleDef> {}, function_ref<void (CallInst *)> { Closure_2 {}, null, null });
+            let mut Widen: *mut Value = Builder.CreateBitCast(Tbl, StepVecTy, "");
+            if IsUIToFP {
+                Widen = Builder.CreateUIToFP(Widen, DestTy, "", false, null);
+            }
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("aarch64-sve-shuffle-opts", 1) {
+                    dbgs() << "SVETBLOPT: Replaced " << *Extend << " with " << *Widen << "\n";
+                }
+            }
+                if !(false) { break; }
+            }
+            Extend.replaceAllUsesWith(Widen);
+            Extend.eraseFromParent();
+        }
+        for U in make_early_inc_range(Deinterleave.users()) {
+            cast(U).eraseFromParent();
+        }
+        Deinterleave.eraseFromParent();
+    }
+}
 
 fn processLoop(L: *mut Loop, ST: *AArch64Subtarget, DL: DataLayout) -> bool {
-    if operator!(L()()) || !ST.isSVEorStreamingSVEAvailable() {
+    if !L.isInnermost() || !ST.isSVEorStreamingSVEAvailable() {
         return false;
     }
     let mut TL: *AArch64TargetLowering = *ST.getTargetLowering();
     assert!(DL.isLittleEndian(), "Shuffle optimizations unsupported for big endian targets.");
-    let mut Candidates: i32 = 0;
-    if Candidates()() {
+    let mut Candidates: DeinterleaveMap = DeinterleaveMap {};
+    for BB in L.blocks() {
+        for I in *BB {
+            if match(&mut I, m_Intrinsic(m_Value())) {
+                evaluateDeinterleave(cast(&mut I), Candidates, L, TL, DL);
+            }
+        }
+    }
+    if Candidates.is_empty() {
         return false;
     }
-    optimizeSVEDeinterleavedExtends();
+    optimizeSVEDeinterleavedExtends(Candidates);
     return true;
 }
 
@@ -39,15 +109,15 @@ fn SVEShuffleOpts::runOnLoop(self, L: *mut Loop, PM: *mut LPPassManager) -> bool
     if self.skipLoop(L) {
         return false;
     }
-    let mut TPC: *mut TargetPassConfig = ;
-    let mut TM: *AArch64TargetMachine = TPC;
-    let mut F: *Function = L()()();
+    let mut TPC: *mut TargetPassConfig = self.getAnalysis();
+    let mut TM: *AArch64TargetMachine = TPC.getTM();
+    let mut F: *Function = L.getHeader().getParent();
     let mut ST: *AArch64Subtarget = *TM.getSubtargetImpl(*F);
-    return processLoop(*L, ST, F());
+    return processLoop(*L, ST, F.getParent().getDataLayout());
 }
 
 fn SVEShuffleOpts::getAnalysisUsage(self: *SVEShuffleOpts, AU: *mut AnalysisUsage) {
-    AU;
+    AU.addRequired();
     AU.setPreservesCFG();
 }
 
@@ -90,14 +160,14 @@ fn createSVEShuffleOptsPass() -> *mut Pass {
 }
 
 fn AArch64SVEShuffleOptsPass::run(self, L: *mut Loop, AM: *mut LoopAnalysisManager, AR: *mut LoopStandardAnalysisResults, U: *mut LPMUpdater) -> PreservedAnalyses {
-    let mut F: *Function = L()()();
+    let mut F: *Function = L.getHeader().getParent();
     let mut ST: *AArch64Subtarget = *self.TM.getSubtargetImpl(*F);
-    if processLoop(L, ST, F()) {
+    if processLoop(L, ST, F.getParent().getDataLayout()) {
         let mut PA: PreservedAnalyses = PreservedAnalyses {};
-        PA;
-        PA;
-        PA;
-        PA;
+        PA.preserveSet();
+        PA.preserve();
+        PA.preserve();
+        PA.preserve();
         return PA;
     }
     return all();
@@ -111,3 +181,7 @@ struct Closure_1 {
 fn Closure_1::call(self: *Closure_1, CI: *mut CastInst) -> bool {
         return !CI || (CI.getDestTy() == self.DestTy && CI.getOpcode() == self.Opcode);
     }
+
+struct Closure_2 {}
+
+fn Closure_2::call(self: *Closure_2, arg: *mut CallInst) {}

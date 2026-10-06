@@ -6,7 +6,7 @@ enum PtrauthCheckMode {
     Trap = 2,
 }
 
-static mut PtrauthAuthChecks: i32 = "aarch64-ptrauth-auth-checks";
+static mut PtrauthAuthChecks: opt<PtrauthCheckMode> = opt<PtrauthCheckMode> { "aarch64-ptrauth-auth-checks", Hidden, values(OptionEnumValue { Name: "none", Value: Unchecked, Description: "don't test for failure" }, OptionEnumValue { Name: "poison", Value: Poison, Description: "poison on failure" }, OptionEnumValue { Name: "trap", Value: Trap, Description: "trap on failure" }), "Check pointer authentication auth/resign failures" };
 
 struct AArch64AsmPrinter {
     Resolver: *mut AnalysisResolver,
@@ -18,7 +18,7 @@ struct AArch64AsmPrinter {
     TM: *mut TargetMachine,
     MAI: *MCAsmInfo,
     OutContext: *mut MCContext,
-    OutStreamer: i32,
+    OutStreamer: unique_ptr<MCStreamer>,
     MF: *mut MachineFunction,
     MMI: *mut MachineModuleInfo,
     PointerSize: u32,
@@ -29,11 +29,11 @@ struct AArch64AsmPrinter {
     CurrentFnSym: *mut MCSymbol,
     CurrentFnDescSym: *mut MCSymbol,
     CurrentFnSymForSize: *mut MCSymbol,
-    CurrentFnCallsiteEndSymbols: i32,
+    CurrentFnCallsiteEndSymbols: DenseMap<const MachineBasicBlock *, SmallVector<MCSymbol *, 1>>,
     SDPI: *StaticDataProfileInfo,
     PSI: *ProfileSummaryInfo,
-    MBBSectionRanges: i32,
-    GlobalGOTEquivs: i32,
+    MBBSectionRanges: MapVector<MBBSectionID, MBBSectionRange>,
+    GlobalGOTEquivs: MapVector<const MCSymbol *, GOTEquivUsePair>,
     GetMMI: function<MachineModuleInfo *()>,
     GetORE: function<MachineOptimizationRemarkEmitter *(MachineFunction &)>,
     GetMDT: function<MachineDominatorTree *(MachineFunction &)>,
@@ -43,23 +43,23 @@ struct AArch64AsmPrinter {
     EmitStackMaps: function<void (Module &)>,
     AssertDebugEHFinalized: function<void ()>,
     CurrentFnEnd: *mut MCSymbol,
-    MBBSectionExceptionSyms: i32,
+    MBBSectionExceptionSyms: DenseMap<MBBSectionID, MCSymbol *>,
     CurrentSectionBeginSym: *mut MCSymbol,
-    AddrLabelSymbols: i32,
-    GCMetadataPrinters: i32,
+    AddrLabelSymbols: unique_ptr<AddrLabelMap>,
+    GCMetadataPrinters: unique_ptr<GCMetadataPrinter>>,
     VerboseAsm: bool,
-    StackUsageStream: i32,
-    PCSectionsSymbols: i32,
+    StackUsageStream: unique_ptr<raw_fd_ostream>,
+    PCSectionsSymbols: DenseMap<const MDNode *, SmallVector<const MCSymbol *>>,
     CurrentFnBegin: *mut MCSymbol,
     CurrentFnBeginLocal: *mut MCSymbol,
-    EHHandlers: i32,
-    Handlers: i32,
+    EHHandlers: unique_ptr<EHStreamer>, 1>,
+    Handlers: unique_ptr<AsmPrinterHandler>, 2>,
     NumUserHandlers: u64,
     SM: StackMaps,
-    OwnedMDT: i32,
-    OwnedMLI: i32,
+    OwnedMDT: unique_ptr<MachineDominatorTree>,
+    OwnedMLI: unique_ptr<MachineLoopInfo>,
     DD: *mut DwarfDebug,
-    PP: i32,
+    PP: unique_ptr<PseudoProbeHandler>,
     ModuleCFISection: CFISection,
     HasSplitStack: bool,
     HasNoSplitStack: bool,
@@ -77,11 +77,11 @@ struct AArch64AsmPrinter {
     PtrauthInitFiniAddressDisc: bool,
     InstsEmitted: u32,
     EnableImportCallOptimization: bool,
-    SectionToImportedFunctionCalls: i32,
+    SectionToImportedFunctionCalls: pair<MCSymbol *, MCSymbol *>>>,
     PAuthIFuncNextUniqueID: u32,
-    HwasanMemaccessSymbols: i32,
+    HwasanMemaccessSymbols: map<HwasanMemaccessTuple, MCSymbol *>,
     AArch64FI: *mut AArch64FunctionInfo,
-    LOHInstToLabel: i32,
+    LOHInstToLabel: MInstToMCSymbol,
 }
 
 fn AArch64AsmPrinter::getPassName(self: *AArch64AsmPrinter) -> str {
@@ -93,27 +93,46 @@ fn AArch64AsmPrinter::lowerOperand(self: *AArch64AsmPrinter, MO: *MachineOperand
 }
 
 fn AArch64AsmPrinter::isPtrauthRegSafe(self: *AArch64AsmPrinter, Reg: Register) -> bool {
+    if self.STI.isX16X17Safer() {
+        return Reg == X16 || Reg == X17;
+    }
     return true;
 }
 
-fn AArch64AsmPrinter::EmitToStreamer(self, Inst: *MCInst) {}
+fn AArch64AsmPrinter::EmitToStreamer(self, Inst: *MCInst) {
+    self.EmitToStreamer(operator(self.OutStreamer), Inst);
+}
 
 fn AArch64AsmPrinter::getAnalysisUsage(self: *AArch64AsmPrinter, AU: *mut AnalysisUsage) {
-    self.getAnalysisUsage;
+    self.getAnalysisUsage(AU);
     AU.setPreservesAll();
 }
 
 fn AArch64AsmPrinter::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
-    self.AArch64FI = MF;
-    self.STI = operator&(MF);
-    self.SetupMachineFunction;
+    if self.getAnalysisIfAvailable() {
+        PSIW;
+    } else {
+        self.PSI = &mut PSIW.getPSI();
+    }
+    if self.getAnalysisIfAvailable() {
+        SDPIW;
+    } else {
+        self.SDPI = &mut SDPIW.getStaticDataProfileInfo();
+    }
+    self.AArch64FI = MF.getInfo();
+    self.STI = &mut MF.getSubtarget();
+    self.SetupMachineFunction(MF);
     if self.STI.isTargetCOFF() {
-        let mut Local: bool = MF.getFunction().hasLocalLinkage;
+        let mut Local: bool = MF.getFunction().hasLocalLinkage();
         let mut Scl: SymbolStorageClass = if Local { IMAGE_SYM_CLASS_STATIC } else { IMAGE_SYM_CLASS_EXTERNAL };
         let mut Type: i32 = IMAGE_SYM_DTYPE_FUNCTION << SCT_COMPLEX_TYPE_SHIFT;
+        operator(self.OutStreamer).beginCOFFSymbolDef(self.CurrentFnSym);
+        operator(self.OutStreamer).emitCOFFSymbolStorageClass(Scl);
+        operator(self.OutStreamer).emitCOFFSymbolType(Type);
+        operator(self.OutStreamer).endCOFFSymbolDef();
     }
-    self.emitFunctionBody;
-    self.emitXRayTable;
+    self.emitFunctionBody();
+    self.emitXRayTable();
     return false;
 }
 
@@ -181,7 +200,7 @@ fn AArch64AsmPrinter::getFunctionEnd(self: *AArch64AsmPrinter) -> *mut MCSymbol 
 }
 
 fn AArch64AsmPrinter::getAddrLabelSymbol(self, BB: *BasicBlock) -> *mut MCSymbol {
-    return self.getAddrLabelSymbolToEmit();
+    return self.getAddrLabelSymbolToEmit(BB).front();
 }
 
 fn AArch64AsmPrinter::getPointerSize(self: *AArch64AsmPrinter) -> u32 {
@@ -207,7 +226,7 @@ fn AArch64AsmPrinter::hasDebugInfo(self: *AArch64AsmPrinter) -> bool {
 fn AArch64AsmPrinter::emitFunctionBodyStart(self) {}
 
 fn AArch64AsmPrinter::emitFunctionDescriptor(self) {
-    llvm_unreachable_internal("Function descriptor is target-specific.", "llvm\\include\\llvm/CodeGen/AsmPrinter.h", 656);
+    llvm_unreachable_internal("Function descriptor is target-specific.", "P:/Goraw/llvm-project/llvm/include\\llvm/CodeGen/AsmPrinter.h", 656);
 }
 
 fn AArch64AsmPrinter::emitLabelReference(self: *AArch64AsmPrinter, Label: *MCSymbol, Size: u32, IsSectionRelative: bool) {
@@ -237,7 +256,7 @@ fn getOptionalBooleanModuleFlag(M: *mut Module, Name: str) -> bool {
     if !Flag {
         return false;
     }
-    let mut Value: u64 = extract(Flag)();
+    let mut Value: u64 = extract(Flag).getZExtValue();
     assert!((Value == 0 || Value == 1), "Boolean flag is expected, if present");
     return Value;
 }
@@ -245,8 +264,8 @@ fn getOptionalBooleanModuleFlag(M: *mut Module, Name: str) -> bool {
 fn AArch64AsmPrinter::emitStartOfAsmFile(self, M: *mut Module) {
     let mut TT: *Triple = M.getTargetTriple();
     if TT.isOSBinFormatCOFF() {
-        self.emitCOFFFeatureSymbol;
-        self.emitCOFFReplaceableFunctionData;
+        self.emitCOFFFeatureSymbol(M);
+        self.emitCOFFReplaceableFunctionData(M);
         if M.getModuleFlag("import-call-optimization") {
             self.EnableImportCallOptimization = true;
         }
@@ -256,56 +275,69 @@ fn AArch64AsmPrinter::emitStartOfAsmFile(self, M: *mut Module) {
     if !TT.isOSBinFormatELF() {
         return;
     }
-    let mut TS: *mut auto = null;
+    let mut TS: *mut AArch64TargetStreamer = operator(self.OutStreamer).getTargetStreamer() as *mut AArch64TargetStreamer;
     let mut BAFlags: u32 = 0;
     let mut GNUFlags: u32 = 0;
-    if  {
-        if operator!() {
+    if extract_or_null(M.getModuleFlag("branch-target-enforcement")) {
+        BTE;
+    } else {
+        if !BTE.isZero() {
             BAFlags |= Feature_BTI_Flag;
             GNUFlags |= GNU_PROPERTY_AARCH64_FEATURE_1_BTI;
         }
     }
-    if  {
-        if operator!() {
+    if extract_or_null(M.getModuleFlag("guarded-control-stack")) {
+        GCS;
+    } else {
+        if !GCS.isZero() {
             BAFlags |= Feature_GCS_Flag;
             GNUFlags |= GNU_PROPERTY_AARCH64_FEATURE_1_GCS;
         }
     }
-    if  {
-        if operator!() {
+    if extract_or_null(M.getModuleFlag("sign-return-address")) {
+        Sign;
+    } else {
+        if !Sign.isZero() {
             BAFlags |= Feature_PAC_Flag;
             GNUFlags |= GNU_PROPERTY_AARCH64_FEATURE_1_PAC;
         }
     }
     let mut PAuthABIPlatform: u64 = -1;
-    if  {
-        PAuthABIPlatform = ();
+    if extract_or_null(M.getModuleFlag("aarch64-elf-pauthabi-platform")) {
+        PAP;
+    } else {
+        PAuthABIPlatform = PAP.getZExtValue();
     }
     let mut PAuthABIVersion: u64 = -1;
-    if  {
-        PAuthABIVersion = ();
+    if extract_or_null(M.getModuleFlag("aarch64-elf-pauthabi-version")) {
+        PAV;
+    } else {
+        PAuthABIVersion = PAV.getZExtValue();
     }
     if PAuthABIPlatform == AARCH64_PAUTH_PLATFORM_LLVM_LINUX && PAuthABIVersion == 0 {
         PAuthABIPlatform = -1;
         PAuthABIVersion = -1;
     }
-    self.emitAttributes(BAFlags, PAuthABIPlatform, PAuthABIVersion);
-    TS()(GNUFlags, PAuthABIPlatform, PAuthABIVersion);
+    self.emitAttributes(BAFlags, PAuthABIPlatform, PAuthABIVersion, TS);
+    TS.emitNoteSection(GNUFlags, PAuthABIPlatform, PAuthABIVersion);
 }
 
 fn AArch64AsmPrinter::emitFunctionHeaderComment(self) {
-    let mut FI: *AArch64FunctionInfo = null;
-    let mut OutlinerString: string> = zeroed();
+    let mut FI: *AArch64FunctionInfo = self.MF.getInfo();
+    let mut OutlinerString: string> = FI.getOutliningStyle();
+    if !OutlinerString == nullopt {
+        operator(self.OutStreamer).getCommentOS() << ' ' << OutlinerString;
+    }
 }
 
 fn AArch64AsmPrinter::LowerPATCHABLE_FUNCTION_ENTER(self, MI: *MachineInstr) {
-    let mut F: *Function = null;
+    let mut F: *Function = self.MF.getFunction();
     if F.hasFnAttribute("patchable-function-entry") {
         let mut Num: u32 = 0;
-        if F.getFnAttribute("patchable-function-entry").getValueAsString() {
+        if F.getFnAttribute("patchable-function-entry").getValueAsString().getAsInteger(10, Num) {
             return;
         }
-        self.emitNops;
+        self.emitNops(Num);
         return;
     }
     self.emitSled(MI, FUNCTION_ENTER);
@@ -321,12 +353,16 @@ fn AArch64AsmPrinter::LowerPATCHABLE_TAIL_CALL(self, MI: *MachineInstr) {
 
 fn AArch64AsmPrinter::emitSled(self, MI: *MachineInstr, Kind: SledKind) {
     let mut NoopsInSledCount: i8 = 7;
-    let mut CurSled: auto = zeroed();
-    let mut Target: auto = zeroed();
+    operator(self.OutStreamer).emitCodeAlignment(4, self.getSubtargetInfo(), 0);
+    let mut CurSled: *mut MCSymbol = self.OutContext.createTempSymbol("xray_sled_", true);
+    operator(self.OutStreamer).emitLabel(CurSled, SMLoc {});
+    let mut Target: *mut MCSymbol = self.OutContext.createTempSymbol();
+    self.EmitToStreamer(operator(self.OutStreamer), B.addImm(8).operator llvm::MCInst &());
     for let mut I: i8 = 0; I < NoopsInSledCount; I += 1 {
-        
+        self.EmitToStreamer(operator(self.OutStreamer), NOP.operator llvm::MCInst &());
     }
-    self.recordSled(MI, Kind, 2);
+    operator(self.OutStreamer).emitLabel(Target, SMLoc {});
+    self.recordSled(CurSled, MI, Kind, 2);
 }
 
 fn AArch64AsmPrinter::emitAttributes(self, Flags: u32, PAuthABIPlatform: u64, PAuthABIVersion: u64, TS: *mut AArch64TargetStreamer) {
@@ -349,90 +385,185 @@ fn AArch64AsmPrinter::emitAttributes(self, Flags: u32, PAuthABIPlatform: u64, PA
 }
 
 fn AArch64AsmPrinter::LowerPATCHABLE_EVENT_CALL(self, MI: *MachineInstr, Typed: bool) {
-    let mut O: *mut auto = null;
-    let mut CurSled: *mut MCSymbol = null;
-    O()(CurSled);
-    let mut MachO: bool = false;
-    let mut Sym: *mut auto = create();
+    let mut O: *mut MCStreamer = operator(self.OutStreamer);
+    let mut CurSled: *mut MCSymbol = self.OutContext.createTempSymbol("xray_sled_", true);
+    O.emitLabel(CurSled, SMLoc {});
+    let mut MachO: bool = self.TM.getTargetTriple().isOSBinFormatMachO();
+    let mut Sym: *MCSymbolRefExpr = create(self.OutContext.getOrCreateSymbol(if MachO { "_" } else { "" } + (if Typed { "__xray_TypedEvent" } else { "__xray_CustomEvent" })), self.OutContext, SMLoc {});
     if Typed {
-        O()("Begin XRay typed event");
-        self.emitMovXReg;
-        self.emitMovXReg;
-        self.emitMovXReg;
-        O()("End XRay typed event");
-        self.recordSled;
+        O.AddComment("Begin XRay typed event", true);
+        self.EmitToStreamer(O, B.addImm(9).operator llvm::MCInst &());
+        self.EmitToStreamer(O, STPXpre.addReg(SP).addReg(X0).addReg(X1).addReg(SP).addImm(-4).operator llvm::MCInst &());
+        self.EmitToStreamer(O, STRXui.addReg(X2).addReg(SP).addImm(2).operator llvm::MCInst &());
+        self.emitMovXReg(X0, MI.getOperand(0).getReg());
+        self.emitMovXReg(X1, MI.getOperand(1).getReg());
+        self.emitMovXReg(X2, MI.getOperand(2).getReg());
+        self.EmitToStreamer(O, BL.addExpr(Sym).operator llvm::MCInst &());
+        self.EmitToStreamer(O, LDRXui.addReg(X2).addReg(SP).addImm(2).operator llvm::MCInst &());
+        O.AddComment("End XRay typed event", true);
+        self.EmitToStreamer(O, LDPXpost.addReg(SP).addReg(X0).addReg(X1).addReg(SP).addImm(4).operator llvm::MCInst &());
+        self.recordSled(CurSled, MI, TYPED_EVENT, 2);
     } else {
-        O()("Begin XRay custom event");
-        self.emitMovXReg;
-        self.emitMovXReg;
-        O()("End XRay custom event");
-        self.recordSled;
+        O.AddComment("Begin XRay custom event", true);
+        self.EmitToStreamer(O, B.addImm(6).operator llvm::MCInst &());
+        self.EmitToStreamer(O, STPXpre.addReg(SP).addReg(X0).addReg(X1).addReg(SP).addImm(-2).operator llvm::MCInst &());
+        self.emitMovXReg(X0, MI.getOperand(0).getReg());
+        self.emitMovXReg(X1, MI.getOperand(1).getReg());
+        self.EmitToStreamer(O, BL.addExpr(Sym).operator llvm::MCInst &());
+        O.AddComment("End XRay custom event", true);
+        self.EmitToStreamer(O, LDPXpost.addReg(SP).addReg(X0).addReg(X1).addReg(SP).addImm(2).operator llvm::MCInst &());
+        self.recordSled(CurSled, MI, CUSTOM_EVENT, 2);
     }
 }
 
 fn AArch64AsmPrinter::LowerKCFI_CHECK(self, MI: *MachineInstr) {
     let mut AddrReg: Register = MI.getOperand(0).getReg();
-    (((operator!(operator!((next(MI()())() && "KCFI_CHECK not followed by a call instruction")))) || (_wassert(L"std::next(MI.getIterator())->isCall() && \"KCFI_CHECK not followed by a call instruction\"", L"llvm\\lib\\Target\\AArch64\\AArch64AsmPrinter.cpp", (704) as u32) , 0)) as void);
-    (((operator!(operator!((next(MI()())(0)() == AddrReg && "KCFI_CHECK call target doesn't match call operand")))) || (_wassert(L"std::next(MI.getIterator())->getOperand(0).getReg() == AddrReg && \"KCFI_CHECK call target doesn't match call operand\"", L"llvm\\lib\\Target\\AArch64\\AArch64AsmPrinter.cpp", (706) as u32) , 0)) as void);
-    let mut ScratchRegs: []u32 = zeroed();
-    if  {
+    assert!(operator(next(MI.getIterator(), 1)).isCall(AnyInBundle), "KCFI_CHECK not followed by a call instruction");
+    assert!(operator(next(MI.getIterator(), 1)).getOperand(0).getReg() == AddrReg, "KCFI_CHECK call target doesn't match call operand");
+    let mut ScratchRegs: [2]u32 = [W16, W17];
+    if AddrReg == XZR {
         AddrReg = getXRegFromWReg(ScratchRegs[0]);
-        self.emitMovXReg;
+        self.emitMovXReg(AddrReg, XZR);
     } else {
+        for Reg in ScratchRegs[..] {
+            if Reg == getWRegFromXReg(AddrReg.operator MCRegister()).operator unsigned int() {
+                Reg = W9;
+                break;
+            }
+        }
         assert!(ScratchRegs[0] != AddrReg.operator unsigned int() && ScratchRegs[1] != AddrReg.operator unsigned int(), "Invalid scratch registers for KCFI_CHECK");
         let mut PrefixNops: i64 = MI.getMF().getFunction().getFnAttributeAsParsedInteger("patchable-function-prefix", 0);
+        self.EmitToStreamer(operator(self.OutStreamer), LDURWi.addReg(ScratchRegs[0]).addReg(AddrReg.operator MCRegister()).addImm(-(PrefixNops * 4 + 4)).operator llvm::MCInst &());
     }
     let mut Type: i64 = MI.getOperand(1).getImm();
     self.emitMOVK(ScratchRegs[1], Type & 65535, 0);
     self.emitMOVK(ScratchRegs[1], (Type >> 16) & 65535, 16);
-    let mut Pass: *mut MCSymbol = null;
-    let mut TypeIndex: u32 = 0;
+    self.EmitToStreamer(operator(self.OutStreamer), SUBSWrs.addReg(WZR).addReg(ScratchRegs[0]).addReg(ScratchRegs[1]).addImm(0).operator llvm::MCInst &());
+    let mut Pass: *mut MCSymbol = self.OutContext.createTempSymbol();
+    self.EmitToStreamer(operator(self.OutStreamer), Bcc.addImm(EQ).addExpr(create(Pass, self.OutContext, SMLoc {})).operator llvm::MCInst &());
+    let mut TypeIndex: u32 = ScratchRegs[1] - W0;
     let mut AddrIndex: u32 = 0;
     match AddrReg.operator unsigned int() {
         _ => {
-            
+            AddrIndex = AddrReg.operator unsigned int() - X0;
+        },
+        FP => {
+            AddrIndex = 29;
+        },
+        LR => {
+            AddrIndex = 30;
         },
     }
     assert!(AddrIndex < 31 && TypeIndex < 31);
     let mut ESR: u32 = 32768 | ((TypeIndex & 31) << 5) | (AddrIndex & 31);
+    self.EmitToStreamer(operator(self.OutStreamer), BRK.addImm(ESR).operator llvm::MCInst &());
+    operator(self.OutStreamer).emitLabel(Pass, SMLoc {});
 }
 
 fn AArch64AsmPrinter::LowerHWASAN_CHECK_MEMACCESS(self, MI: *MachineInstr) {
     let mut Reg: Register = MI.getOperand(0).getReg();
-    if  {
+    if Reg == XZR {
         return;
     }
-    let mut IsShort: bool = false;
+    let mut IsShort: bool = ((MI.getOpcode() == HWASAN_CHECK_MEMACCESS_SHORTGRANULES) || (MI.getOpcode() == HWASAN_CHECK_MEMACCESS_SHORTGRANULES_FIXEDSHADOW));
     let mut AccessInfo: u32 = MI.getOperand(1).getImm();
-    let mut IsFixedShadow: bool = false;
+    let mut IsFixedShadow: bool = ((MI.getOpcode() == HWASAN_CHECK_MEMACCESS_FIXEDSHADOW) || (MI.getOpcode() == HWASAN_CHECK_MEMACCESS_SHORTGRANULES_FIXEDSHADOW));
     let mut FixedShadowOffset: u64 = if IsFixedShadow { MI.getOperand(2).getImm() } else { 0 };
-    let mut Sym: *mut *mut MCSymbol = null;
+    let mut Sym: *mut *mut MCSymbol = self.HwasanMemaccessSymbols[HwasanMemaccessTuple { Reg, IsShort, AccessInfo, IsFixedShadow, FixedShadowOffset }];
     if !Sym {
-        if  {
+        if !self.TM.getTargetTriple().isOSBinFormatELF() {
             report_fatal_error("llvm.hwasan.check.memaccess only supported on ELF", true);
         }
-        let mut SymName: str = "__hwasan_check_x" + utostr() + "_" + utostr(AccessInfo, false);
+        let mut SymName: str = "__hwasan_check_x" + utostr(Reg.operator unsigned int() - X0, false) + "_" + utostr(AccessInfo, false);
         if IsFixedShadow {
-            SymName("_fixed_" + utostr(FixedShadowOffset, false));
+            operator(SymName, "_fixed_" + utostr(FixedShadowOffset, false));
         }
         if IsShort {
             operator(SymName, "_short_v2");
         }
+        Sym = self.OutContext.getOrCreateSymbol(SymName);
     }
+    self.EmitToStreamer(operator(self.OutStreamer), BL.addExpr(create(Sym, self.OutContext, SMLoc {})).operator llvm::MCInst &());
 }
 
 fn AArch64AsmPrinter::emitHwasanMemaccessSymbols(self, M: *mut Module) {
-    if  {
+    if self.HwasanMemaccessSymbols.is_empty() {
         return;
     }
     let mut TT: *Triple = M.getTargetTriple();
     assert!(TT.isOSBinFormatELF();
-    let mut STI: auto = make_unique(TT, true);
-    self.STI = ();
-    let mut HwasanTagMismatchV1Sym: *mut MCSymbol = null;
-    let mut HwasanTagMismatchV2Sym: *mut MCSymbol = null;
-    let mut HwasanTagMismatchV1Ref: *MCSymbolRefExpr = create(HwasanTagMismatchV1Sym);
-    let mut HwasanTagMismatchV2Ref: *MCSymbolRefExpr = create(HwasanTagMismatchV2Sym);
+    let mut STI: AArch64Subtarget> = make_unique(TT, self.TM.getTargetCPU(), self.TM.getTargetCPU(), self.TM.getTargetFeatureString(), self.TM, true);
+    self.STI = STI.get();
+    let mut HwasanTagMismatchV1Sym: *mut MCSymbol = self.OutContext.getOrCreateSymbol("__hwasan_tag_mismatch");
+    let mut HwasanTagMismatchV2Sym: *mut MCSymbol = self.OutContext.getOrCreateSymbol("__hwasan_tag_mismatch_v2");
+    let mut HwasanTagMismatchV1Ref: *MCSymbolRefExpr = create(HwasanTagMismatchV1Sym, self.OutContext, SMLoc {});
+    let mut HwasanTagMismatchV2Ref: *MCSymbolRefExpr = create(HwasanTagMismatchV2Sym, self.OutContext, SMLoc {});
+    for P in self.HwasanMemaccessSymbols {
+        let mut Reg: u32 = get(P.first);
+        let mut IsShort: bool = get(P.first);
+        let mut AccessInfo: u32 = get(P.first);
+        let mut IsFixedShadow: bool = get(P.first);
+        let mut FixedShadowOffset: u64 = get(P.first);
+        let mut HwasanTagMismatchRef: *MCSymbolRefExpr = if IsShort { HwasanTagMismatchV2Ref } else { HwasanTagMismatchV1Ref };
+        let mut Sym: *mut MCSymbol = P.second;
+        let mut HasMatchAllTag: bool = (AccessInfo >> HasMatchAllShift) & 1;
+        let mut MatchAllTag: u8 = (AccessInfo >> MatchAllShift) & 255;
+        let mut Size: u32 = 1 << ((AccessInfo >> AccessSizeShift) & 15);
+        let mut CompileKernel: bool = (AccessInfo >> CompileKernelShift) & 1;
+        operator(self.OutStreamer).switchSection(self.OutContext.getELFSection(".text.hot", SHT_PROGBITS, SHF_EXECINSTR | SHF_ALLOC | SHF_GROUP, 0, Sym.getName(), true), 0);
+        operator(self.OutStreamer).emitSymbolAttribute(Sym, MCSA_ELF_TypeFunction);
+        operator(self.OutStreamer).emitSymbolAttribute(Sym, MCSA_Weak);
+        operator(self.OutStreamer).emitSymbolAttribute(Sym, MCSA_Hidden);
+        operator(self.OutStreamer).emitLabel(Sym, SMLoc {});
+        self.EmitToStreamer(SBFMXri.addReg(X16).addReg(Reg).addImm(4).addImm(55).operator llvm::MCInst &());
+        if IsFixedShadow {
+            self.emitMOVZ(X17, FixedShadowOffset >> 32, 32);
+            self.EmitToStreamer(LDRBBroX.addReg(W16).addReg(X17).addReg(X16).addImm(0).addImm(0).operator llvm::MCInst &());
+        } else {
+            self.EmitToStreamer(LDRBBroX.addReg(W16).addReg(if IsShort { X20 } else { X9 }).addReg(X16).addImm(0).addImm(0).operator llvm::MCInst &());
+        }
+        self.EmitToStreamer(SUBSXrs.addReg(XZR).addReg(X16).addReg(Reg).addImm(getShifterImm(LSR, 56)).operator llvm::MCInst &());
+        let mut HandleMismatchOrPartialSym: *mut MCSymbol = self.OutContext.createTempSymbol();
+        self.EmitToStreamer(Bcc.addImm(NE).addExpr(create(HandleMismatchOrPartialSym, self.OutContext, SMLoc {})).operator llvm::MCInst &());
+        let mut ReturnSym: *mut MCSymbol = self.OutContext.createTempSymbol();
+        operator(self.OutStreamer).emitLabel(ReturnSym, SMLoc {});
+        self.EmitToStreamer(RET.addReg(LR).operator llvm::MCInst &());
+        operator(self.OutStreamer).emitLabel(HandleMismatchOrPartialSym, SMLoc {});
+        if HasMatchAllTag {
+            self.EmitToStreamer(UBFMXri.addReg(X17).addReg(Reg).addImm(56).addImm(63).operator llvm::MCInst &());
+            self.EmitToStreamer(SUBSXri.addReg(XZR).addReg(X17).addImm(MatchAllTag).addImm(0).operator llvm::MCInst &());
+            self.EmitToStreamer(Bcc.addImm(EQ).addExpr(create(ReturnSym, self.OutContext, SMLoc {})).operator llvm::MCInst &());
+        }
+        if IsShort {
+            self.EmitToStreamer(SUBSWri.addReg(WZR).addReg(W16).addImm(15).addImm(0).operator llvm::MCInst &());
+            let mut HandleMismatchSym: *mut MCSymbol = self.OutContext.createTempSymbol();
+            self.EmitToStreamer(Bcc.addImm(HI).addExpr(create(HandleMismatchSym, self.OutContext, SMLoc {})).operator llvm::MCInst &());
+            self.EmitToStreamer(ANDXri.addReg(X17).addReg(Reg).addImm(encodeLogicalImmediate(15, 64)).operator llvm::MCInst &());
+            if Size != 1 {
+                self.EmitToStreamer(ADDXri.addReg(X17).addReg(X17).addImm(Size - 1).addImm(0).operator llvm::MCInst &());
+            }
+            self.EmitToStreamer(SUBSWrs.addReg(WZR).addReg(W16).addReg(W17).addImm(0).operator llvm::MCInst &());
+            self.EmitToStreamer(Bcc.addImm(LS).addExpr(create(HandleMismatchSym, self.OutContext, SMLoc {})).operator llvm::MCInst &());
+            self.EmitToStreamer(ORRXri.addReg(X16).addReg(Reg).addImm(encodeLogicalImmediate(15, 64)).operator llvm::MCInst &());
+            self.EmitToStreamer(LDRBBui.addReg(W16).addReg(X16).addImm(0).operator llvm::MCInst &());
+            self.EmitToStreamer(SUBSXrs.addReg(XZR).addReg(X16).addReg(Reg).addImm(getShifterImm(LSR, 56)).operator llvm::MCInst &());
+            self.EmitToStreamer(Bcc.addImm(EQ).addExpr(create(ReturnSym, self.OutContext, SMLoc {})).operator llvm::MCInst &());
+            operator(self.OutStreamer).emitLabel(HandleMismatchSym, SMLoc {});
+        }
+        self.EmitToStreamer(STPXpre.addReg(SP).addReg(X0).addReg(X1).addReg(SP).addImm(-32).operator llvm::MCInst &());
+        self.EmitToStreamer(STPXi.addReg(FP).addReg(LR).addReg(SP).addImm(29).operator llvm::MCInst &());
+        if Reg != X0 {
+            self.emitMovXReg(X0, Reg);
+        }
+        self.emitMOVZ(X1, AccessInfo & RuntimeMask, 0);
+        if CompileKernel {
+            self.EmitToStreamer(B.addExpr(HwasanTagMismatchRef).operator llvm::MCInst &());
+        } else {
+            self.EmitToStreamer(ADRP.addReg(X16).addExpr(create(HwasanTagMismatchRef, S_GOT_PAGE, self.OutContext, SMLoc {})).operator llvm::MCInst &());
+            self.EmitToStreamer(LDRXui.addReg(X16).addReg(X16).addExpr(create(HwasanTagMismatchRef, S_GOT_LO12, self.OutContext, SMLoc {})).operator llvm::MCInst &());
+            self.EmitToStreamer(BR.addReg(X16).operator llvm::MCInst &());
+        }
+    }
     self.STI = null;
 }
 
@@ -445,51 +576,94 @@ fn AArch64AsmPrinter::emitEndOfAsmFile(self, M: *mut Module) {
     self.emitHwasanMemaccessSymbols(M);
     let mut TT: *Triple = M.getTargetTriple();
     if TT.isOSBinFormatMachO() {
-        let mut MMIMacho: *mut MachineModuleInfoMachO = null;
-        let mut Stubs: auto = MMIMacho()();
-        if operator!() {
-            self.emitAlignment;
+        let mut MMIMacho: *mut MachineModuleInfoMachO = self.MMI.getObjFileInfo();
+        let mut Stubs: ExprStubListTy = MMIMacho.getAuthGVStubList();
+        if !Stubs.is_empty() {
+            operator(self.OutStreamer).switchSection(self.OutContext.getMachOSection("__DATA", "__auth_ptr", S_REGULAR, getMetadata(), null), 0);
+            self.emitAlignment(8, null, 0);
+            for Stub in Stubs {
+                emitAuthenticatedPointer(operator(self.OutStreamer), Stub.first, Stub.second);
+            }
+            operator(self.OutStreamer).addBlankLine();
         }
+        operator(self.OutStreamer).emitSubsectionsViaSymbols();
     }
     if TT.isOSBinFormatELF() {
-        let mut MMIELF: *mut MachineModuleInfoELF = null;
-        let mut Stubs: auto = MMIELF()();
-        if operator!() {
-            let mut TLOF: *TargetLoweringObjectFile = self.getObjFileLowering;
-            self.emitAlignment;
+        let mut MMIELF: *mut MachineModuleInfoELF = self.MMI.getObjFileInfo();
+        let mut Stubs: ExprStubListTy = MMIELF.getAuthGVStubList();
+        if !Stubs.is_empty() {
+            let mut TLOF: *TargetLoweringObjectFile = self.getObjFileLowering();
+            operator(self.OutStreamer).switchSection(TLOF.getDataSection(), 0);
+            self.emitAlignment(8, null, 0);
+            for Stub in Stubs {
+                emitAuthenticatedPointer(operator(self.OutStreamer), Stub.first, Stub.second);
+            }
+            operator(self.OutStreamer).addBlankLine();
         }
-        let mut PtrAuthELFGOTFlag: *auto = extract_or_null(M.getModuleFlag("ptrauth-elf-got"));
+        let mut PtrAuthELFGOTFlag: *ConstantInt = extract_or_null(M.getModuleFlag("ptrauth-elf-got"));
+        if PtrAuthELFGOTFlag && PtrAuthELFGOTFlag.getZExtValue() == 1 {
+            for GV in M.global_values() {
+                if !GV.use_empty() && isa(GV) && !GV.getName().starts_with("llvm.") {
+                    operator(self.OutStreamer).emitSymbolAttribute(self.getSymbol(&mut GV), MCSA_ELF_TypeFunction);
+                }
+            }
+        }
     }
+    self.FM.serializeToFaultMapSection();
     if self.EnableImportCallOptimization && TT.isOSBinFormatCOFF() {
+        operator(self.OutStreamer).switchSection(self.getObjFileLowering().getImportCallSection(), 0);
         let mut ImpCallMagic: [12]i8 = "Imp_Call_V1";
+        operator(self.OutStreamer).emitBytes(ImpCallMagic[0..(ImpCallMagic)]);
+        for x in self.SectionToImportedFunctionCalls {
+            let mut SectionSize: u32 =  * (2 + 3 * CallsToImportedFuncs.len);
+            operator(self.OutStreamer).emitInt32(SectionSize);
+            operator(self.OutStreamer).emitCOFFSecNumber(Section.getBeginSymbol());
+            for x in CallsToImportedFuncs {
+                operator(self.OutStreamer).emitInt32(19);
+                operator(self.OutStreamer).emitCOFFSecOffset(CallsiteSymbol);
+                operator(self.OutStreamer).emitCOFFSymbolIndex(CalledSymbol);
+            }
+        }
     }
 }
 
 fn AArch64AsmPrinter::emitLOHs(self) {
-    let mut MCArgs: SmallVector<MCSymbol *, 3> = zeroed();
+    let mut MCArgs: SmallVector<MCSymbol *, 3> = SmallVector<MCSymbol *, 3> {};
+    for D in self.AArch64FI.getLOHContainer() {
+        for MI in D.getArgs() {
+            let mut LabelIt: iterator = self.LOHInstToLabel.find(MI);
+            assert!(!LabelIt == self.LOHInstToLabel.end(), "Label hasn't been inserted for LOH related instruction");
+            MCArgs.push(operator(LabelIt).second);
+        }
+        operator(self.OutStreamer).emitLOHDirective(D.getKind(), MCArgs);
+        MCArgs.clear();
+    }
 }
 
 fn AArch64AsmPrinter::emitFunctionBodyEnd(self) {
-    if operator!(self.AArch64FI.getLOHRelated()()) {
+    if !self.AArch64FI.getLOHRelated().is_empty() {
         self.emitLOHs();
     }
 }
 
 fn AArch64AsmPrinter::GetCPISymbol(self: *AArch64AsmPrinter, CPID: u32) -> *mut MCSymbol {
-    return self.GetCPISymbol;
+    if !self.getDataLayout().getLinkerPrivateGlobalPrefix().is_empty() {
+        return self.OutContext.getOrCreateSymbol(self.getDataLayout().getLinkerPrivateGlobalPrefix() + "CPI" + self.getFunctionNumber() + "_" + CPID);
+    }
+    return self.GetCPISymbol(CPID);
 }
 
 fn AArch64AsmPrinter::printOperand(self, MI: *MachineInstr, OpNum: u32, O: *mut raw_ostream) {
     let mut MO: *MachineOperand = MI.getOperand(OpNum);
     match MO.getType() {
         _ => {
-            llvm_unreachable_internal("<unknown operand type>", "llvm\\lib\\Target\\AArch64\\AArch64AsmPrinter.cpp", 1186);
+            llvm_unreachable_internal("<unknown operand type>", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64AsmPrinter.cpp", 1186);
         },
         MO_Register => {
             let mut Reg: Register = MO.getReg();
             assert!(Reg.isPhysical();
             assert!(!MO.getSubReg(), "Subregs should be eliminated!");
-            O << getRegisterName(Reg.operator MCRegister());
+            O << getRegisterName(Reg.operator MCRegister(), NoRegAltName);
             break;
         },
         MO_Immediate => {
@@ -497,12 +671,12 @@ fn AArch64AsmPrinter::printOperand(self, MI: *MachineInstr, OpNum: u32, O: *mut 
             break;
         },
         MO_GlobalAddress => {
-            self.PrintSymbolOperand;
+            self.PrintSymbolOperand(MO, O);
             break;
         },
         MO_BlockAddress => {
-            let mut Sym: *mut MCSymbol = ;
-            Sym;
+            let mut Sym: *mut MCSymbol = self.GetBlockAddressSymbol(MO.getBlockAddress());
+            Sym.print(O, self.MAI);
             break;
         },
     }
@@ -524,7 +698,7 @@ fn AArch64AsmPrinter::printAsmMRegister(self, MO: *MachineOperand, Mode: i8, O: 
             Reg = getXRegFromXRegTuple(Reg.operator MCRegister());
         },
     }
-    O << getRegisterName(Reg.operator MCRegister());
+    O << getRegisterName(Reg.operator MCRegister(), NoRegAltName);
     return false;
 }
 
@@ -532,7 +706,7 @@ fn AArch64AsmPrinter::printAsmRegInClass(self, MO: *MachineOperand, RC: *TargetR
     assert!(MO.isReg(), "Should only get here with a register!");
     let mut RI: *TargetRegisterInfo = self.STI.getRegisterInfo();
     let mut Reg: Register = MO.getReg();
-    let mut RegToPrint: MCRegister = RC.getRegister(RI.getEncodingValue);
+    let mut RegToPrint: MCRegister = RC.getRegister(RI.getEncodingValue(Reg.operator MCRegister()));
     if !RI.regsOverlap(RegToPrint, Reg) {
         return true;
     }
@@ -542,7 +716,7 @@ fn AArch64AsmPrinter::printAsmRegInClass(self, MO: *MachineOperand, RC: *TargetR
 
 fn AArch64AsmPrinter::PrintAsmOperand(self, MI: *MachineInstr, OpNum: u32, ExtraCode: *u8, O: *mut raw_ostream) -> bool {
     let mut MO: *MachineOperand = MI.getOperand(OpNum);
-    if operator!(self.PrintAsmOperand) {
+    if !self.PrintAsmOperand(MI, OpNum, ExtraCode, O) {
         return false;
     }
     if ExtraCode && ExtraCode[0] {
@@ -563,15 +737,24 @@ fn AArch64AsmPrinter::PrintAsmOperand(self, MI: *MachineInstr, OpNum: u32, Extra
     }
     if MO.isReg() {
         let mut Reg: Register = MO.getReg();
-        if  {
+        if GPR32allRegClass.contains(Reg.operator MCRegister()) || GPR64allRegClass.contains(Reg.operator MCRegister()) {
             return self.printAsmMRegister(MO, 'x', O);
         }
-        if  {
+        if GPR64x8ClassRegClass.contains(Reg.operator MCRegister()) {
             return self.printAsmMRegister(MO, 't', O);
         }
-        let mut AltName: u32 = 0;
+        let mut AltName: u32 = NoRegAltName;
         let mut RegClass: *TargetRegisterClass = null;
-        if  {} else if  {} else if  {} else {}
+        if ZPRRegClass.contains(Reg.operator MCRegister()) {
+            RegClass = &mut ZPRRegClass;
+        } else if PPRRegClass.contains(Reg.operator MCRegister()) {
+            RegClass = &mut PPRRegClass;
+        } else if PNRRegClass.contains(Reg.operator MCRegister()) {
+            RegClass = &mut PNRRegClass;
+        } else {
+            RegClass = &mut FPR128RegClass;
+            AltName = vreg;
+        }
         return self.printAsmRegInClass(MO, RegClass, AltName, O);
     }
     self.printOperand(MI, OpNum, O);
@@ -584,19 +767,20 @@ fn AArch64AsmPrinter::PrintAsmMemoryOperand(self, MI: *MachineInstr, OpNum: u32,
     }
     let mut MO: *MachineOperand = MI.getOperand(OpNum);
     assert!(MO.isReg(), "unexpected inline asm memory operand");
-    O << "[" << getRegisterName(MO.getReg().operator MCRegister()) << "]";
+    O << "[" << getRegisterName(MO.getReg().operator MCRegister(), NoRegAltName) << "]";
     return false;
 }
 
 fn AArch64AsmPrinter::PrintDebugValueComment(self, MI: *MachineInstr, OS: *mut raw_ostream) {
     let mut NOps: u32 = MI.getNumOperands();
     assert!(NOps == 4);
-    OS << MI.getDebugVariable().getName;
+    OS << 9 << self.MAI.getCommentString() << "DEBUG_VALUE: ";
+    OS << MI.getDebugVariable().getName();
     OS << " <- ";
     assert!(MI.isIndirectDebugValue();
     OS << '[';
     for let mut I: u32 = 0;
-let mut E: u32 = size(MI()()); I < E; I += 1 {
+let mut E: u32 = size(MI.debug_operands(), null); I < E; I += 1 {
         if I != 0 {
             OS << ", ";
         }
@@ -608,26 +792,46 @@ let mut E: u32 = size(MI()()); I < E; I += 1 {
 }
 
 fn AArch64AsmPrinter::emitJumpTableImpl(self, MJTI: *MachineJumpTableInfo, JumpTableIndices: ArrayRef<unsigned int>) {
-    if JumpTableIndices()() {
+    if JumpTableIndices.is_empty() {
         return;
     }
-    let mut TLOF: *TargetLoweringObjectFile = self.getObjFileLowering;
-    let mut F: *auto = null;
-    let mut JT: ArrayRef<MachineJumpTableEntry> = zeroed();
+    let mut TLOF: *TargetLoweringObjectFile = self.getObjFileLowering();
+    let mut F: *Function = self.MF.getFunction();
+    let mut JT: ArrayRef<MachineJumpTableEntry> = MJTI.getJumpTables();
     let mut ReadOnlySec: *mut MCSection = null;
-    if  {
-        ReadOnlySec = TLOF;
+    if self.TM.Options.EnableStaticDataPartitioning {
+        ReadOnlySec = TLOF.getSectionForJumpTable(F, self.TM, &mut JT[JumpTableIndices.front()]);
     } else {
-        ReadOnlySec = TLOF;
+        ReadOnlySec = TLOF.getSectionForJumpTable(F, self.TM);
     }
-    let mut AFI: auto = zeroed();
+    operator(self.OutStreamer).switchSection(ReadOnlySec, 0);
+    let mut AFI: *mut AArch64FunctionInfo = self.MF.getInfo();
+    for JTI in JumpTableIndices {
+        let mut JTBBs: *[]*mut MachineBasicBlock = JT[JTI].MBBs;
+        if JTBBs.is_empty() {
+            continue;
+        }
+        let mut Size: u32 = AFI.getJumpTableEntrySize(JTI);
+        self.emitAlignment(Size, null, 0);
+        operator(self.OutStreamer).emitLabel(self.GetJTISymbol(JTI, false), SMLoc {});
+        let mut BaseSym: *MCSymbol = self.AArch64FI.getJumpTableEntryPCRelSymbol(JTI);
+        let mut Base: *MCExpr = create(BaseSym, self.OutContext, SMLoc {});
+        for JTBB in JTBBs {
+            let mut Value: *MCExpr = create(JTBB.getSymbol(), self.OutContext, SMLoc {});
+            Value = createSub(Value, Base, self.OutContext);
+            if Size != 4 {
+                Value = createLShr(Value, create(2, self.OutContext, false, 0), self.OutContext);
+            }
+            operator(self.OutStreamer).emitValue(Value, Size, SMLoc {});
+        }
+    }
 }
 
 fn AArch64AsmPrinter::getCodeViewJumpTableInfo(self: *AArch64AsmPrinter, JTI: i32, BranchInstr: *MachineInstr, BranchLabel: *MCSymbol) -> JumpTableEntrySize> {
-    let mut AFI: auto = zeroed();
+    let mut AFI: AArch64FunctionInfo *const = self.MF.getInfo();
     let mut Base: MCSymbol *const = self.AArch64FI.getJumpTableEntryPCRelSymbol(JTI);
     let mut EntrySize: JumpTableEntrySize = zeroed();
-    match AFI()(JTI) {
+    match AFI.getJumpTableEntrySize(JTI) {
         1 => {
             EntrySize = UInt8ShiftLeft;
         },
@@ -638,27 +842,38 @@ fn AArch64AsmPrinter::getCodeViewJumpTableInfo(self: *AArch64AsmPrinter, JTI: i3
             EntrySize = Int32;
         },
         _ => {
-            llvm_unreachable_internal("Unexpected jump table entry size", "llvm\\lib\\Target\\AArch64\\AArch64AsmPrinter.cpp", 1449);
+            llvm_unreachable_internal("Unexpected jump table entry size", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64AsmPrinter.cpp", 1449);
         },
     }
     return make_tuple(Base, 0, BranchLabel, EntrySize);
 }
 
 fn AArch64AsmPrinter::emitFunctionEntryLabel(self) {
-    let mut TT: *Triple = null;
-    if  {
-        let mut TS: *mut auto = null;
-        TS();
+    let mut TT: *Triple = self.TM.getTargetTriple();
+    if TT.isOSBinFormatELF() && (self.MF.getFunction().getCallingConv() == AArch64_VectorCall || self.MF.getFunction().getCallingConv() == AArch64_SVE_VectorCall || self.MF.getInfo().isSVECC()) {
+        let mut TS: *mut AArch64TargetStreamer = operator(self.OutStreamer).getTargetStreamer() as *mut AArch64TargetStreamer;
+        TS.emitDirectiveVariantPCS(self.CurrentFnSym);
     }
-    self.emitFunctionEntryLabel;
-    if  {
+    self.emitFunctionEntryLabel();
+    if TT.isWindowsArm64EC() && !self.MF.getFunction().hasLocalLinkage() {
         let mut emitFunctionAlias: Closure_1 = Closure_1 { cap_0: self };
         let mut getSymbolFromMetadata: Closure_2 = Closure_2 { cap_0: self };
-        let mut UnmangledNames: i32 = 0;
+        let mut UnmangledNames: SmallVector<MDNode *> = SmallVector<MDNode *> {};
+        self.MF.getFunction().getMetadata("arm64ec_unmangled_name", UnmangledNames);
+        for Node in UnmangledNames {
+            let mut NameStr: str = cast(Node.getOperand(0)).getString();
+            let mut UnmangledSym: *mut MCSymbol = self.MMI.getContext().getOrCreateSymbol(NameStr);
+            if getArm64ECMangledFunctionName(UnmangledSym.getName()) {
+                MangledName;
+            } else {
+                let mut ECMangledSym: *mut MCSymbol = self.MMI.getContext().getOrCreateSymbol(operator(MangledName));
+                emitFunctionAlias.call(UnmangledSym, ECMangledSym);
+            }
+        }
         if getSymbolFromMetadata.call("arm64ec_ecmangled_name") {
             ECMangledSym;
         } else {
-            emitFunctionAlias(ECMangledSym);
+            emitFunctionAlias.call(ECMangledSym, self.CurrentFnSym);
         }
     }
 }
@@ -680,74 +895,93 @@ fn AArch64AsmPrinter::emitXXStructor(self, DL: *DataLayout, CV: *Constant) {
         }
         CV = get(CV, Key, IntDisc, AddressDisc, Null);
     }
-    self.emitXXStructor;
+    self.emitXXStructor(DL, CV);
 }
 
 fn AArch64AsmPrinter::emitGlobalAlias(self, M: *Module, GA: *GlobalAlias) {
-    if  {
-        if ("arm64ec_exp_name") {
+    if dyn_cast_or_null(GA.getAliasee()) {
+        F;
+    } else {
+        if F.getMetadata("arm64ec_exp_name") {
             Node;
         } else {
-            let mut ExpStr: str = cast(Node.getOperand(0))();
-            let mut ExpSym: *mut MCSymbol = null;
-            let mut Sym: *mut MCSymbol = null;
+            let mut ExpStr: str = cast(Node.getOperand(0)).getString();
+            let mut ExpSym: *mut MCSymbol = self.MMI.getContext().getOrCreateSymbol(ExpStr);
+            let mut Sym: *mut MCSymbol = self.MMI.getContext().getOrCreateSymbol(GA.getName());
+            operator(self.OutStreamer).beginCOFFSymbolDef(ExpSym);
+            operator(self.OutStreamer).emitCOFFSymbolStorageClass(IMAGE_SYM_CLASS_EXTERNAL);
+            operator(self.OutStreamer).emitCOFFSymbolType(IMAGE_SYM_DTYPE_FUNCTION << SCT_COMPLEX_TYPE_SHIFT);
+            operator(self.OutStreamer).endCOFFSymbolDef();
+            operator(self.OutStreamer).beginCOFFSymbolDef(Sym);
+            operator(self.OutStreamer).emitCOFFSymbolStorageClass(IMAGE_SYM_CLASS_EXTERNAL);
+            operator(self.OutStreamer).emitCOFFSymbolType(IMAGE_SYM_DTYPE_FUNCTION << SCT_COMPLEX_TYPE_SHIFT);
+            operator(self.OutStreamer).endCOFFSymbolDef();
+            operator(self.OutStreamer).emitSymbolAttribute(Sym, MCSA_Weak);
+            operator(self.OutStreamer).emitAssignment(Sym, create(ExpSym, self.MMI.getContext(), SMLoc {}));
             return;
         }
     }
-    self.emitGlobalAlias;
+    self.emitGlobalAlias(M, GA);
 }
 
 fn AArch64AsmPrinter::LowerJumpTableDest(self, OutStreamer: *mut MCStreamer, MI: *MachineInstr) {
     let mut DestReg: Register = MI.getOperand(0).getReg();
     let mut ScratchReg: Register = MI.getOperand(1).getReg();
-    let mut ScratchRegW: Register = self.STI.getRegisterInfo();
+    let mut ScratchRegW: Register = self.STI.getRegisterInfo().getSubReg(ScratchReg.operator MCRegister(), sub_32);
     let mut TableReg: Register = MI.getOperand(2).getReg();
     let mut EntryReg: Register = MI.getOperand(3).getReg();
     let mut JTIdx: i32 = MI.getOperand(4).getIndex();
     let mut Size: i32 = self.AArch64FI.getJumpTableEntrySize(JTIdx);
-    let mut Label: auto = zeroed();
-    if operator!() {
-        self.AArch64FI.setJumpTableEntryInfo(JTIdx, Size);
-        OutStreamer.emitLabel();
+    let mut Label: *mut MCSymbol = self.MF.getInfo().getJumpTableEntryPCRelSymbol(JTIdx);
+    if !Label {
+        Label = self.MF.getContext().createTempSymbol();
+        self.AArch64FI.setJumpTableEntryInfo(JTIdx, Size, Label);
+        OutStreamer.emitLabel(Label, SMLoc {});
     }
-    let mut LabelExpr: auto = create();
+    let mut LabelExpr: *MCSymbolRefExpr = create(Label, self.MF.getContext(), SMLoc {});
+    self.EmitToStreamer(OutStreamer, ADR.addReg(DestReg.operator MCRegister()).addExpr(LabelExpr).operator llvm::MCInst &());
     let mut LdrOpcode: u32 = 0;
     match Size {
         1 => {
-            
+            LdrOpcode = LDRBBroX;
         },
         2 => {
-            
+            LdrOpcode = LDRHHroX;
         },
         4 => {
-            
+            LdrOpcode = LDRSWroX;
         },
         _ => {
-            llvm_unreachable_internal("Unknown jump table size", "llvm\\lib\\Target\\AArch64\\AArch64AsmPrinter.cpp", 1611);
+            llvm_unreachable_internal("Unknown jump table size", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64AsmPrinter.cpp", 1611);
         },
     }
-    self.EmitToStreamer;
+    self.EmitToStreamer(OutStreamer, LdrOpcode.addReg(if Size == 4 { ScratchReg } else { ScratchRegW }.operator MCRegister()).addReg(TableReg.operator MCRegister()).addReg(EntryReg.operator MCRegister()).addImm(0).addImm(if Size == 1 { 0 } else { 1 }).operator llvm::MCInst &());
+    self.EmitToStreamer(OutStreamer, ADDXrs.addReg(DestReg.operator MCRegister()).addReg(DestReg.operator MCRegister()).addReg(ScratchReg.operator MCRegister()).addImm(if Size == 4 { 0 } else { 2 }).operator llvm::MCInst &());
 }
 
 fn AArch64AsmPrinter::LowerHardenedBRJumpTable(self, MI: *MachineInstr) {
-    let mut MJTI: *MachineJumpTableInfo = null;
+    let mut MJTI: *MachineJumpTableInfo = self.MF.getJumpTableInfo();
     assert!(MJTI, "Can't lower jump-table dispatch without JTI");
-    let mut JTs: i32 = MJTI()();
-    (((operator!(operator!((operator!() && "Invalid JT index for jump-table dispatch")))) || (_wassert(L"!JTs.empty() && \"Invalid JT index for jump-table dispatch\"", L"llvm\\lib\\Target\\AArch64\\AArch64AsmPrinter.cpp", (1635) as u32) , 0)) as void);
+    let mut JTs: *[]MachineJumpTableEntry = MJTI.getJumpTables();
+    assert!(!JTs.is_empty(), "Invalid JT index for jump-table dispatch");
     let mut JTOp: MachineOperand = MI.getOperand(0);
     let mut JTI: u32 = JTOp.getIndex();
     assert!(!self.AArch64FI.getJumpTableEntryPCRelSymbol(JTI), "unsupported compressed jump table");
-    let mut NumTableEntries: u64 = [JTI]();
+    let mut NumTableEntries: u64 = JTs[JTI].MBBs.len;
     let mut MaxTableEntry: u64 = NumTableEntries - 1;
-    if isUInt(MaxTableEntry) {} else {
-        self.emitMOVZ;
+    if isUInt(MaxTableEntry) {
+        self.EmitToStreamer(operator(self.OutStreamer), SUBSXri.addReg(XZR).addReg(X16).addImm(MaxTableEntry).addImm(0).operator llvm::MCInst &());
+    } else {
+        self.emitMOVZ(X17, MaxTableEntry as u16, 0);
         for let mut Offset: i32 = 16; Offset < 64; Offset += 16 {
             if (MaxTableEntry >> Offset) == 0 {
                 break;
             }
-            self.emitMOVK;
+            self.emitMOVK(X17, MaxTableEntry >> Offset as u16, Offset);
         }
+        self.EmitToStreamer(operator(self.OutStreamer), SUBSXrs.addReg(XZR).addReg(X16).addReg(X17).addImm(0).operator llvm::MCInst &());
     }
+    self.EmitToStreamer(operator(self.OutStreamer), CSELXr.addReg(X16).addReg(X16).addReg(XZR).addImm(LS).operator llvm::MCInst &());
     let mut JTMOHi: MachineOperand = JTOp;
     let mut JTMOLo: MachineOperand = JTOp;
     let mut JTMCHi: MCOperand = MCOperand {};
@@ -756,16 +990,37 @@ fn AArch64AsmPrinter::LowerHardenedBRJumpTable(self, MI: *MachineInstr) {
     JTMOLo.setTargetFlags(MO_PAGEOFF | MO_NC);
     self.MCInstLowering.lowerOperand(JTMOHi, JTMCHi);
     self.MCInstLowering.lowerOperand(JTMOLo, JTMCLo);
-    let mut AdrLabel: *mut MCSymbol = null;
-    let mut AdrLabelE: *auto = create(AdrLabel);
+    self.EmitToStreamer(operator(self.OutStreamer), ADRP.addReg(X17).addOperand(JTMCHi).operator llvm::MCInst &());
+    self.EmitToStreamer(operator(self.OutStreamer), ADDXri.addReg(X17).addReg(X17).addOperand(JTMCLo).addImm(0).operator llvm::MCInst &());
+    self.EmitToStreamer(operator(self.OutStreamer), LDRSWroX.addReg(X16).addReg(X17).addReg(X16).addImm(0).addImm(1).operator llvm::MCInst &());
+    let mut AdrLabel: *mut MCSymbol = self.MF.getContext().createTempSymbol();
+    let mut AdrLabelE: *MCSymbolRefExpr = create(AdrLabel, self.MF.getContext(), SMLoc {});
     self.AArch64FI.setJumpTableEntryInfo(JTI, 4, AdrLabel);
+    operator(self.OutStreamer).emitLabel(AdrLabel, SMLoc {});
+    self.EmitToStreamer(operator(self.OutStreamer), ADR.addReg(X17).addExpr(AdrLabelE).operator llvm::MCInst &());
+    self.EmitToStreamer(operator(self.OutStreamer), ADDXrs.addReg(X16).addReg(X17).addReg(X16).addImm(0).operator llvm::MCInst &());
+    self.EmitToStreamer(operator(self.OutStreamer), BR.addReg(X16).operator llvm::MCInst &());
 }
 
 fn AArch64AsmPrinter::LowerMOPS(self, OutStreamer: *mut MCStreamer, MI: *MachineInstr) {
     let mut Opcode: u32 = MI.getOpcode();
-    (((operator!(operator!((self.STI())))) || (_wassert(L"STI->hasMOPS()", L"llvm\\lib\\Target\\AArch64\\AArch64AsmPrinter.cpp", (1742) as u32) , 0)) as void);
-    let mut Ops: auto = Closure_3 { Opcode: Opcode };
-    let mut IsSet: bool = false;
+    assert!(self.STI.hasMOPS();
+    assert!(self.STI.hasMTE() || Opcode != MOPSMemorySetTaggingPseudo);
+    let mut Ops: array<unsigned int, 3> = Closure_3 { Opcode: Opcode }.call();
+    let mut IsSet: bool = Opcode == MOPSMemorySetPseudo || Opcode == MOPSMemorySetTaggingPseudo;
+    for Op in Ops {
+        let mut i: i32 = 0;
+        let mut MCIB: MCInstBuilder = Op;
+        MCIB.addReg(MI.getOperand(i += 1).getReg().operator MCRegister());
+        MCIB.addReg(MI.getOperand(i += 1).getReg().operator MCRegister());
+        if !IsSet {
+            MCIB.addReg(MI.getOperand(i += 1).getReg().operator MCRegister());
+        }
+        MCIB.addReg(MI.getOperand(i += 1).getReg().operator MCRegister());
+        MCIB.addReg(MI.getOperand(i += 1).getReg().operator MCRegister());
+        MCIB.addReg(MI.getOperand(i += 1).getReg().operator MCRegister());
+        self.EmitToStreamer(OutStreamer, MCIB.operator llvm::MCInst &());
+    }
 }
 
 fn AArch64AsmPrinter::LowerSTACKMAP(self, OutStreamer: *mut MCStreamer, SM: *mut StackMaps, MI: *MachineInstr) {
@@ -776,14 +1031,17 @@ fn AArch64AsmPrinter::LowerSTACKMAP(self, OutStreamer: *mut MCStreamer, SM: *mut
     SM.recordStackMap(*MILabel, MI);
     assert!(NumNOPBytes % 4 == 0, "Invalid number of NOP bytes requested!");
     let mut MBB: *MachineBasicBlock = *MI.getParent();
+    let mut MII: const_iterator = MI;
+    operator(MII);
     while NumNOPBytes > 0 {
-        if  {
+        if MII == MBB.end() || operator(MII).isCall(AnyInBundle) || operator(MII).getOpcode() == DBG_VALUE || operator(MII).getOpcode() == PATCHPOINT || operator(MII).getOpcode() == STACKMAP {
             break;
         }
+        operator(MII);
         NumNOPBytes -= 4;
     }
     for let mut i: u32 = 0; i < NumNOPBytes; i += 4 {
-        
+        self.EmitToStreamer(OutStreamer, NOP.operator llvm::MCInst &());
     }
 }
 
@@ -802,12 +1060,13 @@ fn AArch64AsmPrinter::LowerPATCHPOINT(self, OutStreamer: *mut MCStreamer, SM: *m
         self.emitMOVZ(ScratchReg, (CallTarget >> 32) & 65535, 32);
         self.emitMOVK(ScratchReg, (CallTarget >> 16) & 65535, 16);
         self.emitMOVK(ScratchReg, CallTarget & 65535, 0);
+        self.EmitToStreamer(OutStreamer, BLR.addReg(ScratchReg.operator MCRegister()).operator llvm::MCInst &());
     }
     let mut NumBytes: u32 = Opers.getNumPatchBytes();
     assert!(NumBytes >= EncodedBytes, "Patchpoint can't request size less than the length of a call.");
     assert!((NumBytes - EncodedBytes) % 4 == 0, "Invalid number of NOP bytes requested!");
     for let mut i: u32 = EncodedBytes; i < NumBytes; i += 4 {
-        
+        self.EmitToStreamer(OutStreamer, NOP.operator llvm::MCInst &());
     }
 }
 
@@ -818,7 +1077,7 @@ fn AArch64AsmPrinter::LowerSTATEPOINT(self, OutStreamer: *mut MCStreamer, SM: *m
     } else {
         assert!(PatchBytes % 4 == 0, "Invalid number of NOP bytes requested!");
         for let mut i: u32 = 0; i < PatchBytes; i += 4 {
-            
+            self.EmitToStreamer(OutStreamer, NOP.operator llvm::MCInst &());
         }
     }
     let mut Ctx: *mut MCContext = OutStreamer.getContext();
@@ -833,29 +1092,41 @@ fn AArch64AsmPrinter::LowerFAULTING_OP(self, FaultingMI: *MachineInstr) {
     let mut HandlerLabel: *mut MCSymbol = FaultingMI.getOperand(2).getMBB().getSymbol();
     let mut Opcode: u32 = FaultingMI.getOperand(3).getImm();
     let mut OperandsBeginIdx: u32 = 4;
-    let mut Ctx: *mut auto = null;
-    let mut FaultingLabel: *mut MCSymbol = ();
+    let mut Ctx: *mut MCContext = operator(self.OutStreamer).getContext();
+    let mut FaultingLabel: *mut MCSymbol = Ctx.createTempSymbol();
+    operator(self.OutStreamer).emitLabel(FaultingLabel, SMLoc {});
     assert!(FK < FaultKindMax, "Invalid Faulting Kind!");
+    self.FM.recordFaultingOp(FK, FaultingLabel, HandlerLabel);
     let mut MI: MCInst = MCInst {};
     MI.setOpcode(Opcode);
     if DefRegister != 0 as Register {
         MI.addOperand(createReg(DefRegister.operator MCRegister()));
     }
+    for MO in drop_begin(FaultingMI.operands(), OperandsBeginIdx) {
+        let mut Dest: MCOperand = MCOperand {};
+        self.lowerOperand(MO, Dest);
+        MI.addOperand(Dest);
+    }
+    operator(self.OutStreamer).AddComment("on-fault: " + HandlerLabel.getName(), true);
     self.EmitToStreamer(MI);
 }
 
-fn AArch64AsmPrinter::emitMovXReg(self, Dest: Register, Src: Register) {}
+fn AArch64AsmPrinter::emitMovXReg(self, Dest: Register, Src: Register) {
+    self.EmitToStreamer(operator(self.OutStreamer), ORRXrs.addReg(Dest.operator MCRegister()).addReg(XZR).addReg(Src.operator MCRegister()).addImm(0).operator llvm::MCInst &());
+}
 
 fn AArch64AsmPrinter::emitMOVZ(self, Dest: Register, Imm: u64, Shift: u32) {
-    let mut Is64Bit: bool = false;
+    let mut Is64Bit: bool = GPR64RegClass.contains(Dest.operator MCRegister());
+    self.EmitToStreamer(operator(self.OutStreamer), if Is64Bit { MOVZXi } else { MOVZWi }.addReg(Dest.operator MCRegister()).addImm(Imm).addImm(Shift).operator llvm::MCInst &());
 }
 
 fn AArch64AsmPrinter::emitMOVK(self, Dest: Register, Imm: u64, Shift: u32) {
-    let mut Is64Bit: bool = false;
+    let mut Is64Bit: bool = GPR64RegClass.contains(Dest.operator MCRegister());
+    self.EmitToStreamer(operator(self.OutStreamer), if Is64Bit { MOVKXi } else { MOVKWi }.addReg(Dest.operator MCRegister()).addReg(Dest.operator MCRegister()).addImm(Imm).addImm(Shift).operator llvm::MCInst &());
 }
 
 fn AArch64AsmPrinter::emitAUT(self, Key: ID, Pointer: Register, Disc: Register) {
-    let mut IsZeroDisc: bool = false;
+    let mut IsZeroDisc: bool = Disc == XZR;
     let mut Opcode: u32 = getAUTOpcodeForKey(Key, IsZeroDisc);
     let mut AUTInst: MCInst = MCInst {};
     AUTInst.setOpcode(Opcode);
@@ -868,7 +1139,7 @@ fn AArch64AsmPrinter::emitAUT(self, Key: ID, Pointer: Register, Disc: Register) 
 }
 
 fn AArch64AsmPrinter::emitPAC(self, Key: ID, Pointer: Register, Disc: Register) {
-    let mut IsZeroDisc: bool = false;
+    let mut IsZeroDisc: bool = Disc == XZR;
     let mut Opcode: u32 = getPACOpcodeForKey(Key, IsZeroDisc);
     let mut PACInst: MCInst = MCInst {};
     PACInst.setOpcode(Opcode);
@@ -881,7 +1152,7 @@ fn AArch64AsmPrinter::emitPAC(self, Key: ID, Pointer: Register, Disc: Register) 
 }
 
 fn AArch64AsmPrinter::emitBLRA(self, IsCall: bool, Key: ID, Target: Register, Disc: Register) {
-    let mut IsZeroDisc: bool = false;
+    let mut IsZeroDisc: bool = Disc == XZR;
     let mut Opcode: u32 = getBranchOpcodeForKey(IsCall, Key, IsZeroDisc);
     let mut Inst: MCInst = MCInst {};
     Inst.setOpcode(Opcode);
@@ -894,34 +1165,37 @@ fn AArch64AsmPrinter::emitBLRA(self, IsCall: bool, Key: ID, Target: Register, Di
 
 fn AArch64AsmPrinter::emitFMov0(self, MI: *MachineInstr) {
     let mut DestReg: Register = MI.getOperand(0).getReg();
-    if operator!(self.STI()) && self.STI.isNeonAvailable() {
-        if self.STI() {
+    if !self.STI.hasZeroCycleZeroingFPWorkaround() && self.STI.isNeonAvailable() {
+        if self.STI.hasZeroCycleZeroingFPR64() {
             let mut TRI: *AArch64RegisterInfo = self.STI.getRegisterInfo();
-            if  {
-                DestReg = TRI();
-            } else if  {
-                DestReg = TRI();
+            if FPR16RegClass.contains(DestReg.operator MCRegister()) {
+                DestReg = TRI.getMatchingSuperReg(DestReg.operator MCRegister(), hsub, &mut FPR64RegClass);
+            } else if FPR32RegClass.contains(DestReg.operator MCRegister()) {
+                DestReg = TRI.getMatchingSuperReg(DestReg.operator MCRegister(), ssub, &mut FPR64RegClass);
             } else {
-                
+                assert!(FPR64RegClass.contains(DestReg.operator MCRegister();
             }
             let mut MOVI: MCInst = MCInst {};
-            MOVI.setOpcode;
+            MOVI.setOpcode(MOVID);
             MOVI.addOperand(createReg(DestReg.operator MCRegister()));
             MOVI.addOperand(createImm(0));
+            self.EmitToStreamer(operator(self.OutStreamer), MOVI);
             operator(NumZCZeroingInstrsFPR);
-        } else if self.STI() {
+        } else if self.STI.hasZeroCycleZeroingFPR128() {
             let mut TRI: *AArch64RegisterInfo = self.STI.getRegisterInfo();
-            if  {
-                DestReg = TRI();
-            } else if  {
-                DestReg = TRI();
+            if FPR16RegClass.contains(DestReg.operator MCRegister()) {
+                DestReg = TRI.getMatchingSuperReg(DestReg.operator MCRegister(), hsub, &mut FPR128RegClass);
+            } else if FPR32RegClass.contains(DestReg.operator MCRegister()) {
+                DestReg = TRI.getMatchingSuperReg(DestReg.operator MCRegister(), ssub, &mut FPR128RegClass);
             } else {
-                DestReg = TRI();
+                assert!(FPR64RegClass.contains(DestReg.operator MCRegister();
+                DestReg = TRI.getMatchingSuperReg(DestReg.operator MCRegister(), dsub, &mut FPR128RegClass);
             }
             let mut MOVI: MCInst = MCInst {};
-            MOVI.setOpcode;
+            MOVI.setOpcode(MOVIv2d_ns);
             MOVI.addOperand(createReg(DestReg.operator MCRegister()));
             MOVI.addOperand(createImm(0));
+            self.EmitToStreamer(operator(self.OutStreamer), MOVI);
             operator(NumZCZeroingInstrsFPR);
         } else {
             self.emitFMov0AsFMov(MI, DestReg);
@@ -935,18 +1209,31 @@ fn AArch64AsmPrinter::emitFMov0AsFMov(self, MI: *MachineInstr, DestReg: Register
     let mut FMov: MCInst = MCInst {};
     match MI.getOpcode() {
         _ => {
-            llvm_unreachable_internal("Unexpected opcode", "llvm\\lib\\Target\\AArch64\\AArch64AsmPrinter.cpp", 2047);
+            llvm_unreachable_internal("Unexpected opcode", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64AsmPrinter.cpp", 2047);
+        },
+        FMOVH0 => {
+            FMov.setOpcode(if self.STI.hasFullFP16() { FMOVWHr } else { FMOVWSr });
+        },
+        FMOVS0 => {
+            FMov.setOpcode(FMOVWSr);
+        },
+        FMOVD0 => {
+            FMov.setOpcode(FMOVXDr);
         },
     }
+    self.EmitToStreamer(operator(self.OutStreamer), FMov);
 }
 
 fn AArch64AsmPrinter::emitPtrauthDiscriminator(self, Disc: u64, AddrDisc: Register, ScratchReg: Register, MayClobberAddrDisc: bool) -> Register {
     assert!(self.isPtrauthRegSafe(ScratchReg), "Safe scratch register must be provided by the caller");
     assert!(isUInt(Disc), "Constant discriminator is too wide");
+    if !AddrDisc.isValid() {
+        AddrDisc = XZR;
+    }
     if !Disc {
         return AddrDisc;
     }
-    if  {
+    if AddrDisc == XZR {
         self.emitMOVZ(ScratchReg, Disc, 0);
         return ScratchReg;
     }
@@ -965,22 +1252,32 @@ fn AArch64AsmPrinter::emitPtrauthCheckAuthenticatedValue(self, TestedReg: Regist
         return;
     }
     if Method == DummyLoad {
+        self.EmitToStreamer(LDRWui.addReg(getWRegFromXReg(ScratchReg.operator MCRegister())).addReg(TestedReg.operator MCRegister()).addImm(0).operator llvm::MCInst &());
         assert!(!OnFailure, "DummyLoad always traps on error");
         return;
     }
-    let mut SuccessSym: *mut MCSymbol = self.createTempSymbol;
+    let mut SuccessSym: *mut MCSymbol = self.createTempSymbol("auth_success_");
     if Method == XPAC || Method == XPACHint {
         self.emitMovXReg(ScratchReg, TestedReg);
         if Method == XPAC {
             let mut XPACOpc: u32 = getXPACOpcodeForKey(Key);
-            self.EmitToStreamer;
+            self.EmitToStreamer(XPACOpc.addReg(ScratchReg.operator MCRegister()).addReg(ScratchReg.operator MCRegister()).operator llvm::MCInst &());
         } else {
+            assert!(TestedReg == LR, "XPACHint mode is only compatible with checking the LR register");
             assert!((Key == IA || Key == IB), "XPACHint mode is only compatible with I-keys");
+            self.EmitToStreamer(XPACLRI.operator llvm::MCInst &());
         }
-    } else if Method == HighBitsNoTBI {} else {
-        llvm_unreachable_internal("Unsupported check method", "llvm\\lib\\Target\\AArch64\\AArch64AsmPrinter.cpp", 2207);
+        self.EmitToStreamer(SUBSXrs.addReg(XZR).addReg(TestedReg.operator MCRegister()).addReg(ScratchReg.operator MCRegister()).addImm(0).operator llvm::MCInst &());
+        self.EmitToStreamer(Bcc.addImm(EQ).addExpr(create(SuccessSym, self.OutContext, SMLoc {})).operator llvm::MCInst &());
+    } else if Method == HighBitsNoTBI {
+        self.EmitToStreamer(EORXrs.addReg(ScratchReg.operator MCRegister()).addReg(TestedReg.operator MCRegister()).addReg(TestedReg.operator MCRegister()).addImm(1).operator llvm::MCInst &());
+        self.EmitToStreamer(TBZX.addReg(ScratchReg.operator MCRegister()).addImm(62).addExpr(create(SuccessSym, self.OutContext, SMLoc {})).operator llvm::MCInst &());
+    } else {
+        llvm_unreachable_internal("Unsupported check method", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64AsmPrinter.cpp", 2207);
     }
-    if !OnFailure {} else {
+    if !OnFailure {
+        self.EmitToStreamer(BRK.addImm(50288 | Key).operator llvm::MCInst &());
+    } else {
         match Method {
             XPACHint => {
                 break;
@@ -992,23 +1289,25 @@ fn AArch64AsmPrinter::emitPtrauthCheckAuthenticatedValue(self, TestedReg: Regist
                 let mut XPACOpc: u32 = getXPACOpcodeForKey(Key);
             },
         }
-        let mut OnFailureExpr: *auto = create(OnFailure);
+        let mut OnFailureExpr: *MCSymbolRefExpr = create(OnFailure, self.OutContext, SMLoc {});
+        self.EmitToStreamer(B.addExpr(OnFailureExpr).operator llvm::MCInst &());
     }
+    operator(self.OutStreamer).emitLabel(SuccessSym, SMLoc {});
 }
 
 fn AArch64AsmPrinter::emitPtrauthTailCallHardening(self, TC: *MachineInstr) {
-    if operator!(self.AArch64FI) {
+    if !self.AArch64FI.shouldSignReturnAddress(*self.MF) {
         return;
     }
-    let mut LRCheckMethod: auto = self.STI.getAuthenticatedLRCheckMethod;
-    if LRCheckMethod() == None {
+    let mut LRCheckMethod: AuthCheckMethod = self.STI.getAuthenticatedLRCheckMethod(*self.MF);
+    if LRCheckMethod == None {
         return;
     }
     let mut TRI: *AArch64RegisterInfo = self.STI.getRegisterInfo();
-    let mut ScratchReg: Register = zeroed();
-    assert!(!TC.readsRegister, "Neither x16 nor x17 is available as a scratch register");
+    let mut ScratchReg: Register = if TC.readsRegister(X16, TRI) { X17 } else { X16 };
+    assert!(!TC.readsRegister(ScratchReg, TRI), "Neither x16 nor x17 is available as a scratch register");
     let mut Key: ID = if self.AArch64FI.shouldSignWithBKey() { IB } else { IA };
-    self.emitPtrauthCheckAuthenticatedValue;
+    self.emitPtrauthCheckAuthenticatedValue(LR, ScratchReg, Key, LRCheckMethod, null);
 }
 
 fn AArch64AsmPrinter::emitDeactivationSymbolRelocation(self, DS: *mut Value) -> bool {
@@ -1016,15 +1315,18 @@ fn AArch64AsmPrinter::emitDeactivationSymbolRelocation(self, DS: *mut Value) -> 
         return false;
     }
     if isa(DS) {
+        self.EmitToStreamer(NOP.operator llvm::MCInst &());
         return true;
     }
-    let mut Dot: *mut MCSymbol = null;
-    let mut DeactDotExpr: *MCExpr = create(Dot);
-    let mut DSExpr: *MCExpr = create();
+    let mut Dot: *mut MCSymbol = self.OutContext.createTempSymbol();
+    operator(self.OutStreamer).emitLabel(Dot, SMLoc {});
+    let mut DeactDotExpr: *MCExpr = create(Dot, self.OutContext, SMLoc {});
+    let mut DSExpr: *MCExpr = create(self.OutContext.getOrCreateSymbol(DS.getName()), self.OutContext, SMLoc {});
+    operator(self.OutStreamer).emitRelocDirective(*DeactDotExpr, "R_AARCH64_PATCHINST", DSExpr, SMLoc {});
     return false;
 }
 
-fn PtrAuthSchema@AArch64AsmPrinter@?A0xF958D8A9::CreateImmReg(self, Key: ID, IntDisc: u64, AddrDiscOp: *MachineOperand) -> PtrAuthSchema {
+fn PtrAuthSchema@AArch64AsmPrinter@?A0xCB7B40D2::CreateImmReg(self, Key: ID, IntDisc: u64, AddrDiscOp: *MachineOperand) -> PtrAuthSchema {
     let mut Schema: PtrAuthSchema = PtrAuthSchema {};
     Schema.Key = Key;
     Schema.IntDisc = IntDisc;
@@ -1034,7 +1336,7 @@ fn PtrAuthSchema@AArch64AsmPrinter@?A0xF958D8A9::CreateImmReg(self, Key: ID, Int
     return Schema;
 }
 
-fn PtrAuthSchema@AArch64AsmPrinter@?A0xF958D8A9::CreateRegReg(self, Key: ID, AddrDisc: Register, PCDisc: Register) -> PtrAuthSchema {
+fn PtrAuthSchema@AArch64AsmPrinter@?A0xCB7B40D2::CreateRegReg(self, Key: ID, AddrDisc: Register, PCDisc: Register) -> PtrAuthSchema {
     assert!(PCDisc.isValid(), "Use CreateImmReg for non-PC schemas");
     let mut Schema: PtrAuthSchema = PtrAuthSchema {};
     Schema.Key = Key;
@@ -1046,9 +1348,13 @@ fn PtrAuthSchema@AArch64AsmPrinter@?A0xF958D8A9::CreateRegReg(self, Key: ID, Add
 }
 
 fn AArch64AsmPrinter::emitPtrauthApplyIndirectAddend(self, Pointer: Register, Scratch: Register, Addend: i64) {
-    if isInt(Addend) {} else {
+    if isInt(Addend) {
+        self.EmitToStreamer(LDRSWpre.addReg(Pointer.operator MCRegister()).addReg(Scratch.operator MCRegister()).addReg(Pointer.operator MCRegister()).addImm(Addend).operator llvm::MCInst &());
+    } else {
         if isUInt(Addend) {
-            for let mut BitPos: i32 = 0; BitPos != 24 && (Addend >> BitPos); BitPos += 12 {}
+            for let mut BitPos: i32 = 0; BitPos != 24 && (Addend >> BitPos); BitPos += 12 {
+                self.EmitToStreamer(ADDXri.addReg(Pointer.operator MCRegister()).addReg(Pointer.operator MCRegister()).addImm((Addend >> BitPos) & 4095).addImm(getShifterImm(LSL, BitPos)).operator llvm::MCInst &());
+            }
         } else {
             self.emitMOVZ(Scratch, Addend & 65535, 0);
             for let mut Offset: i32 = 16; Offset < 64; Offset += 16 {
@@ -1058,16 +1364,19 @@ fn AArch64AsmPrinter::emitPtrauthApplyIndirectAddend(self, Pointer: Register, Sc
                     self.emitMOVK(Scratch, Fragment, Offset);
                 }
             }
+            self.EmitToStreamer(ADDXrs.addReg(Pointer.operator MCRegister()).addReg(Pointer.operator MCRegister()).addReg(Scratch.operator MCRegister()).addImm(0).operator llvm::MCInst &());
         }
+        self.EmitToStreamer(LDRSWui.addReg(Scratch.operator MCRegister()).addReg(Pointer.operator MCRegister()).addImm(0).operator llvm::MCInst &());
     }
+    self.EmitToStreamer(ADDXrs.addReg(Pointer.operator MCRegister()).addReg(Pointer.operator MCRegister()).addReg(Scratch.operator MCRegister()).addImm(0).operator llvm::MCInst &());
 }
 
 fn getCheckMode(MF: *MachineFunction) -> PtrauthCheckMode {
-    let mut STI: *AArch64Subtarget = MF;
-    if PtrauthAuthChecks()() {
-        return ;
+    let mut STI: *AArch64Subtarget = MF.getSubtarget();
+    if PtrauthAuthChecks.getNumOccurrences() {
+        return PtrauthAuthChecks.operator PtrauthCheckMode();
     }
-    if STI()() {
+    if STI.hasFPAC() {
         return Unchecked;
     }
     let mut ShouldTrap: bool = MF.getFunction().hasFnAttribute("ptrauth-auth-traps");
@@ -1075,26 +1384,29 @@ fn getCheckMode(MF: *MachineFunction) -> PtrauthCheckMode {
 }
 
 fn AArch64AsmPrinter::emitPtrauthAuthResign(self, Pointer: Register, Scratch: Register, AuthSchema: PtrAuthSchema, SignSchema: optional<PtrAuthSchema>, Addend: optional<int64_t>, DS: *mut Value) {
-    let mut CheckMode: PtrauthCheckMode = getCheckMode();
+    let mut CheckMode: PtrauthCheckMode = getCheckMode(self.MF);
     let mut IsAuthWithPC: bool = AuthSchema.PCDisc.isValid();
-    (((operator!(operator!((operator!() || operator!())))) || (_wassert(L"!SignSchema || !SignSchema->PCDisc.isValid()", L"llvm\\lib\\Target\\AArch64\\AArch64AsmPrinter.cpp", (2421) as u32) , 0)) as void);
-    let mut SignAddrDiscOrNone: Register = if  {  } else { Register { Reg: 0 } };
+    assert!(!SignSchema || !operator(SignSchema).PCDisc.isValid();
+    let mut SignAddrDiscOrNone: Register = if SignSchema { operator(SignSchema).AddrDisc } else { Register { Reg: 0 } };
     if IsAuthWithPC {
+        assert!(Pointer == X17 && Scratch == X16, "AUTPCPAC must use x17/x16 as Pointer/Scratch");
+        assert!(AuthSchema.AddrDisc == X16, "AUTPCPAC requires address discriminator in X16");
+        assert!(AuthSchema.PCDisc == X15, "AUTPCPAC requires PC discriminator in X15");
         assert!(AuthSchema.IntDisc == 0, "AUTPCPAC does not support IntDisc");
         assert!((AuthSchema.Key == IB || AuthSchema.Key == IA), "AUTPCPAC only supports AUT-ing with IA/IB");
         if !self.emitDeactivationSymbolRelocation(DS) {
-            let mut AutOpc: u32 = 0;
-            self.EmitToStreamer;
+            let mut AutOpc: u32 = if (AuthSchema.Key == IB) { AUTIB171615 } else { AUTIA171615 };
+            self.EmitToStreamer(AutOpc.operator llvm::MCInst &());
         }
     } else {
-        let mut AUTDiscReg: Register = self.emitPtrauthDiscriminator(AuthSchema.IntDisc, AuthSchema.AddrDisc, Scratch, AuthSchema.addrDiscIsKilledAndNoneOf);
+        let mut AUTDiscReg: Register = self.emitPtrauthDiscriminator(AuthSchema.IntDisc, AuthSchema.AddrDisc, Scratch, AuthSchema.addrDiscIsKilledAndNoneOf([Pointer, SignAddrDiscOrNone]));
         if !self.emitDeactivationSymbolRelocation(DS) {
             self.emitAUT(AuthSchema.Key, Pointer, AUTDiscReg);
         }
     }
     let mut EmitCheck: Closure_4 = Closure_4 { cap_0: self, Pointer: &mut Pointer, Scratch: &mut Scratch, AuthSchema: &mut AuthSchema };
-    let mut EmitResignOnSuccess: Closure_5 = Closure_5 { Addend: &mut Addend, cap_1: self, Pointer: &mut Pointer, Scratch: &mut Scratch };
-    if operator!() {
+    let mut EmitResignOnSuccess: Closure_5 = Closure_5 { Addend: &mut Addend, cap_1: self, Pointer: &mut Pointer, Scratch: &mut Scratch, SignSchema: &mut SignSchema };
+    if !SignSchema {
         if CheckMode == Trap {
             EmitCheck.call(null);
         }
@@ -1108,7 +1420,7 @@ fn AArch64AsmPrinter::emitPtrauthAuthResign(self, Pointer: Register, Scratch: Re
             EmitCheck.call(null);
         },
         Poison => {
-            let mut OnFailure: *mut MCSymbol = self.createTempSymbol;
+            let mut OnFailure: *mut MCSymbol = self.createTempSymbol("resign_end_");
         },
     }
 }
@@ -1119,7 +1431,7 @@ fn AArch64AsmPrinter::emitPtrauthSign(self, MI: *MachineInstr) {
     let mut Disc: u64 = MI.getOperand(3).getImm();
     let mut AddrDisc: Register = MI.getOperand(4).getReg();
     let mut AddrDiscKilled: bool = MI.getOperand(4).isKill();
-    let mut ScratchReg: Register = zeroed();
+    let mut ScratchReg: Register = if Val == X16 { X17 } else { X16 };
     assert!(ScratchReg != AddrDisc, "Neither X16 nor X17 is available as a scratch register");
     let mut DiscReg: Register = self.emitPtrauthDiscriminator(Disc, AddrDisc, ScratchReg, AddrDiscKilled);
     if self.emitDeactivationSymbolRelocation(MI.getDeactivationSymbol()) {
@@ -1129,7 +1441,7 @@ fn AArch64AsmPrinter::emitPtrauthSign(self, MI: *MachineInstr) {
 }
 
 fn AArch64AsmPrinter::emitPtrauthBranch(self, MI: *MachineInstr) {
-    let mut IsCall: bool = false;
+    let mut IsCall: bool = MI.getOpcode() == BLRA;
     let mut BrTarget: u32 = MI.getOperand(0).getReg().operator unsigned int();
     let mut Key: ID = MI.getOperand(1).getImm() as ID;
     let mut Disc: u64 = MI.getOperand(2).getImm();
@@ -1137,8 +1449,8 @@ fn AArch64AsmPrinter::emitPtrauthBranch(self, MI: *MachineInstr) {
     if BrTarget == AddrDisc {
         report_fatal_error("Branch target is signed with its own value", true);
     }
-    let mut AddrDiscIsImplicitDef: bool = false;
-    let mut DiscReg: Register = self.emitPtrauthDiscriminator;
+    let mut AddrDiscIsImplicitDef: bool = IsCall && (AddrDisc == X16 || AddrDisc == X17);
+    let mut DiscReg: Register = self.emitPtrauthDiscriminator(Disc, AddrDisc, X17, AddrDiscIsImplicitDef);
     self.emitBLRA(IsCall, Key, BrTarget, DiscReg);
 }
 
@@ -1147,13 +1459,17 @@ fn AArch64AsmPrinter::emitAddImm(self, Reg: MCRegister, Addend: i64, Tmp: MCRegi
         let mut AbsOffset: u64 = (if Addend > 0 { Addend } else { -(Addend as u64) });
         let mut IsNeg: bool = Addend < 0;
         if isUInt(AbsOffset) {
-            for let mut BitPos: i32 = 0; BitPos != 24 && (AbsOffset >> BitPos); BitPos += 12 {}
+            for let mut BitPos: i32 = 0; BitPos != 24 && (AbsOffset >> BitPos); BitPos += 12 {
+                self.EmitToStreamer(if IsNeg { SUBXri } else { ADDXri }.addReg(Reg).addReg(Reg).addImm((AbsOffset >> BitPos) & 4095).addImm(getShifterImm(LSL, BitPos)).operator llvm::MCInst &());
+            }
         } else {
             let mut UAddend: u64 = Addend;
+            self.EmitToStreamer(if IsNeg { MOVNXi } else { MOVZXi }.addReg(Tmp).addImm((if IsNeg { ~UAddend } else { UAddend }) & 65535).addImm(0).operator llvm::MCInst &());
             let mut NeedMovk: Closure_6 = Closure_6 { IsNeg: IsNeg, UAddend: UAddend };
             for let mut BitPos: i32 = 16; BitPos != 64 && NeedMovk.call(BitPos); BitPos += 16 {
                 self.emitMOVK(Tmp, (UAddend >> BitPos) & 65535, BitPos);
             }
+            self.EmitToStreamer(ADDXrs.addReg(Reg).addReg(Reg).addReg(Tmp).addImm(0).operator llvm::MCInst &());
         }
     }
 }
@@ -1163,8 +1479,13 @@ fn AArch64AsmPrinter::emitAddress(self, Reg: MCRegister, Expr: *MCExpr, Tmp: MCR
     if !Expr.evaluateAsRelocatable(Val, null) {
         report_fatal_error("emitAddress could not evaluate", true);
     }
-    if DSOLocal {} else {
-        let mut SymRef: *mut auto = create(Val.getAddSym());
+    if DSOLocal {
+        self.EmitToStreamer(ADRP.addReg(Reg).addExpr(create(Expr, S_ABS_PAGE, operator(self.OutStreamer).getContext(), SMLoc {})).operator llvm::MCInst &());
+        self.EmitToStreamer(ADDXri.addReg(Reg).addReg(Reg).addExpr(create(Expr, S_LO12, operator(self.OutStreamer).getContext(), SMLoc {})).addImm(0).operator llvm::MCInst &());
+    } else {
+        let mut SymRef: *MCSymbolRefExpr = create(Val.getAddSym(), operator(self.OutStreamer).getContext(), SMLoc {});
+        self.EmitToStreamer(ADRP.addReg(Reg).addExpr(create(SymRef, S_GOT_PAGE, operator(self.OutStreamer).getContext(), SMLoc {})).operator llvm::MCInst &());
+        self.EmitToStreamer(LDRXui.addReg(Reg).addReg(Reg).addExpr(create(SymRef, S_GOT_LO12, operator(self.OutStreamer).getContext(), SMLoc {})).operator llvm::MCInst &());
         self.emitAddImm(Reg, Val.getConstant(), Tmp);
     }
 }
@@ -1177,49 +1498,64 @@ fn targetSupportsIRelativeRelocation(TT: *Triple) -> bool {
 }
 
 fn AArch64AsmPrinter::emitPAuthRelocationAsIRelative(self, Target: *MCExpr, Disc: u64, KeyID: ID, HasAddressDiversity: bool, IsDSOLocal: bool, DSExpr: *MCExpr) -> *MCExpr {
-    let mut TT: *Triple = null;
+    let mut TT: *Triple = self.TM.getTargetTriple();
     if !targetSupportsIRelativeRelocation(TT) {
         return null;
     }
     if KeyID != DA {
         return null;
     }
-    let mut STI: auto = make_unique(TT, true);
-    self.STI = ();
-    let mut Place: *mut MCSymbol = null;
-    let mut Group: *MCSymbolELF = null;
+    let mut STI: AArch64Subtarget> = make_unique(TT, self.TM.getTargetCPU(), self.TM.getTargetCPU(), self.TM.getTargetFeatureString(), self.TM, true);
+    self.STI = STI.get();
+    let mut Place: *mut MCSymbol = operator(self.OutStreamer).getContext().createTempSymbol();
+    operator(self.OutStreamer).emitLabel(Place, SMLoc {});
+    operator(self.OutStreamer).pushSection();
+    let mut Group: *MCSymbolELF = operator(self.OutStreamer).getCurrentSectionOnly() as *mut MCSectionELF.getGroup();
     let mut Flags: u32 = SHF_ALLOC | SHF_EXECINSTR;
     if Group {
         Flags |= SHF_GROUP;
     }
-    let mut IRelativeSym: *mut MCSymbol = null;
-    if isa(Target) {} else {
-        self.emitAddress;
+    operator(self.OutStreamer).switchSection(operator(self.OutStreamer).getContext().getELFSection(".text.startup", SHT_PROGBITS, Flags, 0, Group, true, if Group { NonUniqueID } else { self.PAuthIFuncNextUniqueID += 1 }, null), 0);
+    let mut IRelativeSym: *mut MCSymbol = operator(self.OutStreamer).getContext().createLinkerPrivateSymbol("pauth_ifunc");
+    operator(self.OutStreamer).emitLabel(IRelativeSym, SMLoc {});
+    if isa(Target) {
+        operator(self.OutStreamer).emitInstruction(MOVZXi.addReg(X0).addExpr(Target).addImm(0).operator llvm::MCInst &(), operator(STI));
+    } else {
+        self.emitAddress(X0, Target, X16, IsDSOLocal, operator(STI));
     }
     if HasAddressDiversity {
-        let mut PlacePlusDisc: *mut auto = createAdd(create(Place), create(Disc));
-        self.emitAddress;
+        let mut PlacePlusDisc: *MCBinaryExpr = createAdd(create(Place, operator(self.OutStreamer).getContext(), SMLoc {}), create(Disc, operator(self.OutStreamer).getContext(), false, 0), operator(self.OutStreamer).getContext(), SMLoc {});
+        self.emitAddress(X1, PlacePlusDisc, X16, true, operator(STI));
     } else {
-        if !isUInt(Disc) {}
-        self.emitMOVZ;
+        if !isUInt(Disc) {
+            self.OutContext.reportError(SMLoc {}, "AArch64 PAC Discriminator '" + Disc + "' out of range [0, 0xFFFF]");
+        }
+        self.emitMOVZ(X1, Disc, 0);
     }
     if DSExpr {
-        let mut PrePACInst: *mut MCSymbol = null;
-        let mut PrePACInstExpr: *mut auto = create(PrePACInst);
+        let mut PrePACInst: *mut MCSymbol = operator(self.OutStreamer).getContext().createTempSymbol();
+        operator(self.OutStreamer).emitLabel(PrePACInst, SMLoc {});
+        let mut PrePACInstExpr: *MCSymbolRefExpr = create(PrePACInst, operator(self.OutStreamer).getContext(), SMLoc {});
+        operator(self.OutStreamer).emitRelocDirective(*PrePACInstExpr, "R_AARCH64_PATCHINST", DSExpr, SMLoc {});
     }
-    let mut EmuPAC: *mut MCSymbol = null;
-    let mut EmuPACRef: *MCSymbolRefExpr = create(EmuPAC);
-    return create(create(IRelativeSym), S_FUNCINIT);
+    let mut EmuPAC: *mut MCSymbol = operator(self.OutStreamer).getContext().getOrCreateSymbol("__emupac_pacda");
+    let mut EmuPACRef: *MCSymbolRefExpr = create(EmuPAC, operator(self.OutStreamer).getContext(), SMLoc {});
+    operator(self.OutStreamer).emitInstruction(B.addExpr(EmuPACRef).operator llvm::MCInst &(), operator(STI));
+    if DSExpr {
+        operator(self.OutStreamer).emitInstruction(RET.addReg(LR).operator llvm::MCInst &(), operator(STI));
+    }
+    operator(self.OutStreamer).popSection();
+    return create(create(IRelativeSym, operator(self.OutStreamer).getContext(), SMLoc {}), S_FUNCINIT, operator(self.OutStreamer).getContext(), SMLoc {});
 }
 
 fn AArch64AsmPrinter::lowerConstantPtrAuth(self, CPA: *ConstantPtrAuth) -> *MCExpr {
-    let mut Ctx: *mut MCContext = null;
+    let mut Ctx: *mut MCContext = self.OutContext;
     let mut Offset: APInt = APInt { 64, 0, false, false };
-    let mut BaseGV: *Value = CPA.getPointer()(self.getDataLayout, Offset, true);
-    let mut BaseGVB: *mut auto = dyn_cast(BaseGV);
+    let mut BaseGV: *Value = CPA.getPointer().stripAndAccumulateConstantOffsets(self.getDataLayout(), Offset, true, false, null, false);
+    let mut BaseGVB: *GlobalValue = dyn_cast(BaseGV);
     let mut Sym: *MCExpr = null;
-    if BaseGVB() {
-        Sym = create(self.getSymbol(), Ctx);
+    if BaseGVB {
+        Sym = create(self.getSymbol(BaseGVB), Ctx, SMLoc {});
         if Offset.sgt(0) {
             Sym = createAdd(Sym, create(Offset.getSExtValue(), Ctx, false, 0), Ctx, SMLoc {});
         } else if Offset.slt(0) {
@@ -1231,11 +1567,13 @@ fn AArch64AsmPrinter::lowerConstantPtrAuth(self, CPA: *ConstantPtrAuth) -> *MCEx
         reportFatalUsageError("unsupported constant expression in ptrauth pointer");
     }
     let mut DSExpr: *MCExpr = null;
-    if  {
-        if isa() {
+    if dyn_cast(CPA.getDeactivationSymbol()) {
+        DS;
+    } else {
+        if isa(DS) {
             return Sym;
         }
-        DSExpr = create(self.getSymbol(), Ctx);
+        DSExpr = create(self.getSymbol(DS), Ctx, SMLoc {});
     }
     let mut KeyID: u64 = CPA.getKey().getZExtValue();
     if KeyID > LAST {
@@ -1243,8 +1581,10 @@ fn AArch64AsmPrinter::lowerConstantPtrAuth(self, CPA: *ConstantPtrAuth) -> *MCEx
         KeyID = 0;
     }
     let mut Disc: u64 = CPA.getDiscriminator().getZExtValue();
-    if  {
-        return ;
+    if self.emitPAuthRelocationAsIRelative(Sym, Disc, KeyID, CPA.hasAddressDiscriminator(), BaseGVB && BaseGVB.isDSOLocal(), DSExpr) {
+        IFuncSym;
+    } else {
+        return IFuncSym;
     }
     if !isUInt(Disc) {
         CPA.getContext().emitError("AArch64 PAC Discriminator '" + Disc + "' out of range [0, 0xFFFF]");
@@ -1265,16 +1605,17 @@ fn AArch64AsmPrinter::LowerLOADauthptrstatic(self, MI: *MachineInstr) {
     let mut Disc: u64 = MI.getOperand(3).getImm();
     assert!(isUInt(Disc), "constant discriminator is out of range [0, 0xffff]");
     let mut AuthPtrStubSym: *mut MCSymbol = null;
-    if  {
-        let mut TLOF: *auto = self.getObjFileLowering as AArch64_ELFTargetObjectFile;
+    if self.TM.getTargetTriple().isOSBinFormatELF() {
+        let mut TLOF: *AArch64_ELFTargetObjectFile = self.getObjFileLowering() as AArch64_ELFTargetObjectFile;
         assert!(GAOp.getOffset() == 0, "non-zero offset for $auth_ptr$ stub slots is not supported");
-        let mut GASym: *MCSymbol = null;
-        AuthPtrStubSym = ;
+        let mut GASym: *MCSymbol = self.TM.getSymbol(GAOp.getGlobal());
+        AuthPtrStubSym = TLOF.getAuthPtrSlotSymbol(self.TM, self.MMI, GASym, Key, Disc);
     } else {
-        let mut TLOF: *auto = self.getObjFileLowering as AArch64_MachoTargetObjectFile;
+        assert!(self.TM.getTargetTriple().isOSBinFormatMachO(), "LOADauthptrstatic is implemented only for MachO/ELF");
+        let mut TLOF: *AArch64_MachoTargetObjectFile = self.getObjFileLowering() as AArch64_MachoTargetObjectFile;
         assert!(GAOp.getOffset() == 0, "non-zero offset for $auth_ptr$ stub slots is not supported");
-        let mut GASym: *MCSymbol = null;
-        AuthPtrStubSym = ;
+        let mut GASym: *MCSymbol = self.TM.getSymbol(GAOp.getGlobal());
+        AuthPtrStubSym = TLOF.getAuthPtrSlotSymbol(self.TM, self.MMI, GASym, Key, Disc);
     }
     let mut StubMOHi: MachineOperand = CreateMCSymbol(AuthPtrStubSym, MO_PAGE);
     let mut StubMOLo: MachineOperand = CreateMCSymbol(AuthPtrStubSym, MO_PAGEOFF | MO_NC);
@@ -1282,11 +1623,13 @@ fn AArch64AsmPrinter::LowerLOADauthptrstatic(self, MI: *MachineInstr) {
     let mut StubMCLo: MCOperand = MCOperand {};
     self.MCInstLowering.lowerOperand(StubMOHi, StubMCHi);
     self.MCInstLowering.lowerOperand(StubMOLo, StubMCLo);
+    self.EmitToStreamer(operator(self.OutStreamer), ADRP.addReg(DstReg).addOperand(StubMCHi).operator llvm::MCInst &());
+    self.EmitToStreamer(operator(self.OutStreamer), LDRXui.addReg(DstReg).addReg(DstReg).addOperand(StubMCLo).operator llvm::MCInst &());
 }
 
 fn AArch64AsmPrinter::LowerMOVaddrPAC(self, MI: *MachineInstr) {
-    let mut IsGOTLoad: bool = false;
-    let mut IsELFSignedGOT: bool = MI.getParent().getParent()();
+    let mut IsGOTLoad: bool = MI.getOpcode() == LOADgotPAC;
+    let mut IsELFSignedGOT: bool = MI.getParent().getParent().getInfo().hasELFSignedGOT();
     let mut GAOp: MachineOperand = MI.getOperand(0);
     let mut KeyC: u64 = MI.getOperand(1).getImm();
     assert!(KeyC <= LAST, "key is out of range [0, AArch64PACKey::LAST]");
@@ -1307,31 +1650,40 @@ fn AArch64AsmPrinter::LowerMOVaddrPAC(self, MI: *MachineInstr) {
     }
     self.MCInstLowering.lowerOperand(GAMOHi, GAMCHi);
     self.MCInstLowering.lowerOperand(GAMOLo, GAMCLo);
+    self.EmitToStreamer(ADRP.addReg(if IsGOTLoad && IsELFSignedGOT { X17 } else { X16 }).addOperand(GAMCHi).operator llvm::MCInst &());
     if IsGOTLoad {
         if IsELFSignedGOT {
+            self.EmitToStreamer(ADDXri.addReg(X17).addReg(X17).addOperand(GAMCLo).addImm(0).operator llvm::MCInst &());
+            self.EmitToStreamer(LDRXui.addReg(X16).addReg(X17).addImm(0).operator llvm::MCInst &());
             assert!(GAOp.isGlobal();
             assert!(GAOp.getGlobal().getValueType() != null);
             let mut IsFunctionTy: bool = GAOp.getGlobal().getValueType().isFunctionTy();
             let mut AuthKey: ID = if IsFunctionTy { IA } else { DA };
-            self.emitAUT;
-            if operator!(self.STI()) {
-                self.emitPtrauthCheckAuthenticatedValue;
+            self.emitAUT(AuthKey, X16, X17);
+            if !self.STI.hasFPAC() {
+                self.emitPtrauthCheckAuthenticatedValue(X16, X17, AuthKey, XPAC, null);
             }
-        } else {}
-    } else {}
-    self.emitAddImm;
-    let mut DiscReg: Register = self.emitPtrauthDiscriminator;
-    self.emitPAC;
+        } else {
+            self.EmitToStreamer(LDRXui.addReg(X16).addReg(X16).addOperand(GAMCLo).operator llvm::MCInst &());
+        }
+    } else {
+        self.EmitToStreamer(ADDXri.addReg(X16).addReg(X16).addOperand(GAMCLo).addImm(0).operator llvm::MCInst &());
+    }
+    self.emitAddImm(X16, Offset, X17);
+    let mut DiscReg: Register = self.emitPtrauthDiscriminator(Disc, AddrDisc, X17, false);
+    self.emitPAC(Key, X16, DiscReg);
 }
 
 fn AArch64AsmPrinter::LowerLOADgotAUTH(self, MI: *MachineInstr) {
     let mut DstReg: Register = MI.getOperand(0).getReg();
-    let mut AuthResultReg: Register = zeroed();
+    let mut AuthResultReg: Register = if self.STI.hasFPAC() { DstReg } else { X16 };
     let mut GAMO: *MachineOperand = MI.getOperand(1);
     assert!(GAMO.getOffset() == 0);
     if MI.getMF().getTarget().getCodeModel() == Tiny {
         let mut GAMC: MCOperand = MCOperand {};
         self.MCInstLowering.lowerOperand(GAMO, GAMC);
+        self.EmitToStreamer(ADR.addReg(X17).addOperand(GAMC).operator llvm::MCInst &());
+        self.EmitToStreamer(LDRXui.addReg(AuthResultReg.operator MCRegister()).addReg(X17).addImm(0).operator llvm::MCInst &());
     } else {
         let mut GAHiOp: MachineOperand = GAMO;
         let mut GALoOp: MachineOperand = GAMO;
@@ -1341,27 +1693,36 @@ fn AArch64AsmPrinter::LowerLOADgotAUTH(self, MI: *MachineInstr) {
         let mut GAMCLo: MCOperand = MCOperand {};
         self.MCInstLowering.lowerOperand(GAHiOp, GAMCHi);
         self.MCInstLowering.lowerOperand(GALoOp, GAMCLo);
+        self.EmitToStreamer(ADRP.addReg(X17).addOperand(GAMCHi).operator llvm::MCInst &());
+        self.EmitToStreamer(ADDXri.addReg(X17).addReg(X17).addOperand(GAMCLo).addImm(0).operator llvm::MCInst &());
+        self.EmitToStreamer(LDRXui.addReg(AuthResultReg.operator MCRegister()).addReg(X17).addImm(0).operator llvm::MCInst &());
     }
     assert!(GAMO.isGlobal();
     let mut UndefWeakSym: *mut MCSymbol = null;
     if GAMO.getGlobal().hasExternalWeakLinkage() {
-        UndefWeakSym = self.createTempSymbol;
+        UndefWeakSym = self.createTempSymbol("undef_weak");
+        self.EmitToStreamer(CBZX.addReg(AuthResultReg.operator MCRegister()).addExpr(create(UndefWeakSym, self.OutContext, SMLoc {})).operator llvm::MCInst &());
     }
     assert!(GAMO.getGlobal().getValueType() != null);
     let mut IsFunctionTy: bool = GAMO.getGlobal().getValueType().isFunctionTy();
     let mut AuthKey: ID = if IsFunctionTy { IA } else { DA };
-    self.emitAUT;
-    if operator!(self.STI()) {
-        self.emitPtrauthCheckAuthenticatedValue;
+    self.emitAUT(AuthKey, AuthResultReg, X17);
+    if GAMO.getGlobal().hasExternalWeakLinkage() {
+        operator(self.OutStreamer).emitLabel(UndefWeakSym, SMLoc {});
+    }
+    if !self.STI.hasFPAC() {
+        self.emitPtrauthCheckAuthenticatedValue(AuthResultReg, X17, AuthKey, XPAC, null);
         self.emitMovXReg(DstReg, AuthResultReg);
     }
 }
 
 fn AArch64AsmPrinter::lowerBlockAddressConstant(self, BA: *BlockAddress) -> *MCExpr {
-    let mut BAE: *MCExpr = self.lowerBlockAddressConstant;
+    let mut BAE: *MCExpr = self.lowerBlockAddressConstant(BA);
     let mut Fn: *Function = *BA.getFunction();
-    if  {
-        return create(BAE, operator*(), IA, false);
+    if self.STI.getPtrAuthBlockAddressDiscriminatorIfEnabled(Fn) {
+        BADisc;
+    } else {
+        return create(BAE, operator(BADisc), IA, false, self.OutContext, SMLoc {});
     }
     return BAE;
 }
@@ -1371,7 +1732,25 @@ fn AArch64AsmPrinter::emitCBPseudoExpansion(self, MI: *MachineInstr) {
     let mut Width: u32 = 0;
     match MI.getOpcode() {
         _ => {
-            llvm_unreachable_internal("This is not a CB pseudo instruction", "llvm\\lib\\Target\\AArch64\\AArch64AsmPrinter.cpp", 3136);
+            llvm_unreachable_internal("This is not a CB pseudo instruction", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64AsmPrinter.cpp", 3136);
+        },
+        CBBAssertExt => {
+            IsImm = false;
+        },
+        CBHAssertExt => {
+            IsImm = false;
+        },
+        CBWPrr => {
+            Width = 32;
+        },
+        CBXPrr => {
+            Width = 64;
+        },
+        CBWPri => {
+            IsImm = true;
+        },
+        CBXPri => {
+            IsImm = true;
         },
     }
     let mut CC: CondCode = MI.getOperand(0).getImm() as CondCode;
@@ -1381,37 +1760,37 @@ fn AArch64AsmPrinter::emitCBPseudoExpansion(self, MI: *MachineInstr) {
     let mut MCOpC: u32 = 0;
     match CC {
         _ => {
-            llvm_unreachable_internal("Invalid CB condition code", "llvm\\lib\\Target\\AArch64\\AArch64AsmPrinter.cpp", 3181);
+            llvm_unreachable_internal("Invalid CB condition code", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64AsmPrinter.cpp", 3181);
         },
         EQ => {
-            
+            MCOpC = (if IsImm { (if Width == 32 { CBEQWri } else { CBEQXri }) } else { (if Width == 8 { CBBEQWrr } else { (if Width == 16 { CBHEQWrr } else { (if Width == 32 { CBEQWrr } else { CBEQXrr }) }) }) });
         },
         NE => {
-            
+            MCOpC = (if IsImm { (if Width == 32 { CBNEWri } else { CBNEXri }) } else { (if Width == 8 { CBBNEWrr } else { (if Width == 16 { CBHNEWrr } else { (if Width == 32 { CBNEWrr } else { CBNEXrr }) }) }) });
         },
         HS => {
-            
+            MCOpC = (if IsImm { (if Width == 32 { CBHIWri } else { CBHIXri }) } else { (if Width == 8 { CBBHSWrr } else { (if Width == 16 { CBHHSWrr } else { (if Width == 32 { CBHSWrr } else { CBHSXrr }) }) }) });
         },
         LO => {
-            
+            MCOpC = (if IsImm { (if Width == 32 { CBLOWri } else { CBLOXri }) } else { (if Width == 8 { CBBHIWrr } else { (if Width == 16 { CBHHIWrr } else { (if Width == 32 { CBHIWrr } else { CBHIXrr }) }) }) });
         },
         HI => {
-            
+            MCOpC = (if IsImm { (if Width == 32 { CBHIWri } else { CBHIXri }) } else { (if Width == 8 { CBBHIWrr } else { (if Width == 16 { CBHHIWrr } else { (if Width == 32 { CBHIWrr } else { CBHIXrr }) }) }) });
         },
         LS => {
-            
+            MCOpC = (if IsImm { (if Width == 32 { CBLOWri } else { CBLOXri }) } else { (if Width == 8 { CBBHSWrr } else { (if Width == 16 { CBHHSWrr } else { (if Width == 32 { CBHSWrr } else { CBHSXrr }) }) }) });
         },
         GE => {
-            
+            MCOpC = (if IsImm { (if Width == 32 { CBGTWri } else { CBGTXri }) } else { (if Width == 8 { CBBGEWrr } else { (if Width == 16 { CBHGEWrr } else { (if Width == 32 { CBGEWrr } else { CBGEXrr }) }) }) });
         },
         LT => {
-            
+            MCOpC = (if IsImm { (if Width == 32 { CBLTWri } else { CBLTXri }) } else { (if Width == 8 { CBBGTWrr } else { (if Width == 16 { CBHGTWrr } else { (if Width == 32 { CBGTWrr } else { CBGTXrr }) }) }) });
         },
         GT => {
-            
+            MCOpC = (if IsImm { (if Width == 32 { CBGTWri } else { CBGTXri }) } else { (if Width == 8 { CBBGTWrr } else { (if Width == 16 { CBHGTWrr } else { (if Width == 32 { CBGTWrr } else { CBGTXrr }) }) }) });
         },
         LE => {
-            
+            MCOpC = (if IsImm { (if Width == 32 { CBLTWri } else { CBLTXri }) } else { (if Width == 8 { CBBGEWrr } else { (if Width == 16 { CBHGEWrr } else { (if Width == 32 { CBGEWrr } else { CBGEXrr }) }) }) });
         },
     }
     let mut Inst: MCInst = MCInst {};
@@ -1441,6 +1820,7 @@ fn AArch64AsmPrinter::emitCBPseudoExpansion(self, MI: *MachineInstr) {
     }
     assert!((!IsImm || (Rhs.getImm() >= 0 && Rhs.getImm() < 64)), "CB immediate operand out-of-bounds");
     Inst.addOperand(Trgt);
+    self.EmitToStreamer(operator(self.OutStreamer), Inst);
 }
 
 fn AArch64AsmPrinter::emitAtomicHintPseudoExpansion(self, MI: *MachineInstr) {
@@ -1448,10 +1828,23 @@ fn AArch64AsmPrinter::emitAtomicHintPseudoExpansion(self, MI: *MachineInstr) {
     let mut Relaxed: u32 = MI.getOperand(2).getImm();
     assert!(Relaxed < 2, "Atomic hint relaxed immediate out-of-bounds");
     match MI.getOpcode() {
+        ATOMIC_STORE_HINT_B => {
+            StOpc = if Relaxed { STRBBui } else { STLRB };
+        },
+        ATOMIC_STORE_HINT_H => {
+            StOpc = if Relaxed { STRHHui } else { STLRH };
+        },
+        ATOMIC_STORE_HINT_W => {
+            StOpc = if Relaxed { STRWui } else { STLRW };
+        },
+        ATOMIC_STORE_HINT_X => {
+            StOpc = if Relaxed { STRXui } else { STLRX };
+        },
         _ => {
-            llvm_unreachable_internal("Unexpected atomic hint size.", "llvm\\lib\\Target\\AArch64\\AArch64AsmPrinter.cpp", 3276);
+            llvm_unreachable_internal("Unexpected atomic hint size.", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64AsmPrinter.cpp", 3276);
         },
     }
+    self.EmitToStreamer(HINT.addImm(MI.getOperand(3).getImm()).operator llvm::MCInst &());
     let mut Store: MCInst = MCInst {};
     Store.setOpcode(StOpc);
     Store.addOperand(createReg(MI.getOperand(0).getReg().operator MCRegister()));
@@ -1460,16 +1853,54 @@ fn AArch64AsmPrinter::emitAtomicHintPseudoExpansion(self, MI: *MachineInstr) {
     if Relaxed {
         Store.addOperand(createImm(0));
     }
+    self.EmitToStreamer(operator(self.OutStreamer), Store);
 }
 
 fn AArch64AsmPrinter::emitAtomicHintPseudoExpansionRO(self, MI: *MachineInstr) {
     let mut StOpc: u32 = 0;
     assert!(MI.getOperand(5).getImm() == 1, "Atomic store addressing mode only supports relaxed stores");
     match MI.getOpcode() {
+        ATOMIC_STORE_HINT_BroW => {
+            StOpc = STRBBroW;
+        },
+        ATOMIC_STORE_HINT_HroW => {
+            StOpc = STRHHroW;
+        },
+        ATOMIC_STORE_HINT_WroW => {
+            StOpc = STRWroW;
+        },
+        ATOMIC_STORE_HINT_XroW => {
+            StOpc = STRXroW;
+        },
+        ATOMIC_STORE_HINT_SroW => {
+            StOpc = STRSroW;
+        },
+        ATOMIC_STORE_HINT_DroW => {
+            StOpc = STRDroW;
+        },
+        ATOMIC_STORE_HINT_BroX => {
+            StOpc = STRBBroX;
+        },
+        ATOMIC_STORE_HINT_HroX => {
+            StOpc = STRHHroX;
+        },
+        ATOMIC_STORE_HINT_WroX => {
+            StOpc = STRWroX;
+        },
+        ATOMIC_STORE_HINT_XroX => {
+            StOpc = STRXroX;
+        },
+        ATOMIC_STORE_HINT_SroX => {
+            StOpc = STRSroX;
+        },
+        ATOMIC_STORE_HINT_DroX => {
+            StOpc = STRDroX;
+        },
         _ => {
-            llvm_unreachable_internal("Unexpected atomic hint opcode.", "llvm\\lib\\Target\\AArch64\\AArch64AsmPrinter.cpp", 3336);
+            llvm_unreachable_internal("Unexpected atomic hint opcode.", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64AsmPrinter.cpp", 3336);
         },
     }
+    self.EmitToStreamer(HINT.addImm(MI.getOperand(6).getImm()).operator llvm::MCInst &());
     let mut Store: MCInst = MCInst {};
     Store.setOpcode(StOpc);
     Store.addOperand(createReg(MI.getOperand(0).getReg().operator MCRegister()));
@@ -1478,53 +1909,375 @@ fn AArch64AsmPrinter::emitAtomicHintPseudoExpansionRO(self, MI: *MachineInstr) {
     Store.addOperand(createImm(MI.getOperand(3).getImm()));
     Store.addOperand(createImm(MI.getOperand(4).getImm()));
     Store.setFlags(MI.getFlags());
+    self.EmitToStreamer(operator(self.OutStreamer), Store);
 }
 
 fn AArch64AsmPrinter::emitAtomicHintPseudoExpansionImm(self, MI: *MachineInstr) {
     let mut StOpc: u32 = 0;
     assert!(MI.getOperand(3).getImm() == 1, "Atomic store addressing mode only supports relaxed stores");
     match MI.getOpcode() {
+        ATOMIC_STORE_HINT_Bui => {
+            StOpc = STRBBui;
+        },
+        ATOMIC_STORE_HINT_Hui => {
+            StOpc = STRHHui;
+        },
+        ATOMIC_STORE_HINT_Wui => {
+            StOpc = STRWui;
+        },
+        ATOMIC_STORE_HINT_Xui => {
+            StOpc = STRXui;
+        },
+        ATOMIC_STORE_HINT_Sui => {
+            StOpc = STRSui;
+        },
+        ATOMIC_STORE_HINT_Dui => {
+            StOpc = STRDui;
+        },
+        ATOMIC_STORE_HINT_Bi => {
+            StOpc = STURBBi;
+        },
+        ATOMIC_STORE_HINT_Hi => {
+            StOpc = STURHHi;
+        },
+        ATOMIC_STORE_HINT_Wi => {
+            StOpc = STURWi;
+        },
+        ATOMIC_STORE_HINT_Xi => {
+            StOpc = STURXi;
+        },
+        ATOMIC_STORE_HINT_Si => {
+            StOpc = STURSi;
+        },
+        ATOMIC_STORE_HINT_Di => {
+            StOpc = STURDi;
+        },
         _ => {
-            llvm_unreachable_internal("Unexpected atomic hint opcode.", "llvm\\lib\\Target\\AArch64\\AArch64AsmPrinter.cpp", 3397);
+            llvm_unreachable_internal("Unexpected atomic hint opcode.", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64AsmPrinter.cpp", 3397);
         },
     }
+    self.EmitToStreamer(HINT.addImm(MI.getOperand(4).getImm()).operator llvm::MCInst &());
     let mut Store: MCInst = MCInst {};
     Store.setOpcode(StOpc);
     Store.addOperand(createReg(MI.getOperand(0).getReg().operator MCRegister()));
     Store.addOperand(createReg(MI.getOperand(1).getReg().operator MCRegister()));
     Store.addOperand(createImm(MI.getOperand(2).getImm()));
     Store.setFlags(MI.getFlags());
+    self.EmitToStreamer(operator(self.OutStreamer), Store);
 }
 
 fn AArch64AsmPrinter::EmitToStreamer(self, S: *mut MCStreamer, Inst: *MCInst) {
-    S.emitInstruction;
+    S.emitInstruction(Inst, *self.STI);
     self.InstsEmitted += 1;
 }
 
 fn AArch64AsmPrinter::emitInstruction(self, MI: *MachineInstr) {
+    verifyInstructionPredicates(MI.getOpcode(), self.STI.getFeatureBits());
     self.InstsEmitted = 0;
-    let mut CheckMISize: scope_exit = Closure_7 { cap_0: self, MI: &mut MI };
+    let mut CheckMISize: Closure_7 = Closure_7 { cap_0: self, MI: &mut MI };
     let mut OutInst: MCInst = MCInst {};
     if self.lowerPseudoInstExpansion(MI, OutInst) {
+        self.EmitToStreamer(operator(self.OutStreamer), OutInst);
         return;
     }
-    if  {}
-    if self.AArch64FI.getLOHRelated()(MI) {
-        let mut LOHLabel: *mut MCSymbol = self.createTempSymbol;
+    if MI.getOpcode() == ADRP {
+        for Opd in MI.operands() {
+            if Opd.isSymbol() && Opd.getSymbolName() == "swift_async_extendedFramePointerFlags" {
+                self.ShouldEmitWeakSwiftAsyncExtendedFramePointerFlags = true;
+            }
+        }
     }
-    let mut TS: *mut AArch64TargetStreamer = null;
+    if self.AArch64FI.getLOHRelated().count(MI) {
+        let mut LOHLabel: *mut MCSymbol = self.createTempSymbol("loh");
+        self.LOHInstToLabel[MI] = LOHLabel;
+        operator(self.OutStreamer).emitLabel(LOHLabel, SMLoc {});
+    }
+    let mut TS: *mut AArch64TargetStreamer = operator(self.OutStreamer).getTargetStreamer() as *mut AArch64TargetStreamer;
     match MI.getOpcode() {
         _ => {
             assert!(!isTailCallReturnInst(*MI), "Unhandled tail call instruction");
         },
+        READ_REGISTER_GPR64 => {
+            self.EmitToStreamer(operator(self.OutStreamer), ORRXrs.addReg(MI.getOperand(0).getReg().operator MCRegister()).addReg(XZR).addReg(MI.getOperand(1).getImm()).addImm(0).operator llvm::MCInst &());
+        },
+        READ_REGISTER_FPR64 => {
+            self.EmitToStreamer(operator(self.OutStreamer), FMOVDr.addReg(MI.getOperand(0).getReg().operator MCRegister()).addReg(MI.getOperand(1).getImm()).operator llvm::MCInst &());
+        },
+        HINT => {
+            if self.CurrentPatchableFunctionEntrySym && self.CurrentPatchableFunctionEntrySym == self.CurrentFnBegin && MI == &mut self.MF.front().front() {
+                let mut Imm: i64 = MI.getOperand(0).getImm();
+                if Imm == 32 || Imm == 34 || Imm == 36 || Imm == 38 {
+                    let mut Inst: MCInst = MCInst {};
+                    self.MCInstLowering.Lower(MI, Inst);
+                    self.EmitToStreamer(operator(self.OutStreamer), Inst);
+                    self.CurrentPatchableFunctionEntrySym = self.createTempSymbol("patch");
+                    operator(self.OutStreamer).emitLabel(self.CurrentPatchableFunctionEntrySym, SMLoc {});
+                    return;
+                }
+            }
+            break;
+        },
+        MOVMCSym => {
+            let mut DestReg: Register = MI.getOperand(0).getReg();
+            let mut MO_Sym: *MachineOperand = MI.getOperand(1);
+            let mut Hi_MOSym: MachineOperand = MO_Sym;
+            let mut Lo_MOSym: MachineOperand = MO_Sym;
+            let mut Hi_MCSym: MCOperand = MCOperand {};
+            let mut Lo_MCSym: MCOperand = MCOperand {};
+            Hi_MOSym.setTargetFlags(MO_G1 | MO_S);
+            Lo_MOSym.setTargetFlags(MO_G0 | MO_NC);
+            self.MCInstLowering.lowerOperand(Hi_MOSym, Hi_MCSym);
+            self.MCInstLowering.lowerOperand(Lo_MOSym, Lo_MCSym);
+            let mut MovZ: MCInst = MCInst {};
+            MovZ.setOpcode(MOVZXi);
+            MovZ.addOperand(createReg(DestReg.operator MCRegister()));
+            MovZ.addOperand(Hi_MCSym);
+            MovZ.addOperand(createImm(16));
+            self.EmitToStreamer(operator(self.OutStreamer), MovZ);
+            let mut MovK: MCInst = MCInst {};
+            MovK.setOpcode(MOVKXi);
+            MovK.addOperand(createReg(DestReg.operator MCRegister()));
+            MovK.addOperand(createReg(DestReg.operator MCRegister()));
+            MovK.addOperand(Lo_MCSym);
+            MovK.addOperand(createImm(0));
+            self.EmitToStreamer(operator(self.OutStreamer), MovK);
+            return;
+        },
+        MOVIv2d_ns => {
+            if self.STI.hasZeroCycleZeroingFPWorkaround() && MI.getOperand(1).getImm() == 0 {
+                let mut TmpInst: MCInst = MCInst {};
+                TmpInst.setOpcode(MOVIv16b_ns);
+                TmpInst.addOperand(createReg(MI.getOperand(0).getReg().operator MCRegister()));
+                TmpInst.addOperand(createImm(0));
+                self.EmitToStreamer(operator(self.OutStreamer), TmpInst);
+                return;
+            }
+        },
+        DBG_VALUE => {
+            DBG_VALUE_LIST;
+        },
+        EMITBKEY => {
+            let mut ExceptionHandlingType: ExceptionHandling = self.MAI.getExceptionHandlingType();
+            if ExceptionHandlingType != DwarfCFI && ExceptionHandlingType != ARM {
+                return;
+            }
+            if self.getFunctionCFISectionType(*self.MF) == None {
+                return;
+            }
+            operator(self.OutStreamer).emitCFIBKeyFrame();
+            return;
+        },
+        EMITMTETAGGED => {
+            let mut ExceptionHandlingType: ExceptionHandling = self.MAI.getExceptionHandlingType();
+            if ExceptionHandlingType != DwarfCFI && ExceptionHandlingType != ARM {
+                return;
+            }
+            if self.getFunctionCFISectionType(*self.MF) != None {
+                operator(self.OutStreamer).emitCFIMTETaggedFrame();
+            }
+            return;
+        },
+        AUTx16x17 => {
+            let mut Pointer: Register = X16;
+            let mut Scratch: Register = X17;
+            let mut AuthSchema: PtrAuthSchema = CreateImmReg(MI.getOperand(0).getImm() as ID, MI.getOperand(1).getImm(), MI.getOperand(2));
+            self.emitPtrauthAuthResign(Pointer, Scratch, AuthSchema, nullopt, nullopt, MI.getDeactivationSymbol());
+            return;
+        },
+        AUTxMxN => {
+            let mut Pointer: Register = MI.getOperand(0).getReg();
+            let mut Scratch: Register = MI.getOperand(1).getReg();
+            let mut AuthSchema: PtrAuthSchema = CreateImmReg(MI.getOperand(3).getImm() as ID, MI.getOperand(4).getImm(), MI.getOperand(5));
+            self.emitPtrauthAuthResign(Pointer, Scratch, AuthSchema, nullopt, nullopt, MI.getDeactivationSymbol());
+            return;
+        },
+        AUTPAC => {
+            let mut Pointer: Register = X16;
+            let mut Scratch: Register = X17;
+            let mut AuthSchema: PtrAuthSchema = CreateImmReg(MI.getOperand(0).getImm() as ID, MI.getOperand(1).getImm(), MI.getOperand(2));
+            let mut SignSchema: PtrAuthSchema = CreateImmReg(MI.getOperand(3).getImm() as ID, MI.getOperand(4).getImm(), MI.getOperand(5));
+            self.emitPtrauthAuthResign(Pointer, Scratch, AuthSchema, SignSchema, nullopt, MI.getDeactivationSymbol());
+            return;
+        },
+        AUTPCPAC => {
+            let mut AuthSchema: PtrAuthSchema = CreateRegReg(MI.getOperand(0).getImm() as ID, X16, X15);
+            let mut SignSchema: PtrAuthSchema = CreateImmReg(MI.getOperand(1).getImm() as ID, MI.getOperand(2).getImm(), MI.getOperand(3));
+            self.emitPtrauthAuthResign(X17, X16, AuthSchema, SignSchema, nullopt, MI.getDeactivationSymbol());
+            return;
+        },
+        AUTRELLOADPAC => {
+            let mut Pointer: Register = X16;
+            let mut Scratch: Register = X17;
+            let mut AuthSchema: PtrAuthSchema = CreateImmReg(MI.getOperand(0).getImm() as ID, MI.getOperand(1).getImm(), MI.getOperand(2));
+            let mut SignSchema: PtrAuthSchema = CreateImmReg(MI.getOperand(3).getImm() as ID, MI.getOperand(4).getImm(), MI.getOperand(5));
+            self.emitPtrauthAuthResign(Pointer, Scratch, AuthSchema, SignSchema, MI.getOperand(6).getImm(), MI.getDeactivationSymbol());
+            return;
+        },
+        PAC => {
+            self.emitPtrauthSign(MI);
+        },
+        LOADauthptrstatic => {
+            self.LowerLOADauthptrstatic(*MI);
+        },
+        LOADgotPAC => {
+            MOVaddrPAC;
+        },
+        LOADgotAUTH => {
+            self.LowerLOADgotAUTH(*MI);
+        },
+        BRA => {
+            BLRA;
+        },
+        AUTH_TCRETURN => {
+            AUTH_TCRETURN_BTI;
+        },
+        TCRETURNri => {
+            TCRETURNrix16x17;
+        },
+        TCRETURNdi => {
+            self.emitPtrauthTailCallHardening(MI);
+            let mut Dest: MCOperand = MCOperand {};
+            self.MCInstLowering.lowerOperand(MI.getOperand(0), Dest);
+            self.recordIfImportCall(MI);
+            let mut TmpInst: MCInst = MCInst {};
+            TmpInst.setOpcode(B);
+            TmpInst.addOperand(Dest);
+            self.EmitToStreamer(operator(self.OutStreamer), TmpInst);
+            return;
+        },
+        SpeculationBarrierISBDSBEndBB => {
+            let mut TmpInstDSB: MCInst = MCInst {};
+            TmpInstDSB.setOpcode(DSB);
+            TmpInstDSB.addOperand(createImm(15));
+            self.EmitToStreamer(operator(self.OutStreamer), TmpInstDSB);
+            let mut TmpInstISB: MCInst = MCInst {};
+            TmpInstISB.setOpcode(ISB);
+            TmpInstISB.addOperand(createImm(15));
+            self.EmitToStreamer(operator(self.OutStreamer), TmpInstISB);
+            return;
+        },
+        SpeculationBarrierSBEndBB => {
+            let mut TmpInstSB: MCInst = MCInst {};
+            TmpInstSB.setOpcode(SB);
+            self.EmitToStreamer(operator(self.OutStreamer), TmpInstSB);
+            return;
+        },
+        TLSDESC_AUTH_CALLSEQ => {
+            let mut MO_Sym: *MachineOperand = MI.getOperand(0);
+            let mut MO_TLSDESC_LO12: MachineOperand = MO_Sym;
+            let mut MO_TLSDESC: MachineOperand = MO_Sym;
+            let mut Sym: MCOperand = MCOperand {};
+            let mut SymTLSDescLo12: MCOperand = MCOperand {};
+            let mut SymTLSDesc: MCOperand = MCOperand {};
+            MO_TLSDESC_LO12.setTargetFlags(MO_TLS | MO_PAGEOFF);
+            MO_TLSDESC.setTargetFlags(MO_TLS | MO_PAGE);
+            self.MCInstLowering.lowerOperand(MO_Sym, Sym);
+            self.MCInstLowering.lowerOperand(MO_TLSDESC_LO12, SymTLSDescLo12);
+            self.MCInstLowering.lowerOperand(MO_TLSDESC, SymTLSDesc);
+            let mut Adrp: MCInst = MCInst {};
+            Adrp.setOpcode(ADRP);
+            Adrp.addOperand(createReg(X0));
+            Adrp.addOperand(SymTLSDesc);
+            self.EmitToStreamer(operator(self.OutStreamer), Adrp);
+            let mut Ldr: MCInst = MCInst {};
+            Ldr.setOpcode(LDRXui);
+            Ldr.addOperand(createReg(X16));
+            Ldr.addOperand(createReg(X0));
+            Ldr.addOperand(SymTLSDescLo12);
+            Ldr.addOperand(createImm(0));
+            self.EmitToStreamer(operator(self.OutStreamer), Ldr);
+            let mut Add: MCInst = MCInst {};
+            Add.setOpcode(ADDXri);
+            Add.addOperand(createReg(X0));
+            Add.addOperand(createReg(X0));
+            Add.addOperand(SymTLSDescLo12);
+            Add.addOperand(createImm(getShiftValue(0)));
+            self.EmitToStreamer(operator(self.OutStreamer), Add);
+            let mut TLSAuthDescCall: MCInst = MCInst {};
+            TLSAuthDescCall.setOpcode(TLSAUTHDESCCALL);
+            TLSAuthDescCall.addOperand(Sym);
+            self.EmitToStreamer(operator(self.OutStreamer), TLSAuthDescCall);
+            self.InstsEmitted -= 1;
+            let mut Blraa: MCInst = MCInst {};
+            Blraa.setOpcode(BLRAA);
+            Blraa.addOperand(createReg(X16));
+            Blraa.addOperand(createReg(X0));
+            self.EmitToStreamer(operator(self.OutStreamer), Blraa);
+            return;
+        },
+        TLSDESC_CALLSEQ => {
+            let mut MO_Sym: *MachineOperand = MI.getOperand(0);
+            let mut MO_TLSDESC_LO12: MachineOperand = MO_Sym;
+            let mut MO_TLSDESC: MachineOperand = MO_Sym;
+            let mut Sym: MCOperand = MCOperand {};
+            let mut SymTLSDescLo12: MCOperand = MCOperand {};
+            let mut SymTLSDesc: MCOperand = MCOperand {};
+            MO_TLSDESC_LO12.setTargetFlags(MO_TLS | MO_PAGEOFF);
+            MO_TLSDESC.setTargetFlags(MO_TLS | MO_PAGE);
+            self.MCInstLowering.lowerOperand(MO_Sym, Sym);
+            self.MCInstLowering.lowerOperand(MO_TLSDESC_LO12, SymTLSDescLo12);
+            self.MCInstLowering.lowerOperand(MO_TLSDESC, SymTLSDesc);
+            let mut Adrp: MCInst = MCInst {};
+            Adrp.setOpcode(ADRP);
+            Adrp.addOperand(createReg(X0));
+            Adrp.addOperand(SymTLSDesc);
+            self.EmitToStreamer(operator(self.OutStreamer), Adrp);
+            let mut Ldr: MCInst = MCInst {};
+            if self.STI.isTargetILP32() {
+                Ldr.setOpcode(LDRWui);
+                Ldr.addOperand(createReg(W1));
+            } else {
+                Ldr.setOpcode(LDRXui);
+                Ldr.addOperand(createReg(X1));
+            }
+            Ldr.addOperand(createReg(X0));
+            Ldr.addOperand(SymTLSDescLo12);
+            Ldr.addOperand(createImm(0));
+            self.EmitToStreamer(operator(self.OutStreamer), Ldr);
+            let mut Add: MCInst = MCInst {};
+            if self.STI.isTargetILP32() {
+                Add.setOpcode(ADDWri);
+                Add.addOperand(createReg(W0));
+                Add.addOperand(createReg(W0));
+            } else {
+                Add.setOpcode(ADDXri);
+                Add.addOperand(createReg(X0));
+                Add.addOperand(createReg(X0));
+            }
+            Add.addOperand(SymTLSDescLo12);
+            Add.addOperand(createImm(getShiftValue(0)));
+            self.EmitToStreamer(operator(self.OutStreamer), Add);
+            let mut TLSDescCall: MCInst = MCInst {};
+            TLSDescCall.setOpcode(TLSDESCCALL);
+            TLSDescCall.addOperand(Sym);
+            self.EmitToStreamer(operator(self.OutStreamer), TLSDescCall);
+            self.InstsEmitted -= 1;
+            let mut Blr: MCInst = MCInst {};
+            Blr.setOpcode(BLR);
+            Blr.addOperand(createReg(X1));
+            self.EmitToStreamer(operator(self.OutStreamer), Blr);
+            return;
+        },
+        JumpTableDest32 => {
+            JumpTableDest16;
+        },
+        BR_JumpTable => {
+            self.LowerHardenedBRJumpTable(*MI);
+        },
+        FMOVH0 => {
+            FMOVS0;
+        },
+        MOPSMemoryCopyPseudo => {
+            MOPSMemoryMovePseudo;
+        },
         STACKMAP => {
-            return self.LowerSTACKMAP;
+            return self.LowerSTACKMAP(operator(self.OutStreamer), self.SM, *MI);
         },
         PATCHPOINT => {
-            return self.LowerPATCHPOINT;
+            return self.LowerPATCHPOINT(operator(self.OutStreamer), self.SM, *MI);
         },
         STATEPOINT => {
-            return self.LowerSTATEPOINT;
+            return self.LowerSTATEPOINT(operator(self.OutStreamer), self.SM, *MI);
         },
         FAULTING_OP => {
             return self.LowerFAULTING_OP(*MI);
@@ -1544,12 +2297,113 @@ fn AArch64AsmPrinter::emitInstruction(self, MI: *MachineInstr) {
         PATCHABLE_TYPED_EVENT_CALL => {
             return self.LowerPATCHABLE_EVENT_CALL(*MI, true);
         },
+        KCFI_CHECK => {
+            self.LowerKCFI_CHECK(*MI);
+        },
+        HWASAN_CHECK_MEMACCESS => {
+            HWASAN_CHECK_MEMACCESS_SHORTGRANULES;
+        },
+        SEH_StackAlloc => {
+            TS.emitARM64WinCFIAllocStack(MI.getOperand(0).getImm());
+        },
+        SEH_SaveFPLR => {
+            TS.emitARM64WinCFISaveFPLR(MI.getOperand(0).getImm());
+        },
+        SEH_SaveFPLR_X => {
+            assert!(MI.getOperand(0).getImm() < 0, "Pre increment SEH opcode must have a negative offset");
+        },
+        SEH_SaveReg => {
+            TS.emitARM64WinCFISaveReg(MI.getOperand(0).getImm(), MI.getOperand(1).getImm());
+        },
+        SEH_SaveReg_X => {
+            assert!(MI.getOperand(1).getImm() < 0, "Pre increment SEH opcode must have a negative offset");
+        },
+        SEH_SaveRegP => {
+            if MI.getOperand(1).getImm() == 30 && MI.getOperand(0).getImm() >= 19 && MI.getOperand(0).getImm() <= 28 {
+                assert!((MI.getOperand(0).getImm() - 19) % 2 == 0, "Register paired with LR must be odd");
+                TS.emitARM64WinCFISaveLRPair(MI.getOperand(0).getImm(), MI.getOperand(2).getImm());
+                return;
+            }
+        },
+        SEH_SaveRegP_X => {
+            assert!((MI.getOperand(1).getImm() - MI.getOperand(0).getImm() == 1), "Non-consecutive registers not allowed for save_regp_x");
+        },
+        SEH_SaveFReg => {
+            TS.emitARM64WinCFISaveFReg(MI.getOperand(0).getImm(), MI.getOperand(1).getImm());
+        },
+        SEH_SaveFReg_X => {
+            assert!(MI.getOperand(1).getImm() < 0, "Pre increment SEH opcode must have a negative offset");
+        },
+        SEH_SaveFRegP => {
+            assert!((MI.getOperand(1).getImm() - MI.getOperand(0).getImm() == 1), "Non-consecutive registers not allowed for save_regp");
+        },
+        SEH_SaveFRegP_X => {
+            assert!((MI.getOperand(1).getImm() - MI.getOperand(0).getImm() == 1), "Non-consecutive registers not allowed for save_regp_x");
+        },
+        SEH_SetFP => {
+            TS.emitARM64WinCFISetFP();
+        },
+        SEH_AddFP => {
+            TS.emitARM64WinCFIAddFP(MI.getOperand(0).getImm());
+        },
+        SEH_Nop => {
+            TS.emitARM64WinCFINop();
+        },
+        SEH_PrologEnd => {
+            TS.emitARM64WinCFIPrologEnd();
+        },
+        SEH_EpilogStart => {
+            TS.emitARM64WinCFIEpilogStart();
+        },
+        SEH_EpilogEnd => {
+            TS.emitARM64WinCFIEpilogEnd();
+        },
+        SEH_PACSignLR => {
+            TS.emitARM64WinCFIPACSignLR();
+        },
+        SEH_SaveAnyRegI => {
+            assert!(MI.getOperand(1).getImm() <= 1008, "SaveAnyRegQP SEH opcode offset must fit into 6 bits");
+        },
+        SEH_SaveAnyRegIP => {
+            assert!(MI.getOperand(1).getImm() - MI.getOperand(0).getImm() == 1, "Non-consecutive registers not allowed for save_any_reg");
+        },
+        SEH_SaveAnyRegQP => {
+            assert!(MI.getOperand(1).getImm() - MI.getOperand(0).getImm() == 1, "Non-consecutive registers not allowed for save_any_reg");
+        },
+        SEH_SaveAnyRegQPX => {
+            assert!(MI.getOperand(1).getImm() - MI.getOperand(0).getImm() == 1, "Non-consecutive registers not allowed for save_any_reg");
+        },
+        SEH_AllocZ => {
+            assert!(MI.getOperand(0).getImm() >= 0, "AllocZ SEH opcode offset must be non-negative");
+        },
+        SEH_SaveZReg => {
+            assert!(MI.getOperand(1).getImm() >= 0, "SaveZReg SEH opcode offset must be non-negative");
+        },
+        SEH_SavePReg => {
+            assert!(MI.getOperand(1).getImm() >= 0, "SavePReg SEH opcode offset must be non-negative");
+        },
+        BLR => {
+            BR;
+        },
+        CBWPri => {
+            CBXPri;
+        },
+        ATOMIC_STORE_HINT_B => {
+            ATOMIC_STORE_HINT_H;
+        },
+        ATOMIC_STORE_HINT_BroW => {
+            ATOMIC_STORE_HINT_HroW;
+        },
+        ATOMIC_STORE_HINT_Bui => {
+            ATOMIC_STORE_HINT_Hui;
+        },
     }
     if self.emitDeactivationSymbolRelocation(MI.getDeactivationSymbol()) {
         return;
     }
     let mut TmpInst: MCInst = MCInst {};
     self.MCInstLowering.Lower(MI, TmpInst);
+    self.EmitToStreamer(operator(self.OutStreamer), TmpInst);
 }
 
 fn AArch64AsmPrinter::recordIfImportCall(self, BranchInst: *MachineInstr) {
@@ -1557,16 +2411,18 @@ fn AArch64AsmPrinter::recordIfImportCall(self, BranchInst: *MachineInstr) {
         return;
     }
     if GV && GV.hasDLLImportStorageClass() {
-        let mut CallSiteSymbol: *mut auto = null;
+        let mut CallSiteSymbol: *mut MCSymbol = self.MMI.getContext().createNamedTempSymbol("impcall");
+        operator(self.OutStreamer).emitLabel(CallSiteSymbol, SMLoc {});
         let mut CalledSymbol: *mut MCSymbol = self.MCInstLowering.GetGlobalValueSymbol(GV, OpFlags);
+        self.SectionToImportedFunctionCalls[operator(self.OutStreamer).getCurrentSectionOnly()].push(MCSymbol *> { CallSiteSymbol, CalledSymbol });
     }
 }
 
 fn AArch64AsmPrinter::emitMachOIFuncStubBody(self, M: *mut Module, GI: *GlobalIFunc, LazyPointer: *mut MCSymbol) {
     {
         let mut Adrp: MCInst = MCInst {};
-        Adrp.setOpcode;
-        Adrp.addOperand(createReg());
+        Adrp.setOpcode(ADRP);
+        Adrp.addOperand(createReg(X16));
         let mut SymPage: MCOperand = MCOperand {};
         self.MCInstLowering.lowerOperand(CreateMCSymbol(LazyPointer, MO_GOT | MO_PAGE), SymPage);
         Adrp.addOperand(SymPage);
@@ -1574,28 +2430,33 @@ fn AArch64AsmPrinter::emitMachOIFuncStubBody(self, M: *mut Module, GI: *GlobalIF
     }
     {
         let mut Ldr: MCInst = MCInst {};
-        Ldr.setOpcode;
-        Ldr.addOperand(createReg());
-        Ldr.addOperand(createReg());
+        Ldr.setOpcode(LDRXui);
+        Ldr.addOperand(createReg(X16));
+        Ldr.addOperand(createReg(X16));
         let mut SymPageOff: MCOperand = MCOperand {};
         self.MCInstLowering.lowerOperand(CreateMCSymbol(LazyPointer, MO_GOT | MO_PAGEOFF), SymPageOff);
         Ldr.addOperand(SymPageOff);
         Ldr.addOperand(createImm(0));
         self.EmitToStreamer(Ldr);
     }
+    self.EmitToStreamer(LDRXui.addReg(X16).addReg(X16).addImm(0).operator llvm::MCInst &());
+    self.EmitToStreamer(if self.TM.getTargetTriple().isArm64e() { BRAAZ } else { BR }.addReg(X16).operator llvm::MCInst &());
 }
 
 fn AArch64AsmPrinter::emitMachOIFuncStubHelperBody(self, M: *mut Module, GI: *GlobalIFunc, LazyPointer: *mut MCSymbol) {
+    self.EmitToStreamer(STPXpre.addReg(SP).addReg(FP).addReg(LR).addReg(SP).addImm(-2).operator llvm::MCInst &());
+    self.EmitToStreamer(ADDXri.addReg(FP).addReg(SP).addImm(0).addImm(0).operator llvm::MCInst &());
     for let mut I: i32 = 0; I != 4; I += 1 {
-        
+        self.EmitToStreamer(STPXpre.addReg(SP).addReg(X1 + 2 * I).addReg(X0 + 2 * I).addReg(SP).addImm(-2).operator llvm::MCInst &());
     }
     for let mut I: i32 = 0; I != 4; I += 1 {
-        
+        self.EmitToStreamer(STPDpre.addReg(SP).addReg(D1 + 2 * I).addReg(D0 + 2 * I).addReg(SP).addImm(-2).operator llvm::MCInst &());
     }
+    self.EmitToStreamer(BL.addOperand(createExpr(self.lowerConstant(GI.getResolver(), null, 0))).operator llvm::MCInst &());
     {
         let mut Adrp: MCInst = MCInst {};
-        Adrp.setOpcode;
-        Adrp.addOperand(createReg());
+        Adrp.setOpcode(ADRP);
+        Adrp.addOperand(createReg(X16));
         let mut SymPage: MCOperand = MCOperand {};
         self.MCInstLowering.lowerOperand(CreateES(LazyPointer.getName().ptr + 1, MO_GOT | MO_PAGE), SymPage);
         Adrp.addOperand(SymPage);
@@ -1603,52 +2464,64 @@ fn AArch64AsmPrinter::emitMachOIFuncStubHelperBody(self, M: *mut Module, GI: *Gl
     }
     {
         let mut Ldr: MCInst = MCInst {};
-        Ldr.setOpcode;
-        Ldr.addOperand(createReg());
-        Ldr.addOperand(createReg());
+        Ldr.setOpcode(LDRXui);
+        Ldr.addOperand(createReg(X16));
+        Ldr.addOperand(createReg(X16));
         let mut SymPageOff: MCOperand = MCOperand {};
         self.MCInstLowering.lowerOperand(CreateES(LazyPointer.getName().ptr + 1, MO_GOT | MO_PAGEOFF), SymPageOff);
         Ldr.addOperand(SymPageOff);
         Ldr.addOperand(createImm(0));
         self.EmitToStreamer(Ldr);
     }
+    self.EmitToStreamer(STRXui.addReg(X0).addReg(X16).addImm(0).operator llvm::MCInst &());
+    self.EmitToStreamer(ADDXri.addReg(X16).addReg(X0).addImm(0).addImm(0).operator llvm::MCInst &());
     for let mut I: i32 = 3; I != -1; I -= 1 {
-        
+        self.EmitToStreamer(LDPDpost.addReg(SP).addReg(D1 + 2 * I).addReg(D0 + 2 * I).addReg(SP).addImm(2).operator llvm::MCInst &());
     }
     for let mut I: i32 = 3; I != -1; I -= 1 {
-        
+        self.EmitToStreamer(LDPXpost.addReg(SP).addReg(X1 + 2 * I).addReg(X0 + 2 * I).addReg(SP).addImm(2).operator llvm::MCInst &());
     }
+    self.EmitToStreamer(LDPXpost.addReg(SP).addReg(FP).addReg(LR).addReg(SP).addImm(2).operator llvm::MCInst &());
+    self.EmitToStreamer(if self.TM.getTargetTriple().isArm64e() { BRAAZ } else { BR }.addReg(X16).operator llvm::MCInst &());
 }
 
 fn AArch64AsmPrinter::lowerConstant(self, CV: *Constant, BaseCV: *Constant, Offset: u64) -> *MCExpr {
     if dyn_cast(CV) {
         GV;
     } else {
-        return create(self.MCInstLowering.GetGlobalValueSymbol(GV, 0));
+        return create(self.MCInstLowering.GetGlobalValueSymbol(GV, 0), self.OutContext, SMLoc {});
     }
-    return self.lowerConstant;
+    return self.lowerConstant(CV, BaseCV, Offset);
 }
 
 static mut ID: i8 = 0;
 
+fn LLVMInitializeAArch64AsmPrinter() {
+    let mut X: RegisterAsmPrinter<AArch64AsmPrinter> = getTheAArch64leTarget();
+    let mut Y: RegisterAsmPrinter<AArch64AsmPrinter> = getTheAArch64beTarget();
+    let mut Z: RegisterAsmPrinter<AArch64AsmPrinter> = getTheARM64Target();
+    let mut W: RegisterAsmPrinter<AArch64AsmPrinter> = getTheARM64_32Target();
+    let mut V: RegisterAsmPrinter<AArch64AsmPrinter> = getTheAArch64_32Target();
+}
+
 fn AArch64AsmPrinterBeginPass::run(self, M: *mut Module, MAM: *mut ModuleAnalysisManager) -> PreservedAnalyses {
-    let mut AsmPrinter: *mut AArch64AsmPrinter = MAM() as AArch64AsmPrinter;
+    let mut AsmPrinter: *mut AArch64AsmPrinter = MAM.getResult(M).getPrinter() as AArch64AsmPrinter;
     setupModuleAsmPrinter(M, MAM, AsmPrinter);
-    AsmPrinter.doInitialization;
+    AsmPrinter.doInitialization(M);
     return all();
 }
 
 fn AArch64AsmPrinterPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
-    let mut AsmPrinter: *mut AArch64AsmPrinter = MFAM(operator*(MF.getFunction()))() as AArch64AsmPrinter;
+    let mut AsmPrinter: *mut AArch64AsmPrinter = MFAM.getResult(MF).getCachedResult(*MF.getFunction().getParent()).getPrinter() as AArch64AsmPrinter;
     setupMachineFunctionAsmPrinter(MFAM, MF, AsmPrinter);
     AsmPrinter.runOnMachineFunction(MF);
     return all();
 }
 
 fn AArch64AsmPrinterEndPass::run(self, M: *mut Module, MAM: *mut ModuleAnalysisManager) -> PreservedAnalyses {
-    let mut AsmPrinter: *mut AArch64AsmPrinter = MAM() as AArch64AsmPrinter;
+    let mut AsmPrinter: *mut AArch64AsmPrinter = MAM.getResult(M).getPrinter() as AArch64AsmPrinter;
     setupModuleAsmPrinter(M, MAM, AsmPrinter);
-    AsmPrinter.doFinalization;
+    AsmPrinter.doFinalization(M);
     return all();
 }
 
@@ -1656,7 +2529,10 @@ struct Closure_1 {
     cap_0: *mut AArch64AsmPrinter,
 }
 
-fn Closure_1::call(self: *Closure_1, Src: *mut MCSymbol, Dst: *mut MCSymbol) {}
+fn Closure_1::call(self: *Closure_1, Src: *mut MCSymbol, Dst: *mut MCSymbol) {
+            operator(self.OutStreamer).emitSymbolAttribute(Src, MCSA_WeakAntiDep);
+            operator(self.OutStreamer).emitAssignment(Src, create(Dst, self.MMI.getContext(), SMLoc {}));
+        }
 
 struct Closure_2 {
     cap_0: *mut AArch64AsmPrinter,
@@ -1664,10 +2540,11 @@ struct Closure_2 {
 
 fn Closure_2::call(self: *Closure_2, Name: str) -> *mut MCSymbol {
             let mut Sym: *mut MCSymbol = null;
-            if  {
+            if self.MF.getFunction().getMetadata(Name) {
                 Node;
             } else {
-                let mut NameStr: str = cast(Node.getOperand(0))();
+                let mut NameStr: str = cast(Node.getOperand(0)).getString();
+                Sym = self.MMI.getContext().getOrCreateSymbol(NameStr);
             }
             return Sym;
         }
@@ -1677,7 +2554,19 @@ struct Closure_3 {
 }
 
 fn Closure_3::call(self: *mut Closure_3) -> auto {
-        llvm_unreachable_internal("Unhandled memory operation pseudo", "llvm\\lib\\Target\\AArch64\\AArch64AsmPrinter.cpp", 1754);
+        if self.Opcode == MOPSMemoryCopyPseudo {
+            return array<unsigned int, 3> { [CPYFP, CPYFM, CPYFE] };
+        }
+        if self.Opcode == MOPSMemoryMovePseudo {
+            return array<unsigned int, 3> { [CPYP, CPYM, CPYE] };
+        }
+        if self.Opcode == MOPSMemorySetPseudo {
+            return array<unsigned int, 3> { [SETP, SETM, SETE] };
+        }
+        if self.Opcode == MOPSMemorySetTaggingPseudo {
+            return array<unsigned int, 3> { [SETGP, SETGM, MOPSSETGE] };
+        }
+        llvm_unreachable_internal("Unhandled memory operation pseudo", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64AsmPrinter.cpp", 1754);
     }
 
 struct Closure_4 {
@@ -1696,15 +2585,16 @@ struct Closure_5 {
     cap_1: *mut AArch64AsmPrinter,
     Pointer: *mut Register,
     Scratch: *mut Register,
+    SignSchema: *mut optional<PtrAuthSchema>,
 }
 
 unsafe fn Closure_5::call(self: *mut Closure_5) {
         if (*self.Addend).has_value() {
             self.emitPtrauthApplyIndirectAddend((*self.Pointer), (*self.Scratch), operator((*self.Addend)));
         }
-        (((operator!(operator!(((*self.Pointer) !=  && "Pointer is early-clobbered")))) || (_wassert(L"Pointer != SignSchema->AddrDisc && \"Pointer is early-clobbered\"", L"llvm\\lib\\Target\\AArch64\\AArch64AsmPrinter.cpp", (2477) as u32) , 0)) as void);
-        let mut PACDiscReg: Register = self.emitPtrauthDiscriminator((*self.Scratch));
-        self.emitPAC((*self.Pointer), PACDiscReg);
+        assert!((*self.Pointer) != operator((*self.SignSchema)).AddrDisc, "Pointer is early-clobbered");
+        let mut PACDiscReg: Register = self.emitPtrauthDiscriminator(operator((*self.SignSchema)).IntDisc, operator((*self.SignSchema)).AddrDisc, (*self.Scratch), operator((*self.SignSchema)).AddrDiscIsKilled);
+        self.emitPAC(operator((*self.SignSchema)).Key, (*self.Pointer), PACDiscReg);
     }
 
 struct Closure_6 {

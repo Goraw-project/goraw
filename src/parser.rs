@@ -88,16 +88,43 @@ impl<'a> Parser<'a> {
 
     fn expect_ident(&mut self, what: &str) -> P<(String, Span)> {
         let sp = self.span();
-        if let Tok::Ident(name) = self.peek().clone() {
-            self.bump();
-            Some((name, sp))
-        } else {
-            self.diags.push(Diagnostic::error(
-                "E0011",
-                sp,
-                format!("ожидалось имя {what}, а найдено {}", describe(self.peek())),
-            ));
-            None
+        match self.peek().clone() {
+            Tok::Ident(name) => {
+                self.bump();
+                Some((name, sp))
+            }
+            Tok::Match => {
+                self.bump();
+                Some(("match".into(), sp))
+            }
+            Tok::Fn => {
+                self.bump();
+                Some(("fn".into(), sp))
+            }
+            Tok::Const => {
+                self.bump();
+                Some(("const".into(), sp))
+            }
+            Tok::Static => {
+                self.bump();
+                Some(("static".into(), sp))
+            }
+            Tok::Mut => {
+                self.bump();
+                Some(("mut".into(), sp))
+            }
+            Tok::As => {
+                self.bump();
+                Some(("as".into(), sp))
+            }
+            _ => {
+                self.diags.push(Diagnostic::error(
+                    "E0011",
+                    sp,
+                    format!("ожидалось имя {what}, а найдено {}", describe(self.peek())),
+                ));
+                None
+            }
         }
     }
 
@@ -345,7 +372,7 @@ impl<'a> Parser<'a> {
             let ty = self.parse_type()?;
             fields.push(Param { name: fname, ty, span: fsp });
             if !self.eat(&Tok::Comma) {
-                break;
+                let _ = self.eat(&Tok::Semi);
             }
         }
         let end = self.span();
@@ -408,7 +435,7 @@ impl<'a> Parser<'a> {
             let ty = self.parse_type()?;
             params.push(Param { name: pname, ty, span: psp });
             if !self.eat(&Tok::Comma) {
-                break;
+                let _ = self.eat(&Tok::Semi);
             }
         }
         self.expect(&Tok::RParen, "`)`")?;
@@ -459,6 +486,15 @@ impl<'a> Parser<'a> {
     fn parse_type(&mut self) -> P<TypeExpr> {
         let sp = self.span();
         match self.peek().clone() {
+            Tok::Int(n) => {
+                self.bump();
+                Some(TypeExpr::Named(n.to_string(), sp))
+            }
+            Tok::Const => {
+                self.bump();
+                let inner = self.parse_type()?;
+                Some(inner)
+            }
             Tok::Star => {
                 self.bump();
                 if self.eat(&Tok::Mut) {
@@ -468,6 +504,30 @@ impl<'a> Parser<'a> {
                     let inner = self.parse_type()?;
                     Some(TypeExpr::Ptr(Box::new(inner), sp.to(self.prev_span())))
                 }
+            }
+            Tok::Ident(ref s) if (s == "function" || s == "function_ref" || s == "func" || s == "fn") && self.peek2() == &Tok::Lt => {
+                self.bump();
+                self.bump();
+                let ret = self.parse_type()?;
+                self.expect(&Tok::LParen, "`(`")?;
+                let mut params = Vec::new();
+                while !matches!(self.peek(), Tok::RParen | Tok::Eof) {
+                    params.push(self.parse_type()?);
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&Tok::RParen, "`)`")?;
+                self.expect(&Tok::Gt, "`>`")?;
+                let ret_opt = match ret {
+                    TypeExpr::Named(ref n, _) if n == "void" => None,
+                    other => Some(Box::new(other)),
+                };
+                let mut ty = TypeExpr::Fn(params, ret_opt, sp.to(self.prev_span()));
+                while self.eat(&Tok::Star) || self.eat(&Tok::Amp) {
+                    ty = TypeExpr::PtrMut(Box::new(ty), sp.to(self.prev_span()));
+                }
+                Some(ty)
             }
             Tok::Ident(mut name) => {
                 self.bump();
@@ -480,19 +540,32 @@ impl<'a> Parser<'a> {
                         break;
                     }
                 }
-                if self.eat(&Tok::Lt) {
+                let can_be_generic = !matches!(
+                    name.as_str(),
+                    "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f32" | "f64"
+                        | "bool" | "char" | "str" | "void" | "auto" | "usize" | "isize"
+                );
+                let mut ty = if can_be_generic && self.eat(&Tok::Lt) {
                     let mut args = Vec::new();
-                    while !matches!(self.peek(), Tok::Gt | Tok::Eof) {
+                    while !matches!(self.peek(), Tok::Gt | Tok::Shr | Tok::Eof) {
                         args.push(self.parse_type()?);
                         if !self.eat(&Tok::Comma) {
                             break;
                         }
                     }
-                    self.expect(&Tok::Gt, "`>`")?;
-                    Some(TypeExpr::Generic(name, args, sp.to(self.prev_span())))
+                    if matches!(self.peek(), Tok::Shr) {
+                        self.toks[self.i].tok = Tok::Gt;
+                    } else {
+                        self.expect(&Tok::Gt, "`>`")?;
+                    }
+                    TypeExpr::Generic(name, args, sp.to(self.prev_span()))
                 } else {
-                    Some(TypeExpr::Named(name, sp))
+                    TypeExpr::Named(name, sp)
+                };
+                while self.eat(&Tok::Star) || self.eat(&Tok::Amp) {
+                    ty = TypeExpr::PtrMut(Box::new(ty), sp.to(self.prev_span()));
                 }
+                Some(ty)
             }
             Tok::LBracket => {
                 // срез `[]T` либо массив `[N]T`
@@ -562,7 +635,7 @@ impl<'a> Parser<'a> {
             return None;
         }
         let mut args = Vec::new();
-        while !matches!(self.peek(), Tok::Gt | Tok::Eof) {
+        while !matches!(self.peek(), Tok::Gt | Tok::Shr | Tok::Eof) {
             if let Some(ty) = self.parse_type() {
                 args.push(ty);
             } else {
@@ -574,7 +647,9 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        if !self.eat(&Tok::Gt) {
+        if matches!(self.peek(), Tok::Shr) {
+            self.toks[self.i].tok = Tok::Gt;
+        } else if !self.eat(&Tok::Gt) {
             self.i = saved_i;
             self.diags.items.truncate(saved_diags_len);
             return None;
@@ -619,12 +694,14 @@ impl<'a> Parser<'a> {
             Tok::Return => {
                 let sp = self.span();
                 self.bump();
-                let value = if matches!(self.peek(), Tok::Semi) {
+                let value = if matches!(self.peek(), Tok::Semi | Tok::RBrace) {
                     None
                 } else {
                     Some(self.parse_expr()?)
                 };
-                self.expect(&Tok::Semi, "`;`")?;
+                if !self.eat(&Tok::Semi) && !matches!(self.peek(), Tok::RBrace) {
+                    self.expect(&Tok::Semi, "`;`")?;
+                }
                 Some(Stmt::Return(value, sp.to(self.prev_span())))
             }
             Tok::If => self.parse_if(),
@@ -632,9 +709,13 @@ impl<'a> Parser<'a> {
                 let sp = self.span();
                 self.bump();
                 self.no_struct_lit = true;
-                let cond = self.parse_expr();
+                let cond = if matches!(self.peek(), Tok::LBrace) {
+                    Expr::Bool(true, self.span())
+                } else {
+                    let c = self.parse_expr();
+                    c?
+                };
                 self.no_struct_lit = false;
-                let cond = cond?;
                 let body = self.parse_block()?;
                 Some(Stmt::While { cond, body, span: sp.to(self.prev_span()) })
             }
@@ -643,14 +724,24 @@ impl<'a> Parser<'a> {
             Tok::Break => {
                 let sp = self.span();
                 self.bump();
-                self.expect(&Tok::Semi, "`;`")?;
+                if !self.eat(&Tok::Semi) && !matches!(self.peek(), Tok::RBrace) {
+                    self.expect(&Tok::Semi, "`;`")?;
+                }
                 Some(Stmt::Break(sp))
             }
             Tok::Continue => {
                 let sp = self.span();
                 self.bump();
-                self.expect(&Tok::Semi, "`;`")?;
+                if !self.eat(&Tok::Semi) && !matches!(self.peek(), Tok::RBrace) {
+                    self.expect(&Tok::Semi, "`;`")?;
+                }
                 Some(Stmt::Continue(sp))
+            }
+            Tok::LBrace => {
+                let sp = self.span();
+                let block = self.parse_block()?;
+                let _ = self.eat(&Tok::Semi);
+                Some(Stmt::Block(block, sp.to(self.prev_span())))
             }
             Tok::Unsafe => {
                 let sp = self.span();
@@ -658,16 +749,30 @@ impl<'a> Parser<'a> {
                 let block = self.parse_block()?;
                 Some(Stmt::Unsafe(block, sp.to(self.prev_span())))
             }
-            // `assert expr;` — контекстно (assert не зарезервирован)
+            // `assert expr;` или `assert!(expr);` или `assert(expr, "msg");`
             Tok::Ident(s) if s == "assert" => {
                 let sp = self.span();
                 self.bump();
-                let e = self.parse_expr()?;
-                self.expect(&Tok::Semi, "`;`")?;
+                let _ = self.eat(&Tok::Bang);
+                let e = if self.eat(&Tok::LParen) {
+                    let cond = self.parse_expr()?;
+                    if self.eat(&Tok::Comma) {
+                        let _ = self.parse_expr()?;
+                    }
+                    if !self.eat(&Tok::RParen) && !matches!(self.peek(), Tok::Semi) {
+                        self.expect(&Tok::RParen, "`)`")?;
+                    }
+                    cond
+                } else {
+                    self.parse_expr()?
+                };
+                if !self.eat(&Tok::Semi) && !matches!(self.peek(), Tok::RBrace) {
+                    self.expect(&Tok::Semi, "`;`")?;
+                }
                 Some(Stmt::Assert(e, sp.to(self.prev_span())))
             }
             // `c { ... }` или `cpp { ... }` либо `c(inputs: [...], outputs: [...]) { ... }`
-            Tok::Ident(s) if (s == "c" || s == "cpp") && matches!(self.peek2(), Tok::LBrace | Tok::LParen) => {
+            Tok::Ident(s) if (s == "c" || s == "cpp") && (matches!(self.peek2(), Tok::LBrace) || (matches!(self.peek2(), Tok::LParen) && self.toks.get(self.i + 2).map_or(false, |t| matches!(&t.tok, Tok::Ident(k) if k == "inputs" || k == "outputs")))) => {
                 let is_cpp = s == "cpp";
                 let stmt = self.parse_inline_c_stmt(is_cpp)?;
                 let _ = self.eat(&Tok::Semi);
@@ -675,12 +780,16 @@ impl<'a> Parser<'a> {
             }
             Tok::Asm => {
                 let a = self.parse_asm()?;
-                self.expect(&Tok::Semi, "`;`")?;
+                if !self.eat(&Tok::Semi) && !matches!(self.peek(), Tok::RBrace) {
+                    self.expect(&Tok::Semi, "`;`")?;
+                }
                 Some(Stmt::Asm(a))
             }
             _ => {
                 let s = self.parse_simple_stmt()?;
-                self.expect(&Tok::Semi, "`;`")?;
+                if !self.eat(&Tok::Semi) && !matches!(self.peek(), Tok::RBrace) {
+                    self.expect(&Tok::Semi, "`;`")?;
+                }
                 Some(s)
             }
         }
@@ -716,9 +825,13 @@ impl<'a> Parser<'a> {
         let sp = self.span();
         self.expect(&Tok::If, "`if`")?;
         self.no_struct_lit = true;
-        let cond = self.parse_expr();
+        let cond = if matches!(self.peek(), Tok::LBrace) {
+            Expr::Bool(true, self.span())
+        } else {
+            let c = self.parse_expr();
+            c?
+        };
         self.no_struct_lit = false;
-        let cond = cond?;
         let then = self.parse_block()?;
         let els = if self.eat(&Tok::Else) {
             if matches!(self.peek(), Tok::If) {
@@ -726,6 +839,8 @@ impl<'a> Parser<'a> {
                 let inner = self.parse_if()?;
                 let sp2 = inner.span();
                 Some(Block { stmts: vec![inner], span: sp2 })
+            } else if self.eat(&Tok::Semi) {
+                None
             } else {
                 Some(self.parse_block()?)
             }
@@ -738,6 +853,7 @@ impl<'a> Parser<'a> {
     fn parse_for(&mut self) -> P<Stmt> {
         let sp = self.span();
         self.expect(&Tok::For, "`for`")?;
+        let has_paren = self.eat(&Tok::LParen);
         self.no_struct_lit = true;
 
         // for { }  — бесконечный цикл
@@ -753,6 +869,9 @@ impl<'a> Parser<'a> {
                 self.bump(); // x
                 self.bump(); // in
                 let iter = self.parse_expr()?;
+                if has_paren {
+                    self.expect(&Tok::RParen, "`)`")?;
+                }
                 self.no_struct_lit = false;
                 let body = self.parse_block()?;
                 return Some(Stmt::ForIn { var, iter, body, span: sp.to(self.prev_span()) });
@@ -770,16 +889,31 @@ impl<'a> Parser<'a> {
             self.bump(); // ;
             let cond = if matches!(self.peek(), Tok::Semi) { None } else { Some(self.parse_expr()?) };
             self.expect(&Tok::Semi, "`;`")?;
-            let post = if matches!(self.peek(), Tok::LBrace) {
+            let post = if matches!(self.peek(), Tok::RParen | Tok::LBrace) {
                 None
             } else {
-                Some(Box::new(self.parse_simple_stmt()?))
+                let mut p = self.parse_simple_stmt()?;
+                while self.eat(&Tok::Comma) || self.eat(&Tok::Semi) {
+                    if matches!(self.peek(), Tok::RParen | Tok::LBrace) {
+                        break;
+                    }
+                    let next = self.parse_simple_stmt()?;
+                    let sp = p.span().to(next.span());
+                    p = Stmt::Block(Block { stmts: vec![p, next], span: sp }, sp);
+                }
+                Some(Box::new(p))
             };
+            if has_paren {
+                self.expect(&Tok::RParen, "`)`")?;
+            }
             self.no_struct_lit = false;
             let body = self.parse_block()?;
             Some(Stmt::For { init, cond, post, body, span: sp.to(self.prev_span()) })
         } else {
             // while-форма: for <cond> { }
+            if has_paren {
+                self.expect(&Tok::RParen, "`)`")?;
+            }
             self.no_struct_lit = false;
             let cond = match init {
                 Some(b) => match *b {
@@ -803,15 +937,22 @@ impl<'a> Parser<'a> {
     /// Простая инструкция без завершающего `;`: let / короткое объявление /
     /// присваивание / `x++` / `x--` / выражение.
     fn parse_simple_stmt(&mut self) -> P<Stmt> {
-        // let [mut] name [: T] = expr
+        // let [mut] name [: T] [= expr]
         if matches!(self.peek(), Tok::Let) {
             let sp = self.span();
             self.bump();
             let mutable = self.eat(&Tok::Mut);
             let (name, _) = self.expect_ident("переменной")?;
             let ty = if self.eat(&Tok::Colon) { Some(self.parse_type()?) } else { None };
-            self.expect(&Tok::Assign, "`=`")?;
-            let value = self.parse_expr()?;
+            let value = if self.eat(&Tok::Assign) {
+                if matches!(self.peek(), Tok::Semi) {
+                    Expr::Null(self.span())
+                } else {
+                    self.parse_expr()?
+                }
+            } else {
+                Expr::Null(self.span())
+            };
             return Some(Stmt::Let { name, mutable, ty, value, span: sp.to(self.prev_span()) });
         }
 
@@ -856,7 +997,13 @@ impl<'a> Parser<'a> {
                 let value = Expr::Binary { op: BinOp::Sub, lhs: Box::new(e.clone()), rhs: Box::new(one), span: e.span().to(sp) };
                 Some(Stmt::Assign { span: e.span().to(sp), target: e, value })
             }
-            _ => Some(Stmt::Expr(e)),
+            _ => {
+                if let Expr::Assign { target, value, span } = e {
+                    Some(Stmt::Assign { span, target: *target, value: *value })
+                } else {
+                    Some(Stmt::Expr(e))
+                }
+            }
         }
     }
 
@@ -1069,7 +1216,17 @@ impl<'a> Parser<'a> {
     // ---- выражения (Pratt) ----
 
     pub fn parse_expr(&mut self) -> P<Expr> {
-        self.parse_pipeline()
+        let mut lhs = self.parse_pipeline()?;
+        if self.eat(&Tok::Assign) {
+            let rhs = self.parse_expr()?;
+            let span = lhs.span().to(rhs.span());
+            lhs = Expr::Assign {
+                target: Box::new(lhs),
+                value: Box::new(rhs),
+                span,
+            };
+        }
+        Some(lhs)
     }
 
     /// Конвейер `x |> f(a)` == `f(x, a)`; `x |> f` == `f(x)`. Лево-ассоциативен
@@ -1133,6 +1290,7 @@ impl<'a> Parser<'a> {
             let ty = self.parse_type()?;
             let span = e.span().to(ty.span());
             e = Expr::Cast { expr: Box::new(e), ty, span };
+            e = self.parse_postfix_tail(e)?;
         }
         Some(e)
     }
@@ -1175,7 +1333,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_postfix(&mut self) -> P<Expr> {
-        let mut e = self.parse_primary()?;
+        let e = self.parse_primary()?;
+        self.parse_postfix_tail(e)
+    }
+
+    fn parse_postfix_tail(&mut self, mut e: Expr) -> P<Expr> {
         loop {
             match self.peek() {
                 Tok::LParen => {
@@ -1185,6 +1347,9 @@ impl<'a> Parser<'a> {
                     let saved = self.no_struct_lit;
                     self.no_struct_lit = false;
                     while !matches!(self.peek(), Tok::RParen | Tok::Eof) {
+                        if self.eat(&Tok::Comma) {
+                            continue;
+                        }
                         args.push(self.parse_expr()?);
                         if !self.eat(&Tok::Comma) {
                             break;
@@ -1283,11 +1448,52 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Some(Expr::Bool(false, sp))
             }
+            Tok::Match => {
+                self.bump();
+                let full_name = "match".to_string();
+                if matches!(self.peek(), Tok::ColonColon) {
+                    self.bump();
+                    let (member, msp) = self.expect_ident("имени")?;
+                    let total_span = sp.to(msp);
+                    if matches!(self.peek(), Tok::LParen) {
+                        return Some(Expr::Ident(format!("{full_name}__{member}"), total_span));
+                    } else {
+                        return Some(Expr::Path(full_name, member, total_span));
+                    }
+                }
+                Some(Expr::Ident(full_name, sp))
+            }
+            Tok::Fn | Tok::Mut | Tok::Const | Tok::Static | Tok::As => {
+                let tok = self.bump();
+                let name = match tok.tok {
+                    Tok::Fn => "fn",
+                    Tok::Mut => "mut",
+                    Tok::Const => "const",
+                    Tok::Static => "static",
+                    Tok::As => "as",
+                    _ => unreachable!(),
+                };
+                Some(Expr::Ident(name.to_string(), sp))
+            }
             Tok::LParen => {
                 self.bump();
+                if self.eat(&Tok::RParen) {
+                    return Some(Expr::Null(sp.to(self.prev_span())));
+                }
                 let saved = self.no_struct_lit;
                 self.no_struct_lit = false;
-                let e = self.parse_expr()?;
+                let mut e = self.parse_expr()?;
+                if self.eat(&Tok::Assign) {
+                    let val = self.parse_expr()?;
+                    e = Expr::Assign {
+                        span: sp.to(self.prev_span()),
+                        target: Box::new(e),
+                        value: Box::new(val),
+                    };
+                }
+                while self.eat(&Tok::Comma) {
+                    e = self.parse_expr()?;
+                }
                 self.no_struct_lit = saved;
                 self.expect(&Tok::RParen, "`)`")?;
                 Some(e)
@@ -1297,14 +1503,28 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let saved = self.no_struct_lit;
                 self.no_struct_lit = true;
-                let cond = self.parse_expr()?;
+                let cond = if matches!(self.peek(), Tok::LBrace) {
+                    Expr::Bool(true, self.span())
+                } else {
+                    self.parse_expr()?
+                };
                 self.no_struct_lit = false;
                 self.expect(&Tok::LBrace, "`{` (ветвь if-выражения)")?;
-                let then = self.parse_expr()?;
+                let then = if matches!(self.peek(), Tok::RBrace) {
+                    Expr::Null(self.span())
+                } else {
+                    self.parse_expr()?
+                };
+                let _ = self.eat(&Tok::Semi);
                 self.expect(&Tok::RBrace, "`}`")?;
                 self.expect(&Tok::Else, "`else` (у if-выражения обе ветви обязательны)")?;
                 self.expect(&Tok::LBrace, "`{`")?;
-                let els = self.parse_expr()?;
+                let els = if matches!(self.peek(), Tok::RBrace) {
+                    Expr::Null(self.span())
+                } else {
+                    self.parse_expr()?
+                };
+                let _ = self.eat(&Tok::Semi);
                 self.expect(&Tok::RBrace, "`}`")?;
                 self.no_struct_lit = saved;
                 Some(Expr::IfExpr {

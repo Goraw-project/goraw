@@ -5,6 +5,12 @@ struct VisitedBBInfo {
     Cycles: u32,
 }
 
+fn VisitedBBInfo::operator=(self, arg: *mut *mut VisitedBBInfo) -> *mut VisitedBBInfo {
+    self.HasReturn =  as VisitedBBInfo.HasReturn;
+    self.Cycles =  as VisitedBBInfo.Cycles;
+    return *self;
+}
+
 struct PadShortFunc {
     Resolver: *mut AnalysisResolver,
     PassID: *void,
@@ -13,16 +19,16 @@ struct PadShortFunc {
     SetProperties: MachineFunctionProperties,
     ClearedProperties: MachineFunctionProperties,
     Threshold: u32,
-    ReturnBBs: i32,
-    VisitedBBs: i32,
+    ReturnBBs: DenseMap<MachineBasicBlock *, unsigned int>,
+    VisitedBBs: DenseMap<MachineBasicBlock *, VisitedBBInfo>,
     TSM: TargetSchedModel,
 }
 
 fn PadShortFunc::getAnalysisUsage(self: *PadShortFunc, AU: *mut AnalysisUsage) {
-    AU;
-    AU;
-    AU;
-    self.getAnalysisUsage;
+    AU.addRequired();
+    AU.addRequired();
+    AU.addPreserved();
+    self.getAnalysisUsage(AU);
 }
 
 fn PadShortFunc::getRequiredProperties(self: *PadShortFunc) -> MachineFunctionProperties {
@@ -78,19 +84,40 @@ fn PadShortFunc::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
     }
         if !(false) { break; }
     }
-    if self.skipFunction {
+    if self.skipFunction(MF.getFunction()) {
         return false;
     }
     if MF.getFunction().hasOptSize() {
         return false;
     }
-    if operator!(MF()) {
+    if !MF.getSubtarget().padShortFunctions() {
         return false;
     }
-    let mut PSI: *mut auto = operator&();
-    let mut MBFI: *mut auto = if (PSI() && ()) { operator&() } else { null };
+    self.TSM.init(&mut MF.getSubtarget(), true, true);
+    let mut PSI: *mut ProfileSummaryInfo = &mut self.getAnalysis().getPSI();
+    let mut MBFI: *mut MachineBlockFrequencyInfo = if (PSI && PSI.hasProfileSummary()) { &mut self.getAnalysis().getBFI() } else { null };
+    self.ReturnBBs.clear();
+    self.VisitedBBs.clear();
     self.findReturns(&mut MF.front(), 0);
     let mut MadeChange: bool = false;
+    for ReturnBB in self.ReturnBBs {
+        let mut MBB: *mut MachineBasicBlock = ReturnBB.first;
+        let mut Cycles: u32 = ReturnBB.second;
+        if shouldOptimizeForSize(MBB, PSI, MBFI, Other) {
+            continue;
+        }
+        if Cycles < self.Threshold {
+            assert!(MBB.len > 0, "Basic block should contain at least a RET but is empty");
+            let mut ReturnLoc: iterator = operator(MBB.end());
+            while operator(ReturnLoc).isDebugInstr() {
+                operator(ReturnLoc);
+            }
+            assert!(operator(ReturnLoc).isReturn(AnyInBundle) && !operator(ReturnLoc).isCall(AnyInBundle), "Basic block does not end with RET");
+            self.addPadding(MBB, ReturnLoc, self.Threshold - Cycles);
+            operator(NumBBsPadded, 0);
+            MadeChange = true;
+        }
+    }
     while true {
         {
         if DebugFlag && isCurrentDebugType("x86-pad-short-functions", 1) {
@@ -108,8 +135,8 @@ fn PadShortFunc::findReturns(self, MBB: *mut MachineBasicBlock, Cycles: u32) {
         return;
     }
     if hasReturn {
-        let mut NumCycles: *mut u32 = null;
-        NumCycles = max(NumCycles, Cycles);
+        let mut NumCycles: *mut u32 = self.ReturnBBs[MBB];
+        NumCycles = if NumCycles > Cycles { NumCycles } else { Cycles };
         return;
     }
     for Succ in MBB.successors() {
@@ -120,27 +147,30 @@ fn PadShortFunc::findReturns(self, MBB: *mut MachineBasicBlock, Cycles: u32) {
 }
 
 fn PadShortFunc::cyclesUntilReturn(self, MBB: *mut MachineBasicBlock, Cycles: *mut u32) -> bool {
-    if operator!() {
-        let mut BBInfo: VisitedBBInfo = ;
+    if !Inserted {
+        let mut BBInfo: VisitedBBInfo = operator(It).second;
         Cycles += BBInfo.Cycles;
         return BBInfo.HasReturn;
     }
     let mut CyclesToEnd: u32 = 0;
     for MI in *MBB {
         if MI.isReturn(AnyInBundle) && !MI.isCall(AnyInBundle) {
+            operator(It).second = VisitedBBInfo { HasReturn: true, Cycles: CyclesToEnd };
             Cycles += CyclesToEnd;
             return true;
         }
+        CyclesToEnd += self.TSM.computeInstrLatency(&mut MI, true);
     }
+    operator(It).second = VisitedBBInfo { HasReturn: false, Cycles: CyclesToEnd };
     Cycles += CyclesToEnd;
     return false;
 }
 
 fn PadShortFunc::addPadding(self, MBB: *mut MachineBasicBlock, MBBI: *mut iterator, NOOPsToAdd: u32) {
     let mut DL: *DebugLoc = operator(MBBI).getDebugLoc();
-    let mut IssueWidth: u32 = 0;
+    let mut IssueWidth: u32 = self.TSM.getIssueWidth();
     for let mut i: u32 = 0;
 let mut e: u32 = IssueWidth * NOOPsToAdd; i != e; i += 1 {
-        BuildMI(*MBB, MBBI, DL);
+        BuildMI(*MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TSM.getInstrInfo().get(NOOP));
     }
 }

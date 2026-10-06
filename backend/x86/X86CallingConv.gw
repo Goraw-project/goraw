@@ -1,12 +1,17 @@
 fn CC_X86_32_RegCall_Assign2Regs(ValNo: *mut u32, ValVT: *mut MVT, LocVT: *mut MVT, LocInfo: *mut LocInfo, ArgFlags: *mut ArgFlagsTy, State: *mut CCState) -> bool {
-    let mut RegList: []MCPhysReg = zeroed();
-    let mut AvailableRegs: SmallVector<unsigned int, 5> = zeroed();
+    let mut RegList: [5]MCPhysReg = [EAX, ECX, EDX, EDI, ESI];
+    let mut AvailableRegs: SmallVector<unsigned int, 5> = SmallVector<unsigned int, 5> {};
+    for Reg in RegList[..] {
+        if !State.isAllocated(Reg) {
+            AvailableRegs.push(Reg);
+        }
+    }
     let mut RequiredGprsUponSplit: u64 = 2;
-    if AvailableRegs()() < RequiredGprsUponSplit {
+    if AvailableRegs.len < RequiredGprsUponSplit {
         return false;
     }
     for let mut I: u32 = 0; I < RequiredGprsUponSplit; I += 1 {
-        let mut Reg: MCRegister = State([I]);
+        let mut Reg: MCRegister = State.AllocateReg(AvailableRegs[I]);
         assert!(Reg.operator unsigned int(), "Expecting a register will be available");
         State.addLoc(getCustomReg(ValNo, ValVT, Reg, LocVT, LocInfo));
     }
@@ -15,26 +20,38 @@ fn CC_X86_32_RegCall_Assign2Regs(ValNo: *mut u32, ValVT: *mut MVT, LocVT: *mut M
 
 fn CC_X86_VectorCallGetSSEs(ValVT: *MVT) -> ArrayRef<MCPhysReg> {
     if ValVT.is512BitVector() {
-        let mut RegListZMM: []MCPhysReg = zeroed();
-        return RegListZMM();
+        let mut RegListZMM: [6]MCPhysReg = [ZMM0, ZMM1, ZMM2, ZMM3, ZMM4, ZMM5];
+        return RegListZMM;
     }
     if ValVT.is256BitVector() {
-        let mut RegListYMM: []MCPhysReg = zeroed();
-        return RegListYMM();
+        let mut RegListYMM: [6]MCPhysReg = [YMM0, YMM1, YMM2, YMM3, YMM4, YMM5];
+        return RegListYMM;
     }
-    let mut RegListXMM: []MCPhysReg = zeroed();
-    return RegListXMM();
+    let mut RegListXMM: [6]MCPhysReg = [XMM0, XMM1, XMM2, XMM3, XMM4, XMM5];
+    return RegListXMM;
 }
 
 fn CC_X86_64_VectorCallGetGPRs() -> ArrayRef<MCPhysReg> {
-    let mut RegListGPR: []MCPhysReg = zeroed();
-    return RegListGPR();
+    let mut RegListGPR: [4]MCPhysReg = [RCX, RDX, R8, R9];
+    return RegListGPR;
 }
 
 fn CC_X86_VectorCallAssignRegister(ValNo: *mut u32, ValVT: *mut MVT, LocVT: *mut MVT, LocInfo: *mut LocInfo, ArgFlags: *mut ArgFlagsTy, State: *mut CCState) -> bool {
-    let mut RegList: ArrayRef<MCPhysReg> = zeroed();
-    let mut Is64bit: bool = false;
-    llvm_unreachable_internal("Clang should ensure that hva marked vectors will have an available register.", "llvm\\lib\\Target\\X86\\X86CallingConv.cpp", 118);
+    let mut RegList: ArrayRef<MCPhysReg> = CC_X86_VectorCallGetSSEs(ValVT);
+    let mut Is64bit: bool = State.getMachineFunction().getSubtarget() as X86Subtarget.is64Bit();
+    for Reg in RegList {
+        if !State.isAllocated(Reg) {
+            let mut AssigedReg: MCRegister = State.AllocateReg(Reg);
+            assert!(AssigedReg == Reg, "Expecting a valid register allocation");
+            State.addLoc(getReg(ValNo, ValVT, AssigedReg, LocVT, LocInfo, false));
+            return true;
+        }
+        if Is64bit && State.IsShadowAllocatedReg(Reg) {
+            State.addLoc(getReg(ValNo, ValVT, Reg, LocVT, LocInfo, false));
+            return true;
+        }
+    }
+    llvm_unreachable_internal("Clang should ensure that hva marked vectors will have an available register.", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86CallingConv.cpp", 118);
     return false;
 }
 
@@ -45,20 +62,20 @@ fn CC_X86_64_VectorCall(ValNo: *mut u32, ValVT: *mut MVT, LocVT: *mut MVT, LocIn
         }
         return true;
     }
-    if operator!((ValVT.isFloatingPoint() || (ValVT.isVector() && ValVT.getSizeInBits()))) {
-        if State.isAllocated {
-            State as void;
+    if !(ValVT.isFloatingPoint() || (ValVT.isVector() && ValVT.getSizeInBits().operator unsigned long long() >= 128)) {
+        if State.isAllocated(R9) {
+            State.AllocateReg(CC_X86_VectorCallGetSSEs(ValVT)) as void;
         }
         return false;
     }
     if !ArgFlags.isHva() || ArgFlags.isHvaStart() {
-        State as void;
-        if State {
+        State.AllocateReg(CC_X86_64_VectorCallGetGPRs()) as void;
+        if State.AllocateReg(CC_X86_VectorCallGetSSEs(ValVT)) {
             Reg.operator unsigned int();
         } else {
             let mut TRI: *TargetRegisterInfo = State.getMachineFunction().getSubtarget().getRegisterInfo();
-            if TRI.regsOverlap || TRI.regsOverlap {
-                State.AllocateStack(8, Align { ShiftValue: 8 });
+            if TRI.regsOverlap(Reg, XMM4) || TRI.regsOverlap(Reg, XMM5) {
+                State.AllocateStack(8, 8);
             }
             if !ArgFlags.isHva() {
                 State.addLoc(getReg(ValNo, ValVT, Reg, LocVT, LocInfo, false));
@@ -76,20 +93,20 @@ fn CC_X86_32_VectorCall(ValNo: *mut u32, ValVT: *mut MVT, LocVT: *mut MVT, LocIn
         }
         return true;
     }
-    if operator!((ValVT.isFloatingPoint() || (ValVT.isVector() && ValVT.getSizeInBits()))) {
+    if !(ValVT.isFloatingPoint() || (ValVT.isVector() && ValVT.getSizeInBits().operator unsigned long long() >= 128)) {
         return false;
     }
     if ArgFlags.isHva() {
         return true;
     }
-    if State {
+    if State.AllocateReg(CC_X86_VectorCallGetSSEs(ValVT)) {
         Reg.operator unsigned int();
     } else {
         State.addLoc(getReg(ValNo, ValVT, Reg, LocVT, LocInfo, false));
         return true;
     }
     if !ValVT.isFloatingPoint() {
-        LocVT = MVT { SimpleTy: i32 };
+        LocVT = i32;
         LocInfo = Indirect;
         ArgFlags.setInReg();
     }
@@ -97,22 +114,22 @@ fn CC_X86_32_VectorCall(ValNo: *mut u32, ValVT: *mut MVT, LocVT: *mut MVT, LocIn
 }
 
 fn CC_X86_AnyReg_Error(arg: *mut u32, arg: *mut MVT, arg: *mut MVT, arg: *mut LocInfo, arg: *mut ArgFlagsTy, arg: *mut CCState) -> bool {
-    llvm_unreachable_internal("The AnyReg calling convention is only supported by the stackmap and patchpoint intrinsics.", "llvm\\lib\\Target\\X86\\X86CallingConv.cpp", 232);
+    llvm_unreachable_internal("The AnyReg calling convention is only supported by the stackmap and patchpoint intrinsics.", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86CallingConv.cpp", 232);
     return false;
 }
 
 fn CC_X86_32_MCUInReg(ValNo: *mut u32, ValVT: *mut MVT, LocVT: *mut MVT, LocInfo: *mut LocInfo, ArgFlags: *mut ArgFlagsTy, State: *mut CCState) -> bool {
-    let mut RegList: []MCPhysReg = zeroed();
+    let mut RegList: [3]MCPhysReg = [EAX, EDX, ECX];
     let mut NumRegs: u32 = size(RegList);
     let mut PendingMembers: *mut SmallVectorImpl<CCValAssign> = State.getPendingLocs();
-    if ArgFlags.isSplit() || operator!(PendingMembers()()) {
-        PendingMembers()(getPending(ValNo, ValVT, LocVT, LocInfo, 0));
+    if ArgFlags.isSplit() || !PendingMembers.is_empty() {
+        PendingMembers.push(getPending(ValNo, ValVT, LocVT, LocInfo, 0));
         if !ArgFlags.isSplitEnd() {
             return true;
         }
     }
-    if PendingMembers()() {
-        if State {
+    if PendingMembers.is_empty() {
+        if State.AllocateReg(RegList) {
             Reg.operator unsigned int();
         } else {
             State.addLoc(getReg(ValNo, ValVT, Reg, LocVT, LocInfo, false));
@@ -121,25 +138,33 @@ fn CC_X86_32_MCUInReg(ValNo: *mut u32, ValVT: *mut MVT, LocVT: *mut MVT, LocInfo
         return false;
     }
     assert!(ArgFlags.isSplitEnd();
-    let mut FirstFree: u32 = State.getFirstUnallocated;
-    let mut UseRegs: bool = PendingMembers()() <= min(2, NumRegs - FirstFree);
-    PendingMembers()();
+    let mut FirstFree: u32 = State.getFirstUnallocated(RegList);
+    let mut UseRegs: bool = PendingMembers.len <= if 2 < NumRegs - FirstFree { 2 } else { NumRegs - FirstFree };
+    for It in PendingMembers {
+        if UseRegs {
+            It.convertToReg(State.AllocateReg(RegList[FirstFree += 1]));
+        } else {
+            It.convertToMem(State.AllocateStack(4, 4));
+        }
+        State.addLoc(It);
+    }
+    PendingMembers.clear();
     return true;
 }
 
 fn CC_X86_Intr(ValNo: *mut u32, ValVT: *mut MVT, LocVT: *mut MVT, LocInfo: *mut LocInfo, ArgFlags: *mut ArgFlagsTy, State: *mut CCState) -> bool {
     let mut MF: *MachineFunction = State.getMachineFunction();
     let mut ArgCount: u64 = State.getMachineFunction().getFunction().arg_size();
-    let mut Is64Bit: bool = MF();
+    let mut Is64Bit: bool = MF.getSubtarget().is64Bit();
     let mut SlotSize: u32 = if Is64Bit { 8 } else { 4 };
     let mut Offset: u32 = 0;
     if ArgCount == 1 && ValNo == 0 {
-        Offset = State.AllocateStack(5 * SlotSize, Align { ShiftValue: 4 });
+        Offset = State.AllocateStack(5 * SlotSize, 4);
     } else if ArgCount == 2 && ValNo == 0 {
         Offset = SlotSize;
     } else if ArgCount == 2 && ValNo == 1 {
         Offset = 0;
-        State.AllocateStack(6 * SlotSize, Align { ShiftValue: 4 }) as void;
+        State.AllocateStack(6 * SlotSize, 4) as void;
     } else {
         report_fatal_error("unsupported x86 interrupt prototype", true);
     }
@@ -152,7 +177,7 @@ fn CC_X86_Intr(ValNo: *mut u32, ValVT: *mut MVT, LocVT: *mut MVT, LocInfo: *mut 
 
 fn CC_X86_64_Pointer(ValNo: *mut u32, ValVT: *mut MVT, LocVT: *mut MVT, LocInfo: *mut LocInfo, ArgFlags: *mut ArgFlagsTy, State: *mut CCState) -> bool {
     if LocVT != i64 {
-        LocVT = MVT { SimpleTy: i64 };
+        LocVT = i64;
         LocInfo = ZExt;
     }
     return false;
@@ -161,36 +186,45 @@ fn CC_X86_64_Pointer(ValNo: *mut u32, ValVT: *mut MVT, LocVT: *mut MVT, LocInfo:
 fn CC_X86_64_I128(ValNo: *mut u32, ValVT: *mut MVT, LocVT: *mut MVT, LocInfo: *mut LocInfo, ArgFlags: *mut ArgFlagsTy, State: *mut CCState) -> bool {
     assert!(ValVT == i64, "Should have i64 parts");
     let mut PendingMembers: *mut SmallVectorImpl<CCValAssign> = State.getPendingLocs();
-    PendingMembers()(getPending(ValNo, ValVT, LocVT, LocInfo, 0));
+    PendingMembers.push(getPending(ValNo, ValVT, LocVT, LocInfo, 0));
     if !ArgFlags.isInConsecutiveRegsLast() {
         return true;
     }
-    let mut NumRegs: u32 = PendingMembers()();
+    let mut NumRegs: u32 = PendingMembers.len;
     assert!(NumRegs == 2, "Should have two parts");
-    let mut Regs: []MCPhysReg = zeroed();
-    let mut Allocated: ArrayRef<MCPhysReg> = zeroed();
-    if operator!() {} else {
-        let mut Offset: i64 = State.AllocateStack(16, Align { ShiftValue: 16 });
+    let mut Regs: [6]MCPhysReg = [RDI, RSI, RDX, RCX, R8, R9];
+    let mut Allocated: ArrayRef<MCPhysReg> = State.AllocateRegBlock(Regs, NumRegs);
+    if !Allocated.is_empty() {
+        PendingMembers[0].convertToReg(Allocated[0]);
+        PendingMembers[1].convertToReg(Allocated[1]);
+    } else {
+        let mut Offset: i64 = State.AllocateStack(16, 16);
+        PendingMembers[0].convertToMem(Offset);
+        PendingMembers[1].convertToMem(Offset + 8);
     }
-    State.addLoc;
-    State.addLoc;
-    PendingMembers()();
+    State.addLoc(PendingMembers[0]);
+    State.addLoc(PendingMembers[1]);
+    PendingMembers.clear();
     return true;
 }
 
 fn CC_X86_32_I128_FP128(ValNo: *mut u32, ValVT: *mut MVT, LocVT: *mut MVT, LocInfo: *mut LocInfo, ArgFlags: *mut ArgFlagsTy, State: *mut CCState) -> bool {
     assert!(ValVT == i32, "Should have i32 parts");
     let mut PendingMembers: *mut SmallVectorImpl<CCValAssign> = State.getPendingLocs();
-    PendingMembers()(getPending(ValNo, ValVT, LocVT, LocInfo, 0));
+    PendingMembers.push(getPending(ValNo, ValVT, LocVT, LocInfo, 0));
     if !ArgFlags.isInConsecutiveRegsLast() {
         return true;
     }
-    (((operator!(operator!((PendingMembers()() == 4 && "Should have four parts")))) || (_wassert(L"PendingMembers.size() == 4 && \"Should have four parts\"", L"llvm\\lib\\Target\\X86\\X86CallingConv.cpp", (392) as u32) , 0)) as void);
-    let mut Offset: i64 = State.AllocateStack(16, Align { ShiftValue: 16 });
-    State.addLoc;
-    State.addLoc;
-    State.addLoc;
-    State.addLoc;
-    PendingMembers()();
+    assert!(PendingMembers.len == 4, "Should have four parts");
+    let mut Offset: i64 = State.AllocateStack(16, 16);
+    PendingMembers[0].convertToMem(Offset);
+    PendingMembers[1].convertToMem(Offset + 4);
+    PendingMembers[2].convertToMem(Offset + 8);
+    PendingMembers[3].convertToMem(Offset + 12);
+    State.addLoc(PendingMembers[0]);
+    State.addLoc(PendingMembers[1]);
+    State.addLoc(PendingMembers[2]);
+    State.addLoc(PendingMembers[3]);
+    PendingMembers.clear();
     return true;
 }

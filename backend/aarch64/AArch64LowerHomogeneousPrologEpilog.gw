@@ -1,4 +1,4 @@
-static mut FrameHelperSizeThreshold: i32 = "frame-helper-size-threshold";
+static mut FrameHelperSizeThreshold: opt<int> = opt<int> { "frame-helper-size-threshold", init(2), Hidden, "The minimum number of instructions that are outlined in a frame helper (default = 2)" };
 
 struct AArch64LowerHomogeneousPrologEpilogImpl {
     TII: *AArch64InstrInfo,
@@ -13,8 +13,8 @@ struct AArch64LowerHomogeneousPrologEpilogLegacy {
 }
 
 fn AArch64LowerHomogeneousPrologEpilogLegacy::getAnalysisUsage(self: *AArch64LowerHomogeneousPrologEpilogLegacy, AU: *mut AnalysisUsage) {
-    AU;
-    AU;
+    AU.addRequired();
+    AU.addPreserved();
     AU.setPreservesAll();
     self.getAnalysisUsage(AU);
 }
@@ -51,23 +51,33 @@ fn AArch64LowerHomogeneousPrologEpilogLegacy::runOnModule(self, M: *mut Module) 
     if self.skipModule(M) {
         return false;
     }
-    let mut MMI: *mut MachineModuleInfo = operator&();
+    let mut MMI: *mut MachineModuleInfo = &mut self.getAnalysis().getMMI();
     return AArch64LowerHomogeneousPrologEpilogImpl { &mut M, MMI }.run();
 }
 
 fn AArch64LowerHomogeneousPrologEpilogPass::run(self, M: *mut Module, MAM: *mut ModuleAnalysisManager) -> PreservedAnalyses {
-    let mut MMI: *mut MachineModuleInfo = operator&(MAM()(M)());
+    let mut MMI: *mut MachineModuleInfo = &mut MAM.getResult(M).getMMI();
     let mut Changed: bool = AArch64LowerHomogeneousPrologEpilogImpl { &mut M, MMI }.run();
     if !Changed {
         return all();
     }
     let mut PA: PreservedAnalyses = PreservedAnalyses {};
-    PA;
+    PA.preserve();
     return PA;
 }
 
 fn AArch64LowerHomogeneousPrologEpilogImpl::run(self) -> bool {
     let mut Changed: bool = false;
+    for F in *self.M {
+        if F.is_empty() {
+            continue;
+        }
+        let mut MF: *mut MachineFunction = self.MMI.getMachineFunction(F);
+        if !MF {
+            continue;
+        }
+        Changed |= self.runOnMachineFunction(*MF);
+    }
     return Changed;
 }
 
@@ -79,22 +89,28 @@ enum FrameHelperType {
 }
 
 fn getFrameHelperName(Regs: *mut SmallVectorImpl<unsigned int>, Type: FrameHelperType, FpOffset: u32) -> str {
-    let mut RegStream: ostringstream = zeroed();
+    let mut RegStream: ostringstream = ostringstream {};
     match Type {
         Prolog => {
-            RegStream() << "OUTLINED_FUNCTION_PROLOG_";
+            RegStream << "OUTLINED_FUNCTION_PROLOG_";
         },
         PrologFrame => {
-            RegStream() << "OUTLINED_FUNCTION_PROLOG_FRAME" << FpOffset << "_";
+            RegStream << "OUTLINED_FUNCTION_PROLOG_FRAME" << FpOffset << "_";
         },
         Epilog => {
-            RegStream() << "OUTLINED_FUNCTION_EPILOG_";
+            RegStream << "OUTLINED_FUNCTION_EPILOG_";
         },
         EpilogTail => {
-            RegStream() << "OUTLINED_FUNCTION_EPILOG_TAIL_";
+            RegStream << "OUTLINED_FUNCTION_EPILOG_TAIL_";
         },
     }
-    return ();
+    for Reg in Regs {
+        if Reg == NoRegister {
+            continue;
+        }
+        RegStream << getRegisterName(Reg, NoRegAltName);
+    }
+    return RegStream;
 }
 
 fn createFrameHelperMachineFunction(M: *mut Module, MMI: *mut MachineModuleInfo, Name: str) -> *mut MachineFunction {
@@ -103,8 +119,8 @@ fn createFrameHelperMachineFunction(M: *mut Module, MMI: *mut MachineModuleInfo,
     assert!(F == null, "Function has been created before");
     F = Create(get(getVoidTy(C), false), ExternalLinkage, Name, M);
     assert!(F, "Function was null!");
-    F.setLinkage;
-    F.setUnnamedAddr;
+    F.setLinkage(LinkOnceODRLinkage);
+    F.setUnnamedAddr(Global);
     F.addFnAttr(NoInline);
     F.addFnAttr(MinSize);
     F.addFnAttr(Naked);
@@ -112,67 +128,97 @@ fn createFrameHelperMachineFunction(M: *mut Module, MMI: *mut MachineModuleInfo,
     MF.getProperties().resetTracksLiveness().resetIsSSA().setNoVRegs().setNoPHIs();
     MF.getRegInfo().freezeReservedRegs();
     let mut EntryBB: *mut BasicBlock = Create(C, "entry", F, null);
-    let mut Builder: i32 = EntryBB;
-    Builder()();
-    let mut MBB: *mut MachineBasicBlock = MF.CreateMachineBasicBlock(null, nullopt());
-    MF()(MF()(), MBB);
+    let mut Builder: IRBuilder<> = EntryBB;
+    Builder.CreateRetVoid();
+    let mut MBB: *mut MachineBasicBlock = MF.CreateMachineBasicBlock(null, nullopt);
+    MF.insert(MF.begin(), MBB);
     return MF;
 }
 
-fn emitStore(MF: *mut MachineFunction, MBB: *mut MachineBasicBlock, Pos: i32, TII: *TargetInstrInfo, Reg1: u32, Reg2: u32, Offset: i32, IsPreDec: bool) {
-    let mut IsPaired: bool = false;
-    let mut IsFloat: bool = false;
+fn emitStore(MF: *mut MachineFunction, MBB: *mut MachineBasicBlock, Pos: iterator, TII: *TargetInstrInfo, Reg1: u32, Reg2: u32, Offset: i32, IsPreDec: bool) {
+    assert!(Reg1 != NoRegister);
+    let mut IsPaired: bool = Reg2 != NoRegister;
+    let mut IsFloat: bool = FPR64RegClass.contains(Reg1);
+    assert!(!(IsFloat ^ FPR64RegClass.contains(Reg2);
     let mut Opc: u32 = 0;
-    if IsPreDec {} else {}
-    let mut Scale: TypeSize = 0;
-    let mut Width: TypeSize = 0;
+    if IsPreDec {
+        if IsFloat {
+            Opc = if IsPaired { STPDpre } else { STRDpre };
+        } else {
+            Opc = if IsPaired { STPXpre } else { STRXpre };
+        }
+    } else {
+        if IsFloat {
+            Opc = if IsPaired { STPDi } else { STRDui };
+        } else {
+            Opc = if IsPaired { STPXi } else { STRXui };
+        }
+    }
+    let mut Scale: TypeSize = TypeSize { 0, false };
+    let mut Width: TypeSize = TypeSize { 0, false };
     let mut MinOffset: i64 = 0;
     let mut MaxOffset: i64 = 0;
     let mut Success: bool = getMemOpInfo(Opc, Scale, Width, MinOffset, MaxOffset);
     assert!(Success, "Invalid Opcode");
-    let mut MIB: MachineInstrBuilder = BuildMI(MBB, DebugLoc { Loc: null }, TII.get);
+    Offset *= (8 / Scale.operator unsigned long long() as i32);
+    let mut MIB: MachineInstrBuilder = BuildMI(MBB, Pos, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(Opc));
     if IsPreDec {
-        MIB();
+        MIB.addDef(SP, RegState {}, 0);
     }
     if IsPaired {
-        MIB()(Reg2);
+        MIB.addReg(Reg2, RegState {}, 0);
     }
-    MIB()(Reg1)(Offset)(FrameSetup);
+    MIB.addReg(Reg1, RegState {}, 0).addReg(SP, RegState {}, 0).addImm(Offset).setMIFlag(FrameSetup);
 }
 
-fn emitLoad(MF: *mut MachineFunction, MBB: *mut MachineBasicBlock, Pos: i32, TII: *TargetInstrInfo, Reg1: u32, Reg2: u32, Offset: i32, IsPostDec: bool) {
-    let mut IsPaired: bool = false;
-    let mut IsFloat: bool = false;
+fn emitLoad(MF: *mut MachineFunction, MBB: *mut MachineBasicBlock, Pos: iterator, TII: *TargetInstrInfo, Reg1: u32, Reg2: u32, Offset: i32, IsPostDec: bool) {
+    assert!(Reg1 != NoRegister);
+    let mut IsPaired: bool = Reg2 != NoRegister;
+    let mut IsFloat: bool = FPR64RegClass.contains(Reg1);
+    assert!(!(IsFloat ^ FPR64RegClass.contains(Reg2);
     let mut Opc: u32 = 0;
-    if IsPostDec {} else {}
-    let mut Scale: TypeSize = 0;
-    let mut Width: TypeSize = 0;
+    if IsPostDec {
+        if IsFloat {
+            Opc = if IsPaired { LDPDpost } else { LDRDpost };
+        } else {
+            Opc = if IsPaired { LDPXpost } else { LDRXpost };
+        }
+    } else {
+        if IsFloat {
+            Opc = if IsPaired { LDPDi } else { LDRDui };
+        } else {
+            Opc = if IsPaired { LDPXi } else { LDRXui };
+        }
+    }
+    let mut Scale: TypeSize = TypeSize { 0, false };
+    let mut Width: TypeSize = TypeSize { 0, false };
     let mut MinOffset: i64 = 0;
     let mut MaxOffset: i64 = 0;
     let mut Success: bool = getMemOpInfo(Opc, Scale, Width, MinOffset, MaxOffset);
     assert!(Success, "Invalid Opcode");
-    let mut MIB: MachineInstrBuilder = BuildMI(MBB, DebugLoc { Loc: null }, TII.get);
+    Offset *= (8 / Scale.operator unsigned long long() as i32);
+    let mut MIB: MachineInstrBuilder = BuildMI(MBB, Pos, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(Opc));
     if IsPostDec {
-        MIB();
+        MIB.addDef(SP, RegState {}, 0);
     }
     if IsPaired {
-        MIB()(Reg2, getDefRegState(true));
+        MIB.addReg(Reg2, getDefRegState(true), 0);
     }
-    MIB()(Reg1, getDefRegState(true))(Offset)(FrameDestroy);
+    MIB.addReg(Reg1, getDefRegState(true), 0).addReg(SP, RegState {}, 0).addImm(Offset).setMIFlag(FrameDestroy);
 }
 
 fn getOrCreateFrameHelper(M: *mut Module, MMI: *mut MachineModuleInfo, Regs: *mut SmallVectorImpl<unsigned int>, Type: FrameHelperType, FpOffset: u32) -> *mut Function {
-    (((operator!(operator!((Regs()() >= 2)))) || (_wassert(L"Regs.size() >= 2", L"llvm\\lib\\Target\\AArch64\\AArch64LowerHomogeneousPrologEpilog.cpp", (326) as u32) , 0)) as void);
+    assert!(Regs.len >= 2);
     let mut Name: str = getFrameHelperName(Regs, Type, FpOffset);
     let mut F: *mut Function = M.getFunction(Name);
     if F {
         return F;
     }
     let mut MF: *mut MachineFunction = createFrameHelperMachineFunction(M, MMI, Name);
-    let mut MBB: *mut MachineBasicBlock = operator*(MF()());
+    let mut MBB: *mut MachineBasicBlock = operator(MF.begin());
     let mut STI: *TargetSubtargetInfo = MF.getSubtarget();
     let mut TII: *TargetInstrInfo = *STI.getInstrInfo();
-    let mut Size: i32 = Regs()() as i32;
+    let mut Size: i32 = Regs.len as i32;
     match Type {
         Prolog => {
             PrologFrame;
@@ -184,12 +230,12 @@ fn getOrCreateFrameHelper(M: *mut Module, MMI: *mut MachineModuleInfo, Regs: *mu
     return M.getFunction(Name);
 }
 
-fn shouldUseFrameHelper(MBB: *mut MachineBasicBlock, NextMBBI: *mut i32, Regs: *mut SmallVectorImpl<unsigned int>, Type: FrameHelperType) -> bool {
+fn shouldUseFrameHelper(MBB: *mut MachineBasicBlock, NextMBBI: *mut iterator, Regs: *mut SmallVectorImpl<unsigned int>, Type: FrameHelperType) -> bool {
     let mut TRI: *TargetRegisterInfo = MBB.getParent().getSubtarget().getRegisterInfo();
-    let mut RegCount: auto = Regs()();
-    (((operator!(operator!((RegCount() > 0 && (RegCount() % 2 == 0))))) || (_wassert(L"RegCount > 0 && (RegCount % 2 == 0)", L"llvm\\lib\\Target\\AArch64\\AArch64LowerHomogeneousPrologEpilog.cpp", (410) as u32) , 0)) as void);
-    let mut InstCount: i32 =  / 2;
-    if operator!(is_contained(Regs)) {
+    let mut RegCount: u64 = Regs.len;
+    assert!(RegCount > 0 && (RegCount % 2 == 0);
+    let mut InstCount: i32 = RegCount / 2;
+    if !is_contained(Regs, LR) {
         return false;
     }
     match Type {
@@ -200,99 +246,136 @@ fn shouldUseFrameHelper(MBB: *mut MachineBasicBlock, NextMBBI: *mut i32, Regs: *
             break;
         },
         Epilog => {
-            for let mut NextMI: auto = ; NextMI() != MBB()();  += 1 {
-                if NextMI() {
+            for let mut NextMI: iterator = NextMBBI; NextMI != MBB.end(); operator(NextMI, 0) {
+                if operator(NextMI).readsRegister(W16, TRI) {
                     return false;
                 }
             }
         },
         EpilogTail => {
-            if NextMBBI() == MBB()() {
+            if NextMBBI == MBB.end() {
                 return false;
             }
-            if  {
+            if operator(NextMBBI).getOpcode() != RET_ReallyLR {
                 return false;
             }
             InstCount += 1;
             break;
         },
     }
-    return InstCount >= ;
+    return InstCount >= FrameHelperSizeThreshold.operator int();
 }
 
-fn AArch64LowerHomogeneousPrologEpilogImpl::lowerEpilog(self, MBB: *mut MachineBasicBlock, MBBI: i32, NextMBBI: *mut i32) -> bool {
+fn AArch64LowerHomogeneousPrologEpilogImpl::lowerEpilog(self, MBB: *mut MachineBasicBlock, MBBI: iterator, NextMBBI: *mut iterator) -> bool {
     let mut MF: *mut MachineFunction = *MBB.getParent();
-    let mut MI: *mut MachineInstr = operator*();
+    let mut MI: *mut MachineInstr = operator(MBBI);
     let mut DL: DebugLoc = MI.getDebugLoc();
-    let mut Regs: SmallVector<unsigned int, 8> = zeroed();
+    let mut Regs: SmallVector<unsigned int, 8> = SmallVector<unsigned int, 8> {};
     let mut HasUnpairedReg: bool = false;
+    for MO in MI.operands() {
+        if MO.isReg() {
+            if !MO.getReg().isValid() {
+                assert!(!HasUnpairedReg);
+                HasUnpairedReg = true;
+            }
+            Regs.push(MO.getReg().operator unsigned int());
+        }
+    }
     HasUnpairedReg as void;
-    let mut Size: i32 = () as i32;
+    let mut Size: i32 = Regs.len as i32;
     if Size == 0 {
         return false;
     }
     assert!(Size % 2 == 0);
-    let mut Return: auto = ;
+    assert!(MI.getOpcode() == HOM_Epilog);
+    let mut Return: iterator = NextMBBI;
     let mut HelperCall: *mut MachineInstr = null;
-    if shouldUseFrameHelper(MBB, EpilogTail) {
-        let mut EpilogTailHelper: *mut auto = getOrCreateFrameHelper(self.M, self.MMI, EpilogTail);
-        HelperCall = BuildMI(MBB, DL, self.TII)()(0)(FrameDestroy)(MI)(operator*());
-        NextMBBI() = next();
-        Return()();
-    } else if shouldUseFrameHelper(MBB, Epilog) {
-        let mut EpilogHelper: *mut auto = getOrCreateFrameHelper(self.M, self.MMI, Epilog);
-        HelperCall = BuildMI(MBB, DL, self.TII)()(FrameDestroy)(MI);
+    if shouldUseFrameHelper(MBB, NextMBBI, Regs, EpilogTail) {
+        let mut EpilogTailHelper: *mut Function = getOrCreateFrameHelper(self.M, self.MMI, Regs, EpilogTail, 0);
+        HelperCall = BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(TCRETURNdi)).addGlobalAddress(EpilogTailHelper, 0, 0).addImm(0).setMIFlag(FrameDestroy).copyImplicitOps(MI).copyImplicitOps(operator(Return)).operator llvm::MachineInstr *();
+        NextMBBI = next(Return, 1);
+        operator(Return).removeFromParent();
+    } else if shouldUseFrameHelper(MBB, NextMBBI, Regs, Epilog) {
+        let mut EpilogHelper: *mut Function = getOrCreateFrameHelper(self.M, self.MMI, Regs, Epilog, 0);
+        HelperCall = BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(BL)).addGlobalAddress(EpilogHelper, 0, 0).setMIFlag(FrameDestroy).copyImplicitOps(MI).operator llvm::MachineInstr *();
     } else {
         for let mut I: i32 = 0; I < Size - 2; I += 2 {
-            emitLoad(MF, MBB, *self.TII, [I], [I + 1], Size - I - 2, false);
+            emitLoad(MF, MBB, MBBI, *self.TII, Regs[I], Regs[I + 1], Size - I - 2, false);
         }
-        emitLoad(MF, MBB, *self.TII, [Size - 2], [Size - 1], Size, true);
+        emitLoad(MF, MBB, MBBI, *self.TII, Regs[Size - 2], Regs[Size - 1], Size, true);
     }
-    MBBI()();
+    if HelperCall {
+        for Def in operator(MBBI).defs() {
+            HelperCall.addRegisterDefined(Def.getReg(), MF.getRegInfo().getTargetRegisterInfo());
+        }
+    }
+    operator(MBBI).removeFromParent();
     return true;
 }
 
-fn AArch64LowerHomogeneousPrologEpilogImpl::lowerProlog(self, MBB: *mut MachineBasicBlock, MBBI: i32, NextMBBI: *mut i32) -> bool {
+fn AArch64LowerHomogeneousPrologEpilogImpl::lowerProlog(self, MBB: *mut MachineBasicBlock, MBBI: iterator, NextMBBI: *mut iterator) -> bool {
     let mut MF: *mut MachineFunction = *MBB.getParent();
-    let mut MI: *mut MachineInstr = operator*();
+    let mut MI: *mut MachineInstr = operator(MBBI);
     let mut DL: DebugLoc = MI.getDebugLoc();
-    let mut Regs: SmallVector<unsigned int, 8> = zeroed();
+    let mut Regs: SmallVector<unsigned int, 8> = SmallVector<unsigned int, 8> {};
     let mut HasUnpairedReg: bool = false;
     let mut LRIdx: i32 = 0;
-    let mut FpOffset: optional<int> = zeroed();
+    let mut FpOffset: optional<int> = optional<int> {};
+    for MO in MI.operands() {
+        if MO.isReg() {
+            if MO.getReg().isValid() {
+                if MO.getReg() == LR {
+                    LRIdx = Regs.len;
+                }
+            } else {
+                assert!(!HasUnpairedReg);
+                HasUnpairedReg = true;
+            }
+            Regs.push(MO.getReg().operator unsigned int());
+        } else if MO.isImm() {
+            FpOffset = MO.getImm();
+        }
+    }
     HasUnpairedReg as void;
-    let mut Size: i32 = () as i32;
+    let mut Size: i32 = Regs.len as i32;
     if Size == 0 {
         return false;
     }
     assert!(Size % 2 == 0);
-    if  {
-        emitStore(MF, MBB, *self.TII, -LRIdx - 2, true);
-        let mut PrologFrameHelper: *mut auto = getOrCreateFrameHelper(self.M, self.MMI, PrologFrame, operator*());
-        BuildMI(MBB, DL, self.TII)()(FrameSetup)(MI);
-    } else if  {
-        emitStore(MF, MBB, *self.TII, -LRIdx - 2, true);
-        let mut PrologHelper: *mut auto = getOrCreateFrameHelper(self.M, self.MMI, Prolog);
-        BuildMI(MBB, DL, self.TII)()(FrameSetup)(MI);
+    assert!(MI.getOpcode() == HOM_Prolog);
+    if FpOffset && shouldUseFrameHelper(MBB, NextMBBI, Regs, PrologFrame) {
+        emitStore(MF, MBB, MBBI, *self.TII, LR, FP, -LRIdx - 2, true);
+        let mut PrologFrameHelper: *mut Function = getOrCreateFrameHelper(self.M, self.MMI, Regs, PrologFrame, operator(FpOffset));
+        BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(BL)).addGlobalAddress(PrologFrameHelper, 0, 0).setMIFlag(FrameSetup).copyImplicitOps(MI).addReg(FP, Implicit | Define, 0).addReg(SP, Implicit, 0);
+    } else if !FpOffset && shouldUseFrameHelper(MBB, NextMBBI, Regs, Prolog) {
+        emitStore(MF, MBB, MBBI, *self.TII, LR, FP, -LRIdx - 2, true);
+        let mut PrologHelper: *mut Function = getOrCreateFrameHelper(self.M, self.MMI, Regs, Prolog, 0);
+        BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(BL)).addGlobalAddress(PrologHelper, 0, 0).setMIFlag(FrameSetup).copyImplicitOps(MI);
     } else {
-        emitStore(MF, MBB, *self.TII, [Size - 2], [Size - 1], -Size, true);
+        emitStore(MF, MBB, MBBI, *self.TII, Regs[Size - 2], Regs[Size - 1], -Size, true);
         for let mut I: i32 = Size - 3; I >= 0; I -= 2 {
-            emitStore(MF, MBB, *self.TII, [I - 1], [I], Size - I - 1, false);
+            emitStore(MF, MBB, MBBI, *self.TII, Regs[I - 1], Regs[I], Size - I - 1, false);
         }
-        if FpOffset() {
-            BuildMI(MBB, DL, self.TII)(operator*())(0)(FrameSetup);
+        if FpOffset {
+            BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ADDXri)).addDef(FP, RegState {}, 0).addUse(SP, RegState {}, 0).addImm(operator(FpOffset)).addImm(0).setMIFlag(FrameSetup);
         }
     }
-    MBBI()();
+    operator(MBBI).removeFromParent();
     return true;
 }
 
-fn AArch64LowerHomogeneousPrologEpilogImpl::runOnMI(self, MBB: *mut MachineBasicBlock, MBBI: i32, NextMBBI: *mut i32) -> bool {
-    let mut MI: *mut MachineInstr = operator*();
+fn AArch64LowerHomogeneousPrologEpilogImpl::runOnMI(self, MBB: *mut MachineBasicBlock, MBBI: iterator, NextMBBI: *mut iterator) -> bool {
+    let mut MI: *mut MachineInstr = operator(MBBI);
     let mut Opcode: u32 = MI.getOpcode();
     match Opcode {
         _ => {
             break;
+        },
+        HOM_Prolog => {
+            return self.lowerProlog(MBB, MBBI, NextMBBI);
+        },
+        HOM_Epilog => {
+            return self.lowerEpilog(MBB, MBBI, NextMBBI);
         },
     }
     return false;
@@ -300,17 +383,22 @@ fn AArch64LowerHomogeneousPrologEpilogImpl::runOnMI(self, MBB: *mut MachineBasic
 
 fn AArch64LowerHomogeneousPrologEpilogImpl::runOnMBB(self, MBB: *mut MachineBasicBlock) -> bool {
     let mut Modified: bool = false;
-    let mut MBBI: i32 = MBB()();
-    while  {
-        let mut NMBBI: i32 = next();
-        MBBI() = ;
+    let mut MBBI: iterator = MBB.begin();
+    let mut E: iterator = MBB.end();
+    while MBBI != E {
+        let mut NMBBI: iterator = next(MBBI, 1);
+        Modified |= self.runOnMI(MBB, MBBI, NMBBI);
+        MBBI = NMBBI;
     }
     return Modified;
 }
 
 fn AArch64LowerHomogeneousPrologEpilogImpl::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
-    self.TII = MF();
+    self.TII = MF.getSubtarget().getInstrInfo();
     let mut Modified: bool = false;
+    for MBB in MF {
+        Modified |= self.runOnMBB(MBB);
+    }
     return Modified;
 }
 

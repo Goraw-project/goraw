@@ -114,7 +114,7 @@ fn SectionChunk::applyRelX64(self: *SectionChunk, off: *mut u8, type: u16, os: *
             add32(off, s - p - 9);
         },
         IMAGE_REL_AMD64_SECTION => {
-            applySecIdx(off, os, self.file.symtab.ctx());
+            applySecIdx(off, os, self.file.symtab.ctx.outputSections.len);
         },
         IMAGE_REL_AMD64_SECREL => {
             applySecRel(self, off, os, s);
@@ -140,7 +140,7 @@ fn SectionChunk::applyRelX86(self: *SectionChunk, off: *mut u8, type: u16, os: *
             add32(off, s - p - 4);
         },
         IMAGE_REL_I386_SECTION => {
-            applySecIdx(off, os, self.file.symtab.ctx());
+            applySecIdx(off, os, self.file.symtab.ctx.outputSections.len);
         },
         IMAGE_REL_I386_SECREL => {
             applySecRel(self, off, os, s);
@@ -224,7 +224,7 @@ fn SectionChunk::applyRelARM(self: *SectionChunk, off: *mut u8, type: u16, os: *
             applyBranch24T(off, sx - p - 4);
         },
         IMAGE_REL_ARM_SECTION => {
-            applySecIdx(off, os, self.file.symtab.ctx());
+            applySecIdx(off, os, self.file.symtab.ctx.outputSections.len);
         },
         IMAGE_REL_ARM_SECREL => {
             applySecRel(self, off, os, s);
@@ -361,7 +361,7 @@ fn SectionChunk::applyRelARM64(self: *SectionChunk, off: *mut u8, type: u16, os:
             applySecRelLdr(self, off, os, s);
         },
         IMAGE_REL_ARM64_SECTION => {
-            applySecIdx(off, os, self.file.symtab.ctx());
+            applySecIdx(off, os, self.file.symtab.ctx.outputSections.len);
         },
         IMAGE_REL_ARM64_REL32 => {
             add32(off, s - p - 4);
@@ -400,7 +400,7 @@ fn SectionChunk::applyRelMIPS(self: *SectionChunk, off: *mut u8, type: u16, os: 
             add32(off, s);
         },
         IMAGE_REL_MIPS_SECTION => {
-            applySecIdx(off, os, self.file.symtab.ctx());
+            applySecIdx(off, os, self.file.symtab.ctx.outputSections.len);
         },
         IMAGE_REL_MIPS_SECREL => {
             applySecRel(self, off, os, s);
@@ -423,10 +423,13 @@ fn maybeReportRelocationToDiscarded(fromChunk: *SectionChunk, sym: *mut Defined,
         let mut coffSym: COFFSymbolRef = check(file.getCOFFObj().getSymbol(rel.SymbolTableIndex.operator unsigned int()));
         name = maybeDemangleSymbol(file.symtab.ctx, check(file.getCOFFObj().getSymbolName(coffSym)));
     }
-    let mut symbolLocations: i32 = getSymbolLocations(file, rel.SymbolTableIndex.operator unsigned int());
+    let mut symbolLocations: []str = getSymbolLocations(file, rel.SymbolTableIndex.operator unsigned int());
     let mut out: str = "";
-    let mut os: raw_string_ostream = raw_string_ostream { out };
+    let mut os: raw_string_ostream = out;
     os << "relocation against symbol in discarded section: " + name;
+    for s in symbolLocations {
+        os << s;
+    }
     error(out);
 }
 
@@ -449,15 +452,15 @@ fn SectionChunk::writeTo(self: *SectionChunk, buf: *mut u8) {
 }
 
 fn SectionChunk::applyRelocation(self: *SectionChunk, off: *mut u8, rel: *coff_relocation) {
-    let mut sym: *mut auto = dyn_cast_or_null(self.file.getSymbol(rel.SymbolTableIndex.operator unsigned int()));
-    let mut c: *mut Chunk = if  { () } else { null };
+    let mut sym: *mut Defined = dyn_cast_or_null(self.file.getSymbol(rel.SymbolTableIndex.operator unsigned int()));
+    let mut c: *mut Chunk = if sym { sym.getChunk() } else { null };
     let mut ctx: *mut COFFLinkerContext = self.file.symtab.ctx;
     let mut os: *mut OutputSection = if c { ctx.getOutputSection(c) } else { null };
-    if operator!() || (!os && operator!(isa()) && operator!(isa())) {
-        maybeReportRelocationToDiscarded(self, rel, ctx.config.mingw);
+    if !sym || (!os && !isa(sym) && !isa(sym)) {
+        maybeReportRelocationToDiscarded(self, sym, rel, ctx.config.mingw);
         return;
     }
-    let mut s: u64 = ();
+    let mut s: u64 = sym.getRVA();
     let mut p: u64 = self.rva + rel.VirtualAddress.operator unsigned int();
     let mut imageBase: u64 = ctx.config.imageBase;
     match self.getArch() {
@@ -477,7 +480,7 @@ fn SectionChunk::applyRelocation(self: *SectionChunk, off: *mut u8, rel: *coff_r
             self.applyRelMIPS(off, rel.Type.operator unsigned short(), os, s, p, imageBase);
         },
         _ => {
-            llvm_unreachable_internal("unknown machine type", "lld\\COFF\\Chunks.cpp", 513);
+            llvm_unreachable_internal("unknown machine type", "P:/Goraw/llvm-project/lld/COFF/Chunks.cpp", 513);
         },
     }
 }
@@ -488,14 +491,14 @@ fn SectionChunk::sortRelocations(self) {
         return;
     }
     warn("some relocations in " + self.file.getName() + " are not sorted");
-    let mut newRelocs: MutableArrayRef<coff_relocation> = zeroed();
-    memcpy(self.relocsData, self.relocsSize * );
-    sort(cmpByVa);
-    self.setRelocs();
+    let mut newRelocs: MutableArrayRef<coff_relocation> = MutableArrayRef<coff_relocation> { bAlloc().Allocate(self.relocsSize), self.relocsSize };
+    memcpy(newRelocs.ptr, self.relocsData, self.relocsSize * );
+    sort(newRelocs, cmpByVa);
+    self.setRelocs(newRelocs);
 }
 
 fn SectionChunk::writeAndRelocateSubsection(self: *SectionChunk, sec: ArrayRef<uint8_t>, subsec: ArrayRef<uint8_t>, nextRelocIndex: *mut u32, buf: *mut u8) {
-    assert!(!subsec.is_empty() && !sec.is_empty());
+    assert!(!subsec.is_empty() && !sec.is_empty();
     assert!(sec.begin() <= subsec.begin() && subsec.end() <= sec.end(), "subsection is not part of this section");
     let mut vaBegin: u64 = distance(sec.begin(), subsec.begin());
     let mut vaEnd: u64 = distance(sec.begin(), subsec.end());
@@ -552,12 +555,12 @@ fn getBaserelType(rel: *coff_relocation, arch: ArchType) -> u8 {
             return IMAGE_REL_BASED_ABSOLUTE;
         },
         _ => {
-            llvm_unreachable_internal("unknown machine type", "lld\\COFF\\Chunks.cpp", 601);
+            llvm_unreachable_internal("unknown machine type", "P:/Goraw/llvm-project/lld/COFF/Chunks.cpp", 601);
         },
     }
 }
 
-fn SectionChunk::getBaserels(self, res: *mut i32) {
+fn SectionChunk::getBaserels(self, res: *mut []Baserel) {
     for rel in self.getRelocs() {
         let mut ty: u8 = getBaserelType(rel, self.getArch());
         if ty == IMAGE_REL_BASED_ABSOLUTE {
@@ -567,11 +570,11 @@ fn SectionChunk::getBaserels(self, res: *mut i32) {
         if !isa_and_nonnull(target) || isa(target) {
             continue;
         }
-        res()(self.rva + rel.VirtualAddress.operator unsigned int(), ty);
+        res.push(self.rva + rel.VirtualAddress.operator unsigned int(), ty);
     }
     let mut ctx: *mut COFFLinkerContext = self.file.symtab.ctx;
-    if ctx.config.machine == ARM64X && ctx() && ctx()() == self && ctx.symtab.loadConfigSym && ctx() >=  + (CHPEMetadataPointer) {
-        res()(ctx()() + , IMAGE_REL_BASED_DIR64);
+    if ctx.config.machine == ARM64X && operator(ctx.hybridSymtab).loadConfigSym && operator(ctx.hybridSymtab).loadConfigSym.getChunk() == self && ctx.symtab.loadConfigSym && operator(ctx.hybridSymtab).loadConfigSize >=  + (CHPEMetadataPointer) {
+        res.push(operator(ctx.hybridSymtab).loadConfigSym.getRVA() + , IMAGE_REL_BASED_DIR64);
     }
 }
 
@@ -624,30 +627,30 @@ fn getRuntimePseudoRelocSize(type: u16, arch: ArchType) -> i32 {
             }
         },
         _ => {
-            llvm_unreachable_internal("unknown machine type", "lld\\COFF\\Chunks.cpp", 711);
+            llvm_unreachable_internal("unknown machine type", "P:/Goraw/llvm-project/lld/COFF/Chunks.cpp", 711);
         },
     }
 }
 
-fn SectionChunk::getRuntimePseudoRelocs(self, res: *mut i32) {
+fn SectionChunk::getRuntimePseudoRelocs(self, res: *mut []RuntimePseudoReloc) {
     for rel in self.getRelocs() {
-        let mut target: *mut auto = dyn_cast_or_null(self.file.getSymbol(rel.SymbolTableIndex.operator unsigned int()));
-        if operator!() || operator!() {
+        let mut target: *mut Defined = dyn_cast_or_null(self.file.getSymbol(rel.SymbolTableIndex.operator unsigned int()));
+        if !target || !target.isRuntimePseudoReloc {
             continue;
         }
-        if operator!() {
+        if !target.getChunk() {
             continue;
         }
         let mut sizeInBits: i32 = getRuntimePseudoRelocSize(rel.Type.operator unsigned short(), self.getArch());
         if sizeInBits == 0 {
-            error("unable to automatically import from " + () + " with relocation type " + self.file.getCOFFObj().getRelocationTypeName(rel.Type.operator unsigned short()) + " in " + toString(self.file));
+            error("unable to automatically import from " + target.getName() + " with relocation type " + self.file.getCOFFObj().getRelocationTypeName(rel.Type.operator unsigned short()) + " in " + toString(self.file));
             continue;
         }
         let mut addressSizeInBits: i32 = if self.file.symtab.ctx.config.is64() { 64 } else { 32 };
         if sizeInBits < addressSizeInBits {
-            warn("runtime pseudo relocation in " + toString(self.file) + " against " + "symbol " + () + " is too narrow (only " + sizeInBits + " bits wide); this can fail at runtime " + "depending on memory layout");
+            warn("runtime pseudo relocation in " + toString(self.file) + " against " + "symbol " + target.getName() + " is too narrow (only " + sizeInBits + " bits wide); this can fail at runtime " + "depending on memory layout");
         }
-        res()(self, rel.VirtualAddress, sizeInBits);
+        res.push(target, self, rel.VirtualAddress, sizeInBits);
     }
 }
 
@@ -680,7 +683,7 @@ fn SectionChunk::consumeDebugMagic(self) -> ArrayRef<uint8_t> {
 }
 
 fn SectionChunk::consumeDebugMagic(self, data: ArrayRef<uint8_t>, sectionName: str) -> ArrayRef<uint8_t> {
-    if data.len == 0 {
+    if data.is_empty() {
         return ArrayRef<uint8_t> {};
     }
     if data.len < 4 {
@@ -708,7 +711,7 @@ fn SectionChunk::findByName(self, sections: ArrayRef<SectionChunk *>, name: str)
 }
 
 fn SectionChunk::replace(self, other: *mut SectionChunk) {
-    self.p2Align = max(self.p2Align, other.p2Align);
+    self.p2Align = if self.p2Align > other.p2Align { self.p2Align } else { other.p2Align };
     other.repl = self.repl;
     other.live = false;
 }
@@ -721,7 +724,7 @@ fn SectionChunk::getSectionNumber(self: *SectionChunk) -> u32 {
 }
 
 fn CommonChunk::CommonChunk(self, s: COFFSymbolRef) {
-    self.setAlignment(min(32, PowerOf2Ceil(self.sym.getValue())));
+    self.setAlignment(if 32 < PowerOf2Ceil(self.sym.getValue()) { 32 } else { PowerOf2Ceil(self.sym.getValue()) });
     self.hasData = false;
 }
 
@@ -743,8 +746,8 @@ fn ImportThunkChunkX64::writeTo(self: *ImportThunkChunkX64, buf: *mut u8) {
     write32le(buf + 2, self.impSymbol.getRVA() - self.rva - self.getSize());
 }
 
-fn ImportThunkChunkX86::getBaserels(self, res: *mut i32) {
-    res()(self.getRVA() + 2, self.ctx.config.machine);
+fn ImportThunkChunkX86::getBaserels(self, res: *mut []Baserel) {
+    res.push(self.getRVA() + 2, self.ctx.config.machine);
 }
 
 fn ImportThunkChunkX86::writeTo(self: *ImportThunkChunkX86, buf: *mut u8) {
@@ -752,8 +755,8 @@ fn ImportThunkChunkX86::writeTo(self: *ImportThunkChunkX86, buf: *mut u8) {
     write32le(buf + 2, self.impSymbol.getRVA() + self.ctx.config.imageBase);
 }
 
-fn ImportThunkChunkARM::getBaserels(self, res: *mut i32) {
-    res()(self.getRVA(), IMAGE_REL_BASED_ARM_MOV32T);
+fn ImportThunkChunkARM::getBaserels(self, res: *mut []Baserel) {
+    res.push(self.getRVA(), IMAGE_REL_BASED_ARM_MOV32T);
 }
 
 fn ImportThunkChunkARM::writeTo(self: *ImportThunkChunkARM, buf: *mut u8) {
@@ -802,16 +805,16 @@ fn SameAddressThunkARM64EC::setDynamicRelocs(self: *SameAddressThunkARM64EC, ctx
     hybridView.writeTo(buf);
     let mut addrp: u32 = *buf as *mut ulittle32_t.operator unsigned int();
     let mut add: u32 = *buf +  as *mut ulittle32_t.operator unsigned int();
-    ctx.dynamicRelocs.set(Arm64XRelocVal { self, 0 }, Arm64XRelocVal { addrp });
-    ctx.dynamicRelocs.set(Arm64XRelocVal { self,  }, Arm64XRelocVal { add });
+    ctx.dynamicRelocs.set(Arm64XRelocVal { self, 0 }, addrp);
+    ctx.dynamicRelocs.set(Arm64XRelocVal { self,  }, add);
 }
 
 fn LocalImportChunk::LocalImportChunk(self, c: *mut COFFLinkerContext, s: *mut Defined) {
     self.setAlignment(self.ctx.config.wordsize);
 }
 
-fn LocalImportChunk::getBaserels(self, res: *mut i32) {
-    res()(self.getRVA(), self.ctx.config.machine);
+fn LocalImportChunk::getBaserels(self, res: *mut []Baserel) {
+    res.push(self.getRVA(), self.ctx.config.machine);
 }
 
 fn LocalImportChunk::getSize(self: *LocalImportChunk) -> u64 {
@@ -833,24 +836,33 @@ fn LocalImportChunk::writeTo(self: *LocalImportChunk, buf: *mut u8) {
 fn RVATableChunk::writeTo(self: *RVATableChunk, buf: *mut u8) {
     let mut begin: *mut ulittle32_t = buf as *mut ulittle32_t;
     let mut cnt: u64 = 0;
+    for co in self.syms {
+        begin[cnt += 1] = co.inputChunk.getRVA() + co.offset;
+    }
     sort(begin, begin + cnt);
-    (((operator!(operator!((unique(begin, begin + cnt) == begin + cnt && "RVA tables should be de-duplicated")))) || (_wassert(L"std::unique(begin, begin + cnt) == begin + cnt && \"RVA tables should be de-duplicated\"", L"lld\\COFF\\Chunks.cpp", (972) as u32) , 0)) as void);
+    assert!(unique(begin, begin + cnt) == begin + cnt, "RVA tables should be de-duplicated");
 }
 
 fn RVAFlagTableChunk::writeTo(self: *RVAFlagTableChunk, buf: *mut u8) {
-    let mut flags: auto = buf as *mut RVAFlag;
-    sort(Closure_2 {});
-    (((operator!(operator!((unique(Closure_3 {}) == () && "RVA tables should be de-duplicated")))) || (_wassert(L"llvm::unique(flags, [](const RVAFlag &a, const RVAFlag &b) { return a.rva == b.rva; }) == flags.end() && \"RVA tables should be de-duplicated\"", L"lld\\COFF\\Chunks.cpp", (993) as u32) , 0)) as void);
+    let mut flags: MutableArrayRef<RVAFlag> = MutableArrayRef<RVAFlag> { buf as *mut RVAFlag, self.syms.len };
+    for t in zip(self.syms, flags) {
+        let mut sym: *ChunkAndOffset = get(t);
+        let mut flag: *mut RVAFlag = get(t);
+        flag.rva = sym.inputChunk.getRVA() + sym.offset;
+        flag.flag = 0;
+    }
+    sort(flags, Closure_2 {});
+    assert!(unique(flags, Closure_3 {}) == flags.end(), "RVA tables should be de-duplicated");
 }
 
 fn ECCodeMapChunk::getSize(self: *ECCodeMapChunk) -> u64 {
-    return self.map() * ;
+    return self.map.len * ;
 }
 
 fn ECCodeMapChunk::writeTo(self: *ECCodeMapChunk, buf: *mut u8) {
     let mut table: *mut chpe_range_entry = buf as *mut chpe_range_entry;
-    for let mut i: u32 = 0; i < self.map(); i += 1 {
-        let mut entry: *ECCodeMapEntry = null;
+    for let mut i: u32 = 0; i < self.map.len; i += 1 {
+        let mut entry: *ECCodeMapEntry = self.map[i];
         let mut start: u32 = entry.first.getRVA() & ~4095;
         table[i].StartOffset = start | entry.type;
         table[i].Length = entry.last.getRVA() + entry.last.getSize() - start;
@@ -858,14 +870,14 @@ fn ECCodeMapChunk::writeTo(self: *ECCodeMapChunk, buf: *mut u8) {
 }
 
 fn PseudoRelocTableChunk::getSize(self: *PseudoRelocTableChunk) -> u64 {
-    if self.relocs.len == 0 {
+    if self.relocs.is_empty() {
         return 0;
     }
     return 12 + 12 * self.relocs.len;
 }
 
 fn PseudoRelocTableChunk::writeTo(self: *PseudoRelocTableChunk, buf: *mut u8) {
-    if self.relocs.len == 0 {
+    if self.relocs.is_empty() {
         return;
     }
     let mut table: *mut ulittle32_t = buf as *mut ulittle32_t;
@@ -873,6 +885,12 @@ fn PseudoRelocTableChunk::writeTo(self: *PseudoRelocTableChunk, buf: *mut u8) {
     table[1] = 0;
     table[2] = 1;
     let mut idx: u64 = 3;
+    for rpr in self.relocs {
+        table[idx + 0] = rpr.sym.getRVA();
+        table[idx + 1] = rpr.target.getRVA() + rpr.targetOffset;
+        table[idx + 2] = rpr.flags;
+        idx += 3;
+    }
 }
 
 fn BaserelChunk::BaserelChunk(self, page: u32, begin: *mut Baserel, end: *mut Baserel) {
@@ -902,7 +920,7 @@ fn MergeChunk::MergeChunk(self, alignment: u32) {
 fn MergeChunk::addSection(self, ctx: *mut COFFLinkerContext, c: *mut SectionChunk) {
     assert!(isPowerOf2_32(c.getAlignment();
     let mut p2Align: u8 = Log2_32(c.getAlignment());
-    (((operator!(operator!((p2Align < size(ctx.mergeChunkInstances))))) || (_wassert(L"p2Align < std::size(ctx.mergeChunkInstances)", L"lld\\COFF\\Chunks.cpp", (1107) as u32) , 0)) as void);
+    assert!(p2Align < size(ctx.mergeChunkInstances);
     let mut mc: *mut *mut MergeChunk = ctx.mergeChunkInstances[p2Align];
     if !mc {
         mc = make(c.getAlignment());
@@ -912,11 +930,24 @@ fn MergeChunk::addSection(self, ctx: *mut COFFLinkerContext, c: *mut SectionChun
 
 fn MergeChunk::finalizeContents(self) {
     assert!(!self.finalized, "should only finalize once");
+    for c in self.sections {
+        if c.live {
+            self.builder.add(toStringRef(c.getContents()), 0);
+        }
+    }
     self.builder.finalize();
     self.finalized = true;
 }
 
-fn MergeChunk::assignSubsectionRVAs(self) {}
+fn MergeChunk::assignSubsectionRVAs(self) {
+    for c in self.sections {
+        if !c.live {
+            continue;
+        }
+        let mut off: u64 = self.builder.getOffset(toStringRef(c.getContents()));
+        c.setRVA(self.rva + off);
+    }
+}
 
 fn MergeChunk::getOutputCharacteristics(self: *MergeChunk) -> u32 {
     return IMAGE_SCN_MEM_READ | IMAGE_SCN_CNT_INITIALIZED_DATA;
@@ -952,13 +983,13 @@ fn ECExportThunkChunk::writeTo(self: *ECExportThunkChunk, buf: *mut u8) {
 }
 
 fn CHPECodeRangesChunk::getSize(self: *CHPECodeRangesChunk) -> u64 {
-    return self.exportThunks() * ;
+    return self.exportThunks.len * ;
 }
 
 fn CHPECodeRangesChunk::writeTo(self: *CHPECodeRangesChunk, buf: *mut u8) {
     let mut ranges: *mut chpe_code_range_entry = buf as *mut chpe_code_range_entry;
-    for let mut i: u32 = 0; i < self.exportThunks(); i += 1 {
-        let mut thunk: *mut Chunk = null;
+    for let mut i: u32 = 0; i < self.exportThunks.len; i += 1 {
+        let mut thunk: *mut Chunk = self.exportThunks[i].first;
         let mut start: u32 = thunk.getRVA();
         ranges[i].StartRva = start;
         ranges[i].EndRva = start + thunk.getSize();
@@ -967,12 +998,15 @@ fn CHPECodeRangesChunk::writeTo(self: *CHPECodeRangesChunk, buf: *mut u8) {
 }
 
 fn CHPERedirectionChunk::getSize(self: *CHPERedirectionChunk) -> u64 {
-    return (self.exportThunks() + 1) * ;
+    return (self.exportThunks.len + 1) * ;
 }
 
 fn CHPERedirectionChunk::writeTo(self: *CHPERedirectionChunk, buf: *mut u8) {
     let mut entries: *mut chpe_redirection_entry = buf as *mut chpe_redirection_entry;
-    for let mut i: u32 = 0; i < self.exportThunks(); i += 1 {}
+    for let mut i: u32 = 0; i < self.exportThunks.len; i += 1 {
+        entries[i].Source = self.exportThunks[i].first.getRVA();
+        entries[i].Destination = self.exportThunks[i].second.getRVA();
+    }
 }
 
 fn ImportThunkChunkARM64EC::getSize(self: *ImportThunkChunkARM64EC) -> u64 {
@@ -1003,8 +1037,8 @@ fn ImportThunkChunkARM64EC::verifyRanges(self) -> bool {
     if self.extended {
         return true;
     }
-    let mut helper: auto = cast(self.file.symtab.ctx.config.arm64ECIcallHelper);
-    return isInt(() - self.rva - 16);
+    let mut helper: CastReturnType = cast(self.file.symtab.ctx.config.arm64ECIcallHelper);
+    return isInt(helper.getRVA() - self.rva - 16);
 }
 
 fn ImportThunkChunkARM64EC::extendRanges(self) -> u32 {
@@ -1031,7 +1065,7 @@ fn Arm64XDynamicRelocEntry::getSize(self: *Arm64XDynamicRelocEntry) -> u64 {
             return 2 * ;
         },
     }
-    llvm_unreachable_internal("invalid type", "lld\\COFF\\Chunks.cpp", 1258);
+    llvm_unreachable_internal("invalid type", "P:/Goraw/llvm-project/lld/COFF/Chunks.cpp", 1258);
 }
 
 fn Arm64XDynamicRelocEntry::writeTo(self: *Arm64XDynamicRelocEntry, buf: *mut u8) {
@@ -1054,15 +1088,23 @@ fn DynamicRelocsChunk::finalize(self) {
     stable_sort(self.arm64xRelocs, Closure_4 {});
     self.size =  + ;
     let mut prevPage: u32 = 4095;
-    self.size = alignTo(self.size);
+    for entry in self.arm64xRelocs {
+        let mut page: u32 = entry.offset.get() & ~4095;
+        if page != prevPage {
+            self.size = alignTo(self.size, sizeof) + ;
+            prevPage = page;
+        }
+        self.size += entry.getSize();
+    }
+    self.size = alignTo(self.size, sizeof);
 }
 
 fn DynamicRelocsChunk::set(self, offset: Arm64XRelocVal, value: Arm64XRelocVal) {
     let mut rva: u32 = offset.get();
-    let mut entry: auto = find_if(self.arm64xRelocs, Closure_5 { rva: rva });
-    (((operator!(operator!((entry() != self.arm64xRelocs.end)))) || (_wassert(L"entry != arm64xRelocs.end()", L"lld\\COFF\\Chunks.cpp", (1335) as u32) , 0)) as void);
-    (((operator!(operator!((operator!())))) || (_wassert(L"!entry->value.get()", L"lld\\COFF\\Chunks.cpp", (1336) as u32) , 0)) as void);
-    entry() = value;
+    let mut entry: Arm64XDynamicRelocEntry>>> = find_if(self.arm64xRelocs, Closure_5 { rva: rva });
+    assert!(!entry == self.arm64xRelocs.end();
+    assert!(!operator(entry).value.get();
+    operator(entry).value = value;
 }
 
 fn DynamicRelocsChunk::writeTo(self: *DynamicRelocsChunk, buf: *mut u8) {
@@ -1075,7 +1117,21 @@ fn DynamicRelocsChunk::writeTo(self: *DynamicRelocsChunk, buf: *mut u8) {
     buf += (*header);
     let mut pageHeader: *mut coff_base_reloc_block_header = null;
     let mut relocSize: u64 = 0;
-    relocSize = alignTo(relocSize);
+    for entry in self.arm64xRelocs {
+        let mut page: u32 = entry.offset.get() & ~4095;
+        if !pageHeader || page != pageHeader.PageRVA.operator unsigned int() {
+            relocSize = alignTo(relocSize, sizeof);
+            if pageHeader {
+                pageHeader.BlockSize = buf + relocSize - pageHeader as *mut u8;
+            }
+            pageHeader = buf + relocSize as *mut coff_base_reloc_block_header;
+            pageHeader.PageRVA = page;
+            relocSize += (*pageHeader);
+        }
+        entry.writeTo(buf + relocSize);
+        relocSize += entry.getSize();
+    }
+    relocSize = alignTo(relocSize, sizeof);
     pageHeader.BlockSize = buf + relocSize - pageHeader as *mut u8;
     header.BaseRelocSize = relocSize;
     operator(table.Size, relocSize);

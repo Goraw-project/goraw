@@ -4,16 +4,25 @@ struct DirectoryLookupInfo {
     UserEntryIdx: optional<unsigned int>,
 }
 
+fn DirectoryLookupInfo::operator=(self, arg: *mut *mut DirectoryLookupInfo) -> *mut DirectoryLookupInfo {
+    self.Group =  as DirectoryLookupInfo.Group;
+    self.Lookup.operator=( as DirectoryLookupInfo.Lookup);
+    self.UserEntryIdx.operator=( as DirectoryLookupInfo.UserEntryIdx);
+    return *self;
+}
+
 struct InitHeaderSearch {
-    IncludePath: i32,
-    SystemHeaderPrefixes: i32,
+    IncludePath: []DirectoryLookupInfo,
+    SystemHeaderPrefixes: []string, bool>,
     Headers: *mut HeaderSearch,
     Verbose: bool,
     IncludeSysroot: str,
     HasSysroot: bool,
 }
 
-fn InitHeaderSearch::AddSystemHeaderPrefix(self, Prefix: str, IsSystemHeader: bool) {}
+fn InitHeaderSearch::AddSystemHeaderPrefix(self, Prefix: str, IsSystemHeader: bool) {
+    self.SystemHeaderPrefixes.push(Prefix[0..allocator<char> {}], IsSystemHeader);
+}
 
 fn CanPrefixSysroot(Path: str) -> bool {
     return !Path.is_empty() && is_separator(Path[0], native);
@@ -21,8 +30,8 @@ fn CanPrefixSysroot(Path: str) -> bool {
 
 fn InitHeaderSearch::AddPath(self, Path: str, Group: IncludeDirGroup, isFramework: bool, UserEntryIdx: optional<unsigned int>) -> bool {
     if self.HasSysroot {
-        let mut MappedPathStorage: str = zeroed();
-        let mut MappedPathStr: str = Path.toStringRef();
+        let mut MappedPathStorage: str = "";
+        let mut MappedPathStr: str = Path.toStringRef(MappedPathStorage);
         if CanPrefixSysroot(MappedPathStr) {
             return self.AddUnmappedPath(self.IncludeSysroot + Path, Group, isFramework, UserEntryIdx);
         }
@@ -33,10 +42,10 @@ fn InitHeaderSearch::AddPath(self, Path: str, Group: IncludeDirGroup, isFramewor
 fn InitHeaderSearch::AddUnmappedPath(self, Path: str, Group: IncludeDirGroup, isFramework: bool, UserEntryIdx: optional<unsigned int>) -> bool {
     assert!(!Path.isTriviallyEmpty(), "can't handle empty path here");
     let mut FM: *mut FileManager = self.Headers.getFileMgr();
-    let mut MappedPathStorage: str = zeroed();
-    let mut MappedPathStr: str = Path.toStringRef();
+    let mut MappedPathStorage: str = "";
+    let mut MappedPathStr: str = Path.toStringRef(MappedPathStorage);
     if self.HasSysroot && (MappedPathStr.starts_with("/usr/include") || MappedPathStr.starts_with("/usr/local/include")) {
-        self.Headers.getDiags() << MappedPathStr;
+        self.Headers.getDiags().Report(warn_poison_system_directories) << MappedPathStr;
     }
     let mut Type: CharacteristicKind = zeroed();
     if Group == Quoted || Group == Angled {
@@ -46,14 +55,20 @@ fn InitHeaderSearch::AddUnmappedPath(self, Path: str, Group: IncludeDirGroup, is
     } else {
         Type = C_System;
     }
-    if  {
+    if FM.getOptionalDirectoryRef(MappedPathStr, true) {
+        DE;
+    } else {
+        self.IncludePath.push(Group, DirectoryLookup { operator(DE), Type, isFramework }, UserEntryIdx);
         return true;
     }
     if !isFramework {
-        if  {
-            if self.Headers.CreateHeaderMap(*) {
+        if FM.getOptionalFileRef(MappedPathStr, false, true, true) {
+            FE;
+        } else {
+            if self.Headers.CreateHeaderMap(operator(FE)) {
                 HM;
             } else {
+                self.IncludePath.push(Group, DirectoryLookup { HM, Type }, UserEntryIdx);
                 return true;
             }
         }
@@ -66,22 +81,26 @@ fn InitHeaderSearch::AddUnmappedPath(self, Path: str, Group: IncludeDirGroup, is
 
 fn InitHeaderSearch::AddDefaultCIncludePaths(self, triple: *Triple, HSOpts: *HeaderSearchOptions) {
     if !self.ShouldAddDefaultIncludePaths(triple) {
-        llvm_unreachable_internal("Include management is handled in the driver.", "clang\\lib\\Lex\\InitHeaderSearch.cpp", 176);
+        llvm_unreachable_internal("Include management is handled in the driver.", "P:/Goraw/llvm-project/clang/lib/Lex/InitHeaderSearch.cpp", 176);
     }
     if HSOpts.UseStandardSystemIncludes {
         self.AddPath("/usr/local/include", System, false, nullopt);
     }
     if HSOpts.UseBuiltinIncludes {
-        let mut P: str = zeroed();
-        append("include");
-        self.AddUnmappedPath(ExternCSystem, false);
+        let mut P: str = HSOpts.ResourceDir;
+        append(P, "include", "", "", "");
+        self.AddUnmappedPath(P, ExternCSystem, false, nullopt);
     }
     if !HSOpts.UseStandardSystemIncludes {
         return;
     }
-    if CIncludeDirs() != "" {
-        let mut dirs: SmallVector<StringRef, 5> = zeroed();
-        CIncludeDirs()(":");
+    let mut CIncludeDirs: str = "";
+    if CIncludeDirs != "" {
+        let mut dirs: SmallVector<StringRef, 5> = SmallVector<StringRef, 5> {};
+        CIncludeDirs.split(dirs, ":", -1, true);
+        for dir in dirs {
+            self.AddPath(dir, ExternCSystem, false, nullopt);
+        }
         return;
     }
     self.AddPath("/usr/include", ExternCSystem, false, nullopt);
@@ -122,25 +141,25 @@ fn InitHeaderSearch::AddDefaultIncludePaths(self, Lang: *LangOptions, triple: *T
     self.AddDefaultCIncludePaths(triple, HSOpts);
 }
 
-fn RemoveDuplicates(SearchList: *mut i32, First: u32, Verbose: bool) -> u32 {
-    let mut SeenDirs: SmallPtrSet<const DirectoryEntry *, 8> = zeroed();
-    let mut SeenFrameworkDirs: SmallPtrSet<const DirectoryEntry *, 8> = zeroed();
-    let mut SeenHeaderMaps: SmallPtrSet<const HeaderMap *, 8> = zeroed();
+fn RemoveDuplicates(SearchList: *mut []DirectoryLookupInfo, First: u32, Verbose: bool) -> u32 {
+    let mut SeenDirs: SmallPtrSet<const DirectoryEntry *, 8> = SmallPtrSet<const DirectoryEntry *, 8> {};
+    let mut SeenFrameworkDirs: SmallPtrSet<const DirectoryEntry *, 8> = SmallPtrSet<const DirectoryEntry *, 8> {};
+    let mut SeenHeaderMaps: SmallPtrSet<const HeaderMap *, 8> = SmallPtrSet<const HeaderMap *, 8> {};
     let mut NonSystemRemoved: u32 = 0;
-    for let mut i: u32 = First; i != (); i += 1 {
+    for let mut i: u32 = First; i != SearchList.len; i += 1 {
         let mut DirToRemove: u32 = i;
-        let mut CurEntry: *DirectoryLookup = [i];
+        let mut CurEntry: *DirectoryLookup = SearchList[i].Lookup;
         if CurEntry.isNormalDir() {
-            if SeenDirs()(CurEntry.getDir()) {
+            if SeenDirs.insert(CurEntry.getDir()).second {
                 continue;
             }
         } else if CurEntry.isFramework() {
-            if SeenFrameworkDirs()(CurEntry.getFrameworkDir()) {
+            if SeenFrameworkDirs.insert(CurEntry.getFrameworkDir()).second {
                 continue;
             }
         } else {
             assert!(CurEntry.isHeaderMap(), "Not a headermap or normal dir?");
-            if SeenHeaderMaps()(CurEntry.getHeaderMap()) {
+            if SeenHeaderMaps.insert(CurEntry.getHeaderMap()).second {
                 continue;
             }
         }
@@ -148,7 +167,7 @@ fn RemoveDuplicates(SearchList: *mut i32, First: u32, Verbose: bool) -> u32 {
             let mut FirstDir: u32 = 0;
             for FirstDir = First; ; FirstDir += 1 {
                 assert!(FirstDir != i, "Didn't find dupe?");
-                let mut SearchEntry: *DirectoryLookup = [FirstDir];
+                let mut SearchEntry: *DirectoryLookup = SearchList[FirstDir].Lookup;
                 if SearchEntry.getLookupType() != CurEntry.getLookupType() {
                     continue;
                 }
@@ -165,7 +184,7 @@ fn RemoveDuplicates(SearchList: *mut i32, First: u32, Verbose: bool) -> u32 {
                     break;
                 }
             }
-            if SearchList()[FirstDir]() == C_User {
+            if SearchList[FirstDir].Lookup.getDirCharacteristic() == C_User {
                 DirToRemove = FirstDir;
             }
         }
@@ -178,56 +197,76 @@ fn RemoveDuplicates(SearchList: *mut i32, First: u32, Verbose: bool) -> u32 {
         if DirToRemove != i {
             NonSystemRemoved += 1;
         }
-        SearchList()(() + DirToRemove);
+        SearchList.erase(SearchList.begin() + DirToRemove);
         i -= 1;
     }
     return NonSystemRemoved;
 }
 
-fn extractLookups(Infos: i32) -> i32 {
-    let mut Lookups: i32 = 0;
-    Lookups()();
-    transform(back_inserter(), Closure_1 {});
-    return ;
+fn extractLookups(Infos: *[]DirectoryLookupInfo) -> []DirectoryLookup {
+    let mut Lookups: []DirectoryLookup = []DirectoryLookup {};
+    Lookups.reserve(Infos.len);
+    transform(Infos, back_inserter(Lookups), Closure_1 {});
+    return Lookups;
 }
 
-fn mapToUserEntries(Infos: i32) -> i32 {
-    let mut LookupsToUserEntries: i32 = 0;
+fn mapToUserEntries(Infos: *[]DirectoryLookupInfo) -> DenseMap<unsigned int, unsigned int> {
+    let mut LookupsToUserEntries: DenseMap<unsigned int, unsigned int> = DenseMap<unsigned int, unsigned int> {};
     for let mut I: u32 = 0;
-let mut E: u32 = (); I < E; I += 1 {
-        if Infos()[I] {
-            LookupsToUserEntries()(void { I, *[I] });
+let mut E: u32 = Infos.len; I < E; I += 1 {
+        if Infos[I].UserEntryIdx {
+            LookupsToUserEntries.insert(pair<unsigned int, unsigned int> { I, operator(Infos[I].UserEntryIdx) });
         }
     }
-    return ;
+    return LookupsToUserEntries;
 }
 
 fn InitHeaderSearch::Realize(self, Lang: *LangOptions) {
-    let mut SearchList: i32 = 0;
-    SearchList();
-    RemoveDuplicates(0, self.Verbose);
-    let mut NumQuoted: u32 = ();
-    RemoveDuplicates(NumQuoted, self.Verbose);
-    let mut NumAngled: u32 = ();
-    let mut NonSystemRemoved: u32 = 0;
+    let mut SearchList: []DirectoryLookupInfo = []DirectoryLookupInfo {};
+    SearchList.reserve(self.IncludePath.len);
+    for Include in self.IncludePath {
+        if Include.Group == Quoted {
+            SearchList.push(Include);
+        }
+    }
+    RemoveDuplicates(SearchList, 0, self.Verbose);
+    let mut NumQuoted: u32 = SearchList.len;
+    for Include in self.IncludePath {
+        if Include.Group == Angled {
+            SearchList.push(Include);
+        }
+    }
+    RemoveDuplicates(SearchList, NumQuoted, self.Verbose);
+    let mut NumAngled: u32 = SearchList.len;
+    for Include in self.IncludePath {
+        if Include.Group == System || Include.Group == ExternCSystem || (!Lang.ObjC && !Lang.CPlusPlus && Include.Group == CSystem) || (Lang.CPlusPlus && Include.Group == CXXSystem) || (Lang.ObjC && !Lang.CPlusPlus && Include.Group == ObjCSystem) || (Lang.ObjC && Lang.CPlusPlus && Include.Group == ObjCXXSystem) {
+            SearchList.push(Include);
+        }
+    }
+    for Include in self.IncludePath {
+        if Include.Group == After {
+            SearchList.push(Include);
+        }
+    }
+    let mut NonSystemRemoved: u32 = RemoveDuplicates(SearchList, NumQuoted, self.Verbose);
     NumAngled -= NonSystemRemoved;
-    self.Headers;
-    self.Headers.SetSystemHeaderPrefixes;
+    self.Headers.SetSearchPaths(extractLookups(SearchList), NumQuoted, NumAngled, mapToUserEntries(SearchList));
+    self.Headers.SetSystemHeaderPrefixes(self.SystemHeaderPrefixes);
     if self.Verbose {
         errs() << "#include \"...\" search starts here:\n";
         for let mut i: u32 = 0;
-let mut e: u32 = (); i != e; i += 1 {
+let mut e: u32 = SearchList.len; i != e; i += 1 {
             if i == NumQuoted {
                 errs() << "#include <...> search starts here:\n";
             }
-            let mut Name: str = [i]();
+            let mut Name: str = SearchList[i].Lookup.getName();
             let mut Suffix: *u8 = null;
-            if SearchList()[i]() {
+            if SearchList[i].Lookup.isNormalDir() {
                 Suffix = "";
-            } else if SearchList()[i]() {
+            } else if SearchList[i].Lookup.isFramework() {
                 Suffix = " (framework directory)";
             } else {
-                assert!(SearchList()[i](), "Unknown DirectoryLookup");
+                assert!(SearchList[i].Lookup.isHeaderMap(), "Unknown DirectoryLookup");
                 Suffix = " (headermap)";
             }
             errs() << " " << Name << Suffix << "\n";
@@ -239,24 +278,26 @@ let mut e: u32 = (); i != e; i += 1 {
 fn ApplyHeaderSearchOptions(HS: *mut HeaderSearch, HSOpts: *HeaderSearchOptions, Lang: *LangOptions, Triple: *Triple) {
     let mut Init: InitHeaderSearch = InitHeaderSearch { HS, HSOpts.Verbose, HSOpts.Sysroot };
     for let mut i: u32 = 0;
-let mut e: u32 = HSOpts()(); i != e; i += 1 {
-        let mut E: *Entry = HSOpts()[i];
+let mut e: u32 = HSOpts.UserEntries.len; i != e; i += 1 {
+        let mut E: *Entry = HSOpts.UserEntries[i];
         if E.IgnoreSysRoot {
-            Init.AddUnmappedPath;
+            Init.AddUnmappedPath(E.Path, E.Group, E.IsFramework, i);
         } else {
-            Init.AddPath;
+            Init.AddPath(E.Path, E.Group, E.IsFramework, i);
         }
     }
     Init.AddDefaultIncludePaths(Lang, Triple, HSOpts);
     for let mut i: u32 = 0;
-let mut e: u32 = HSOpts()(); i != e; i += 1 {
-        Init.AddSystemHeaderPrefix(HSOpts()[i], HSOpts()[i]);
+let mut e: u32 = HSOpts.SystemHeaderPrefixes.len; i != e; i += 1 {
+        Init.AddSystemHeaderPrefix(HSOpts.SystemHeaderPrefixes[i].Prefix, HSOpts.SystemHeaderPrefixes[i].IsSystemHeader);
     }
     if HSOpts.UseBuiltinIncludes {
-        let mut P: str = zeroed();
-        append("include");
-        if  {
-            HS.getModuleMap().setBuiltinIncludeDir(*);
+        let mut P: str = HSOpts.ResourceDir;
+        append(P, "include", "", "", "");
+        if HS.getFileMgr().getOptionalDirectoryRef(P.operator StringRef(), true) {
+            Dir;
+        } else {
+            HS.getModuleMap().setBuiltinIncludeDir(operator(Dir));
         }
     }
     Init.Realize(Lang);

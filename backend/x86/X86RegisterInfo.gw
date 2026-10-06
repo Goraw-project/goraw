@@ -1,10 +1,10 @@
-static mut EnableBasePointer: i32 = "x86-use-base-pointer";
+static mut EnableBasePointer: opt<bool> = opt<bool> { "x86-use-base-pointer", Hidden, init(true), "Enable use of a base pointer for complex stack frames" };
 
-static mut DisableRegAllocNDDHints: i32 = "x86-disable-regalloc-hints-for-ndd";
+static mut DisableRegAllocNDDHints: opt<bool> = opt<bool> { "x86-disable-regalloc-hints-for-ndd", Hidden, init(false), "Disable two address hints for register allocation" };
 
-static mut SetjmpCSRWarningThreshold: i32 = "x86-setjmp-csr-warning-threshold";
+static mut SetjmpCSRWarningThreshold: opt<unsigned int> = opt<unsigned int> { "x86-setjmp-csr-warning-threshold", Hidden, init(50), "Basic block count threshold for emitting a warning about callee-saved registers reserved due to setjmp" };
 
-static mut X86EnableAPXForRelocation: i32 = 0;
+static mut X86EnableAPXForRelocation: opt<bool> = zeroed();
 
 fn X86RegisterInfo::X86RegisterInfo(self, TT: *Triple) {
     initLLVMToSEHAndCVRegMapping(self);
@@ -15,39 +15,66 @@ fn X86RegisterInfo::X86RegisterInfo(self, TT: *Triple) {
     if self.Is64Bit {
         self.SlotSize = 8;
         let mut Use64BitReg: bool = !TT.isX32();
+        self.StackPtr = if Use64BitReg { RSP } else { ESP };
+        self.FramePtr = if Use64BitReg { RBP } else { EBP };
+        self.BasePtr = if Use64BitReg { RBX } else { EBX };
     } else {
         self.SlotSize = 4;
+        self.StackPtr = ESP;
+        self.FramePtr = EBP;
+        self.BasePtr = ESI;
     }
 }
 
-fn X86RegisterInfo::getSubClassWithSubReg(self: *X86RegisterInfo, RC: *TargetRegisterClass, Idx: u32) -> *TargetRegisterClass {}
+fn X86RegisterInfo::getSubClassWithSubReg(self: *X86RegisterInfo, RC: *TargetRegisterClass, Idx: u32) -> *TargetRegisterClass {
+    if !self.Is64Bit && Idx == sub_8bit {
+        Idx = sub_8bit_hi;
+    }
+    return self.getSubClassWithSubReg(RC, Idx);
+}
 
 fn X86RegisterInfo::getMatchingSuperRegClass(self: *X86RegisterInfo, A: *TargetRegisterClass, B: *TargetRegisterClass, SubIdx: u32) -> *TargetRegisterClass {
-    if  {
+    if !self.Is64Bit && SubIdx == sub_8bit {
+        A = self.getSubClassWithSubReg(A, sub_8bit_hi);
         if !A {
             return null;
         }
     }
+    return self.getMatchingSuperRegClass(A, B, SubIdx);
 }
 
 fn X86RegisterInfo::getLargestLegalSuperClass(self: *X86RegisterInfo, RC: *TargetRegisterClass, MF: *MachineFunction) -> *TargetRegisterClass {
-    if  {
+    if RC == &mut GR8_NOREXRegClass {
         return RC;
     }
-    if operator!() && self.isNonRex2RegClass(RC) {
+    if !X86EnableAPXForRelocation && self.isNonRex2RegClass(RC) {
         return RC;
     }
-    let mut Subtarget: *X86Subtarget = MF;
+    let mut Subtarget: *X86Subtarget = MF.getSubtarget();
     let mut Super: *TargetRegisterClass = RC;
     let mut I: iterator = RC.superclasses().begin();
     let mut E: iterator = RC.superclasses().end();
     while true {
         {
         match Super.getID() {
-
+            FR32RegClassID => {
+                FR64RegClassID;
+            },
+            VR128RegClassID => {
+                VR256RegClassID;
+            },
+            VR128XRegClassID => {
+                VR256XRegClassID;
+            },
+            FR32XRegClassID => {
+                FR64XRegClassID;
+            },
+            GR8RegClassID => {
+                GR16RegClassID;
+            },
         }
         if I != E {
-            Super = getRegClass(*I);
+            Super = self.getRegClass(*I);
             I += 1;
         } else {
             Super = null;
@@ -59,7 +86,13 @@ fn X86RegisterInfo::getLargestLegalSuperClass(self: *X86RegisterInfo, RC: *Targe
 }
 
 fn X86RegisterInfo::getCrossCopyRegClass(self: *X86RegisterInfo, RC: *TargetRegisterClass) -> *TargetRegisterClass {
-    if  {}
+    if RC == &mut CCRRegClass {
+        if self.Is64Bit {
+            return &mut GR64RegClass;
+        } else {
+            return &mut GR32RegClass;
+        }
+    }
     return RC;
 }
 
@@ -70,66 +103,129 @@ fn X86RegisterInfo::getRegPressureLimit(self: *X86RegisterInfo, RC: *TargetRegis
         _ => {
             return 0;
         },
+        GR32RegClassID => {
+            return 4 - FPDiff;
+        },
+        GR64RegClassID => {
+            return 12 - FPDiff;
+        },
+        VR128RegClassID => {
+            return if self.Is64Bit { 10 } else { 4 };
+        },
+        VR64RegClassID => {
+            return 4;
+        },
     }
 }
 
 fn X86RegisterInfo::getCalleeSavedRegs(self: *X86RegisterInfo, MF: *MachineFunction) -> *MCPhysReg {
     assert!(MF, "MachineFunction required");
-    let mut Subtarget: *X86Subtarget = MF;
+    let mut Subtarget: *X86Subtarget = MF.getSubtarget();
     let mut F: *Function = MF.getFunction();
     let mut HasSSE: bool = Subtarget.hasSSE1();
     let mut HasAVX: bool = Subtarget.hasAVX();
     let mut HasAVX512: bool = Subtarget.hasAVX512();
-    let mut HasEGPR: bool = Subtarget()();
+    let mut HasEGPR: bool = Subtarget.hasEGPR();
     let mut CallsEHReturn: bool = MF.callsEHReturn();
     let mut CC: ID = F.getCallingConv();
     if MF.getFunction().hasFnAttribute("no_caller_saved_registers") {
         CC = X86_INTR;
+    }
+    if MF.getFunction().hasFnAttribute("no_callee_saved_registers") {
+        return CSR_NoRegs_SaveList;
     }
     match CC {
         GHC => {
             HiPE;
         },
         AnyReg => {
-            
+            if HasAVX {
+                return CSR_64_AllRegs_AVX_SaveList;
+            }
         },
         PreserveMost => {
-            
+            if self.IsWin64 {
+                return if HasEGPR { CSR_Win64_APX_RT_MostRegs_SaveList } else { CSR_Win64_RT_MostRegs_SaveList };
+            }
         },
         PreserveAll => {
-            
+            if HasAVX {
+                return CSR_64_RT_AllRegs_AVX_SaveList;
+            }
         },
         PreserveNone => {
-            
+            return CSR_64_NoneRegs_SaveList;
         },
         CXX_FAST_TLS => {
-            
+            if self.Is64Bit {
+                return if MF.getInfo().isSplitCSR() { CSR_64_CXX_TLS_Darwin_PE_SaveList } else { CSR_64_TLS_Darwin_SaveList };
+            }
         },
         Intel_OCL_BI => {
+            if HasAVX512 && self.IsWin64 {
+                return if HasEGPR { CSR_Win64_APX_Intel_OCL_BI_AVX512_SaveList } else { CSR_Win64_Intel_OCL_BI_AVX512_SaveList };
+            }
+            if HasAVX512 && self.Is64Bit {
+                return CSR_64_Intel_OCL_BI_AVX512_SaveList;
+            }
+            if HasAVX && self.IsWin64 {
+                return if HasEGPR { CSR_Win64_APX_Intel_OCL_BI_AVX_SaveList } else { CSR_Win64_Intel_OCL_BI_AVX_SaveList };
+            }
+            if HasAVX && self.Is64Bit {
+                return CSR_64_Intel_OCL_BI_AVX_SaveList;
+            }
+            if !HasAVX && !self.IsWin64 && self.Is64Bit {
+                return CSR_64_Intel_OCL_BI_SaveList;
+            }
             break;
         },
         X86_RegCall => {
             if self.Is64Bit {
-                if self.IsWin64 {}
+                if self.IsWin64 {
+                    if HasSSE {
+                        return if HasEGPR { CSR_Win64_APX_RegCall_SaveList } else { CSR_Win64_RegCall_SaveList };
+                    }
+                    return CSR_Win64_RegCall_NoSSE_SaveList;
+                }
+                return if HasSSE { CSR_SysV64_RegCall_SaveList } else { CSR_SysV64_RegCall_NoSSE_SaveList };
             }
         },
         CFGuard_Check => {
             assert!(!self.Is64Bit, "CFGuard check mechanism only used on 32-bit X86");
         },
         Cold => {
-            
+            if self.Is64Bit {
+                return CSR_64_MostRegs_SaveList;
+            }
         },
         Win64 => {
-            
+            if HasSSE {
+                return if HasEGPR { CSR_Win64_APX_SaveList } else { CSR_Win64_SaveList };
+            }
         },
         SwiftTail => {
-            
+            if !self.Is64Bit {
+                return CSR_32_SaveList;
+            }
         },
         X86_64_SysV => {
-            
+            if CallsEHReturn {
+                return CSR_64EHRet_SaveList;
+            }
         },
         X86_INTR => {
-            if self.Is64Bit {}
+            if self.Is64Bit {
+                if HasAVX512 {
+                    return CSR_64_AllRegs_AVX512_SaveList;
+                }
+                if HasAVX {
+                    return CSR_64_AllRegs_AVX_SaveList;
+                }
+                if HasSSE {
+                    return CSR_64_AllRegs_SaveList;
+                }
+                return CSR_64_AllRegs_NoSSE_SaveList;
+            }
         },
         _ => {
             break;
@@ -137,68 +233,137 @@ fn X86RegisterInfo::getCalleeSavedRegs(self: *X86RegisterInfo, MF: *MachineFunct
     }
     if self.Is64Bit {
         let mut IsSwiftCC: bool = Subtarget.getTargetLowering().supportSwiftError() && F.getAttributes().hasAttrSomewhere(SwiftError, null);
-        if IsSwiftCC {}
-        if self.IsWin64 || self.IsUEFI64 {}
+        if IsSwiftCC {
+            if self.IsWin64 {
+                return if HasEGPR { CSR_Win64_APX_SwiftError_SaveList } else { CSR_Win64_SwiftError_SaveList };
+            }
+            return CSR_64_SwiftError_SaveList;
+        }
+        if self.IsWin64 || self.IsUEFI64 {
+            if HasSSE {
+                return if HasEGPR { CSR_Win64_APX_SaveList } else { CSR_Win64_SaveList };
+            }
+            return CSR_Win64_NoSSE_SaveList;
+        }
+        if CallsEHReturn {
+            return CSR_64EHRet_SaveList;
+        }
+        return CSR_64_SaveList;
     }
+    return if CallsEHReturn { CSR_32EHRet_SaveList } else { CSR_32_SaveList };
 }
 
-fn X86RegisterInfo::getIPRACSRegs(self: *X86RegisterInfo, MF: *MachineFunction) -> *MCPhysReg {}
+fn X86RegisterInfo::getIPRACSRegs(self: *X86RegisterInfo, MF: *MachineFunction) -> *MCPhysReg {
+    return if self.Is64Bit { CSR_IPRA_64_SaveList } else { CSR_IPRA_32_SaveList };
+}
 
 fn X86RegisterInfo::getCalleeSavedRegsViaCopy(self: *X86RegisterInfo, MF: *MachineFunction) -> *MCPhysReg {
     assert!(MF, "Invalid MachineFunction pointer.");
+    if MF.getFunction().getCallingConv() == CXX_FAST_TLS && MF.getInfo().isSplitCSR() {
+        return CSR_64_CXX_TLS_Darwin_ViaCopy_SaveList;
+    }
     return null;
 }
 
 fn X86RegisterInfo::getCallPreservedMask(self: *X86RegisterInfo, MF: *MachineFunction, CC: ID) -> *u32 {
-    let mut Subtarget: *X86Subtarget = MF;
+    let mut Subtarget: *X86Subtarget = MF.getSubtarget();
     let mut HasSSE: bool = Subtarget.hasSSE1();
     let mut HasAVX: bool = Subtarget.hasAVX();
     let mut HasAVX512: bool = Subtarget.hasAVX512();
-    let mut HasEGPR: bool = Subtarget()();
+    let mut HasEGPR: bool = Subtarget.hasEGPR();
     match CC {
         GHC => {
             HiPE;
         },
         AnyReg => {
-            
+            if HasAVX {
+                return CSR_64_AllRegs_AVX_RegMask;
+            }
         },
         PreserveMost => {
-            
+            if self.IsWin64 {
+                return if HasEGPR { CSR_Win64_APX_RT_MostRegs_RegMask } else { CSR_Win64_RT_MostRegs_RegMask };
+            }
         },
         PreserveAll => {
-            
+            if HasAVX {
+                return CSR_64_RT_AllRegs_AVX_RegMask;
+            }
         },
         PreserveNone => {
-            
+            return CSR_64_NoneRegs_RegMask;
         },
         CXX_FAST_TLS => {
-            
+            if self.Is64Bit {
+                return CSR_64_TLS_Darwin_RegMask;
+            }
         },
         Intel_OCL_BI => {
+            if HasAVX512 && self.IsWin64 {
+                return if HasEGPR { CSR_Win64_APX_Intel_OCL_BI_AVX512_RegMask } else { CSR_Win64_Intel_OCL_BI_AVX512_RegMask };
+            }
+            if HasAVX512 && self.Is64Bit {
+                return CSR_64_Intel_OCL_BI_AVX512_RegMask;
+            }
+            if HasAVX && self.IsWin64 {
+                return if HasEGPR { CSR_Win64_APX_Intel_OCL_BI_AVX_RegMask } else { CSR_Win64_Intel_OCL_BI_AVX_RegMask };
+            }
+            if HasAVX && self.Is64Bit {
+                return CSR_64_Intel_OCL_BI_AVX_RegMask;
+            }
+            if !HasAVX && !self.IsWin64 && self.Is64Bit {
+                return CSR_64_Intel_OCL_BI_RegMask;
+            }
             break;
         },
         X86_RegCall => {
             if self.Is64Bit {
-                if self.IsWin64 {}
+                if self.IsWin64 {
+                    if HasSSE {
+                        return if HasEGPR { CSR_Win64_APX_RegCall_RegMask } else { CSR_Win64_RegCall_RegMask };
+                    }
+                    return CSR_Win64_RegCall_NoSSE_RegMask;
+                }
+                return if HasSSE { CSR_SysV64_RegCall_RegMask } else { CSR_SysV64_RegCall_NoSSE_RegMask };
             }
         },
         CFGuard_Check => {
-            if self.Is64Bit {}
+            if self.Is64Bit {
+                if HasSSE {
+                    return if HasEGPR { CSR_Win64_APX_CFGuard_Check_RegMask } else { CSR_Win64_CFGuard_Check_RegMask };
+                }
+                return CSR_Win64_CFGuard_Check_NoSSE_RegMask;
+            }
         },
         Cold => {
-            
+            if self.Is64Bit {
+                return CSR_64_MostRegs_RegMask;
+            }
         },
         Win64 => {
-            
+            return if HasEGPR { CSR_Win64_APX_RegMask } else { CSR_Win64_RegMask };
         },
         SwiftTail => {
-            
+            if !self.Is64Bit {
+                return CSR_32_RegMask;
+            }
         },
         X86_64_SysV => {
-            
+            return CSR_64_RegMask;
         },
         X86_INTR => {
-            if self.Is64Bit {}
+            if self.Is64Bit {
+                if HasAVX512 {
+                    return CSR_64_AllRegs_AVX512_RegMask;
+                }
+                if HasAVX {
+                    return CSR_64_AllRegs_AVX_RegMask;
+                }
+                if HasSSE {
+                    return CSR_64_AllRegs_RegMask;
+                }
+                return CSR_64_AllRegs_NoSSE_RegMask;
+            }
         },
         _ => {
             break;
@@ -207,157 +372,234 @@ fn X86RegisterInfo::getCallPreservedMask(self: *X86RegisterInfo, MF: *MachineFun
     if self.Is64Bit {
         let mut F: *Function = MF.getFunction();
         let mut IsSwiftCC: bool = Subtarget.getTargetLowering().supportSwiftError() && F.getAttributes().hasAttrSomewhere(SwiftError, null);
-        if IsSwiftCC {}
+        if IsSwiftCC {
+            if self.IsWin64 {
+                return if HasEGPR { CSR_Win64_APX_SwiftError_RegMask } else { CSR_Win64_SwiftError_RegMask };
+            }
+            return CSR_64_SwiftError_RegMask;
+        }
+        if self.IsWin64 || self.IsUEFI64 {
+            return if HasEGPR { CSR_Win64_APX_RegMask } else { CSR_Win64_RegMask };
+        }
+        return CSR_64_RegMask;
     }
+    return CSR_32_RegMask;
 }
 
-fn X86RegisterInfo::getNoPreservedMask(self: *X86RegisterInfo) -> *u32 {}
+fn X86RegisterInfo::getNoPreservedMask(self: *X86RegisterInfo) -> *u32 {
+    return CSR_NoRegs_RegMask;
+}
 
-fn X86RegisterInfo::getDarwinTLSCallPreservedMask(self: *X86RegisterInfo) -> *u32 {}
+fn X86RegisterInfo::getDarwinTLSCallPreservedMask(self: *X86RegisterInfo) -> *u32 {
+    return CSR_64_TLS_Darwin_RegMask;
+}
 
 fn X86RegisterInfo::getReservedRegs(self: *X86RegisterInfo, MF: *MachineFunction) -> BitVector {
-    let mut Reserved: BitVector = getNumRegs();
+    let mut Reserved: BitVector = BitVector { Bits: self.getNumRegs(), Size: false };
     let mut TFI: *X86FrameLowering = getFrameLowering(MF);
-    Reserved;
-    Reserved;
-    Reserved;
-    Reserved;
-    let mut ST: *mut auto = MF;
-    if ST()() {
-        if ST()() {} else {}
+    Reserved.set(FPCW);
+    Reserved.set(FPSW);
+    Reserved.set(MXCSR);
+    for SubReg in self.subregs_inclusive(RSP) {
+        Reserved.set(SubReg);
+    }
+    Reserved.set(SSP);
+    let mut ST: *X86Subtarget = MF.getSubtarget();
+    if ST.hasUserReservedRegisters() {
+        if ST.is64Bit() {
+            for let mut Reg: u32 = R8; Reg <= R15; Reg += 1 {
+                if ST.isRegisterReservedByUser(Reg) {
+                    for SubReg in self.subregs_inclusive(Reg) {
+                        Reserved.set(SubReg);
+                    }
+                }
+            }
+            if ST.hasEGPR() {
+                for let mut Reg: u32 = R16; Reg <= R31; Reg += 1 {
+                    if ST.isRegisterReservedByUser(Reg) {
+                        for SubReg in self.subregs_inclusive(Reg) {
+                            Reserved.set(SubReg);
+                        }
+                    }
+                }
+            }
+        } else {
+            if ST.isRegisterReservedByUser(EDI) {
+                for SubReg in self.sub_and_superregs_inclusive(EDI) {
+                    Reserved.set(SubReg);
+                }
+            }
+        }
+    }
+    for SubReg in self.subregs_inclusive(RIP) {
+        Reserved.set(SubReg);
     }
     if TFI.hasFP(MF) || MF.framePointerIsReserved() {
-        if MF() {
+        if MF.getInfo().getFPClobberedByInvoke() {
             MF.getContext().reportError(SMLoc {}, "Frame pointer clobbered by function invoke is not supported.");
+        }
+        for SubReg in self.subregs_inclusive(RBP) {
+            Reserved.set(SubReg);
         }
     }
     if self.hasBasePointer(MF) {
-        if MF() {
+        if MF.getInfo().getBPClobberedByInvoke() {
             MF.getContext().reportError(SMLoc {}, "Stack realignment in presence of dynamic allocas is not supported with this calling convention.");
         }
-        let mut BasePtr: Register = Register { Reg: getX86SubSuperRegister(self.getBaseRegister().operator MCRegister(), 64, false) };
+        let mut BasePtr: Register = getX86SubSuperRegister(self.getBaseRegister().operator MCRegister(), 64, false);
+        for SubReg in self.subregs_inclusive(BasePtr.operator MCRegister()) {
+            Reserved.set(SubReg);
+        }
     }
-    Reserved;
-    Reserved;
-    Reserved;
-    Reserved;
-    Reserved;
-    Reserved;
+    Reserved.set(CS);
+    Reserved.set(SS);
+    Reserved.set(DS);
+    Reserved.set(ES);
+    Reserved.set(FS);
+    Reserved.set(GS);
     for let mut n: u32 = 0; n != 8; n += 1 {
-        Reserved;
+        Reserved.set(ST0 + n);
     }
-    if ST()() || operator!() {
+    if ST.useSoftFloat() || !ST.hasX87() {
         for let mut n: u32 = 0; n != 7; n += 1 {
-            Reserved;
+            Reserved.set(FP0 + n);
         }
     }
     if !self.Is64Bit {
-        Reserved;
-        Reserved;
-        Reserved;
-        Reserved;
-        Reserved;
-        Reserved;
-        Reserved;
-        Reserved;
+        Reserved.set(SIL);
+        Reserved.set(DIL);
+        Reserved.set(BPL);
+        Reserved.set(SPL);
+        Reserved.set(SIH);
+        Reserved.set(DIH);
+        Reserved.set(BPH);
+        Reserved.set(SPH);
         for let mut n: u32 = 0; n != 8; n += 1 {
-            for let mut AI: MCRegAliasIterator = zeroed(); AI.isValid(); operator(AI) {
+            for let mut AI: MCRegAliasIterator = MCRegAliasIterator { R8 + n, self, true }; AI.isValid(); operator(AI) {
                 Reserved.set(operator(AI).operator unsigned int());
             }
-            for let mut AI: MCRegAliasIterator = zeroed(); AI.isValid(); operator(AI) {
+            for let mut AI: MCRegAliasIterator = MCRegAliasIterator { XMM8 + n, self, true }; AI.isValid(); operator(AI) {
                 Reserved.set(operator(AI).operator unsigned int());
             }
         }
     }
-    if !self.Is64Bit || operator!(MF()) {
+    if !self.Is64Bit || !MF.getSubtarget().hasAVX512() {
         for let mut n: u32 = 0; n != 16; n += 1 {
-            for let mut AI: MCRegAliasIterator = zeroed(); AI.isValid(); operator(AI) {
+            for let mut AI: MCRegAliasIterator = MCRegAliasIterator { XMM16 + n, self, true }; AI.isValid(); operator(AI) {
                 Reserved.set(operator(AI).operator unsigned int());
             }
         }
     }
-    if !self.Is64Bit || operator!(MF()) {
-        Reserved;
+    if !self.Is64Bit || !MF.getSubtarget().hasEGPR() {
+        Reserved.set(R16, R31WH + 1);
     }
-    if MF.exposesReturnsTwice() && () {
+    if MF.exposesReturnsTwice() && ST.isTargetWin64() {
         let mut NumReservedCSRs: u32 = 0;
-        for let mut Reg: u32 = 0; ; Reg += 1 {
-            if isCalleeSavedPhysReg(Reg, MF) {
+        for let mut Reg: u32 = R16; Reg <= R31; Reg += 1 {
+            if self.isCalleeSavedPhysReg(Reg, MF) {
                 NumReservedCSRs += 1;
+                for SubReg in self.subregs_inclusive(Reg) {
+                    Reserved.set(SubReg);
+                }
             }
         }
-        if NumReservedCSRs && MF.len >  && !MF.getRegInfo().reservedRegsFrozen() {
+        if NumReservedCSRs && MF.len > SetjmpCSRWarningThreshold.operator unsigned int() && !MF.getRegInfo().reservedRegsFrozen() {
             MF.getContext().reportWarning(SMLoc {}, NumReservedCSRs + " callee-saved register(s) reserved due to setjmp in '" + MF.getName() + "'; this may impact performance in large functions");
         }
     }
     if MF.getFunction().getCallingConv() == GRAAL {
-        for let mut AI: MCRegAliasIterator = zeroed(); AI.isValid(); operator(AI) {
+        for let mut AI: MCRegAliasIterator = MCRegAliasIterator { R14, self, true }; AI.isValid(); operator(AI) {
             Reserved.set(operator(AI).operator unsigned int());
         }
-        for let mut AI: MCRegAliasIterator = zeroed(); AI.isValid(); operator(AI) {
-            Reserved.set(operator(AI).operator unsigned int());
-        }
-    }
-    if MF() {
-        for let mut AI: MCRegAliasIterator = zeroed(); AI.isValid(); operator(AI) {
-            Reserved.set(operator(AI).operator unsigned int());
-        }
-        for let mut AI: MCRegAliasIterator = zeroed(); AI.isValid(); operator(AI) {
-            Reserved.set(operator(AI).operator unsigned int());
-        }
-        for let mut AI: MCRegAliasIterator = zeroed(); AI.isValid(); operator(AI) {
+        for let mut AI: MCRegAliasIterator = MCRegAliasIterator { R15, self, true }; AI.isValid(); operator(AI) {
             Reserved.set(operator(AI).operator unsigned int());
         }
     }
-    (((operator!(operator!((checkAllSuperRegsMarked(Reserved))))) || (_wassert(L"checkAllSuperRegsMarked(Reserved, {X86::SIL, X86::DIL, X86::BPL, X86::SPL, X86::SIH, X86::DIH, X86::BPH, X86::SPH})", L"llvm\\lib\\Target\\X86\\X86RegisterInfo.cpp", (681) as u32) , 0)) as void);
+    if MF.getSubtarget().isLFI() {
+        for let mut AI: MCRegAliasIterator = MCRegAliasIterator { R11, self, true }; AI.isValid(); operator(AI) {
+            Reserved.set(operator(AI).operator unsigned int());
+        }
+        for let mut AI: MCRegAliasIterator = MCRegAliasIterator { R14, self, true }; AI.isValid(); operator(AI) {
+            Reserved.set(operator(AI).operator unsigned int());
+        }
+        for let mut AI: MCRegAliasIterator = MCRegAliasIterator { R15, self, true }; AI.isValid(); operator(AI) {
+            Reserved.set(operator(AI).operator unsigned int());
+        }
+    }
+    assert!(self.checkAllSuperRegsMarked(Reserved, [SIL, DIL, BPL, SPL, SIH, DIH, BPH, SPH]);
     return Reserved;
 }
 
 fn X86RegisterInfo::getNumSupportedRegs(self: *X86RegisterInfo, MF: *MachineFunction) -> u32 {
-    let mut ST: *X86Subtarget = MF;
+    let mut ST: *X86Subtarget = MF.getSubtarget();
+    if ST.hasEGPR() {
+        return NUM_TARGET_REGS;
+    }
+    if ST.hasAMXTILE() {
+        return TMM7 + 1;
+    }
+    if ST.hasAVX512() {
+        return K6_K7 + 1;
+    }
+    if ST.hasAVX() {
+        return YMM15 + 1;
+    }
+    return R15WH + 1;
 }
 
 fn X86RegisterInfo::isArgumentRegister(self: *X86RegisterInfo, MF: *MachineFunction, Reg: MCRegister) -> bool {
-    let mut ST: *X86Subtarget = MF;
+    let mut ST: *X86Subtarget = MF.getSubtarget();
     let mut TRI: *TargetRegisterInfo = *ST.getRegisterInfo();
     let mut IsSubReg: Closure_1 = Closure_1 { TRI: &mut TRI };
+    if !ST.is64Bit() {
+        return any_of(SmallVector<MCRegister> { [EAX, ECX, EDX] }, Closure_2 { IsSubReg: &mut IsSubReg, Reg: &mut Reg }) || (ST.hasMMX() && VR64RegClass.contains(Reg));
+    }
     let mut CC: ID = MF.getFunction().getCallingConv();
-    if CC == X86_64_SysV && IsSubReg(Reg) {
+    if CC == X86_64_SysV && IsSubReg.call(RAX, Reg) {
         return true;
     }
-    if any_of(Closure_2 { IsSubReg: &mut IsSubReg, Reg: &mut Reg }) {
+    if any_of(SmallVector<MCRegister> { [RDX, RCX, R8, R9] }, Closure_3 { IsSubReg: &mut IsSubReg, Reg: &mut Reg }) {
         return true;
     }
-    if CC != Win64 && any_of(Closure_3 { IsSubReg: &mut IsSubReg, Reg: &mut Reg }) {
+    if CC != Win64 && any_of(SmallVector<MCRegister> { [RDI, RSI] }, Closure_4 { IsSubReg: &mut IsSubReg, Reg: &mut Reg }) {
         return true;
     }
-    if ST.hasSSE1() && any_of(Closure_4 { IsSubReg: &mut IsSubReg, Reg: &mut Reg }) {
+    if ST.hasSSE1() && any_of(SmallVector<MCRegister> { [XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7] }, Closure_5 { IsSubReg: &mut IsSubReg, Reg: &mut Reg }) {
         return true;
     }
+    return self.isArgumentRegister(MF, Reg);
 }
 
 fn X86RegisterInfo::isFixedRegister(self: *X86RegisterInfo, MF: *MachineFunction, PhysReg: MCRegister) -> bool {
-    let mut ST: *X86Subtarget = MF;
+    let mut ST: *X86Subtarget = MF.getSubtarget();
     let mut TRI: *TargetRegisterInfo = *ST.getRegisterInfo();
-    if TRI.isSuperOrSubRegisterEq {
+    if TRI.isSuperOrSubRegisterEq(RSP, PhysReg) {
         return true;
     }
-    let mut TFI: *X86FrameLowering = operator*(getFrameLowering(MF));
-    if TFI.hasFP(MF) && TRI.isSuperOrSubRegisterEq {
+    let mut TFI: *X86FrameLowering = *getFrameLowering(MF);
+    if TFI.hasFP(MF) && TRI.isSuperOrSubRegisterEq(RBP, PhysReg) {
         return true;
     }
+    return self.isFixedRegister(MF, PhysReg);
 }
 
-fn X86RegisterInfo::isTileRegisterClass(self: *X86RegisterInfo, RC: *TargetRegisterClass) -> bool {}
+fn X86RegisterInfo::isTileRegisterClass(self: *X86RegisterInfo, RC: *TargetRegisterClass) -> bool {
+    return RC.getID() == TILERegClassID;
+}
 
-fn X86RegisterInfo::adjustStackMapLiveOutMask(self: *X86RegisterInfo, Mask: *mut u32) {}
+fn X86RegisterInfo::adjustStackMapLiveOutMask(self: *X86RegisterInfo, Mask: *mut u32) {
+    assert!(!(Mask[EFLAGS / 32] & (1 << (EFLAGS % 32))), "EFLAGS are not live-out from a patchpoint.");
+    for Reg in [EFLAGS, RIP, EIP, IP] {
+        Mask[Reg / 32] &= ~(1 << (Reg % 32));
+    }
+}
 
 fn CantUseSP(MFI: *MachineFrameInfo) -> bool {
     return MFI.hasVarSizedObjects() || MFI.hasOpaqueSPAdjustment();
 }
 
 fn X86RegisterInfo::hasBasePointer(self: *X86RegisterInfo, MF: *MachineFunction) -> bool {
-    let mut X86FI: *X86MachineFunctionInfo = MF;
+    let mut X86FI: *X86MachineFunctionInfo = MF.getInfo();
     if X86FI.getStackPtrSaveMI() != null {
         return false;
     }
@@ -365,30 +607,30 @@ fn X86RegisterInfo::hasBasePointer(self: *X86RegisterInfo, MF: *MachineFunction)
         return true;
     }
     let mut MFI: *MachineFrameInfo = MF.getFrameInfo();
-    if operator!() {
+    if !EnableBasePointer {
         return false;
     }
-    let mut CantUseFP: bool = hasStackRealignment(MF);
+    let mut CantUseFP: bool = self.hasStackRealignment(MF);
     return CantUseFP && CantUseSP(MFI);
 }
 
 fn X86RegisterInfo::canRealignStack(self: *X86RegisterInfo, MF: *MachineFunction) -> bool {
-    if  {
+    if !self.canRealignStack(MF) {
         return false;
     }
     let mut MFI: *MachineFrameInfo = MF.getFrameInfo();
     let mut MRI: *MachineRegisterInfo = &mut MF.getRegInfo();
-    if !MRI.canReserveReg(MCRegister { Reg: self.FramePtr }) {
+    if !MRI.canReserveReg(self.FramePtr) {
         return false;
     }
     if CantUseSP(MFI) {
-        return MRI.canReserveReg(MCRegister { Reg: self.BasePtr });
+        return MRI.canReserveReg(self.BasePtr);
     }
     return true;
 }
 
 fn X86RegisterInfo::shouldRealignStack(self: *X86RegisterInfo, MF: *MachineFunction) -> bool {
-    if  {
+    if self.shouldRealignStack(MF) {
         return true;
     }
     return !self.Is64Bit && MF.getFunction().getCallingConv() == X86_INTR;
@@ -397,27 +639,30 @@ fn X86RegisterInfo::shouldRealignStack(self: *X86RegisterInfo, MF: *MachineFunct
 fn tryOptimizeLEAtoMOV(II: iterator) -> bool {
     let mut MI: *mut MachineInstr = operator(II);
     let mut Opc: u32 = operator(II).getOpcode();
-    if  {
+    if (Opc != LEA32r && Opc != LEA64r && Opc != LEA64_32r) || MI.getOperand(2).getImm() != 1 || MI.getOperand(3).getReg() != NoRegister || MI.getOperand(4).getImm() != 0 || MI.getOperand(5).getReg() != NoRegister {
         return false;
     }
     let mut BasePtr: Register = MI.getOperand(1).getReg();
-    if  {
-        BasePtr = Register { Reg: getX86SubSuperRegister(BasePtr.operator MCRegister(), 32, false) };
+    if Opc == LEA64_32r {
+        BasePtr = getX86SubSuperRegister(BasePtr.operator MCRegister(), 32, false);
     }
     let mut NewDestReg: Register = MI.getOperand(0).getReg();
-    let mut TII: *X86InstrInfo = MI.getParent().getParent()();
-    TII.copyPhysReg(*MI.getParent(), iterator { II }, MI.getDebugLoc(), NewDestReg, BasePtr, MI.getOperand(1).isKill(), false, false);
+    let mut TII: *X86InstrInfo = MI.getParent().getParent().getSubtarget().getInstrInfo();
+    TII.copyPhysReg(*MI.getParent(), II, MI.getDebugLoc(), NewDestReg, BasePtr, MI.getOperand(1).isKill(), false, false);
     MI.eraseFromParent();
     return true;
 }
 
 fn isFuncletReturnInstr(MI: *mut MachineInstr) -> bool {
     match MI.getOpcode() {
+        CATCHRET => {
+            CLEANUPRET;
+        },
         _ => {
             return false;
         },
     }
-    llvm_unreachable_internal("impossible", "llvm\\lib\\Target\\X86\\X86RegisterInfo.cpp", 886);
+    llvm_unreachable_internal("impossible", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86RegisterInfo.cpp", 886);
 }
 
 fn X86RegisterInfo::eliminateFrameIndex(self: *X86RegisterInfo, II: iterator, FIOperandNum: u32, BaseReg: Register, FIOffset: i32) {
@@ -457,9 +702,9 @@ fn X86RegisterInfo::eliminateFrameIndex(self: *X86RegisterInfo, II: iterator, SP
     let mut TFI: *X86FrameLowering = getFrameLowering(MF);
     let mut FrameIndex: i32 = MI.getOperand(FIOperandNum).getIndex();
     let mut FIOffset: i64 = 0;
-    let mut BasePtr: Register = Register { Reg: 0 };
+    let mut BasePtr: Register = 0;
     if MI.isReturn(AnyInBundle) {
-        (((operator!(operator!(((operator!(hasStackRealignment(MF)) || MF.getFrameInfo().isFixedObjectIndex(FrameIndex)) && "Return instruction can only reference SP relative frame objects")))) || (_wassert(L"(!hasStackRealignment(MF) || MF.getFrameInfo().isFixedObjectIndex(FrameIndex)) && \"Return instruction can only reference SP relative frame objects\"", L"llvm\\lib\\Target\\X86\\X86RegisterInfo.cpp", (947) as u32) , 0)) as void);
+        assert!((!self.hasStackRealignment(MF) || MF.getFrameInfo().isFixedObjectIndex(FrameIndex)), "Return instruction can only reference SP relative frame objects");
         FIOffset = TFI.getFrameIndexReferenceSP(MF, FrameIndex, BasePtr, 0).getFixed();
     } else if TFI.Is64Bit && (MBB.isEHFuncletEntry() || IsEHFuncletEpilogue) {
         FIOffset = TFI.getWin64EHFrameIndexRef(MF, FrameIndex, BasePtr);
@@ -473,8 +718,8 @@ fn X86RegisterInfo::eliminateFrameIndex(self: *X86RegisterInfo, II: iterator, SP
         return false;
     }
     let mut MachineBasePtr: Register = BasePtr;
-    if  {
-        MachineBasePtr = Register { Reg: getX86SubSuperRegister(BasePtr.operator MCRegister(), 64, false) };
+    if Opc == LEA64_32r && GR32RegClass.contains(BasePtr.operator MCRegister()) {
+        MachineBasePtr = getX86SubSuperRegister(BasePtr.operator MCRegister(), 64, false);
     }
     MI.getOperand(FIOperandNum).ChangeToRegister(MachineBasePtr, false, false, false, false, false, false);
     if BasePtr == self.StackPtr {
@@ -487,7 +732,7 @@ fn X86RegisterInfo::eliminateFrameIndex(self: *X86RegisterInfo, II: iterator, SP
         return false;
     }
     if MI.getOperand(FIOperandNum + 3).isImm() {
-        let mut TII: *X86InstrInfo = MF();
+        let mut TII: *X86InstrInfo = MF.getSubtarget().getInstrInfo();
         let mut DL: *DebugLoc = MI.getDebugLoc();
         let mut Imm: i64 = MI.getOperand(FIOperandNum + 3).getImm();
         let mut Offset: i64 = FIOffset + Imm;
@@ -495,26 +740,26 @@ fn X86RegisterInfo::eliminateFrameIndex(self: *X86RegisterInfo, II: iterator, SP
         if self.Is64Bit && !FitsIn32Bits {
             assert!(RS, "RegisterScavenger was NULL");
             RS.enterBasicBlockEnd(MBB);
-            RS(next(II));
-            let mut ScratchReg: Register = RS.scavengeRegisterBackwards;
+            RS.backward(next(II, 1));
+            let mut ScratchReg: Register = RS.scavengeRegisterBackwards(GR64RegClass, II, false, 0, true);
             assert!(ScratchReg != 0, "scratch reg was 0");
             RS.setRegUsed(ScratchReg, getAll());
-            BuildMI(MBB, II, DL, TII(), ScratchReg)(Offset);
+            BuildMI(MBB, II, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(MOV64ri), ScratchReg).addImm(Offset);
             MI.getOperand(FIOperandNum + 3).setImm(0);
-            if  {
+            if MI.getOperand(FIOperandNum + 2).getReg() == NoRegister {
                 MI.getOperand(FIOperandNum + 2).setReg(ScratchReg);
             } else {
-                BuildMI(MBB, II, DL, TII(), ScratchReg)(MachineBasePtr)(1)(ScratchReg)(0);
+                BuildMI(MBB, II, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(LEA64r), ScratchReg).addReg(MachineBasePtr, RegState {}, 0).addImm(1).addReg(ScratchReg, RegState {}, 0).addImm(0).addReg(NoRegister, RegState {}, 0);
                 MI.getOperand(FIOperandNum).setReg(ScratchReg);
             }
             return false;
         }
         if !self.Is64Bit && !FitsIn32Bits {
             MI.emitGenericError("64-bit offset calculated but target is 32-bit");
-            BuildMI(MBB, MBBI, DL, TII());
+            BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(TRAP));
             return false;
         }
-        if Offset != 0 || !tryOptimizeLEAtoMOV(iterator { II }) {
+        if Offset != 0 || !tryOptimizeLEAtoMOV(II) {
             MI.getOperand(FIOperandNum + 3).ChangeToImmediate(Offset, 0);
         }
     } else {
@@ -538,15 +783,7 @@ fn X86RegisterInfo::findDeadCallerSavedReg(self: *X86RegisterInfo, MBB: *mut Mac
             return 0;
         },
         PATCHABLE_RET => {
-            let mut LRU: LiveRegUnits = *self;
-            LRU.addLiveOuts(MBB);
-            LRU.stepBackward(operator(MBBI));
-            let mut RC: *TargetRegisterClass = null;
-            for Reg in RC {
-                if LRU.available(Reg) && !MRI.isReserved(Reg) {
-                    return Reg.operator unsigned int();
-                }
-            }
+            RET;
         },
     }
     return 0;
@@ -554,23 +791,23 @@ fn X86RegisterInfo::findDeadCallerSavedReg(self: *X86RegisterInfo, MBB: *mut Mac
 
 fn X86RegisterInfo::getFrameRegister(self: *X86RegisterInfo, MF: *MachineFunction) -> Register {
     let mut TFI: *X86FrameLowering = getFrameLowering(MF);
-    return Register { Reg: if TFI.hasFP(MF) { self.FramePtr } else { self.StackPtr } };
+    return if TFI.hasFP(MF) { self.FramePtr } else { self.StackPtr };
 }
 
 fn X86RegisterInfo::getPtrSizedFrameRegister(self: *X86RegisterInfo, MF: *MachineFunction) -> Register {
-    let mut Subtarget: *X86Subtarget = MF;
+    let mut Subtarget: *X86Subtarget = MF.getSubtarget();
     let mut FrameReg: Register = self.getFrameRegister(MF);
     if Subtarget.isTarget64BitILP32() {
-        FrameReg = Register { Reg: getX86SubSuperRegister(FrameReg.operator MCRegister(), 32, false) };
+        FrameReg = getX86SubSuperRegister(FrameReg.operator MCRegister(), 32, false);
     }
     return FrameReg;
 }
 
 fn X86RegisterInfo::getPtrSizedStackRegister(self: *X86RegisterInfo, MF: *MachineFunction) -> Register {
-    let mut Subtarget: *X86Subtarget = MF;
+    let mut Subtarget: *X86Subtarget = MF.getSubtarget();
     let mut StackReg: Register = self.getStackRegister();
     if Subtarget.isTarget64BitILP32() {
-        StackReg = Register { Reg: getX86SubSuperRegister(StackReg.operator MCRegister(), 32, false) };
+        StackReg = getX86SubSuperRegister(StackReg.operator MCRegister(), 32, false);
     }
     return StackReg;
 }
@@ -579,12 +816,21 @@ fn getTileShape(VirtReg: Register, VRM: *mut VirtRegMap, MRI: *MachineRegisterIn
     if VRM.hasShape(VirtReg) {
         return VRM.getShape(VirtReg);
     }
-    let mut Def: *MachineOperand = operator*(MRI()(VirtReg));
+    let mut Def: *MachineOperand = operator(MRI.def_begin(VirtReg));
     let mut MI: *mut MachineInstr = Def.getParent();
     let mut OpCode: u32 = MI.getOpcode();
     match OpCode {
         _ => {
-            llvm_unreachable_internal("Unexpected machine instruction on tile register!", "llvm\\lib\\Target\\X86\\X86RegisterInfo.cpp", 1131);
+            llvm_unreachable_internal("Unexpected machine instruction on tile register!", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86RegisterInfo.cpp", 1131);
+        },
+        COPY => {
+            let mut SrcReg: Register = MI.getOperand(1).getReg();
+            let mut Shape: ShapeT = getTileShape(SrcReg, VRM, MRI);
+            VRM.assignVirt2Shape(VirtReg, Shape);
+            return Shape;
+        },
+        PTILELOADDV => {
+            PTILELOADDT1V;
         },
     }
 }
@@ -592,32 +838,56 @@ fn getTileShape(VirtReg: Register, VRM: *mut VirtRegMap, MRI: *MachineRegisterIn
 fn X86RegisterInfo::getRegAllocationHints(self: *X86RegisterInfo, VirtReg: Register, Order: ArrayRef<MCPhysReg>, Hints: *mut SmallSetVector<MCPhysReg, 16>, MF: *MachineFunction, VRM: *VirtRegMap, Matrix: *LiveRegMatrix) -> bool {
     let mut MRI: *MachineRegisterInfo = &mut MF.getRegInfo();
     let mut RC: *TargetRegisterClass = *MRI.getRegClass(VirtReg);
-    let mut BaseImplRetVal: bool = false;
-    let mut ST: *X86Subtarget = MF;
+    let mut BaseImplRetVal: bool = self.getRegAllocationHints(VirtReg, Order, Hints, MF, VRM, Matrix);
+    let mut ST: *X86Subtarget = MF.getSubtarget();
     let mut TRI: *TargetRegisterInfo = *ST.getRegisterInfo();
     let mut ID: u32 = RC.getID();
     if !VRM {
         return BaseImplRetVal;
     }
-    if  {
-        if DisableRegAllocNDDHints() || operator!(ST()()) || !TRI.isGeneralPurposeRegisterClass(&mut RC) {
+    if ID != TILERegClassID {
+        if DisableRegAllocNDDHints || !ST.hasNDD() || !TRI.isGeneralPurposeRegisterClass(&mut RC) {
             return BaseImplRetVal;
         }
-        let mut TwoAddrHints: i32 = 0;
-        let mut TryAddNDDHint: Closure_5 = Closure_5 { VRM: &mut VRM, MRI: &mut MRI, Hints: &mut Hints };
+        let mut TwoAddrHints: SmallSet<unsigned int, 4> = SmallSet<unsigned int, 4> {};
+        let mut TryAddNDDHint: Closure_6 = Closure_6 { VRM: &mut VRM, MRI: &mut MRI, Hints: &mut Hints, TwoAddrHints: &mut TwoAddrHints };
+        for MO in MRI.reg_nodbg_operands(VirtReg) {
+            let mut MI: *MachineInstr = *MO.getParent();
+            if !getNonNDVariant(MI.getOpcode()) {
+                continue;
+            }
+            let mut OpIdx: u32 = MI.getOperandNo(&mut MO);
+            if OpIdx == 0 {
+                assert!(MI.getOperand(1).isReg();
+                TryAddNDDHint.call(MI.getOperand(1));
+                if MI.isCommutable(IgnoreBundle) {
+                    assert!(MI.getOperand(2).isReg();
+                    TryAddNDDHint.call(MI.getOperand(2));
+                }
+            } else if OpIdx == 1 {
+                TryAddNDDHint.call(MI.getOperand(0));
+            } else if MI.isCommutable(IgnoreBundle) && OpIdx == 2 {
+                TryAddNDDHint.call(MI.getOperand(0));
+            }
+        }
         for OrderReg in Order {
-            if TwoAddrHints()(OrderReg) {
-                Hints()(OrderReg);
+            if TwoAddrHints.count(OrderReg) {
+                Hints.insert(OrderReg);
             }
         }
         return BaseImplRetVal;
     }
     let mut VirtShape: ShapeT = getTileShape(VirtReg, VRM, MRI);
-    let mut AddHint: Closure_6 = Closure_6 { Matrix: &mut Matrix, Hints: &mut Hints, VRM: &mut VRM, MRI: &mut MRI, VirtShape: &mut VirtShape };
-    let mut CopyHints: SmallSetVector<MCPhysReg, 16> = zeroed();
-    Hints()();
+    let mut AddHint: Closure_7 = Closure_7 { Matrix: &mut Matrix, Hints: &mut Hints, VRM: &mut VRM, MRI: &mut MRI, VirtShape: &mut VirtShape };
+    let mut CopyHints: SmallSetVector<MCPhysReg, 16> = Hints;
+    Hints.clear();
+    for Hint in CopyHints {
+        if RC.contains(Hint) && !MRI.isReserved(Hint) {
+            AddHint.call(Hint);
+        }
+    }
     for PhysReg in Order {
-        if operator!((PhysReg)) && RC.contains(MCRegister { Reg: PhysReg }) && !MRI.isReserved(MCRegister { Reg: PhysReg }) {
+        if !CopyHints.contains(PhysReg) && RC.contains(PhysReg) && !MRI.isReserved(PhysReg) {
             AddHint.call(PhysReg);
         }
     }
@@ -626,6 +896,9 @@ fn X86RegisterInfo::getRegAllocationHints(self: *X86RegisterInfo, VirtReg: Regis
         if DebugFlag && isCurrentDebugType("tile-hint", 1) {
             {
                 dbgs() << "Hints for virtual register " << format_hex(VirtReg.operator unsigned int(), 8, false) << "\n";
+                for Hint in Hints {
+                    dbgs() << "tmm" << Hint << ",";
+                }
                 dbgs() << "\n";
             }
         }
@@ -640,6 +913,24 @@ fn X86RegisterInfo::constrainRegClassToNonRex2(self: *X86RegisterInfo, RC: *Targ
         _ => {
             return RC;
         },
+        GR8RegClassID => {
+            return &mut GR8_NOREX2RegClass;
+        },
+        GR16RegClassID => {
+            return &mut GR16_NOREX2RegClass;
+        },
+        GR32RegClassID => {
+            return &mut GR32_NOREX2RegClass;
+        },
+        GR64RegClassID => {
+            return &mut GR64_NOREX2RegClass;
+        },
+        GR32_NOSPRegClassID => {
+            return &mut GR32_NOREX2_NOSPRegClass;
+        },
+        GR64_NOSPRegClassID => {
+            return &mut GR64_NOREX2_NOSPRegClass;
+        },
     }
 }
 
@@ -648,12 +939,15 @@ fn X86RegisterInfo::isNonRex2RegClass(self: *X86RegisterInfo, RC: *TargetRegiste
         _ => {
             return false;
         },
+        GR8_NOREX2RegClassID => {
+            GR16_NOREX2RegClassID;
+        },
     }
 }
 
 fn X86RegisterInfo::getCSRFirstUseCost(self: *X86RegisterInfo, MF: *MachineFunction) -> u32 {
-    let mut ST: *X86Subtarget = MF;
-    if ST()() && ST()() {
+    let mut ST: *X86Subtarget = MF.getSubtarget();
+    if ST.is64Bit() && ST.hasPPX() {
         return 0;
     }
     return 2;
@@ -663,44 +957,62 @@ struct Closure_1 {
     TRI: *mut TargetRegisterInfo,
 }
 
-unsafe fn Closure_1::call(self: *mut Closure_1, RegA: MCRegister, RegB: MCRegister) -> auto {}
+unsafe fn Closure_1::call(self: *mut Closure_1, RegA: MCRegister, RegB: MCRegister) -> bool {
+        return (*self.TRI).isSuperOrSubRegisterEq(RegA, RegB);
+    }
 
 struct Closure_2 {
-    IsSubReg: *mut (lambda at p:\Goraw\llvm-project\llvm\lib\Target\X86\X86RegisterInfo.cpp:719:19),
+    IsSubReg: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86RegisterInfo.cpp:719:19),
     Reg: *mut MCRegister,
 }
 
-unsafe fn Closure_2::call(self: *mut Closure_2, RegA: *mut MCRegister) -> auto {}
+unsafe fn Closure_2::call(self: *mut Closure_2, RegA: *mut MCRegister) -> bool {
+            return (*self.IsSubReg).call(RegA, (*self.Reg));
+        }
 
 struct Closure_3 {
-    IsSubReg: *mut (lambda at p:\Goraw\llvm-project\llvm\lib\Target\X86\X86RegisterInfo.cpp:719:19),
+    IsSubReg: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86RegisterInfo.cpp:719:19),
     Reg: *mut MCRegister,
 }
 
-unsafe fn Closure_3::call(self: *mut Closure_3, RegA: *mut MCRegister) -> auto {}
+unsafe fn Closure_3::call(self: *mut Closure_3, RegA: *mut MCRegister) -> bool {
+        return (*self.IsSubReg).call(RegA, (*self.Reg));
+    }
 
 struct Closure_4 {
-    IsSubReg: *mut (lambda at p:\Goraw\llvm-project\llvm\lib\Target\X86\X86RegisterInfo.cpp:719:19),
+    IsSubReg: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86RegisterInfo.cpp:719:19),
     Reg: *mut MCRegister,
 }
 
-unsafe fn Closure_4::call(self: *mut Closure_4, RegA: *mut MCRegister) -> auto {}
+unsafe fn Closure_4::call(self: *mut Closure_4, RegA: *mut MCRegister) -> bool {
+        return (*self.IsSubReg).call(RegA, (*self.Reg));
+    }
 
 struct Closure_5 {
+    IsSubReg: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86RegisterInfo.cpp:719:19),
+    Reg: *mut MCRegister,
+}
+
+unsafe fn Closure_5::call(self: *mut Closure_5, RegA: *mut MCRegister) -> bool {
+        return (*self.IsSubReg).call(RegA, (*self.Reg));
+    }
+
+struct Closure_6 {
     VRM: *mut *VirtRegMap,
     MRI: *mut *MachineRegisterInfo,
     Hints: *mut SmallSetVector<MCPhysReg, 16>,
+    TwoAddrHints: *mut SmallSet<unsigned int, 4>,
 }
 
-unsafe fn Closure_5::call(self: *mut Closure_5, MO: *MachineOperand) {
+unsafe fn Closure_6::call(self: *mut Closure_6, MO: *MachineOperand) {
             let mut Reg: Register = MO.getReg();
-            let mut PhysReg: Register = if Reg.isPhysical() { Reg } else { Register { Reg: (*self.VRM).getPhys(Reg) } };
-            if PhysReg.operator unsigned int() && !(*self.MRI).isReserved(PhysReg.operator MCRegister()) && operator!((*self.Hints)()(PhysReg)) {
-                TwoAddrHints()(PhysReg);
+            let mut PhysReg: Register = if Reg.isPhysical() { Reg } else { (*self.VRM).getPhys(Reg) };
+            if PhysReg.operator unsigned int() && !(*self.MRI).isReserved(PhysReg.operator MCRegister()) && !(*self.Hints).contains(PhysReg.operator unsigned int()) {
+                (*self.TwoAddrHints).insert(PhysReg.operator unsigned int());
             }
         }
 
-struct Closure_6 {
+struct Closure_7 {
     Matrix: *mut *LiveRegMatrix,
     Hints: *mut SmallSetVector<MCPhysReg, 16>,
     VRM: *mut *VirtRegMap,
@@ -708,14 +1020,14 @@ struct Closure_6 {
     VirtShape: *mut ShapeT,
 }
 
-unsafe fn Closure_6::call(self: *mut Closure_6, PhysReg: MCPhysReg) {
+unsafe fn Closure_7::call(self: *mut Closure_7, PhysReg: MCPhysReg) {
         let mut VReg: Register = (*self.Matrix).getOneVReg(PhysReg);
         if VReg == NoRegister {
-            (*self.Hints)()(PhysReg);
+            (*self.Hints).insert(PhysReg);
             return;
         }
         let mut PhysShape: ShapeT = getTileShape(VReg, (*self.VRM), (*self.MRI));
         if PhysShape == (*self.VirtShape) {
-            (*self.Hints)()(PhysReg);
+            (*self.Hints).insert(PhysReg);
         }
     }

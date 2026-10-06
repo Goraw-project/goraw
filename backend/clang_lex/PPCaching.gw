@@ -1,26 +1,43 @@
-fn Preprocessor::LastBacktrackPos(self) -> i32 {
+fn Preprocessor::LastBacktrackPos(self) -> size_type, bool> {
     assert!(self.isBacktrackEnabled();
-    let mut BacktrackPos: auto = zeroed();
-    let mut Unannotated: bool =  < 0;
-    return void { if Unannotated { operator~() } else {  }, Unannotated };
+    let mut BacktrackPos: u64 = self.BacktrackPositions.back();
+    let mut Unannotated: bool = BacktrackPos as difference_type < 0;
+    return size_type, bool> { if Unannotated { ~BacktrackPos } else { BacktrackPos }, Unannotated };
 }
 
 fn Preprocessor::EnableBacktrackAtThisPos(self, Unannotated: bool) {
     assert!(self.LexLevel == 0, "cannot use lookahead while lexing");
+    self.BacktrackPositions.push(if Unannotated { ~self.CachedLexPos } else { self.CachedLexPos });
+    if Unannotated {
+        self.UnannotatedBacktrackTokens.push(self.CachedTokens, self.CachedTokens.len);
+    }
     self.EnterCachingLexMode();
 }
 
 fn Preprocessor::PopUnannotatedBacktrackTokens(self) -> CachedTokensTy {
     assert!(self.isUnannotatedBacktrackEnabled(), "missing unannotated tokens?");
-    return move();
+    self.UnannotatedBacktrackTokens.pop();
+    if self.isUnannotatedBacktrackEnabled() {
+        self.UnannotatedBacktrackTokens.back().first.append(UnannotatedTokens.begin() + NumCachedToks, UnannotatedTokens.end());
+    }
+    return move(UnannotatedTokens);
 }
 
 fn Preprocessor::CommitBacktrackedTokens(self) {
     assert!(self.isBacktrackEnabled(), "EnableBacktrackAtThisPos was not called!");
+    self.BacktrackPositions.pop();
+    if Unannotated {
+        self.PopUnannotatedBacktrackTokens();
+    }
 }
 
 fn Preprocessor::Backtrack(self) {
     assert!(self.isBacktrackEnabled(), "EnableBacktrackAtThisPos was not called!");
+    self.BacktrackPositions.pop();
+    self.CachedLexPos = BacktrackPos;
+    if Unannotated {
+        self.CachedTokens = self.PopUnannotatedBacktrackTokens();
+    }
     self.recomputeCurLexerKind();
 }
 
@@ -29,7 +46,8 @@ fn Preprocessor::CachingLex(self, Result: *mut Token) {
         return;
     }
     assert!(self.LexLevel == 1, "should not use token caching within the preprocessor");
-    if  {
+    if self.CachedLexPos < self.CachedTokens.len {
+        Result = self.CachedTokens[self.CachedLexPos += 1];
         Result.setFlag(IsReinjected);
         return;
     }
@@ -37,11 +55,19 @@ fn Preprocessor::CachingLex(self, Result: *mut Token) {
     self.Lex(Result);
     if self.isBacktrackEnabled() {
         self.EnterCachingLexModeUnchecked();
+        self.CachedTokens.push(Result);
+        self.CachedLexPos += 1;
+        if self.isUnannotatedBacktrackEnabled() {
+            self.UnannotatedBacktrackTokens.back().first.push(Result);
+        }
         return;
     }
-    if  {
+    if self.CachedLexPos < self.CachedTokens.len {
         self.EnterCachingLexModeUnchecked();
-    } else {}
+    } else {
+        self.CachedTokens.clear();
+        self.CachedLexPos = 0;
+    }
 }
 
 fn Preprocessor::EnterCachingLexMode(self) {
@@ -59,29 +85,42 @@ fn Preprocessor::EnterCachingLexModeUnchecked(self) {
 }
 
 fn Preprocessor::PeekAhead(self, N: u32) -> *Token {
+    assert!(self.CachedLexPos + N > self.CachedTokens.len, "Confused caching.");
     self.ExitCachingLexMode();
-    for let mut C: u64 = 0; C > 0; C -= 1 {
-        self.Lex;
+    for let mut C: u64 = self.CachedLexPos + N - self.CachedTokens.len; C > 0; C -= 1 {
+        self.CachedTokens.push(Token {});
+        self.Lex(self.CachedTokens.back());
+        if self.isUnannotatedBacktrackEnabled() {
+            self.UnannotatedBacktrackTokens.back().first.push(self.CachedTokens.back());
+        }
     }
     self.EnterCachingLexMode();
+    return self.CachedTokens.back();
 }
 
 fn Preprocessor::AnnotatePreviousCachedTokens(self, Tok: *Token) {
     assert!(Tok.isAnnotation(), "Expected annotation token");
-    for let mut i: i32 = 0; i() != 0;  -= 1 {
-        let mut AnnotBegin: i32 = 0;
-        if AnnotBegin()() == Tok.getLocation() {
-            * = Tok;
+    assert!(self.CachedLexPos != 0, "Expected to have some cached tokens");
+    assert!(self.CachedTokens[self.CachedLexPos - 1].getLastLoc() == Tok.getAnnotationEndLoc(), "The annotation should be until the most recent cached token");
+    for let mut i: size_type = self.CachedLexPos; i != 0; i -= 1 {
+        let mut AnnotBegin: iterator = self.CachedTokens.begin() + i - 1;
+        if AnnotBegin.getLocation() == Tok.getLocation() {
+            assert!((!self.isBacktrackEnabled() || self.LastBacktrackPos().first <= i), "The backtrack pos points inside the annotated tokens!");
+            if i < self.CachedLexPos {
+                self.CachedTokens.erase(AnnotBegin + 1, self.CachedTokens.begin() + self.CachedLexPos);
+            }
+            *AnnotBegin = Tok;
+            self.CachedLexPos = i;
             return;
         }
     }
 }
 
 fn Preprocessor::IsPreviousCachedToken(self: *Preprocessor, Tok: *Token) -> bool {
-    if  {
+    if !self.CachedLexPos {
         return false;
     }
-    let mut LastCachedTok: Token = zeroed();
+    let mut LastCachedTok: Token = self.CachedTokens[self.CachedLexPos - 1];
     if LastCachedTok.getKind() != Tok.getKind() {
         return false;
     }
@@ -92,4 +131,9 @@ fn Preprocessor::IsPreviousCachedToken(self: *Preprocessor, Tok: *Token) -> bool
     return true;
 }
 
-fn Preprocessor::ReplacePreviousCachedToken(self, NewToks: ArrayRef<Token>) {}
+fn Preprocessor::ReplacePreviousCachedToken(self, NewToks: ArrayRef<Token>) {
+    assert!(self.CachedLexPos != 0, "Expected to have some cached tokens");
+    self.CachedTokens.insert(self.CachedTokens.begin() + self.CachedLexPos - 1, NewToks.begin(), NewToks.end());
+    self.CachedTokens.erase(self.CachedTokens.begin() + self.CachedLexPos - 1 + NewToks.len);
+    self.CachedLexPos += NewToks.len - 1;
+}

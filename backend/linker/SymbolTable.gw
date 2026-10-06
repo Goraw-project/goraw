@@ -13,12 +13,12 @@ fn forceLazy(s: *mut Symbol) {
     s.pendingArchiveLoad = true;
     match s.kind() {
         LazyArchiveKind => {
-            let mut l: *mut auto = cast(s);
-            l()();
+            let mut l: *mut LazyArchive = cast(s);
+            l.file.addMember(l.sym);
             break;
         },
         LazyObjectKind => {
-            let mut file: *mut InputFile = cast(s);
+            let mut file: *mut InputFile = cast(s).file;
             if !file.lazy {
                 return;
             }
@@ -27,12 +27,12 @@ fn forceLazy(s: *mut Symbol) {
             break;
         },
         LazyDLLSymbolKind => {
-            let mut l: *mut auto = cast(s);
-            l()();
+            let mut l: *mut LazyDLLSymbol = cast(s);
+            l.file.makeImport(l.sym);
             break;
         },
         _ => {
-            llvm_unreachable_internal("symbol passed to forceLazy is not a LazyArchive or LazyObject", "lld\\COFF\\SymbolTable.cpp", 74);
+            llvm_unreachable_internal("symbol passed to forceLazy is not a LazyArchive or LazyObject", "P:/Goraw/llvm-project/lld/COFF/SymbolTable.cpp", 74);
         },
     }
 }
@@ -40,117 +40,202 @@ fn forceLazy(s: *mut Symbol) {
 fn getSymbol(sc: *mut SectionChunk, addr: u32) -> *mut Symbol {
     let mut candidate: *mut DefinedRegular = null;
     for s in sc.file.getSymbols() {
-        let mut d: *mut auto = dyn_cast_or_null(s);
-        if operator!() || operator!() ||  != sc.file || () != sc || () > addr || (candidate && () < candidate.getValue()) {
+        let mut d: *mut DefinedRegular = dyn_cast_or_null(s);
+        if !d || !d.data || d.file != sc.file || d.getChunk() != sc || d.getValue() > addr || (candidate && d.getValue() < candidate.getValue()) {
             continue;
         }
-        candidate = ;
+        candidate = d;
     }
     return candidate;
 }
 
-fn getSymbolLocations(file: *mut BitcodeFile) -> i32 {
+fn getSymbolLocations(file: *mut BitcodeFile) -> []str {
     let mut res: str = "\n>>> referenced by ";
     let mut source: str = operator(file.obj).getSourceFileName();
     if !source.is_empty() {
-        res(source + "\n>>>               ");
+        operator(res, source + "\n>>>               ");
     }
     operator(res, toString(file));
-    return void { res };
+    return []str { [res], basic_string<char>> {} };
 }
 
 fn getFileLineDwarf(c: *SectionChunk, addr: u32) -> pair<StringRef, uint32_t>> {
-    let mut optionalLineInfo: optional<DILineInfo> = zeroed();
-    if operator!() {
-        return nullopt();
+    let mut optionalLineInfo: optional<DILineInfo> = c.file.getDILineInfo(addr, c.getSectionNumber() - 1);
+    if !optionalLineInfo {
+        return nullopt;
     }
-    let mut lineInfo: *DILineInfo = operator*();
+    let mut lineInfo: *DILineInfo = operator(optionalLineInfo);
     if lineInfo.FileName == BadString {
-        return nullopt();
+        return nullopt;
     }
     return make_pair(saver().save(lineInfo.FileName), lineInfo.Line);
 }
 
 fn getFileLine(c: *SectionChunk, addr: u32) -> pair<StringRef, uint32_t>> {
-    let mut fileLine: pair<StringRef, uint32_t>> = zeroed();
-    return ;
+    let mut fileLine: pair<StringRef, uint32_t>> = getFileLineCodeView(c, addr);
+    if !fileLine && c.file.symtab.ctx.config.mingw {
+        fileLine = getFileLineDwarf(c, addr);
+    }
+    return fileLine;
 }
 
-fn getSymbolLocations(file: *mut ObjFile, symIndex: u32, maxStrings: u64) -> i32 {
-    let mut locations: i32 = 0;
+fn getSymbolLocations(file: *mut ObjFile, symIndex: u32, maxStrings: u64) -> string>, size_t> {
+    let mut locations: []Location = []Location {};
     let mut numLocations: u64 = 0;
     for c in file.getChunks() {
-        let mut sc: *mut auto = dyn_cast(c);
-        if operator!() {
+        let mut sc: *mut SectionChunk = dyn_cast(c);
+        if !sc {
             continue;
+        }
+        for r in sc.getRelocs() {
+            if r.SymbolTableIndex.operator unsigned int() != symIndex {
+                continue;
+            }
+            numLocations += 1;
+            if locations.len >= maxStrings {
+                continue;
+            }
+            let mut fileLine: pair<StringRef, uint32_t>> = getFileLine(sc, r.VirtualAddress.operator unsigned int());
+            let mut sym: *mut Symbol = getSymbol(sc, r.VirtualAddress.operator unsigned int());
+            if fileLine {
+                locations.push(Location { sym, operator(fileLine) });
+            } else if sym {
+                locations.push(Location { sym, pair<StringRef, uint32_t> { "", 0 } });
+            }
         }
     }
     if maxStrings == 0 {
-        return make_pair(numLocations);
+        return make_pair([]str {}, numLocations);
     }
     if numLocations == 0 {
-        return make_pair(1);
+        return make_pair([]str { ["\n>>> referenced by " + toString(file)], basic_string<char>> {} }, 1);
     }
-    let mut symbolLocations: i32 = locations()();
+    let mut symbolLocations: []str = []str { locations.len, basic_string<char>> {} };
     let mut i: u64 = 0;
-    return make_pair(numLocations);
-}
-
-fn getSymbolLocations(file: *mut ObjFile, symIndex: u32) -> i32 {
-    return getSymbolLocations(file, symIndex, 18446744073709551615);
-}
-
-fn getSymbolLocations(file: *mut InputFile, symIndex: u32, maxStrings: u64) -> i32 {
-    if  {
-        return getSymbolLocations(symIndex, maxStrings);
-    }
-    if  {
-        let mut symbolLocations: i32 = getSymbolLocations();
-        let mut numLocations: u64 = ();
-        if symbolLocations()() > maxStrings {
-            symbolLocations()(maxStrings);
+    for loc in locations {
+        let mut os: raw_string_ostream = symbolLocations[i += 1];
+        os << "\n>>> referenced by ";
+        if !loc.fileLine.first.is_empty() {
+            os << loc.fileLine.first << ":" << loc.fileLine.second << "\n>>>               ";
         }
-        return make_pair(numLocations);
+        os << toString(file);
+        if loc.sym {
+            os << ":(" << toString(file.symtab.ctx, *loc.sym) << ')';
+        }
     }
-    llvm_unreachable_internal("unsupported file type passed to getSymbolLocations", "lld\\COFF\\SymbolTable.cpp", 202);
-    return make_pair(0 as u64);
+    return make_pair(symbolLocations, numLocations);
+}
+
+fn getSymbolLocations(file: *mut ObjFile, symIndex: u32) -> []str {
+    return getSymbolLocations(file, symIndex, 18446744073709551615).first;
+}
+
+fn getSymbolLocations(file: *mut InputFile, symIndex: u32, maxStrings: u64) -> string>, size_t> {
+    if dyn_cast(file) {
+        o;
+    } else {
+        return getSymbolLocations(o, symIndex, maxStrings);
+    }
+    if dyn_cast(file) {
+        b;
+    } else {
+        let mut symbolLocations: []str = getSymbolLocations(b);
+        let mut numLocations: u64 = symbolLocations.len;
+        if symbolLocations.len > maxStrings {
+            symbolLocations.resize(maxStrings);
+        }
+        return make_pair(symbolLocations, numLocations);
+    }
+    llvm_unreachable_internal("unsupported file type passed to getSymbolLocations", "P:/Goraw/llvm-project/lld/COFF/SymbolTable.cpp", 202);
+    return make_pair([]str {}, 0 as u64);
 }
 
 struct UndefinedDiag {
     sym: *mut Symbol,
-    files: i32,
+    files: []File,
 }
 
 fn SymbolTable::reportUndefinedSymbol(self, undefDiag: *UndefinedDiag) {
     let mut diag: COFFSyncStream = errorOrWarn(self.ctx);
-    diag << "undefined symbol: ";
+    diag << "undefined symbol: " << self.printSymbol(undefDiag.sym);
     let mut maxUndefReferences: u64 = 3;
     let mut numDisplayedRefs: u64 = 0;
     let mut numRefs: u64 = 0;
+    for ref in undefDiag.files {
+        numRefs += totalLocations;
+        numDisplayedRefs += symbolLocations.len;
+        for s in symbolLocations {
+            diag << s;
+        }
+    }
     if numDisplayedRefs < numRefs {
-        diag << "\n>>> referenced " << " more times";
+        diag << "\n>>> referenced " << numRefs - numDisplayedRefs << " more times";
     }
     let mut name: str = undefDiag.sym.getName();
     if name.consume_front("__imp_") {
         let mut imp: *mut Symbol = self.find(name);
         if imp && imp.isLazy() {
-            diag << "\nNOTE: a relevant symbol '" << "' is available in " << toString(imp.getFile()) << " but cannot be used because it is not an import library.";
+            diag << "\nNOTE: a relevant symbol '" << imp.getName() << "' is available in " << toString(imp.getFile()) << " but cannot be used because it is not an import library.";
         }
     }
 }
 
 fn SymbolTable::loadMinGWSymbols(self) {
-    let mut undefs: i32 = 0;
+    let mut undefs: []*mut Symbol = []*mut Symbol {};
     for i in self.symMap {
         let mut sym: *mut Symbol = i.second;
-        let mut undef: *mut auto = dyn_cast(sym);
-        if operator!() {
+        let mut undef: *mut Undefined = dyn_cast(sym);
+        if !undef {
             continue;
         }
-        if undef()() {
+        if undef.getWeakAlias() {
             continue;
         }
-        undefs()(sym);
+        undefs.push(sym);
+    }
+    for sym in undefs {
+        let mut undef: *mut Undefined = dyn_cast(sym);
+        if !undef {
+            continue;
+        }
+        if undef.getWeakAlias() {
+            continue;
+        }
+        let mut name: str = undef.getName();
+        if self.machine == I386 && self.ctx.config.stdcallFixup {
+            let mut origName: str = name;
+            let mut baseName: str = name;
+            baseName = ltrim1(baseName, "_@");
+            baseName = baseName[0..0 + baseName.find('@', 0)];
+            let mut newName: str = ("_" + baseName);
+            let mut l: *mut Symbol = null;
+            if newName != origName && (l = self.find(newName)) != null {
+                if l.isLazy() && !l.pendingArchiveLoad {
+                    Log(self.ctx) << "Loading lazy " << l.getName() << " from " << l.getFile().getName() << " for stdcall fixup";
+                    forceLazy(l);
+                }
+                if l.isLazy() || isa(l) {
+                    if self.ctx.config.warnStdcallFixup {
+                        Warn(self.ctx) << "Resolving " << origName << " by linking to " << newName;
+                    } else {
+                        Log(self.ctx) << "Resolving " << origName << " by linking to " << newName;
+                    }
+                    undef.setWeakAlias(l, false);
+                    continue;
+                }
+            }
+        }
+        if self.ctx.config.autoImport {
+            if name.starts_with("__imp_") {
+                continue;
+            }
+            let mut l: *mut Symbol = self.find(("__imp_" + name));
+            if !l || l.pendingArchiveLoad || !l.isLazy() {
+                continue;
+            }
+            Log(self.ctx) << "Loading lazy " << l.getName() << " from " << l.getFile().getName() << " for automatic import";
+            forceLazy(l);
+        }
     }
 }
 
@@ -168,13 +253,13 @@ fn SymbolTable::handleMinGWAutomaticImport(self, sym: *mut Symbol, name: str) ->
     }
     let mut impSize: u64 = 0;
     if isa(imp) {
-        Log(self.ctx) << "Automatically importing " << " from " << cast(imp)();
+        Log(self.ctx) << "Automatically importing " << name << " from " << cast(imp).getDLLName();
         impSize = ;
     } else if isa(imp) {
-        Log(self.ctx) << "Automatically importing " << " from " << toString(cast(imp));
+        Log(self.ctx) << "Automatically importing " << name << " from " << toString(cast(imp).file);
         impSize = ;
     } else {
-        Warn(self.ctx) << "unable to automatically import " << " from " << imp.getName() << " from " << cast(imp) << "; unexpected symbol type";
+        Warn(self.ctx) << "unable to automatically import " << name << " from " << imp.getName() << " from " << cast(imp).file << "; unexpected symbol type";
         return false;
     }
     sym.replaceKeepingName(imp, impSize);
@@ -183,7 +268,7 @@ fn SymbolTable::handleMinGWAutomaticImport(self, sym: *mut Symbol, name: str) ->
     if refptr && refptr.getChunk().getSize() == self.ctx.config.wordsize {
         let mut sc: *mut SectionChunk = dyn_cast_or_null(refptr.getChunk());
         if sc && sc.getRelocs().len == 1 && operator(sc.symbols().begin()) == sym {
-            Log(self.ctx) << "Replacing .refptr." << " with " << imp.getName();
+            Log(self.ctx) << "Replacing .refptr." << name << " with " << imp.getName();
             refptr.getChunk().live = false;
             refptr.replaceKeepingName(imp, impSize);
         }
@@ -191,27 +276,50 @@ fn SymbolTable::handleMinGWAutomaticImport(self, sym: *mut Symbol, name: str) ->
     return true;
 }
 
-fn SymbolTable::reportProblemSymbols(self, undefs: *SmallPtrSetImpl<Symbol *>, localImports: *i32, needBitcodeFiles: bool) {
-    if undefs()() && (operator!() || ()) {
+fn SymbolTable::reportProblemSymbols(self, undefs: *SmallPtrSetImpl<Symbol *>, localImports: *DenseMap<Symbol *, Symbol *>, needBitcodeFiles: bool) {
+    if undefs.is_empty() && (!localImports || localImports.is_empty()) {
         return;
     }
-    let mut undefDiags: i32 = 0;
-    let mut firstDiag: i32 = 0;
-    let mut processFile: Closure_1 = Closure_1 { undefs: &mut undefs, cap_1: self };
+    for b in self.ctx.config.gcroot {
+        if undefs.contains(b) {
+            errorOrWarn(self.ctx) << "<root>: undefined symbol: " << self.printSymbol(b);
+        }
+        if localImports {
+            if localImports.lookup(b) {
+                imp;
+            } else {
+                Warn(self.ctx) << "<root>: locally defined symbol imported: " << self.printSymbol(imp) << " (defined in " << toString(imp.getFile()) << ") [LNK4217]";
+            }
+        }
+    }
+    let mut undefDiags: []UndefinedDiag = []UndefinedDiag {};
+    let mut firstDiag: DenseMap<Symbol *, int> = DenseMap<Symbol *, int> {};
+    let mut processFile: Closure_1 = Closure_1 { undefs: &mut undefs, firstDiag: &mut firstDiag, undefDiags: &mut undefDiags, localImports: &mut localImports, cap_4: self };
+    for file in self.ctx.objFileInstances {
+        processFile.call(file, file.getSymbols());
+    }
+    if needBitcodeFiles {
+        for file in self.bitcodeFileInstances {
+            processFile.call(file, file.getSymbols());
+        }
+    }
+    for undefDiag in undefDiags {
+        self.reportUndefinedSymbol(undefDiag);
+    }
 }
 
 fn SymbolTable::reportUnresolvable(self) {
-    let mut undefs: SmallPtrSet<Symbol *, 8> = zeroed();
+    let mut undefs: SmallPtrSet<Symbol *, 8> = SmallPtrSet<Symbol *, 8> {};
     for i in self.symMap {
         let mut sym: *mut Symbol = i.second;
-        let mut undef: *mut auto = dyn_cast(sym);
-        if operator!() || sym.deferUndefined {
+        let mut undef: *mut Undefined = dyn_cast(sym);
+        if !undef || sym.deferUndefined {
             continue;
         }
-        if undef()() {
+        if undef.getWeakAlias() {
             continue;
         }
-        let mut name: str = ();
+        let mut name: str = undef.getName();
         if name.starts_with("__imp_") {
             let mut imp: *mut Symbol = self.find(name[strlen("__imp_")..strlen("__imp_") + npos]);
             if dyn_cast_or_null(imp) {
@@ -227,27 +335,27 @@ fn SymbolTable::reportUnresolvable(self) {
         if self.ctx.config.autoImport && self.impSymbol(name) {
             continue;
         }
-        undefs()(sym);
+        undefs.insert(sym);
     }
-    self.reportProblemSymbols(null, true);
+    self.reportProblemSymbols(undefs, null, true);
 }
 
-fn SymbolTable::resolveRemainingUndefines(self, aliases: *mut i32) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Resolve remaining undefined symbols" };
-    let mut undefs: SmallPtrSet<Symbol *, 8> = zeroed();
-    let mut localImports: i32 = 0;
+fn SymbolTable::resolveRemainingUndefines(self, aliases: *mut []*mut Undefined) {
+    let mut timeScope: TimeTraceScope = "Resolve remaining undefined symbols";
+    let mut undefs: SmallPtrSet<Symbol *, 8> = SmallPtrSet<Symbol *, 8> {};
+    let mut localImports: DenseMap<Symbol *, Symbol *> = DenseMap<Symbol *, Symbol *> {};
     for i in self.symMap {
         let mut sym: *mut Symbol = i.second;
-        let mut undef: *mut auto = dyn_cast(sym);
-        if operator!() {
+        let mut undef: *mut Undefined = dyn_cast(sym);
+        if !undef {
             continue;
         }
         if !sym.isUsedInRegularObj {
             continue;
         }
-        let mut name: str = ();
-        if undef()() {
-            aliases()();
+        let mut name: str = undef.getName();
+        if undef.getWeakAlias() {
+            aliases.push(undef);
             continue;
         }
         if name.starts_with("__imp_") {
@@ -268,8 +376,8 @@ fn SymbolTable::resolveRemainingUndefines(self, aliases: *mut i32) {
             }
             if imp {
                 replaceSymbol(sym, self.ctx, name, imp);
-                self.localImportChunks(cast(sym)());
-                localImports()[sym] = imp;
+                self.localImportChunks.push(cast(sym).getChunk());
+                localImports[sym] = imp;
                 continue;
             }
         }
@@ -282,14 +390,14 @@ fn SymbolTable::resolveRemainingUndefines(self, aliases: *mut i32) {
         if self.ctx.config.forceUnresolved {
             replaceSymbol(sym, self.ctx, name, 0);
         }
-        undefs()(sym);
+        undefs.insert(sym);
     }
-    self.reportProblemSymbols(if self.ctx.config.warnLocallyDefinedImported { operator&() } else { null }, false);
+    self.reportProblemSymbols(undefs, if self.ctx.config.warnLocallyDefinedImported { &mut localImports } else { null }, false);
 }
 
 fn SymbolTable::insert(self, name: str) -> pair<Symbol *, bool> {
     let mut inserted: bool = false;
-    let mut sym: *mut *mut Symbol = self.symMap[CachedHashStringRef { name }];
+    let mut sym: *mut *mut Symbol = self.symMap[name];
     if !sym {
         sym = make() as *mut Symbol;
         sym.isUsedInRegularObj = false;
@@ -300,20 +408,20 @@ fn SymbolTable::insert(self, name: str) -> pair<Symbol *, bool> {
             self.expSymbols.push(sym);
         }
     }
-    return void { sym, inserted };
+    return pair<Symbol *, bool> { sym, inserted };
 }
 
 fn SymbolTable::insert(self, name: str, file: *mut InputFile) -> pair<Symbol *, bool> {
-    let mut result: pair<Symbol *, bool> = zeroed();
+    let mut result: pair<Symbol *, bool> = self.insert(name);
     if !file || !isa(file) {
-        result() = true;
+        result.first.isUsedInRegularObj = true;
     }
-    return ;
+    return result;
 }
 
 fn SymbolTable::initializeLoadConfig(self) {
-    let mut sym: auto = dyn_cast_or_null(self.findUnderscore("_load_config_used"));
-    if operator!() {
+    let mut sym: CastReturnType = dyn_cast_or_null(self.findUnderscore("_load_config_used"));
+    if !sym {
         if self.isEC() {
             Warn(self.ctx) << "EC version of '_load_config_used' is missing";
             return;
@@ -330,12 +438,12 @@ fn SymbolTable::initializeLoadConfig(self) {
         }
         return;
     }
-    let mut sc: *mut SectionChunk = ();
+    let mut sc: *mut SectionChunk = sym.getChunk();
     if !sc.hasData {
         Err(self.ctx) << "_load_config_used points to uninitialized data";
         return;
     }
-    let mut offsetInChunk: u64 = ();
+    let mut offsetInChunk: u64 = sym.getValue();
     if offsetInChunk + 4 > sc.getSize() {
         Err(self.ctx) << "_load_config_used section chunk is too small";
         return;
@@ -348,15 +456,15 @@ fn SymbolTable::initializeLoadConfig(self) {
     }
     let mut expectedAlign: u32 = if self.ctx.config.is64() { 8 } else { 4 };
     if sc.getAlignment() < expectedAlign {
-        Warn(self.ctx) << "'_load_config_used' is misaligned (expected alignment to be " << " bytes, got " << sc.getAlignment() << " instead)";
-    } else if !isAligned(Align { ShiftValue: expectedAlign }, offsetInChunk) {
-        Warn(self.ctx) << "'_load_config_used' is misaligned (section offset is 0x" << utohexstr() << " not aligned to " << expectedAlign << " bytes)";
+        Warn(self.ctx) << "'_load_config_used' is misaligned (expected alignment to be " << expectedAlign << " bytes, got " << sc.getAlignment() << " instead)";
+    } else if !isAligned(expectedAlign, offsetInChunk) {
+        Warn(self.ctx) << "'_load_config_used' is misaligned (section offset is 0x" << utohexstr(sym.getValue()) << " not aligned to " << expectedAlign << " bytes)";
     }
-    self.loadConfigSym = ;
+    self.loadConfigSym = sym;
 }
 
 fn SymbolTable::addEntryThunk(self, from: *mut Symbol, to: *mut Symbol) {
-    self.entryThunks;
+    self.entryThunks.push(Symbol *> { from, to });
 }
 
 fn SymbolTable::addExitThunk(self, from: *mut Symbol, to: *mut Symbol) {
@@ -367,20 +475,65 @@ fn SymbolTable::initializeECThunks(self) {
     if !isArm64EC(self.ctx.config.machine) {
         return;
     }
-    parallelForEach(self.ctx, Closure_3 {});
+    for it in self.entryThunks {
+        let mut to: *mut Defined = it.second.getDefined();
+        if !to {
+            continue;
+        }
+        let mut from: *mut DefinedRegular = dyn_cast_or_null(it.first.getDefined());
+        if !from || !from.getChunk().isCOMDAT() || cast(from).getValue() {
+            Err(self.ctx) << "non COMDAT symbol '" << from.getName() << "' in hybrid map";
+            continue;
+        }
+        from.getChunk().setEntryThunk(to);
+    }
+    for file in self.ctx.importFileInstances {
+        if !file.impchkThunk {
+            continue;
+        }
+        let mut sym: *mut Symbol = self.exitThunks.lookup(file.thunkSym);
+        if !sym {
+            sym = self.exitThunks.lookup(file.impECSym);
+        }
+        if sym {
+            file.impchkThunk.exitThunk = sym.getDefined();
+        }
+    }
+    parallelForEach(self.ctx.objFileInstances, Closure_3 {});
 }
 
-fn SymbolTable::initializeSameAddressThunks(self) {}
+fn SymbolTable::initializeSameAddressThunks(self) {
+    for iter in self.ctx.config.sameAddresses {
+        let mut sym: CastReturnType = dyn_cast_or_null(iter.first.getDefined());
+        if !sym || !sym.isLive() {
+            continue;
+        }
+        let mut nativeSym: CastReturnType = dyn_cast_or_null(iter.second.getDefined());
+        if !nativeSym || !nativeSym.isLive() {
+            continue;
+        }
+        let mut entryThunk: *mut Defined = sym.getChunk().getEntryThunk();
+        if !entryThunk {
+            continue;
+        }
+        let mut symClone: *mut DefinedSynthetic = make(sym.getName(), sym.getChunk(), sym.getValue());
+        let mut nativeSymClone: *mut DefinedSynthetic = make(nativeSym.getName(), nativeSym.getChunk(), nativeSym.getValue());
+        let mut thunk: *mut SameAddressThunkARM64EC = make(nativeSymClone, symClone, entryThunk);
+        self.sameAddressThunks.push(thunk);
+        replaceSymbol(sym, sym.getName(), thunk);
+        replaceSymbol(nativeSym, nativeSym.getName(), thunk);
+    }
+}
 
 fn SymbolTable::addUndefined(self, name: str, f: *mut InputFile, overrideLazy: bool) -> *mut Symbol {
-    if  {
-        replaceSymbol(name);
-        return ;
+    if wasInserted || (s.isLazy() && overrideLazy) {
+        replaceSymbol(s, name);
+        return s;
     }
-    if  {
-        forceLazy();
+    if s.isLazy() {
+        forceLazy(s);
     }
-    return ;
+    return s;
 }
 
 fn SymbolTable::addGCRoot(self, name: str, aliasEC: bool) -> *mut Symbol {
@@ -393,10 +546,10 @@ fn SymbolTable::addGCRoot(self, name: str, aliasEC: bool) -> *mut Symbol {
         if getArm64ECMangledFunctionName(name) {
             mangledName;
         } else {
-            let mut u: auto = dyn_cast(b);
-            if u() && operator!() {
+            let mut u: CastReturnType = dyn_cast(b);
+            if u && !u.weakAlias {
                 let mut t: *mut Symbol = self.addUndefined(saver().save(operator(mangledName)));
-                u()(t, true);
+                u.setWeakAlias(t, true);
             }
         }
     }
@@ -426,10 +579,10 @@ fn SymbolTable::addGCRoot(self, name: str, aliasEC: bool) -> *mut Symbol {
 //     if dyn_cast(sym) {
 //         u;
 //     } else {
-//         return operator!(u) || u;
+//         return !u.weakAlias || u.isAntiDep;
 //     }
-//     let mut lazy: auto = dyn_cast(sym);
-//     return lazy && lazy == f;
+//     let mut lazy: CastReturnType = dyn_cast(sym);
+//     return lazy && lazy.file == f;
 // }
 // ========================================================
 
@@ -438,14 +591,15 @@ fn SymbolTable::addLazyArchive(self, f: *mut ArchiveFile, sym: *Symbol) {
     if self.isEC() && !checkLazyECPair(self, name, f) {
         return;
     }
-    if  {
-        replaceSymbol(f, sym);
+    if wasInserted {
+        replaceSymbol(s, f, sym);
         return;
     }
-    let mut u: *mut auto = dyn_cast();
-    if operator!() || (u() && operator!((self.machine))) ||  {
+    let mut u: *mut Undefined = dyn_cast(s);
+    if !u || (u.weakAlias && !u.isECAlias(self.machine)) || s.pendingArchiveLoad {
         return;
     }
+    s.pendingArchiveLoad = true;
     f.addMember(sym);
 }
 
@@ -454,27 +608,29 @@ fn SymbolTable::addLazyObject(self, f: *mut InputFile, n: str) {
     if self.isEC() && !checkLazyECPair(self, n, f) {
         return;
     }
-    if  {
-        replaceSymbol(f, n);
+    if wasInserted {
+        replaceSymbol(s, f, n);
         return;
     }
-    let mut u: *mut auto = dyn_cast();
-    if operator!() || (u() && operator!((self.machine))) ||  {
+    let mut u: *mut Undefined = dyn_cast(s);
+    if !u || (u.weakAlias && !u.isECAlias(self.machine)) || s.pendingArchiveLoad {
         return;
     }
+    s.pendingArchiveLoad = true;
     f.lazy = false;
     self.ctx.driver.addFile(f);
 }
 
 fn SymbolTable::addLazyDLLSymbol(self, f: *mut DLLFile, sym: *mut Symbol, n: str) {
-    if  {
-        replaceSymbol(f, sym, n);
+    if wasInserted {
+        replaceSymbol(s, f, sym, n);
         return;
     }
-    let mut u: *mut auto = dyn_cast();
-    if operator!() || (u() && operator!((self.machine))) ||  {
+    let mut u: *mut Undefined = dyn_cast(s);
+    if !u || (u.weakAlias && !u.isECAlias(self.machine)) || s.pendingArchiveLoad {
         return;
     }
+    s.pendingArchiveLoad = true;
     f.makeImport(sym);
 }
 
@@ -482,22 +638,25 @@ fn getSourceLocationBitcode(file: *mut BitcodeFile) -> str {
     let mut res: str = "\n>>> defined at ";
     let mut source: str = operator(file.obj).getSourceFileName();
     if !source.is_empty() {
-        res(source + "\n>>>            ");
+        operator(res, source + "\n>>>            ");
     }
     operator(res, toString(file));
     return res;
 }
 
 fn getSourceLocationObj(file: *mut ObjFile, sc: *mut SectionChunk, offset: u32, name: str) -> str {
-    let mut fileLine: pair<StringRef, uint32_t>> = zeroed();
-    if operator!() {
-        fileLine() = file.getVariableLocation;
+    let mut fileLine: pair<StringRef, uint32_t>> = pair<StringRef, uint32_t>> {};
+    if sc {
+        fileLine = getFileLine(sc, offset);
+    }
+    if !fileLine {
+        fileLine = file.getVariableLocation(name);
     }
     let mut res: str = "";
-    let mut os: raw_string_ostream = raw_string_ostream { res };
+    let mut os: raw_string_ostream = res;
     os << "\n>>> defined at ";
-    if fileLine() {
-        os <<  << ":" <<  << "\n>>>            ";
+    if fileLine {
+        os << operator(fileLine).first << ":" << operator(fileLine).second << "\n>>>            ";
     }
     os << toString(file);
     return res;
@@ -507,109 +666,118 @@ fn getSourceLocation(file: *mut InputFile, sc: *mut SectionChunk, offset: u32, n
     if !file {
         return "";
     }
-    if  {
-        return getSourceLocationObj(sc, offset, name);
+    if dyn_cast(file) {
+        o;
+    } else {
+        return getSourceLocationObj(o, sc, offset, name);
     }
-    if  {
-        return getSourceLocationBitcode();
+    if dyn_cast(file) {
+        b;
+    } else {
+        return getSourceLocationBitcode(b);
     }
     return "\n>>> defined at " + toString(file);
 }
 
 fn SymbolTable::reportDuplicate(self, existing: *mut Symbol, newFile: *mut InputFile, newSc: *mut SectionChunk, newSectionOffset: u32) {
     let mut diag: COFFSyncStream = COFFSyncStream { self.ctx, if self.ctx.config.forceMultiple { Warn } else { Err } };
-    diag << "duplicate symbol: ";
+    diag << "duplicate symbol: " << self.printSymbol(existing);
     let mut d: *mut DefinedRegular = dyn_cast(existing);
     if d && isa(d.getFile()) {
-        diag(getSourceLocation(d.getFile(), d.getChunk(), d.getValue(), existing.getName()));
+        diag << getSourceLocation(d.getFile(), d.getChunk(), d.getValue(), existing.getName());
     } else {
-        diag(getSourceLocation(existing.getFile(), null, 0, ""));
+        diag << getSourceLocation(existing.getFile(), null, 0, "");
     }
-    diag(getSourceLocation(newFile, newSc, newSectionOffset, existing.getName()));
+    diag << getSourceLocation(newFile, newSc, newSectionOffset, existing.getName());
 }
 
 fn SymbolTable::addAbsolute(self, n: str, sym: COFFSymbolRef) -> *mut Symbol {
-    if  {
-        replaceSymbol(self.ctx, n, sym);
-    } else if  {
-        if da()() != sym.getValue() {
-            self.reportDuplicate(null);
+    s.isUsedInRegularObj = true;
+    if wasInserted || isa(s) || s.isLazy() {
+        replaceSymbol(s, self.ctx, n, sym);
+    } else if dyn_cast(s) {
+        da;
+    } else {
+        if da.getVA() != sym.getValue() {
+            self.reportDuplicate(s, null, null, 0);
         }
-    } else if operator!(isa()) {
-        self.reportDuplicate(null);
     }
-    return ;
+    return s;
 }
 
 fn SymbolTable::addAbsolute(self, n: str, va: u64) -> *mut Symbol {
-    if  {
-        replaceSymbol(self.ctx, n, va);
-    } else if  {
-        if da()() != va {
-            self.reportDuplicate(null);
+    s.isUsedInRegularObj = true;
+    if wasInserted || isa(s) || s.isLazy() {
+        replaceSymbol(s, self.ctx, n, va);
+    } else if dyn_cast(s) {
+        da;
+    } else {
+        if da.getVA() != va {
+            self.reportDuplicate(s, null, null, 0);
         }
-    } else if operator!(isa()) {
-        self.reportDuplicate(null);
     }
-    return ;
+    return s;
 }
 
 fn SymbolTable::addSynthetic(self, n: str, c: *mut Chunk) -> *mut Symbol {
-    if  {
-        replaceSymbol(n, c);
-    } else if operator!(isa()) {
-        self.reportDuplicate(null);
+    s.isUsedInRegularObj = true;
+    if wasInserted || isa(s) || s.isLazy() {
+        replaceSymbol(s, n, c);
+    } else if !isa(s) {
+        self.reportDuplicate(s, null, null, 0);
     }
-    return ;
+    return s;
 }
 
 fn SymbolTable::addRegular(self, f: *mut InputFile, n: str, sym: *coff_symbol_generic, c: *mut SectionChunk, sectionOffset: u32, isWeak: bool) -> *mut Symbol {
-    if  {
-        replaceSymbol(f, n, false, true, sym, c, isWeak);
+    if wasInserted || !isa(s) || s.isWeak {
+        replaceSymbol(s, f, n, false, true, sym, c, isWeak);
     } else if !isWeak {
-        self.reportDuplicate(f, c, sectionOffset);
+        self.reportDuplicate(s, f, c, sectionOffset);
     }
-    return ;
+    return s;
 }
 
 fn SymbolTable::addComdat(self, f: *mut InputFile, n: str, sym: *coff_symbol_generic) -> pair<DefinedRegular *, bool> {
-    if  {
-        replaceSymbol(f, n, true, true, sym, null);
-        return void { cast(), true };
+    if wasInserted || !isa(s) {
+        replaceSymbol(s, f, n, true, true, sym, null);
+        return pair<DefinedRegular *, bool> { cast(s), true };
     }
-    let mut existingSymbol: *mut auto = cast();
-    if operator!() {
-        self.reportDuplicate(f);
+    let mut existingSymbol: *mut DefinedRegular = cast(s);
+    if !existingSymbol.isCOMDAT {
+        self.reportDuplicate(s, f, null, 0);
     }
-    return void { , false };
+    return pair<DefinedRegular *, bool> { existingSymbol, false };
 }
 
 fn SymbolTable::addCommon(self, f: *mut InputFile, n: str, size: u64, sym: *coff_symbol_generic, c: *mut CommonChunk) -> *mut Symbol {
-    if  {
-        replaceSymbol(f, n, size, sym, c);
-    } else if  {
-        if size > () {
-            replaceSymbol(f, n, size, sym, c);
-        }
+    if wasInserted || !isa(s) {
+        replaceSymbol(s, f, n, size, sym, c);
+    } else if dyn_cast(s) {
+        dc;
+    } else if size > dc.getSize() {
+        replaceSymbol(s, f, n, size, sym, c);
     }
-    return ;
+    return s;
 }
 
 fn SymbolTable::addImportData(self, n: str, f: *mut ImportFile, location: *mut *mut Chunk) -> *mut DefinedImportData {
-    if  {
-        replaceSymbol(n, f, location);
-        return cast();
+    s.isUsedInRegularObj = true;
+    if wasInserted || isa(s) || s.isLazy() {
+        replaceSymbol(s, n, f, location);
+        return cast(s);
     }
-    self.reportDuplicate(f);
+    self.reportDuplicate(s, f, null, 0);
     return null;
 }
 
 fn SymbolTable::addImportThunk(self, name: str, id: *mut DefinedImportData, chunk: *mut ImportThunkChunk) -> *mut Defined {
-    if  {
-        replaceSymbol(self.ctx, name, id, chunk);
-        return cast();
+    s.isUsedInRegularObj = true;
+    if wasInserted || isa(s) || s.isLazy() {
+        replaceSymbol(s, self.ctx, name, id, chunk);
+        return cast(s);
     }
-    self.reportDuplicate(id.file);
+    self.reportDuplicate(s, id.file, null, 0);
     return null;
 }
 
@@ -618,22 +786,18 @@ fn SymbolTable::addLibcall(self, name: str) {
     if !sym {
         return;
     }
-    if  {
-        let mut mb: MemoryBufferRef = ();
-        if isBitcode(mb) {
-            self.addUndefined(sym.getName());
-        }
-    } else if dyn_cast(sym) {
-        o;
+    if dyn_cast(sym) {
+        l;
     } else {
-        if isBitcode(o.file.mb) {
+        let mut mb: MemoryBufferRef = l.getMemberBuffer();
+        if isBitcode(mb) {
             self.addUndefined(sym.getName());
         }
     }
 }
 
 fn SymbolTable::find(self: *SymbolTable, name: str) -> *mut Symbol {
-    return self.symMap.lookup(CachedHashStringRef { name });
+    return self.symMap.lookup(name);
 }
 
 fn SymbolTable::findUnderscore(self: *SymbolTable, name: str) -> *mut Symbol {
@@ -643,33 +807,33 @@ fn SymbolTable::findUnderscore(self: *SymbolTable, name: str) -> *mut Symbol {
     return self.find(name);
 }
 
-fn SymbolTable::getSymsWithPrefix(self, prefix: str) -> i32 {
-    let mut syms: i32 = 0;
+fn SymbolTable::getSymsWithPrefix(self, prefix: str) -> []*mut Symbol {
+    let mut syms: []*mut Symbol = []*mut Symbol {};
     for pair in self.symMap {
         let mut name: str = pair.first.val();
         if name.starts_with(prefix) || name.starts_with(prefix.drop_front(1)) || name.drop_front(1).starts_with(prefix) || name.drop_front(1).starts_with(prefix.drop_front(1)) {
-            syms()(pair.second);
+            syms.push(pair.second);
         }
     }
-    return ;
+    return syms;
 }
 
 fn SymbolTable::findMangle(self, name: str) -> *mut Symbol {
     if self.find(name) {
         sym;
     } else {
-        if  {
-            if () {
+        if dyn_cast(sym) {
+            u;
+        } else {
+            if u.getWeakAlias() {
                 weakAlias;
             } else {
                 return weakAlias;
             }
-        } else {
-            return sym;
         }
     }
-    let mut syms: i32 = self.getSymsWithPrefix(name);
-    let mut findByPrefix: Closure_4 = Closure_4 {};
+    let mut syms: []*mut Symbol = self.getSymsWithPrefix(name);
+    let mut findByPrefix: Closure_4 = Closure_4 { syms: &mut syms };
     if self.machine != I386 {
         return findByPrefix.call("?" + name + "@@Y");
     }
@@ -716,7 +880,7 @@ fn SymbolTable::mangleMaybe(self, s: *mut Symbol) -> str {
     if !mangled {
         return "";
     }
-    Log(self.ctx) << " aliased to " << mangled.getName();
+    Log(self.ctx) << unmangled.getName() << " aliased to " << mangled.getName();
     unmangled.setWeakAlias(self.addUndefined(mangled.getName()), false);
     return mangled.getName();
 }
@@ -768,16 +932,20 @@ fn SymbolTable::inferSubsystem(self) -> WindowsSubsystem {
 }
 
 fn SymbolTable::addUndefinedGlob(self, arg: str) {
-    let mut pat: Expected<GlobPattern> = zeroed();
-    if operator!() {
-        Err(self.ctx) << "/includeglob: " << toString();
+    let mut pat: Expected<GlobPattern> = create(arg, optional<size_t> {}, false);
+    if !pat {
+        Err(self.ctx) << "/includeglob: " << toString(pat.takeError());
         return;
     }
-    let mut syms: SmallVector<Symbol *, 0> = zeroed();
+    let mut syms: SmallVector<Symbol *, 0> = SmallVector<Symbol *, 0> {};
+    self.forEachSymbol(Closure_5 { syms: &mut syms, pat: &mut pat });
+    for sym in syms {
+        self.addGCRoot(sym.getName(), false);
+    }
 }
 
 fn killAt(sym: str, prefix: bool) -> str {
-    if sym.len == 0 {
+    if sym.is_empty() {
         return sym;
     }
     sym = sym[0..0 + sym.find('@', 1)];
@@ -809,7 +977,7 @@ fn exportSourceName(s: ExportSource) -> str {
             return "/export-all-symbols";
         },
         _ => {
-            llvm_unreachable_internal("unknown ExportSource", "lld\\COFF\\SymbolTable.cpp", 1196);
+            llvm_unreachable_internal("unknown ExportSource", "P:/Goraw/llvm-project/lld/COFF/SymbolTable.cpp", 1196);
         },
     }
 }
@@ -826,37 +994,110 @@ fn exportSourcePriority(s: ExportSource) -> i32 {
             ModuleDefinition;
         },
         _ => {
-            llvm_unreachable_internal("unknown ExportSource", "lld\\COFF\\SymbolTable.cpp", 1218);
+            llvm_unreachable_internal("unknown ExportSource", "P:/Goraw/llvm-project/lld/COFF/SymbolTable.cpp", 1218);
         },
     }
 }
 
 fn SymbolTable::fixupExports(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Fixup exports" };
-    let mut ords: i32 = 0;
-    if self.ctx.config.killAt && self.machine == I386 {}
-    let mut map: i32 = self.exports.len;
-    let mut v: i32 = 0;
-    self.exports = move();
-    sort(self.exports, Closure_5 {});
+    let mut timeScope: TimeTraceScope = "Fixup exports";
+    let mut ords: set<uint16_t> = set<uint16_t> {};
+    for e in self.exports {
+        if e.ordinal == 0 {
+            continue;
+        }
+        if !ords.insert(e.ordinal).second {
+            Fatal(self.ctx) << "duplicate export ordinal: " << e.name;
+        }
+    }
+    for e in self.exports {
+        if !e.exportAs.is_empty() {
+            e.exportName = e.exportAs;
+            continue;
+        }
+        let mut sym: str = if !e.forwardTo.is_empty() || e.extName.is_empty() { e.name } else { e.extName };
+        if self.machine == I386 && sym.starts_with("_") {
+            if self.ctx.config.mingw || !sym.contains('@') {
+                e.exportName = sym[1..1 + npos];
+                continue;
+            }
+        }
+        if self.isEC() && !e.data && !e.constant {
+            if getArm64ECDemangledFunctionName(sym) {
+                demangledName;
+            } else {
+                e.exportName = saver().save(operator(demangledName));
+                continue;
+            }
+        }
+        e.exportName = sym;
+    }
+    if self.ctx.config.killAt && self.machine == I386 {
+        for e in self.exports {
+            e.name = killAt(e.name, true);
+            e.exportName = killAt(e.exportName, false);
+            e.extName = killAt(e.extName, true);
+            e.symbolName = killAt(e.symbolName, true);
+        }
+    }
+    let mut map: pair<Export *, unsigned int>> = self.exports.len;
+    let mut v: []Export = []Export {};
+    for e in self.exports {
+        let mut pair: pair<iterator, bool> = map.insert(make_pair(e.exportName, make_pair(&mut e, 0)));
+        let mut inserted: bool = pair.second;
+        if inserted {
+            operator(pair.first).second.second = v.len;
+            v.push(e);
+            continue;
+        }
+        let mut existing: *mut Export = operator(pair.first).second.first;
+        if e == *existing || e.name != existing.name {
+            continue;
+        }
+        let mut existingPriority: i32 = exportSourcePriority(existing.source);
+        let mut newPriority: i32 = exportSourcePriority(e.source);
+        if existingPriority < newPriority {
+            *existing = e;
+            v[operator(pair.first).second.second] = e;
+            continue;
+        }
+        if existingPriority > newPriority {
+            continue;
+        }
+        if existing.source == e.source {
+            Warn(self.ctx) << "duplicate " << exportSourceName(existing.source) << " option: " << e.name;
+        } else {
+            Warn(self.ctx) << "duplicate export: " << e.name << " first seen in " << exportSourceName(existing.source) << ", now in " << exportSourceName(e.source);
+        }
+    }
+    self.exports = move(v);
+    sort(self.exports, Closure_6 {});
 }
 
 fn SymbolTable::assignExportOrdinals(self) {
     let mut max: u32 = 0;
+    for e in self.exports {
+        max = if max > e.ordinal as u32 { max } else { e.ordinal as u32 };
+    }
+    for e in self.exports {
+        if e.ordinal == 0 {
+            e.ordinal = max += 1;
+        }
+    }
     if max > max() {
-        Fatal(self.ctx) << "too many exported symbols (got " << ", max " << max() << ")";
+        Fatal(self.ctx) << "too many exported symbols (got " << max << ", max " << max() << ")";
     }
 }
 
 fn SymbolTable::parseModuleDefs(self, path: str) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Parse def file" };
-    let mut mb: i32 = check2((getFile(path, false, false, true)), Closure_6 { path: &mut path });
-    let mut m: COFFModuleDefinition = check(parseCOFFModuleDefinition(self.machine, self.ctx.config.mingw));
-    self.ctx.driver.takeBuffer(move());
-    if self.ctx.config.outputFile.len == 0 {
-        self.ctx.config.outputFile = saver().save(m.OutputFile);
+    let mut timeScope: TimeTraceScope = "Parse def file";
+    let mut mb: unique_ptr<MemoryBuffer> = check2((getFile(path, false, false, true, nullopt)), string ()> { Closure_7 { path: &mut path }, null, null });
+    let mut m: COFFModuleDefinition = check(parseCOFFModuleDefinition(operator(mb).getMemBufferRef(), self.machine, self.ctx.config.mingw, true));
+    self.ctx.driver.takeBuffer(move(mb));
+    if self.ctx.config.outputFile.is_empty() {
+        self.ctx.config.outputFile = saver().save(m.OutputFile)[0..allocator<char> {}];
     }
-    self.ctx.config.importName = saver().save(m.ImportName);
+    self.ctx.config.importName = saver().save(m.ImportName)[0..allocator<char> {}];
     if m.ImageBase {
         self.ctx.config.imageBase = m.ImageBase;
     }
@@ -884,32 +1125,85 @@ fn SymbolTable::parseModuleDefs(self, path: str) {
     if m.MinorOSVersion {
         self.ctx.config.minorOSVersion = m.MinorOSVersion;
     }
+    for e1 in m.Exports {
+        let mut e2: Export = Export {};
+        if !e1.ExtName.is_empty() && !e1.ExtName == e1.Name && e1.Name.contains('.') {
+            e2.name = saver().save(e1.ExtName);
+            e2.forwardTo = saver().save(e1.Name);
+        } else {
+            e2.name = saver().save(e1.Name);
+            e2.extName = saver().save(e1.ExtName);
+        }
+        e2.exportAs = saver().save(e1.ExportAs);
+        e2.importName = saver().save(e1.ImportName);
+        e2.ordinal = e1.Ordinal;
+        e2.noname = e1.Noname;
+        e2.data = e1.Data;
+        e2.isPrivate = e1.Private;
+        e2.constant = e1.Constant;
+        e2.source = ModuleDefinition;
+        self.exports.push(e2);
+    }
 }
 
 fn SymbolTable::parseAlternateName(self, s: str) {
-    if from.len == 0 || to.len == 0 {
-        Fatal(self.ctx) << "/alternatename: invalid argument: ";
+    if from.is_empty() || to.is_empty() {
+        Fatal(self.ctx) << "/alternatename: invalid argument: " << s;
     }
-    let mut it: auto = self.alternateNames.find;
-    if it() != self.alternateNames.end &&  != to {
-        Fatal(self.ctx) << "/alternatename: conflicts: ";
+    let mut it: iterator = self.alternateNames.find(from);
+    if !it == self.alternateNames.end() && operator(it).second != to {
+        Fatal(self.ctx) << "/alternatename: conflicts: " << s;
     }
-    self.alternateNames(make_pair(from, to));
+    self.alternateNames.insert(it, make_pair(from, to));
 }
 
-fn SymbolTable::resolveAlternateNames(self) {}
+fn SymbolTable::resolveAlternateNames(self) {
+    for pair in self.alternateNames {
+        let mut from: str = pair.first;
+        let mut to: str = pair.second;
+        let mut sym: *mut Symbol = self.find(from);
+        if !sym {
+            continue;
+        }
+        if dyn_cast(sym) {
+            u;
+        } else {
+            if u.weakAlias {
+                if !self.isEC() || !u.isAntiDep {
+                    continue;
+                }
+                if !isa(u.weakAlias) && !isArm64ECMangledFunctionName(u.getName()) {
+                    continue;
+                }
+            }
+            let mut toSym: *mut Symbol = self.find(to);
+            if !toSym {
+                continue;
+            }
+            let mut toUndef: CastReturnType = dyn_cast(toSym);
+            if toUndef && (!toUndef.weakAlias || toUndef.isAntiDep) {
+                continue;
+            }
+            toSym.isUsedInRegularObj = true;
+            if toSym.isLazy() {
+                forceLazy(toSym);
+            }
+            u.setWeakAlias(toSym, false);
+        }
+    }
+}
 
 fn SymbolTable::parseAligncomm(self, s: str) {
-    if name.len == 0 || align.len == 0 {
-        Err(self.ctx) << "/aligncomm: invalid argument: ";
+    if name.is_empty() || align.is_empty() {
+        Err(self.ctx) << "/aligncomm: invalid argument: " << s;
         return;
     }
     let mut v: i32 = 0;
-    if align {
-        Err(self.ctx) << "/aligncomm: invalid argument: ";
+    if align.getAsInteger(0, v) {
+        Err(self.ctx) << "/aligncomm: invalid argument: " << s;
         return;
     }
-    self.alignComm[name()] = max(self.alignComm[name()], 1 << v);
+    self.alignComm[name[0..allocator<char> {}]] = if self.alignComm[name[0..allocator<char> {}]] > 1 << v { self.alignComm[name[0..allocator<char> {}]] } else { 1 << v };
 }
 
 fn SymbolTable::addUndefined(self, name: str) -> *mut Symbol {
@@ -918,25 +1212,46 @@ fn SymbolTable::addUndefined(self, name: str) -> *mut Symbol {
 
 fn SymbolTable::printSymbol(self: *SymbolTable, sym: *mut Symbol) -> str {
     let mut name: str = maybeDemangleSymbol(self.ctx, sym.getName());
-    if self.ctx {
+    if self.ctx.hybridSymtab {
         return name + (if self.isEC() { " (EC symbol)" } else { " (native symbol)" });
     }
     return name;
 }
 
 fn SymbolTable::compileBitcodeFiles(self) {
-    if self.bitcodeFileInstances.len == 0 {
+    if self.bitcodeFileInstances.is_empty() {
         return;
     }
     let mut alloc: BumpPtrAllocator = BumpPtrAllocator {};
-    let mut saver: StringSaver = StringSaver { Alloc: alloc };
-    let mut bitcodeLibFuncs: i32 = 0;
-    let mut tt: Triple = Triple { operator(self.bitcodeFileInstances.front().obj).getTargetTriple() };
-    let mut t: ScopedTimer = self.ctx;
-    self.lto.reset(BitcodeCompiler { self.ctx });
-    operator(self.lto).setBitcodeLibFuncs();
+    let mut saver: StringSaver = alloc;
+    let mut bitcodeLibFuncs: SmallVector<StringRef> = SmallVector<StringRef> {};
+    let mut tt: Triple = operator(self.bitcodeFileInstances.front().obj).getTargetTriple();
+    for libFunc in getLibFuncSymbols(tt, saver) {
+        if self.find(libFunc) {
+            sym;
+        } else {
+            if dyn_cast(sym) {
+                l;
+            } else {
+                if isBitcode(l.getMemberBuffer()) {
+                    bitcodeLibFuncs.push(libFunc);
+                }
+            }
+        }
+    }
+    let mut t: ScopedTimer = self.ctx.ltoTimer;
+    self.lto.reset(self.ctx);
+    operator(self.lto).setBitcodeLibFuncs(bitcodeLibFuncs);
     {
-        let mut addScope: TimeTraceScope = TimeTraceScope { Entry: "Add bitcode file instances" };
+        let mut addScope: TimeTraceScope = "Add bitcode file instances";
+        for f in self.bitcodeFileInstances {
+            operator(self.lto).add(*f);
+        }
+    }
+    for newObj in operator(self.lto).compile() {
+        let mut obj: *mut ObjFile = cast(newObj);
+        obj.parse();
+        self.ctx.objFileInstances.push(obj);
     }
 }
 
@@ -948,7 +1263,10 @@ fn SymbolTable::waitForLTOCleanup(self) {
 
 struct Closure_1 {
     undefs: *mut SmallPtrSetImpl<Symbol *>,
-    cap_1: *mut SymbolTable,
+    firstDiag: *mut DenseMap<Symbol *, int>,
+    undefDiags: *mut []UndefinedDiag,
+    localImports: *mut *DenseMap<Symbol *, Symbol *>,
+    cap_4: *mut SymbolTable,
 }
 
 unsafe fn Closure_1::call(self: *mut Closure_1, file: *mut InputFile, symbols: ArrayRef<Symbol *>) {
@@ -958,18 +1276,18 @@ unsafe fn Closure_1::call(self: *mut Closure_1, file: *mut InputFile, symbols: A
             if !sym {
                 continue;
             }
-            if (*self.undefs)()(sym) {
-                if  {
-                    undefDiags()(void { sym, void { void { file, symIndex } } });
+            if (*self.undefs).contains(sym) {
+                if inserted {
+                    (*self.undefDiags).push(UndefinedDiag { sym: sym, files: []File { [file, symIndex], File> {} } });
                 } else {
-                    undefDiags()[](void { file, symIndex });
+                    (*self.undefDiags)[operator(it).second].files.push(File { file, symIndex });
                 }
             }
-            if localImports() {
-                if (sym) {
+            if (*self.localImports) {
+                if (*self.localImports).lookup(sym) {
                     imp;
                 } else {
-                    Warn(self.ctx) << file << ": locally defined symbol imported: " << " (defined in " << imp.getFile() << ") [LNK4217]";
+                    Warn(self.ctx) << file << ": locally defined symbol imported: " << self.printSymbol(imp) << " (defined in " << imp.getFile() << ") [LNK4217]";
                 }
             }
         }
@@ -991,30 +1309,48 @@ fn Closure_3::call(self: *Closure_3, file: *mut ObjFile) {
             return;
         }
         for sym in file.getMutableSymbols() {
-            let mut impSym: auto = dyn_cast_or_null(sym);
-            if impSym() &&  && sym ==  {
-                sym = ;
+            let mut impSym: CastReturnType = dyn_cast_or_null(sym);
+            if impSym && impSym.file.impchkThunk && sym == impSym.file.impECSym {
+                sym = impSym.file.impSym;
             }
         }
     }
 
-struct Closure_4 {}
+struct Closure_4 {
+    syms: *mut []*mut Symbol,
+}
 
-fn Closure_4::call(self: *mut Closure_4, t: str) -> auto {
+unsafe fn Closure_4::call(self: *mut Closure_4, t: str) -> auto {
         let mut prefix: str = t;
+        for s in (*self.syms) {
+            if s.getName().starts_with(prefix) {
+                return s;
+            }
+        }
         return null;
     }
 
-struct Closure_5 {}
+struct Closure_5 {
+    syms: *mut SmallVector<Symbol *, 0>,
+    pat: *mut Expected<GlobPattern>,
+}
 
-fn Closure_5::call(self: *Closure_5, a: *Export, b: *Export) -> bool {
+unsafe fn Closure_5::call(self: *mut Closure_5, sym: *mut Symbol) {
+        if operator((*self.pat)).match(sym.getName()) {
+            (*self.syms).push(sym);
+        }
+    }
+
+struct Closure_6 {}
+
+fn Closure_6::call(self: *Closure_6, a: *Export, b: *Export) -> bool {
         return a.exportName < b.exportName;
     }
 
-struct Closure_6 {
+struct Closure_7 {
     path: *mut str,
 }
 
-unsafe fn Closure_6::call(self: *mut Closure_6) -> auto {
+unsafe fn Closure_7::call(self: *mut Closure_7) -> auto {
         return toString("could not open " + (*self.path));
     }

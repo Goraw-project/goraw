@@ -1,8 +1,8 @@
 fn validateDeclsInsideHLSLBuffer(DG: DeclGroupPtrTy, BufferLoc: SourceLocation, IsCBuffer: bool, P: *mut Parser) -> bool {
-    if operator!() {
+    if !DG {
         return false;
     }
-    let mut Decls: DeclGroupRef = ();
+    let mut Decls: DeclGroupRef = DG.get();
     let mut IsValid: bool = true;
     for let mut I: iterator = Decls.begin();
 let mut E: iterator = Decls.end(); I != E; I += 1 {
@@ -11,12 +11,12 @@ let mut E: iterator = Decls.end(); I != E; I += 1 {
             continue;
         }
         if isa(D) {
-            P << IsCBuffer;
+            P.Diag(D.getLocation(), err_invalid_declaration_in_hlsl_buffer) << IsCBuffer;
             IsValid = false;
             continue;
         }
         IsValid = false;
-        P << IsCBuffer;
+        P.Diag(D.getLocation(), err_invalid_declaration_in_hlsl_buffer) << IsCBuffer;
     }
     return IsValid;
 }
@@ -26,7 +26,7 @@ fn Parser::ParseHLSLBuffer(self, DeclEnd: *mut SourceLocation, Attrs: *mut Parse
     let mut IsCBuffer: bool = self.Tok.is(kw_cbuffer);
     let mut BufferLoc: SourceLocation = self.ConsumeToken();
     if !self.Tok.is(identifier) {
-         << identifier;
+        self.Diag(self.Tok, err_expected) << identifier;
         return null;
     }
     let mut Identifier: *mut IdentifierInfo = self.Tok.getIdentifierInfo();
@@ -35,16 +35,16 @@ fn Parser::ParseHLSLBuffer(self, DeclEnd: *mut SourceLocation, Attrs: *mut Parse
     let mut BufferScope: ParseScope = ParseScope { self, DeclScope, true, false };
     let mut T: BalancedDelimiterTracker = BalancedDelimiterTracker { *self, l_brace, semi };
     if T.consumeOpen() {
-         << l_brace;
+        self.Diag(self.Tok, err_expected) << l_brace;
         return null;
     }
     let mut D: *mut Decl = self.Actions.HLSL().ActOnStartBuffer(self.getCurScope(), IsCBuffer, BufferLoc, Identifier, IdentifierLoc, T.getOpenLocation());
-    self.Actions.ProcessDeclAttributeList;
+    self.Actions.ProcessDeclAttributeList(self.Actions.CurScope, D, Attrs, ProcessDeclAttributeOptions {});
     while self.Tok.isNot(r_brace) && self.Tok.isNot(eof) {
-        let mut DeclAttrs: ParsedAttributes = zeroed();
-        let mut EmptyDeclSpecAttrs: ParsedAttributes = zeroed();
-        let mut Result: DeclGroupPtrTy = zeroed();
-        if operator!(validateDeclsInsideHLSLBuffer(IdentifierLoc, IsCBuffer, *self)) {
+        let mut DeclAttrs: ParsedAttributes = self.AttrFactory;
+        let mut EmptyDeclSpecAttrs: ParsedAttributes = self.AttrFactory;
+        let mut Result: DeclGroupPtrTy = self.ParseExternalDeclaration(DeclAttrs, EmptyDeclSpecAttrs, null);
+        if !validateDeclsInsideHLSLBuffer(Result, IdentifierLoc, IsCBuffer, *self) {
             T.skipToEnd();
             DeclEnd = T.getCloseLocation();
             BufferScope.Exit();
@@ -63,17 +63,17 @@ fn fixSeparateAttrArgAndNumber(ArgStr: str, ArgLoc: SourceLocation, Tok: Token, 
     let mut Num: str = Tok.getLiteralData()[0..Tok.getLength()];
     let mut EndNumLoc: SourceLocation = Tok.getEndLoc();
     P.ConsumeToken();
-    let mut FixedArg: str = zeroed();
-    P <<  << CreateReplacement(SourceRange { B: ArgLoc, E: EndNumLoc });
-    let mut Slot: *mut ArgsUnion = ArgExprs()();
-    Slot(ArgLoc);
+    let mut FixedArg: str = ArgStr + Num;
+    P.Diag(ArgLoc, err_hlsl_separate_attr_arg_and_number) << FixedArg << CreateReplacement(SourceRange { B: ArgLoc, E: EndNumLoc }, FixedArg);
+    let mut Slot: *mut ArgsUnion = ArgExprs.back();
+    Slot = IdentifierLoc { Loc: ArgLoc, II: PP.getIdentifierInfo(FixedArg) };
 }
 
 fn Parser::ParseHLSLSemantic(self) -> ParsedSemantic {
     assert!(self.Tok.is(identifier), "Not a HLSL Annotation");
-    let mut Buffer: str = zeroed();
-    Buffer()(self.Tok.getLength() + 1);
-    let mut Identifier: str = self.PP(self.Tok);
+    let mut Buffer: str = "";
+    Buffer.resize(self.Tok.getLength() + 1);
+    let mut Identifier: str = self.PP.getSpelling(self.Tok, Buffer, null);
     assert!(Identifier.len > 0);
     let mut IndexIndex: u32 = Identifier.find_last_not_of("0123456789", npos) + 1;
     let mut SemanticName: str = Identifier.take_front(IndexIndex);
@@ -82,7 +82,7 @@ fn Parser::ParseHLSLSemantic(self) -> ParsedSemantic {
     let mut Explicit: bool = false;
     if IndexIndex != Identifier.len {
         Explicit = true;
-        let mut Failure: bool = Identifier[IndexIndex..IndexIndex + npos];
+        let mut Failure: bool = Identifier[IndexIndex..IndexIndex + npos].getAsInteger(10, Index);
         assert!(!Failure);
     }
     return ParsedSemantic { SemanticName, Index, Explicit };
@@ -103,11 +103,12 @@ fn Parser::ParseHLSLAnnotations(self, Attrs: *mut ParsedAttributes, EndLoc: *mut
             self.UnconsumeToken(OldToken);
             return;
         }
+        self.Diag(self.Tok.getLocation(), err_expected_semantic_identifier);
         return;
     }
     let mut AttrKind: Kind = getParsedKind(II, null, AS_HLSLAnnotation);
     let mut Semantic: ParsedSemantic = ParsedSemantic {};
-    if  {
+    if AttrKind == AT_HLSLUnparsedSemantic {
         Semantic = self.ParseHLSLSemantic();
     }
     let mut Loc: SourceLocation = self.ConsumeToken();
@@ -115,14 +116,134 @@ fn Parser::ParseHLSLAnnotations(self, Attrs: *mut ParsedAttributes, EndLoc: *mut
         *EndLoc = self.Tok.getLocation();
     }
     let mut AttrEndLoc: SourceLocation = Loc;
-    let mut ArgExprs: ArgsVector = zeroed();
+    let mut ArgExprs: ArgsVector = ArgsVector {};
     match AttrKind {
+        AT_HLSLResourceBinding => {
+            if self.ExpectAndConsume(l_paren, err_expected_lparen_after, "") {
+                self.SkipUntil(r_paren, StopAtSemi);
+                return;
+            }
+            if !self.Tok.is(identifier) {
+                self.Diag(self.Tok.getLocation(), err_expected) << identifier;
+                self.SkipUntil(r_paren, StopAtSemi);
+                return;
+            }
+            let mut SlotStr: str = self.Tok.getIdentifierInfo().getName();
+            let mut SlotLoc: SourceLocation = self.Tok.getLocation();
+            ArgExprs.push(self.ParseIdentifierLoc());
+            if SlotStr.len == 1 {
+                if !self.Tok.is(numeric_constant) {
+                    self.Diag(self.Tok.getLocation(), err_expected) << numeric_constant;
+                    self.SkipUntil(r_paren, StopAtSemi);
+                    return;
+                }
+                fixSeparateAttrArgAndNumber(SlotStr, SlotLoc, self.Tok, ArgExprs, *self, self.Actions.Context, self.PP);
+            }
+            if self.Tok.is(comma) {
+                self.ConsumeToken();
+                if !self.Tok.is(identifier) {
+                    self.Diag(self.Tok.getLocation(), err_expected) << identifier;
+                    self.SkipUntil(r_paren, StopAtSemi);
+                    return;
+                }
+                let mut SpaceStr: str = self.Tok.getIdentifierInfo().getName();
+                let mut SpaceLoc: SourceLocation = self.Tok.getLocation();
+                ArgExprs.push(self.ParseIdentifierLoc());
+                if SpaceStr == "space" && self.Tok.is(numeric_constant) {
+                    fixSeparateAttrArgAndNumber(SpaceStr, SpaceLoc, self.Tok, ArgExprs, *self, self.Actions.Context, self.PP);
+                }
+            }
+            AttrEndLoc = self.Tok.getLocation();
+            if self.ExpectAndConsume(r_paren, err_expected, "") {
+                self.SkipUntil(r_paren, StopAtSemi);
+                return;
+            }
+        },
+        AT_HLSLPackOffset => {
+            if self.ExpectAndConsume(l_paren, err_expected_lparen_after, "") {
+                self.SkipUntil(r_paren, StopAtSemi);
+                return;
+            }
+            if !self.Tok.is(identifier) {
+                self.Diag(self.Tok.getLocation(), err_expected) << identifier;
+                self.SkipUntil(r_paren, StopAtSemi);
+                return;
+            }
+            let mut OffsetStr: str = self.Tok.getIdentifierInfo().getName();
+            let mut SubComponentLoc: SourceLocation = self.Tok.getLocation();
+            if OffsetStr[0] != 'c' {
+                self.Diag(self.Tok.getLocation(), err_hlsl_packoffset_invalid_reg) << OffsetStr;
+                self.SkipUntil(r_paren, StopAtSemi);
+                return;
+            }
+            OffsetStr = OffsetStr[1..1 + npos];
+            let mut SubComponent: u32 = 0;
+            if !OffsetStr.is_empty() {
+                if OffsetStr.getAsInteger(10, SubComponent) {
+                    self.Diag(SubComponentLoc.getLocWithOffset(1), err_hlsl_unsupported_register_number);
+                    self.SkipUntil(r_paren, StopAtSemi);
+                    return;
+                }
+            }
+            let mut Component: u32 = 0;
+            self.ConsumeToken();
+            let mut ComponentLoc: SourceLocation = SourceLocation {};
+            if self.Tok.is(period) {
+                self.ConsumeToken();
+                if !self.Tok.is(identifier) {
+                    self.Diag(self.Tok.getLocation(), err_expected) << identifier;
+                    self.SkipUntil(r_paren, StopAtSemi);
+                    return;
+                }
+                let mut ComponentStr: str = self.Tok.getIdentifierInfo().getName();
+                ComponentLoc = self.Tok.getLocation();
+                self.ConsumeToken();
+                if ComponentStr.len != 1 {
+                    self.Diag(ComponentLoc, err_hlsl_unsupported_component) << ComponentStr;
+                    self.SkipUntil(r_paren, StopAtSemi);
+                    return;
+                }
+                match ComponentStr[0] {
+                    'x' => {
+                        'r';
+                    },
+                    'y' => {
+                        'g';
+                    },
+                    'z' => {
+                        'b';
+                    },
+                    'w' => {
+                        'a';
+                    },
+                    _ => {
+                        self.Diag(ComponentLoc, err_hlsl_unsupported_component) << ComponentStr;
+                    },
+                }
+            }
+            let mut Ctx: *mut ASTContext = self.Actions.getASTContext();
+            let mut SizeTy: QualType = Ctx.getSizeType();
+            let mut SizeTySize: u64 = Ctx.getTypeSize(SizeTy);
+            ArgExprs.push(Create(Ctx, APInt { SizeTySize, SubComponent, false, false }, SizeTy, SubComponentLoc));
+            ArgExprs.push(Create(Ctx, APInt { SizeTySize, Component, false, false }, SizeTy, ComponentLoc));
+            if self.ExpectAndConsume(r_paren, err_expected, "") {
+                self.SkipUntil(r_paren, StopAtSemi);
+                return;
+            }
+        },
+        AT_HLSLUnparsedSemantic => {
+            let mut Ctx: *mut ASTContext = self.Actions.getASTContext();
+            ArgExprs.push(Create(Ctx, APInt { Ctx.getTypeSize(Ctx.IntTy.operator QualType()), Semantic.Index, false, false }, Ctx.IntTy.operator QualType(), SourceLocation {}));
+            ArgExprs.push(Create(Ctx, APInt { 1, Semantic.Explicit, false, false }, Ctx.BoolTy.operator QualType(), SourceLocation {}));
+            II = self.PP.getIdentifierInfo(Semantic.Name);
+            break;
+        },
         UnknownAttribute => {
             break;
         },
         _ => {
-            llvm_unreachable_internal("invalid HLSL Annotation", "clang\\lib\\Parse\\ParseHLSL.cpp", 338);
+            llvm_unreachable_internal("invalid HLSL Annotation", "P:/Goraw/llvm-project/clang/lib/Parse/ParseHLSL.cpp", 338);
         },
     }
-    Attrs(II, SourceRange { B: Loc, E: AttrEndLoc }, AttributeScopeInfo {}, HLSLAnnotation());
+    Attrs.addNew(II, SourceRange { B: Loc, E: AttrEndLoc }, AttributeScopeInfo {}, ArgExprs.ptr, ArgExprs.len, HLSLAnnotation(), SourceLocation {});
 }

@@ -1,5 +1,5 @@
 fn op_<<(DB: *StreamingDiagnostic, nullability: DiagNullabilityKind) -> *StreamingDiagnostic {
-    DB.AddString(("'" + getNullabilitySpelling() + "'")());
+    DB.AddString(("'" + getNullabilitySpelling(nullability.first, nullability.second) + "'"));
     return DB;
 }
 
@@ -10,7 +10,7 @@ fn op_<<(DB: *StreamingDiagnostic, E: *mut *mut Error) -> *StreamingDiagnostic {
 
 fn DummyArgToStringFn(AK: ArgumentKind, QT: i64, Modifier: str, Argument: str, PrevArgs: ArgumentValue>, Output: *mut SmallVectorImpl<char>, Cookie: *mut void, QualTypeVals: ArrayRef<intptr_t>) {
     let mut Str: str = "<can't format argument>";
-    Output()(Str.begin(), Str.end());
+    Output.append(Str.begin(), Str.end());
 }
 
 fn DiagnosticsEngine::DiagnosticsEngine(self, diags: IntrusiveRefCntPtr<DiagnosticIDs>, DiagOpts: *mut DiagnosticOptions, client: *mut DiagnosticConsumer, ShouldOwnClient: bool) {
@@ -23,27 +23,37 @@ fn DiagnosticsEngine::~DiagnosticsEngine(self) {
     self.setClient(null, true);
 }
 
-fn DiagnosticsEngine::dump(self: *DiagnosticsEngine) {}
+fn DiagnosticsEngine::dump(self: *DiagnosticsEngine) {
+    self.DiagStatesByLoc.dump(*self.SourceMgr, "");
+}
 
-fn DiagnosticsEngine::dump(self: *DiagnosticsEngine, DiagName: str) {}
+fn DiagnosticsEngine::dump(self: *DiagnosticsEngine, DiagName: str) {
+    self.DiagStatesByLoc.dump(*self.SourceMgr, DiagName);
+}
 
 fn DiagnosticsEngine::setClient(self, client: *mut DiagnosticConsumer, ShouldOwnClient: bool) {
+    self.Owner.reset(if ShouldOwnClient { client } else { null });
     self.Client = client;
 }
 
-fn DiagnosticsEngine::pushMappings(self, Loc: SourceLocation) {}
+fn DiagnosticsEngine::pushMappings(self, Loc: SourceLocation) {
+    self.DiagStateOnPushStack.push(self.GetCurDiagState());
+}
 
 fn DiagnosticsEngine::popMappings(self, Loc: SourceLocation) -> bool {
-    if  {
+    if self.DiagStateOnPushStack.is_empty() {
         return false;
     }
-    if  {
-        self.PushDiagStatePoint;
+    if self.DiagStateOnPushStack.back() != self.GetCurDiagState() {
+        self.PushDiagStatePoint(self.DiagStateOnPushStack.back(), Loc);
     }
+    self.DiagStateOnPushStack.pop();
     return true;
 }
 
-fn DiagnosticsEngine::ResetPragmas(self) {}
+fn DiagnosticsEngine::ResetPragmas(self) {
+    self.DiagStatesByLoc.clear(true);
+}
 
 fn DiagnosticsEngine::Reset(self, soft: bool) {
     self.ErrorOccurred = false;
@@ -55,21 +65,28 @@ fn DiagnosticsEngine::Reset(self, soft: bool) {
     self.TrapNumErrorsOccurred = 0;
     self.TrapNumUnrecoverableErrorsOccurred = 0;
     self.LastDiagLevel = Ignored;
-    if !soft {}
+    if !soft {
+        self.DiagStates.clear();
+        self.DiagStatesByLoc.clear(false);
+        self.DiagStateOnPushStack.clear();
+        self.DiagStates.push(operator(self.Diags));
+        self.DiagStatesByLoc.appendFirst(&mut self.DiagStates.back());
+    }
 }
 
 fn DiagState@DiagnosticsEngine@clang::getOrAddMapping(self, Diag: kind) -> *mut DiagnosticMapping {
-    let mut Result: i32 = 0;
-    if Result() {
-        Result() = self.DiagIDs.getDefaultMapping(Diag);
+    let mut Result: pair<iterator, bool> = self.DiagMap.try_emplace(Diag);
+    if Result.second {
+        operator(Result.first).second = self.DiagIDs.getDefaultMapping(Diag);
         if IsCustomDiag(Diag) {
-            self.DiagIDs.initCustomDiagMapping(Diag);
+            self.DiagIDs.initCustomDiagMapping(operator(Result.first).second, Diag);
         }
     }
-    return ;
+    return operator(Result.first).second;
 }
 
 fn DiagStateMap@DiagnosticsEngine@clang::appendFirst(self, State: *mut DiagState) {
+    assert!(self.Files.is_empty(), "not first");
     self.FirstDiagState = self.CurDiagState = State;
     self.CurDiagStateLoc = SourceLocation {};
 }
@@ -77,65 +94,131 @@ fn DiagStateMap@DiagnosticsEngine@clang::appendFirst(self, State: *mut DiagState
 fn DiagStateMap@DiagnosticsEngine@clang::append(self, SrcMgr: *mut SourceManager, Loc: SourceLocation, State: *mut DiagState) {
     self.CurDiagState = State;
     self.CurDiagStateLoc = Loc;
-    let mut Decomp: FileIDAndOffset = zeroed();
-    let mut Offset: u32 = ;
-    for let mut F: *mut File = self.getFile(SrcMgr); F; Offset = F.ParentOffset , F = F.Parent {
+    let mut Decomp: FileIDAndOffset = SrcMgr.getDecomposedLoc(Loc);
+    let mut Offset: u32 = Decomp.second;
+    for let mut F: *mut File = self.getFile(SrcMgr, Decomp.first); F; Offset = F.ParentOffset , F = F.Parent {
         F.HasLocalTransitions = true;
-        let mut Last: *mut auto = F()();
-        assert!(Last() <= Offset, "state transitions added out of order");
-        if Last() == Offset {
-            if Last() == State {
+        let mut Last: *mut DiagStatePoint = F.StateTransitions.back();
+        assert!(Last.Offset <= Offset, "state transitions added out of order");
+        if Last.Offset == Offset {
+            if Last.State == State {
                 break;
             }
-            Last() = State;
+            Last.State = State;
             continue;
         }
-        F()(void { State, Offset });
+        F.StateTransitions.push(ValueParamT { State, Offset });
     }
 }
 
 fn DiagStateMap@DiagnosticsEngine@clang::lookup(self: *DiagStateMap@DiagnosticsEngine@clang, SrcMgr: *mut SourceManager, Loc: SourceLocation) -> *mut DiagState {
-    if  {
+    if self.Files.is_empty() {
         return self.FirstDiagState;
     }
-    let mut Decomp: FileIDAndOffset = zeroed();
-    let mut F: *File = self.getFile(SrcMgr);
-    return F.lookup();
+    let mut Decomp: FileIDAndOffset = SrcMgr.getDecomposedLoc(Loc);
+    let mut F: *File = self.getFile(SrcMgr, Decomp.first);
+    return F.lookup(Decomp.second);
 }
 
 fn File@DiagStateMap@DiagnosticsEngine@clang::lookup(self: *File@DiagStateMap@DiagnosticsEngine@clang, Offset: u32) -> *mut DiagState {
-    let mut OnePastIt: auto = partition_point(Closure_1 { Offset: Offset });
-    return [-1];
+    let mut OnePastIt: *DiagStatePoint = partition_point(self.StateTransitions, Closure_1 { Offset: Offset });
+    assert!(OnePastIt != self.StateTransitions.begin(), "missing initial state");
+    return OnePastIt[-1].State;
 }
 
 fn DiagStateMap@DiagnosticsEngine@clang::getFile(self: *DiagStateMap@DiagnosticsEngine@clang, SrcMgr: *mut SourceManager, ID: FileID) -> *mut File {
-    let mut Range: auto = zeroed();
-    if Range() !=  {
-        return operator&();
+    let mut Range: pair<iterator, iterator> = self.Files.equal_range(ID);
+    if !Range.first == Range.second {
+        return &mut operator(Range.first).second;
     }
-    let mut F: *mut auto = null;
+    let mut F: *mut File = operator(self.Files.insert(Range.first, make_pair(ID, File {}))).second;
     if ID.isValid() {
-        let mut Decomp: FileIDAndOffset = zeroed();
-        F() = self.getFile(SrcMgr);
-        F() = ;
-        F()(void { (), 0 });
+        let mut Decomp: FileIDAndOffset = SrcMgr.getDecomposedIncludedLoc(ID);
+        F.Parent = self.getFile(SrcMgr, Decomp.first);
+        F.ParentOffset = Decomp.second;
+        F.StateTransitions.push(ValueParamT { F.Parent.lookup(Decomp.second), 0 });
     } else {
-        F()(void { self.FirstDiagState, 0 });
+        F.StateTransitions.push(ValueParamT { self.FirstDiagState, 0 });
     }
-    return operator&();
+    return &mut F;
 }
 
 fn DiagStateMap@DiagnosticsEngine@clang::dump(self: *DiagStateMap@DiagnosticsEngine@clang, SrcMgr: *mut SourceManager, DiagName: str) {
-    errs();
-    self.CurDiagStateLoc.print;
-    errs() << self.CurDiagState << "\n";
+    errs() << "diagnostic state at ";
+    self.CurDiagStateLoc.print(errs(), SrcMgr);
+    errs() << ": " << self.CurDiagState << "\n";
+    for F in self.Files {
+        let mut ID: FileID = F.first;
+        let mut File: *mut File = F.second;
+        let mut PrintedOuterHeading: bool = false;
+        let mut PrintOuterHeading: Closure_2 = Closure_2 { PrintedOuterHeading: &mut PrintedOuterHeading, File: &mut File, ID: &mut ID, SrcMgr: &mut SrcMgr, F: &mut F };
+        if DiagName.is_empty() {
+            PrintOuterHeading.call();
+        }
+        for Transition in File.StateTransitions {
+            let mut PrintedInnerHeading: bool = false;
+            let mut PrintInnerHeading: Closure_3 = Closure_3 { PrintedInnerHeading: &mut PrintedInnerHeading, PrintOuterHeading: &mut PrintOuterHeading, SrcMgr: &mut SrcMgr, ID: &mut ID, Transition: &mut Transition };
+            if DiagName.is_empty() {
+                PrintInnerHeading.call();
+            }
+            for Mapping in *Transition.State {
+                let mut Option: str = operator(SrcMgr.getDiagnostics().Diags).getWarningOptionForDiag(Mapping.first);
+                if !DiagName.is_empty() && DiagName != Option {
+                    continue;
+                }
+                PrintInnerHeading.call();
+                errs() << "    ";
+                if Option.is_empty() {
+                    errs() << "<unknown " << Mapping.first << ">";
+                } else {
+                    errs() << Option;
+                }
+                errs() << ": ";
+                match Mapping.second.getSeverity() {
+                    Ignored => {
+                        errs() << "ignored";
+                    },
+                    Remark => {
+                        errs() << "remark";
+                    },
+                    Warning => {
+                        errs() << "warning";
+                    },
+                    Error => {
+                        errs() << "error";
+                    },
+                    Fatal => {
+                        errs() << "fatal";
+                    },
+                }
+                if !Mapping.second.isUser() {
+                    errs() << " default";
+                }
+                if Mapping.second.isPragma() {
+                    errs() << " pragma";
+                }
+                if Mapping.second.hasNoWarningAsError() {
+                    errs() << " no-error";
+                }
+                if Mapping.second.hasNoErrorAsFatal() {
+                    errs() << " no-fatal";
+                }
+                if Mapping.second.wasUpgradedFromWarning() {
+                    errs() << " overruled";
+                }
+                errs() << "\n";
+            }
+        }
+    }
 }
 
 fn DiagnosticsEngine::PushDiagStatePoint(self, State: *mut DiagState, Loc: SourceLocation) {
     assert!(Loc.isValid(), "Adding invalid loc point");
+    self.DiagStatesByLoc.append(*self.SourceMgr, Loc, State);
 }
 
 fn DiagnosticsEngine::setSeverity(self, Diag: kind, Map: Severity, L: SourceLocation) {
+    assert!((operator(self.Diags).isWarningOrExtension(Diag) || (Map == Fatal || Map == Error)), "Cannot map errors into warnings!");
     assert!((L.isInvalid() || self.SourceMgr), "No SourceMgr for valid location");
     let mut WasUpgradedFromWarning: bool = false;
     if Map == Warning && L.isInvalid() {
@@ -149,31 +232,46 @@ fn DiagnosticsEngine::setSeverity(self, Diag: kind, Map: Severity, L: SourceLoca
     Mapping.setUpgradedFromWarning(WasUpgradedFromWarning);
     let mut Info: *mut DiagnosticMapping = self.GetCurDiagState().getOrAddMapping(Diag);
     Mapping.setNoWarningAsError(Info.hasNoWarningAsError() || Mapping.hasNoWarningAsError());
-    if  {
+    if (L.isInvalid() || L == self.DiagStatesByLoc.getCurDiagStateLoc()) && self.DiagStatesByLoc.getCurDiagState() {
+        self.DiagStatesByLoc.getCurDiagState().setMapping(Diag, Mapping);
         return;
     }
-    self.PushDiagStatePoint;
+    self.DiagStates.push(*self.GetCurDiagState());
+    self.DiagStates.back().setMapping(Diag, Mapping);
+    self.PushDiagStatePoint(&mut self.DiagStates.back(), L);
 }
 
 fn DiagnosticsEngine::setSeverityForGroup(self, Flavor: Flavor, Group: str, Map: Severity, Loc: SourceLocation) -> bool {
-    let mut GroupDiags: kind, 256> = zeroed();
-    if  {
+    let mut GroupDiags: kind, 256> = kind, 256> {};
+    if operator(self.Diags).getDiagnosticsInGroup(Flavor, Group, GroupDiags) {
         return true;
+    }
+    operator(self.Diags).setGroupSeverity(Group, Map);
+    for Diag in GroupDiags {
+        self.setSeverity(Diag, Map, Loc);
     }
     return false;
 }
 
 fn DiagnosticsEngine::setSeverityForGroup(self, Flavor: Flavor, Group: Group, Map: Severity, Loc: SourceLocation) -> bool {
-    return ;
+    return self.setSeverityForGroup(Flavor, operator(self.Diags).getWarningOptionForGroup(Group), Map, Loc);
 }
 
 fn DiagnosticsEngine::setDiagnosticGroupWarningAsError(self, Group: str, Enabled: bool) -> bool {
     if Enabled {
         return self.setSeverityForGroup(WarningOrError, Group, Error, SourceLocation {});
     }
-    let mut GroupDiags: kind, 8> = zeroed();
-    if  {
+    operator(self.Diags).setGroupSeverity(Group, Warning);
+    let mut GroupDiags: kind, 8> = kind, 8> {};
+    if operator(self.Diags).getDiagnosticsInGroup(WarningOrError, Group, GroupDiags) {
         return true;
+    }
+    for Diag in GroupDiags {
+        let mut Info: *mut DiagnosticMapping = self.GetCurDiagState().getOrAddMapping(Diag);
+        if Info.getSeverity() == Error || Info.getSeverity() == Fatal {
+            Info.setSeverity(Warning);
+        }
+        Info.setNoWarningAsError(true);
     }
     return false;
 }
@@ -182,46 +280,77 @@ fn DiagnosticsEngine::setDiagnosticGroupErrorAsFatal(self, Group: str, Enabled: 
     if Enabled {
         return self.setSeverityForGroup(WarningOrError, Group, Fatal, SourceLocation {});
     }
-    let mut GroupDiags: kind, 8> = zeroed();
-    if  {
+    operator(self.Diags).setGroupSeverity(Group, Error);
+    let mut GroupDiags: kind, 8> = kind, 8> {};
+    if operator(self.Diags).getDiagnosticsInGroup(WarningOrError, Group, GroupDiags) {
         return true;
+    }
+    for Diag in GroupDiags {
+        let mut Info: *mut DiagnosticMapping = self.GetCurDiagState().getOrAddMapping(Diag);
+        if Info.getSeverity() == Fatal {
+            Info.setSeverity(Error);
+        }
+        Info.setNoErrorAsFatal(true);
     }
     return false;
 }
 
 fn DiagnosticsEngine::setSeverityForAll(self, Flavor: Flavor, Map: Severity, Loc: SourceLocation) {
-    let mut AllDiags: i32 = 0;
-    (Flavor);
+    let mut AllDiags: []kind = []kind {};
+    getAllDiagnostics(Flavor, AllDiags);
+    for Diag in AllDiags {
+        if operator(self.Diags).isWarningOrExtension(Diag) {
+            self.setSeverity(Diag, Map, Loc);
+        }
+    }
 }
 
 struct WarningsSpecialCaseList {
-    StrAlloc: i32,
-    Sections: i32,
-    DiagToSection: i32,
+    StrAlloc: BumpPtrAllocator,
+    Sections: []Section,
+    DiagToSection: kind, const Section *>,
 }
 
-fn WarningsSpecialCaseList::sections(self: *WarningsSpecialCaseList) -> ArrayRef<const Section> {}
+fn WarningsSpecialCaseList::sections(self: *WarningsSpecialCaseList) -> ArrayRef<const Section> {
+    return self.Sections;
+}
 
-fn WarningsSpecialCaseList::create(self, Input: *MemoryBuffer, Err: *mut str) -> i32 {
-    let mut WarningSuppressionList: auto = make_unique();
-    if !(&mut Input, Err) {
+fn WarningsSpecialCaseList::create(self, Input: *MemoryBuffer, Err: *mut str) -> unique_ptr<WarningsSpecialCaseList> {
+    let mut WarningSuppressionList: WarningsSpecialCaseList> = make_unique();
+    if !operator(WarningSuppressionList).createInternal(&mut Input, Err) {
         return null;
     }
-    return ;
+    return WarningSuppressionList;
 }
 
 fn WarningsSpecialCaseList::processSections(self, Diags: *mut DiagnosticsEngine) {
     let mut WarningFlavor: Flavor = WarningOrError;
+    for SectionEntry in self.sections() {
+        let mut DiagGroup: str = SectionEntry.name();
+        if DiagGroup == "*" {
+            continue;
+        }
+        let mut GroupDiags: kind> = kind> {};
+        if operator(Diags.getDiagnosticIDs()).getDiagnosticsInGroup(WarningFlavor, DiagGroup, GroupDiags) {
+            let mut Suggestion: str = getNearestOption(WarningFlavor, DiagGroup);
+            Diags.Report(warn_unknown_diag_option) << WarningFlavor as u32 << DiagGroup << !Suggestion.is_empty() << Suggestion;
+            continue;
+        }
+        for Diag in GroupDiags {
+            self.DiagToSection[Diag] = &mut SectionEntry;
+        }
+    }
 }
 
 fn DiagnosticsEngine::setDiagSuppressionMapping(self, Input: *mut MemoryBuffer) {
-    let mut Error: str = zeroed();
-    let mut WarningSuppressionList: auto = zeroed();
-    if ! {
-         << Input.getBufferIdentifier() << ;
+    let mut Error: str = "";
+    let mut WarningSuppressionList: unique_ptr<WarningsSpecialCaseList> = create(Input, Error);
+    if !WarningSuppressionList {
+        self.Report(err_drv_malformed_warning_suppression_mapping) << Input.getBufferIdentifier() << Error;
         return;
     }
-    WarningSuppressionList()(*self);
+    operator(WarningSuppressionList).processSections(*self);
+    self.DiagSuppressionMapping = SourceManager &) const> { Closure_4 { cap_0: &mut move(WarningSuppressionList) }, null, null };
 }
 
 fn WarningsSpecialCaseList::isDiagSuppressed(self: *WarningsSpecialCaseList, DiagId: kind, DiagLoc: SourceLocation, SM: *SourceManager) -> bool {
@@ -229,7 +358,7 @@ fn WarningsSpecialCaseList::isDiagSuppressed(self: *WarningsSpecialCaseList, Dia
     if !PLoc.isValid() {
         return false;
     }
-    let mut DiagSection: *Section = null;
+    let mut DiagSection: *Section = self.DiagToSection.lookup(DiagId);
     if !DiagSection {
         return false;
     }
@@ -255,15 +384,16 @@ fn DiagnosticsEngine::getDiagStateSystemClassForLoc(self: *DiagnosticsEngine, Lo
 }
 
 fn DiagnosticsEngine::isSuppressedViaMapping(self: *DiagnosticsEngine, DiagId: kind, DiagLoc: SourceLocation) -> bool {
-    if  {
+    if !self.hasSourceManager() || !self.DiagSuppressionMapping {
         return false;
     }
+    return self.DiagSuppressionMapping.call(DiagId, DiagLoc, self.getSourceManager());
 }
 
 fn DiagnosticsEngine::Report(self, storedDiag: *StoredDiagnostic) {
     let mut DiagStorage: DiagnosticStorage = DiagnosticStorage {};
-    DiagStorage()(storedDiag()(), storedDiag()());
-    DiagStorage()(storedDiag()(), storedDiag()());
+    DiagStorage.DiagRanges.append(storedDiag.range_begin(), storedDiag.range_end());
+    DiagStorage.FixItHints.append(storedDiag.fixit_begin(), storedDiag.fixit_end());
     assert!(self.Client, "DiagnosticConsumer not set!");
     let mut DiagLevel: Level = storedDiag.getLevel();
     let mut Info: Diagnostic = Diagnostic { self, storedDiag.getLocation(), storedDiag.getID(), DiagStorage, storedDiag.getMessage() };
@@ -272,6 +402,7 @@ fn DiagnosticsEngine::Report(self, storedDiag: *StoredDiagnostic) {
 
 fn DiagnosticsEngine::Report(self, DiagLevel: Level, Info: *Diagnostic) {
     assert!(DiagLevel != Ignored, "Cannot emit ignored diagnostics!");
+    assert!(!operator(self.getDiagnosticIDs()).isTrapDiag(Info.getID()), "Trap diagnostics should not be consumed by the DiagnosticsEngine");
     self.Client.HandleDiagnostic(DiagLevel, Info);
     if self.Client.IncludeInDiagnosticCounts() {
         if DiagLevel == Warning {
@@ -287,7 +418,7 @@ fn DiagnosticsEngine::ProcessDiag(self, DiagBuilder: *DiagnosticBuilder) -> bool
     let mut DiagLevel: Level = self.getDiagnosticLevel(DiagID, Info.getLocation());
     if DiagLevel >= Error {
         self.TrapNumErrorsOccurred += 1;
-        if  {
+        if operator(self.Diags).isUnrecoverable(DiagID) {
             self.TrapNumUnrecoverableErrorsOccurred += 1;
         }
     }
@@ -310,10 +441,10 @@ fn DiagnosticsEngine::ProcessDiag(self, DiagBuilder: *DiagnosticBuilder) -> bool
         return false;
     }
     if DiagLevel >= Error {
-        if  {
+        if operator(self.Diags).isUnrecoverable(DiagID) {
             self.UnrecoverableErrorOccurred = true;
         }
-        if  {
+        if operator(self.Diags).isDefaultMappingAsError(DiagID) {
             self.UncompilableErrorOccurred = true;
         }
         self.ErrorOccurred = true;
@@ -321,10 +452,11 @@ fn DiagnosticsEngine::ProcessDiag(self, DiagBuilder: *DiagnosticBuilder) -> bool
             self.NumErrors += 1;
         }
         if self.ErrorLimit && self.NumErrors > self.ErrorLimit && DiagLevel == Error {
+            self.Report(fatal_too_many_errors);
             return false;
         }
     }
-    if  {
+    if Info.getID() == fatal_too_many_errors {
         self.FatalErrorOccurred = true;
     }
     self.Report(DiagLevel, Info);
@@ -354,8 +486,11 @@ fn DiagnosticBuilder::DiagnosticBuilder(self, DiagObj: *mut DiagnosticsEngine, D
 fn DiagnosticBuilder::DiagnosticBuilder(self, D: *DiagnosticBuilder) {
     self.DiagLoc = D.DiagLoc;
     self.DiagID = D.DiagID;
+    self.FlagValue = D.FlagValue;
     self.DiagObj = D.DiagObj;
-    D() = null;
+    self.DiagStorage = D.DiagStorage;
+    D.DiagStorage = null;
+    self.Allocator = D.Allocator;
     self.IsActive = D.IsActive;
     self.IsForceEmit = D.IsForceEmit;
     D.Clear();
@@ -377,8 +512,8 @@ fn DiagnosticConsumer::HandleDiagnostic(self, DiagLevel: Level, Info: *Diagnosti
 // ========================================================
 // [C++ Template - Неинстанциированный шаблон функции: ModifierIs]
 // template <typename StrLen>
-// fn ModifierIs(Modifier: *u8, ModifierLen: u32, Str: [StrLen]char (&)) -> bool {
-//     return StrLen - 1 == ModifierLen && memcmp(Modifier, Str, StrLen - 1) == 0;
+// fn ModifierIs(Modifier: *u8, ModifierLen: u32, Str: [6]char (&)) -> bool {
+//     return  - 1 == ModifierLen && memcmp(Modifier, Str,  - 1) == 0;
 // }
 // ========================================================
 
@@ -426,7 +561,7 @@ fn HandleSelectModifier(DInfo: *Diagnostic, ValNo: u32, Argument: *u8, ArgumentL
 
 fn HandleIntegerSModifier(ValNo: u32, OutStr: *mut SmallVectorImpl<char>) {
     if ValNo != 1 {
-        OutStr()('s');
+        OutStr.push('s');
     }
 }
 
@@ -437,11 +572,17 @@ fn HandleOrdinalModifier(ValNo: u32, OutStr: *mut SmallVectorImpl<char>) {
 }
 
 fn HandleIntegerHumanModifier(ValNo: i64, OutStr: *mut SmallVectorImpl<char>) {
-    let mut Units: pair<int64_t, char>, 4> = void { void { void { 1000000000000, 'T' }, void { 1000000000, 'G' }, void { 1000000, 'M' }, void { 1000, 'k' } } };
+    let mut Units: pair<int64_t, char>, 4> = pair<int64_t, char>, 4> { [pair<long long, char> { 1000000000000, 'T' }, pair<long long, char> { 1000000000, 'G' }, pair<long long, char> { 1000000, 'M' }, pair<long long, char> { 1000, 'k' }] };
     let mut Out: raw_svector_ostream = OutStr;
     if ValNo < 0 {
         Out << "-";
         ValNo = -ValNo;
+    }
+    for x in Units {
+        if ValNo >= UnitSize {
+            Out << format("%0.2f%c", ValNo / UnitSize as f64, UnitSign);
+            return;
+        }
     }
     Out << ValNo;
 }
@@ -532,16 +673,16 @@ fn getTokenDescForDiagnostic(Kind: TokenKind) -> *u8 {
 }
 
 fn Diagnostic::FormatDiagnostic(self: *Diagnostic, OutStr: *mut SmallVectorImpl<char>) {
-    if  {
-        OutStr();
+    if self.StoredDiagMessage.has_value() {
+        OutStr.append(operator(self.StoredDiagMessage).begin(), operator(self.StoredDiagMessage).end());
         return;
     }
-    let mut Diag: str = zeroed();
+    let mut Diag: str = operator(self.getDiags().getDiagnosticIDs()).getDescription(self.getID());
     self.FormatDiagnostic(Diag.begin(), Diag.end(), OutStr);
 }
 
 fn EscapeStringForDiagnostic(Str: str, OutStr: *mut SmallVectorImpl<char>, ForCodepoint: bool) {
-    OutStr()(OutStr()() + Str.len);
+    OutStr.reserve(OutStr.len + Str.len);
     let mut Begin: *u8 = Str.ptr as *u8;
     let mut OutStream: raw_svector_ostream = OutStr;
     let mut Size: u32 = Str.len;
@@ -576,7 +717,7 @@ fn EscapeStringForDiagnostic(Str: str, OutStr: *mut SmallVectorImpl<char>, ForCo
             assert!(conversionOK == Res, "the sequence is legal UTF-8 but we couldn't convert it to UTF-32");
             assert!(Begin == CodepointEnd, "we must be further along in the string now");
             if isPrintable(CodepointValue) || (!ForCodepoint && isFormatting(CodepointValue)) {
-                OutStream << (if ForCodepoint { "'" } else { "" }) << CodepointBegin as *u8 << (if ForCodepoint { "' " } else { "" });
+                OutStream << (if ForCodepoint { "'" } else { "" }) << CodepointBegin as *u8[0..distance(CodepointBegin, CodepointEnd)] << (if ForCodepoint { "' " } else { "" });
                 if !ForCodepoint {
                     continue;
                 }
@@ -594,16 +735,16 @@ fn EscapeStringForDiagnostic(Str: str, OutStr: *mut SmallVectorImpl<char>) {
 }
 
 fn EscapeSingleCodepointForDiagnostic(Str: str) -> str {
-    let mut CP: str = zeroed();
-    EscapeStringForDiagnostic(Str, true);
-    return ;
+    let mut CP: str = "";
+    EscapeStringForDiagnostic(Str, CP, true);
+    return CP;
 }
 
 fn EscapeSingleCodepointForDiagnostic(CP: UTF32) -> str {
     let mut ResultBuf: [4]i8 = zeroed();
     let mut ResultPtr: *mut u8 = ResultBuf;
     if !ConvertCodePointToUTF8(CP, ResultPtr) {
-        return formatv("<{0:X+}>", CP)();
+        return formatv("<{0:X+}>", CP);
     }
     return EscapeSingleCodepointForDiagnostic(ResultBuf[0..ResultPtr - ResultBuf]);
 }
@@ -614,23 +755,23 @@ fn Diagnostic::FormatDiagnostic(self: *Diagnostic, DiagStr: *u8, DiagEnd: *u8, O
         EscapeStringForDiagnostic(S, OutStr);
         return;
     }
-    let mut FormattedArgs: ArgumentValue, 8> = ;
-    let mut QualTypeVals: SmallVector<intptr_t, 2> = ;
-    let mut Tree: str = zeroed();
+    let mut FormattedArgs: ArgumentValue, 8> = ArgumentValue, 8> {};
+    let mut QualTypeVals: SmallVector<intptr_t, 2> = SmallVector<intptr_t, 2> {};
+    let mut Tree: str = "";
     for let mut i: u32 = 0;
 let mut e: u32 = self.getNumArgs(); i < e; i += 1 {
         if self.getArgKind(i) == ak_qualtype {
-            QualTypeVals()(self.getRawArg(i));
+            QualTypeVals.push(self.getRawArg(i));
         }
     }
     while DiagStr != DiagEnd {
         if DiagStr[0] != '%' {
             let mut StrEnd: *u8 = find(DiagStr, DiagEnd, '%');
-            OutStr()(DiagStr, StrEnd);
+            OutStr.append(DiagStr, StrEnd);
             DiagStr = StrEnd;
             continue;
         } else if isPunctuation(DiagStr[1]) {
-            OutStr()(DiagStr[1]);
+            OutStr.push(DiagStr[1]);
             DiagStr += 2;
             continue;
         }
@@ -737,7 +878,7 @@ let mut e: u32 = self.getNumArgs(); i < e; i += 1 {
                 assert!(ModifierLen == 0, "No modifiers for strings yet");
                 if !II {
                     let mut S: *u8 = "(null)";
-                    OutStr()(S, S + strlen(S));
+                    OutStr.append(S, S + strlen(S));
                     continue;
                 }
                 OutStr << ''' << II.getName() << ''';
@@ -756,11 +897,11 @@ let mut e: u32 = self.getNumArgs(); i < e; i += 1 {
                 let mut val: i64 = &mut TDT as i64;
                 let mut ArgumentEnd: *u8 = Argument + ArgumentLen;
                 let mut Pipe: *u8 = ScanFormat(Argument, ArgumentEnd, '|');
-                if self.getDiags().PrintTemplateTree && () {
+                if self.getDiags().PrintTemplateTree && Tree.is_empty() {
                     TDT.PrintFromType = true;
                     TDT.PrintTree = true;
-                    self.getDiags().ConvertArgToString(Kind, val, Modifier[0..ModifierLen], Argument[0..ArgumentLen]);
-                    if !() {
+                    self.getDiags().ConvertArgToString(Kind, val, Modifier[0..ModifierLen], Argument[0..ArgumentLen], FormattedArgs, Tree, QualTypeVals);
+                    if !Tree.is_empty() {
                         self.FormatDiagnostic(Pipe + 1, ArgumentEnd, OutStr);
                         break;
                     }
@@ -770,15 +911,15 @@ let mut e: u32 = self.getNumArgs(); i < e; i += 1 {
                 self.FormatDiagnostic(Argument, FirstDollar, OutStr);
                 TDT.PrintTree = false;
                 TDT.PrintFromType = true;
-                self.getDiags().ConvertArgToString(Kind, val, Modifier[0..ModifierLen], Argument[0..ArgumentLen], OutStr);
+                self.getDiags().ConvertArgToString(Kind, val, Modifier[0..ModifierLen], Argument[0..ArgumentLen], FormattedArgs, OutStr, QualTypeVals);
                 if !TDT.TemplateDiffUsed {
-                    FormattedArgs();
+                    FormattedArgs.push(make_pair(ak_qualtype, TDT.FromType));
                 }
                 self.FormatDiagnostic(FirstDollar + 1, SecondDollar, OutStr);
                 TDT.PrintFromType = false;
-                self.getDiags().ConvertArgToString(Kind, val, Modifier[0..ModifierLen], Argument[0..ArgumentLen], OutStr);
+                self.getDiags().ConvertArgToString(Kind, val, Modifier[0..ModifierLen], Argument[0..ArgumentLen], FormattedArgs, OutStr, QualTypeVals);
                 if !TDT.TemplateDiffUsed {
-                    FormattedArgs();
+                    FormattedArgs.push(make_pair(ak_qualtype, TDT.ToType));
                 }
                 self.FormatDiagnostic(SecondDollar + 1, Pipe, OutStr);
                 break;
@@ -787,12 +928,12 @@ let mut e: u32 = self.getNumArgs(); i < e; i += 1 {
         if Kind == ak_qualtype_pair {
             continue;
         } else if Kind != ak_std_string {
-            FormattedArgs();
+            FormattedArgs.push(make_pair(Kind, self.getRawArg(ArgNo)));
         } else {
-            FormattedArgs();
+            FormattedArgs.push(make_pair(ak_c_string, self.getArgStdStr(ArgNo).ptr as i64));
         }
     }
-    OutStr()((), ());
+    OutStr.append(Tree.begin(), Tree.end());
 }
 
 fn StoredDiagnostic::StoredDiagnostic(self, Level: Level, Info: *Diagnostic) {
@@ -800,16 +941,16 @@ fn StoredDiagnostic::StoredDiagnostic(self, Level: Level, Info: *Diagnostic) {
     if Info.getLocation().isValid() {
         self.Loc = FullSourceLoc { ID: Info.getLocation(), SrcMgr: Info.getSourceManager() };
     }
-    let mut Message: str = zeroed();
-    Info();
-    self((), ());
-    self(Info()()(), Info()()());
-    self(Info()()(), Info()()());
+    let mut Message: str = "";
+    Info.FormatDiagnostic(Message);
+    self.Message.assign(Message.begin(), Message.end());
+    self.Ranges.assign(Info.getRanges().begin(), Info.getRanges().end());
+    self.FixIts.assign(Info.getFixItHints().begin(), Info.getFixItHints().end());
 }
 
 fn op_<<(OS: *mut raw_ostream, SD: *StoredDiagnostic) -> *mut raw_ostream {
     if SD.getLocation().hasManager() {
-        OS << SD.getLocation().printToString << ": ";
+        OS << SD.getLocation().printToString(SD.getLocation().getManager()) << ": ";
     }
     OS << SD.getMessage();
     return OS;
@@ -837,6 +978,9 @@ fn ForwardingDiagnosticConsumer::IncludeInDiagnosticCounts(self: *ForwardingDiag
 }
 
 fn DiagStorageAllocator::DiagStorageAllocator(self) {
+    for let mut I: u32 = 0; I != NumCached; I += 1 {
+        self.FreeList[I] = self.Cached + I;
+    }
     self.NumFreeListEntries = NumCached;
 }
 
@@ -852,4 +996,57 @@ struct Closure_1 {
 
 fn Closure_1::call(self: *Closure_1, P: *DiagStatePoint) -> bool {
         return self.Offset <= self.Offset;
+    }
+
+struct Closure_2 {
+    PrintedOuterHeading: *mut bool,
+    File: *mut File,
+    ID: *mut FileID,
+    SrcMgr: *mut SourceManager,
+    F: *mut value_type,
+}
+
+unsafe fn Closure_2::call(self: *mut Closure_2) -> auto {
+            if (*self.PrintedOuterHeading) {
+                return;
+            }
+            (*self.PrintedOuterHeading) = true;
+            errs() << "File " << &mut (*self.File) << " <FileID " << (*self.ID).getHashValue() << ">: " << (*self.SrcMgr).getBufferOrFake((*self.ID), SourceLocation {}).getBufferIdentifier();
+            if (*self.F).second.Parent {
+                let mut Decomp: FileIDAndOffset = (*self.SrcMgr).getDecomposedIncludedLoc((*self.ID));
+                assert!((*self.File).ParentOffset == Decomp.second);
+                errs() << " parent " << (*self.File).Parent << " <FileID " << Decomp.first.getHashValue() << "> ";
+                (*self.SrcMgr).getLocForStartOfFile(Decomp.first).getLocWithOffset(Decomp.second).print(errs(), (*self.SrcMgr));
+            }
+            if (*self.File).HasLocalTransitions {
+                errs() << " has_local_transitions";
+            }
+            errs() << "\n";
+        }
+
+struct Closure_3 {
+    PrintedInnerHeading: *mut bool,
+    PrintOuterHeading: *mut (lambda at P:\Goraw\llvm-project\clang\lib\Basic\Diagnostic.cpp:258:30),
+    SrcMgr: *mut SourceManager,
+    ID: *mut FileID,
+    Transition: *mut DiagStatePoint,
+}
+
+unsafe fn Closure_3::call(self: *mut Closure_3) -> auto {
+                if (*self.PrintedInnerHeading) {
+                    return;
+                }
+                (*self.PrintedInnerHeading) = true;
+                (*self.PrintOuterHeading).call();
+                errs() << "  ";
+                (*self.SrcMgr).getLocForStartOfFile((*self.ID)).getLocWithOffset((*self.Transition).Offset).print(errs(), (*self.SrcMgr));
+                errs() << ": state " << (*self.Transition).State << ":\n";
+            }
+
+struct Closure_4 {
+    cap_0: *mut WarningsSpecialCaseList>> &>,
+}
+
+unsafe fn Closure_4::call(self: *mut Closure_4, DiagId: kind, DiagLoc: SourceLocation, SM: *SourceManager) -> bool {
+        return operator(WarningSuppressionList).isDiagSuppressed(DiagId, DiagLoc, SM);
     }

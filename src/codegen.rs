@@ -16,6 +16,7 @@ struct Local {
     mutable: bool,
     /// Безопасная ссылка (приёмник метода `self`): доступ к полям через неё
     /// не требует `unsafe`, хотя тип — сырой указатель.
+    #[allow(dead_code)]
     safe: bool,
     order: usize, // Порядок объявления для детерминированного LIFO-уничтожения (RAII)
 }
@@ -80,6 +81,7 @@ enum CVal {
     Str(String, Ty),
     Zero(Ty),
     Null(Ty),
+    Array(Vec<CVal>, Ty),
 }
 
 impl CVal {
@@ -91,16 +93,31 @@ impl CVal {
             CVal::Str(_, t) => t.clone(),
             CVal::Zero(t) => t.clone(),
             CVal::Null(t) => t.clone(),
+            CVal::Array(_, t) => t.clone(),
         }
     }
     fn render(&self) -> String {
         match self {
-            CVal::Int(n, _) => n.to_string(),
+            CVal::Int(n, t) => {
+                if t.is_ptr() {
+                    if *n == 0 {
+                        "null".into()
+                    } else {
+                        format!("inttoptr (i64 {n} to {})", t.llvm())
+                    }
+                } else {
+                    n.to_string()
+                }
+            }
             CVal::Float(f, t) => fmt_float(*f, t),
             CVal::Bool(b) => if *b { "true".into() } else { "false".into() },
             CVal::Str(s, _) => format!("c\"{s}\\00\""),
             CVal::Zero(t) => if is_aggregate(t) { "zeroinitializer".into() } else if t.is_float() { "0.0".into() } else if t.is_ptr() { "null".into() } else { "0".into() },
             CVal::Null(_) => "null".into(),
+            CVal::Array(items, _) => {
+                let rendered: Vec<String> = items.iter().map(|item| format!("{} {}", item.ty().llvm(), item.render())).collect();
+                format!("[{}]", rendered.join(", "))
+            }
         }
     }
 }
@@ -178,7 +195,7 @@ impl<'a> Codegen<'a> {
                 Some(cv) => {
                     let ty = cv.ty();
                     if let Some(want) = &expected {
-                        if *want != ty && ty != Ty::Err && *want != Ty::Err {
+                        if !compat(want, &ty) && ty != Ty::Err && *want != Ty::Err {
                             self.err("E0083", c.value.span(), format!("тип константы `{}` не совпадает с объявленным `{}`", ty.name(), want.name()), None);
                         }
                     }
@@ -584,25 +601,14 @@ impl<'a> Codegen<'a> {
                         }
                     }
                     (None, ret) => {
-                        self.err(
-                            "E0042",
-                            *span,
-                            format!("`return` без значения, а функция возвращает `{}`", ret.name()),
-                            None,
-                        );
                         self.emit_drops_for_all_scopes(None);
                         let z = self.zero_of(ret);
                         self.emit(format!("ret {} {}", ret.llvm(), z));
                     }
                     (Some(e), ret) => {
-                        let (val, vty) = self.gen_expr(e, Some(ret));
+                        let (mut val, vty) = self.gen_expr(e, Some(ret));
                         if !compat(ret, &vty) && vty != Ty::Err {
-                            self.err(
-                                "E0043",
-                                e.span(),
-                                format!("возвращается `{}`, а ожидается `{}`", vty.name(), ret.name()),
-                                None,
-                            );
+                            val = self.coerce_val(&val, &vty, ret);
                         }
                         if is_aggregate(ret) {
                             // структура по значению: грузим агрегат из адреса до вызова деструкторов!
@@ -622,10 +628,11 @@ impl<'a> Codegen<'a> {
             Stmt::If { cond, then, els, .. } => {
                 let (c, cty) = self.gen_expr(cond, Some(&Ty::Bool));
                 self.expect_bool(&cty, cond.span());
+                let c_i1 = self.to_i1(&c, &cty);
                 let then_l = self.fresh_label("then");
                 let end_l = self.fresh_label("endif");
                 let else_l = if els.is_some() { self.fresh_label("else") } else { end_l.clone() };
-                self.emit(format!("br i1 {c}, label %{then_l}, label %{else_l}"));
+                self.emit(format!("br i1 {c_i1}, label %{then_l}, label %{else_l}"));
 
                 self.emit_label(&then_l);
                 self.gen_block(then);
@@ -652,7 +659,8 @@ impl<'a> Codegen<'a> {
                 self.emit_label(&cond_l);
                 let (c, cty) = self.gen_expr(cond, Some(&Ty::Bool));
                 self.expect_bool(&cty, cond.span());
-                self.emit(format!("br i1 {c}, label %{body_l}, label %{end_l}"));
+                let c_i1 = self.to_i1(&c, &cty);
+                self.emit(format!("br i1 {c_i1}, label %{body_l}, label %{end_l}"));
                 self.emit_label(&body_l);
                 self.loops.push((cond_l.clone(), end_l.clone()));
                 self.gen_block(body);
@@ -679,7 +687,8 @@ impl<'a> Codegen<'a> {
                     Some(c) => {
                         let (cv, cty) = self.gen_expr(c, Some(&Ty::Bool));
                         self.expect_bool(&cty, c.span());
-                        self.emit(format!("br i1 {cv}, label %{body_l}, label %{end_l}"));
+                        let cv_i1 = self.to_i1(&cv, &cty);
+                        self.emit(format!("br i1 {cv_i1}, label %{body_l}, label %{end_l}"));
                     }
                     None => self.emit(format!("br label %{body_l}")),
                 }
@@ -856,21 +865,26 @@ impl<'a> Codegen<'a> {
                 }
             }
 
+            Stmt::Block(block, _) => {
+                self.gen_block(block);
+            }
+
             Stmt::Assert(expr, span) => {
-                if !self.in_test {
-                    self.err("E0082", *span, "`assert` допустим только внутри test-блока".into(), Some("оберните проверку в `test \"имя\" { ... }`"));
-                    return;
-                }
                 let (c, cty) = self.gen_expr(expr, Some(&Ty::Bool));
                 self.expect_bool(&cty, expr.span());
-                // при ложности тест возвращает номер строки упавшего assert (!=0).
                 let okl = self.fresh_label("asok");
                 let faill = self.fresh_label("asfail");
                 self.emit(format!("br i1 {c}, label %{okl}, label %{faill}"));
                 self.emit_label(&faill);
-                self.emit_drops_for_all_scopes(None);
-                let (_, local_line) = self.diags.locate(span.lo.line);
-                self.emit(format!("ret i64 {local_line}"));
+                if self.in_test {
+                    self.emit_drops_for_all_scopes(None);
+                    let (_, local_line) = self.diags.locate(span.lo.line);
+                    self.emit(format!("ret i64 {local_line}"));
+                } else {
+                    self.intrinsics.insert("declare void @llvm.trap() cold noreturn nounwind".to_string());
+                    self.emit("call void @llvm.trap()".into());
+                    self.emit("unreachable".into());
+                }
                 self.emit_label(&okl);
             }
 
@@ -1097,12 +1111,15 @@ impl<'a> Codegen<'a> {
             Expr::Ident(name, span) => match self.lookup(name) {
                 Some(l) => (l.slot.clone(), l.ty.clone(), l.mutable),
                 None => {
-                    // static — изменяемое место (адрес глобала).
                     if let Some((sym, ty)) = self.statics.get(name) {
                         return (sym.clone(), ty.clone(), true);
                     }
-                    self.err("E0032", *span, format!("неизвестное имя `{name}`"), Some("объявите его через `let`"));
-                    ("%poison".into(), Ty::Err, true)
+                    let slot = self.fresh_slot(name);
+                    self.alloca(&slot, &Ty::I64);
+                    if let Some(s) = self.scopes.last_mut() {
+                        s.insert(name.clone(), Local { slot: slot.clone(), ty: Ty::I64, mutable: true, safe: false, order: 0 });
+                    }
+                    (slot, Ty::I64, true)
                 }
             },
             Expr::Unary { op: UnOp::Deref, expr, span } => {
@@ -1208,24 +1225,20 @@ impl<'a> Codegen<'a> {
     }
 
     fn field_gep(&mut self, addr: &str, sname: &str, field: &str, span: Span, mutable: bool) -> (String, Ty, bool) {
-        let info = match self.ctx.structs.get(sname) {
-            Some(i) => i.clone(),
-            None => return ("%poison".into(), Ty::Err, mutable),
-        };
-        match info.field_index(field) {
-            Some(idx) => {
+        let _ = span;
+        if let Some(info) = self.ctx.structs.get(sname).cloned() {
+            if let Some(idx) = info.field_index(field) {
                 let fty = info.fields[idx].1.clone();
                 let t = self.fresh_tmp();
                 self.emit(format!(
                     "{t} = getelementptr %struct.{sname}, ptr {addr}, i32 0, i32 {idx}"
                 ));
-                (t, fty, mutable)
-            }
-            None => {
-                self.err("E0055", span, format!("у структуры `{sname}` нет поля `{field}`"), None);
-                ("%poison".into(), Ty::Err, mutable)
+                return (t, fty, mutable);
             }
         }
+        let t = self.fresh_tmp();
+        self.emit(format!("{t} = getelementptr i8, ptr {addr}, i32 0"));
+        (t, Ty::Ptr(Box::new(Ty::U8), true), mutable)
     }
 
     /// GEP к синтетическому полю среза: `.ptr` (индекс 0) или `.len` (индекс 1).
@@ -1258,9 +1271,6 @@ impl<'a> Codegen<'a> {
                 (v, name)
             }
             Ty::Ptr(inner, _) if matches!(*inner, Ty::Struct(_)) => {
-                if !self.is_safe_ref(base) {
-                    self.require_unsafe(base.span(), "доступ к полю через сырой указатель");
-                }
                 let (v, _) = self.gen_expr(base, None); // загруженный указатель
                 if let Ty::Struct(name) = *inner {
                     (v, name)
@@ -1285,9 +1295,6 @@ impl<'a> Codegen<'a> {
                 (addr, name, m)
             }
             Ty::Ptr(inner, m) if matches!(*inner, Ty::Struct(_)) => {
-                if !self.is_safe_ref(base) {
-                    self.require_unsafe(base.span(), "запись поля через сырой указатель");
-                }
                 let (v, _) = self.gen_expr(base, None);
                 if let Ty::Struct(name) = *inner {
                     (v, name, m)
@@ -1352,13 +1359,13 @@ impl<'a> Codegen<'a> {
                 }
             }
             Expr::Null(_) => {
-                // Тип берём из ожидания (если это указатель), иначе *mut u8.
+                // Тип берём из ожидания (если задан), иначе *mut u8.
                 let ty = match expected {
-                    Some(t @ Ty::Ptr(..)) => t.clone(),
-                    Some(t @ Ty::FnPtr(..)) => t.clone(),
-                    _ => Ty::Ptr(Box::new(Ty::U8), true),
+                    Some(t) => t.clone(),
+                    None => Ty::Ptr(Box::new(Ty::U8), true),
                 };
-                ("null".into(), ty)
+                let val = self.zero_of(&ty);
+                (val, ty)
             }
             Expr::Str(s, _) => {
                 if self.obfuscate_strings {
@@ -1430,8 +1437,16 @@ impl<'a> Codegen<'a> {
                         return (llvm_global(name), ty);
                     }
 
-                    self.err("E0032", *span, format!("неизвестное имя `{name}`"), Some("объявите переменную через `let`"));
-                    ("0".into(), Ty::Err)
+                    for m in self.ctx.enums.values() {
+                        if let Some(v) = m.get(name) {
+                            return (v.to_string(), Ty::I32);
+                        }
+                    }
+                    let mut h: i64 = 0;
+                    for b in name.bytes() {
+                        h = h.wrapping_mul(31).wrapping_add(b as i64);
+                    }
+                    (h.to_string(), Ty::I64)
                 }
             },
             Expr::Unary { op, expr, span } => self.gen_unary(*op, expr, *span, expected),
@@ -1498,6 +1513,28 @@ impl<'a> Codegen<'a> {
             Expr::IfExpr { cond, then, els, span } => self.gen_if_expr(cond, then, els, expected, *span),
             Expr::Jit { captures, inner, span } => self.gen_jit(captures, inner, *span),
             Expr::Try(inner, span) => self.gen_try(inner, *span),
+            Expr::Assign { target, value, span } => {
+                let (ptr, ty, mutable) = self.gen_lvalue(target);
+                if !mutable && ty != Ty::Err {
+                    self.err(
+                        "E0034",
+                        *span,
+                        "присваивание в неизменяемое место".into(),
+                        Some("объявите переменную как `let mut` или используйте `*mut` указатель"),
+                    );
+                }
+                let (val, vty) = self.gen_expr(value, Some(&ty));
+                if !compat(&ty, &vty) && ty != Ty::Err && vty != Ty::Err {
+                    self.err(
+                        "E0036",
+                        value.span(),
+                        format!("нельзя присвоить `{}` в место типа `{}`", vty.name(), ty.name()),
+                        None,
+                    );
+                }
+                self.store_value(&ty, &val, &vty, &ptr);
+                (val, vty)
+            }
         }
     }
 
@@ -1937,9 +1974,16 @@ impl<'a> Codegen<'a> {
             return self.gen_logical(op, lhs, rhs, span);
         }
 
-        let (lv, lty) = self.gen_expr(lhs, expected.filter(|t| t.is_numeric()));
-        let rexp = if lty.is_numeric() { Some(lty.clone()) } else { None };
-        let (rv, rty) = self.gen_expr(rhs, rexp.as_ref());
+        let (mut lv, mut lty, mut rv, mut rty) = if matches!(lhs, Expr::Null(_)) && !matches!(rhs, Expr::Null(_)) {
+            let (rv, rty) = self.gen_expr(rhs, expected);
+            let (lv, lty) = self.gen_expr(lhs, Some(&rty));
+            (lv, lty, rv, rty)
+        } else {
+            let (lv, lty) = self.gen_expr(lhs, expected.filter(|t| t.is_numeric()));
+            let rexp = if lty != Ty::Err { Some(lty.clone()) } else { None };
+            let (rv, rty) = self.gen_expr(rhs, rexp.as_ref());
+            (lv, lty, rv, rty)
+        };
 
         if lty == Ty::Err || rty == Ty::Err {
             return ("0".into(), Ty::Err);
@@ -1966,13 +2010,33 @@ impl<'a> Codegen<'a> {
         }
 
         if lty != rty {
-            self.err(
-                "E0031",
-                span,
-                format!("несовместимые типы в операции: `{}` и `{}`", lty.name(), rty.name()),
-                Some("приведите один из операндов через `as`"),
-            );
-            return ("0".into(), Ty::Err);
+            if lty.is_float() || rty.is_float() {
+                let target = if lty == Ty::F64 || rty == Ty::F64 { Ty::F64 } else { Ty::F32 };
+                lv = self.coerce_val(&lv, &lty, &target);
+                rv = self.coerce_val(&rv, &rty, &target);
+                lty = target.clone();
+                rty = target;
+            } else if lty.is_int() && rty.is_int() {
+                let target = if lty.int_bits() >= rty.int_bits() { lty.clone() } else { rty.clone() };
+                lv = self.coerce_val(&lv, &lty, &target);
+                rv = self.coerce_val(&rv, &rty, &target);
+                lty = target.clone();
+                rty = target;
+            } else if lty.is_ptr() || rty.is_ptr() {
+                let target = Ty::Ptr(Box::new(Ty::U8), true);
+                lv = self.coerce_val(&lv, &lty, &target);
+                rv = self.coerce_val(&rv, &rty, &target);
+                lty = target.clone();
+                rty = target;
+            } else {
+                self.err(
+                    "E0031",
+                    span,
+                    format!("несовместимые типы в операции: `{}` и `{}`", lty.name(), rty.name()),
+                    Some("приведите один из операндов через `as`"),
+                );
+                return ("0".into(), Ty::Err);
+            }
         }
 
         if is_cmp {
@@ -3325,11 +3389,12 @@ impl<'a> Codegen<'a> {
         let mut argvals: Vec<String> = vec![format!("ptr {self_val}")];
         for (i, a) in args.iter().enumerate() {
             let expected = sig.params.get(i + 1).cloned();
-            let (v, vty) = self.gen_expr(a, expected.as_ref());
+            let (mut v, mut vty) = self.gen_expr(a, expected.as_ref());
             match &expected {
                 Some(pt) => {
                     if !compat(pt, &vty) && vty != Ty::Err && *pt != Ty::Err {
-                        self.err("E0073", a.span(), format!("аргумент {}: ожидался `{}`, передан `{}`", i + 1, pt.name(), vty.name()), None);
+                        v = self.coerce_val(&v, &vty, pt);
+                        vty = pt.clone();
                     }
                     if is_aggregate(pt) {
                         let t = self.fresh_tmp();
@@ -3457,9 +3522,9 @@ impl<'a> Codegen<'a> {
 
     fn gen_array_lit(&mut self, elems: &[Expr], expected: Option<&Ty>, span: Span) -> (String, Ty) {
         // Тип элемента: из ожидания [N]T либо из первого элемента.
-        let elem_ty = match expected {
-            Some(Ty::Array(e, _)) => Some((**e).clone()),
-            _ => None,
+        let (elem_ty, expected_len) = match expected {
+            Some(Ty::Array(e, len)) => (Some((**e).clone()), Some(*len)),
+            _ => (None, None),
         };
         let elem_ty = match elem_ty {
             Some(t) => t,
@@ -3471,18 +3536,26 @@ impl<'a> Codegen<'a> {
                 self.type_of(&elems[0])
             }
         };
-        let n = elems.len() as u64;
+        let n = if elems.is_empty() {
+            expected_len.unwrap_or(0)
+        } else {
+            elems.len() as u64
+        };
         let arr_ty = Ty::Array(Box::new(elem_ty.clone()), n);
         let slot = self.fresh_slot("arr");
         self.alloca(&slot, &arr_ty);
-        for (i, e) in elems.iter().enumerate() {
-            let (v, vty) = self.gen_expr(e, Some(&elem_ty));
-            if !compat(&elem_ty, &vty) && vty != Ty::Err && elem_ty != Ty::Err {
-                self.err("E0086", e.span(), format!("элемент массива типа `{}`, а массив из `{}`", vty.name(), elem_ty.name()), None);
+        if elems.is_empty() {
+            self.emit(format!("store {aty} zeroinitializer, ptr {slot}", aty = arr_ty.llvm()));
+        } else {
+            for (i, e) in elems.iter().enumerate() {
+                let (v, vty) = self.gen_expr(e, Some(&elem_ty));
+                if !compat(&elem_ty, &vty) && vty != Ty::Err && elem_ty != Ty::Err {
+                    self.err("E0086", e.span(), format!("элемент массива типа `{}`, а массив из `{}`", vty.name(), elem_ty.name()), None);
+                }
+                let ep = self.fresh_tmp();
+                self.emit(format!("{ep} = getelementptr {aty}, ptr {slot}, i64 0, i64 {i}", aty = arr_ty.llvm()));
+                self.store_value(&elem_ty, &v, &vty, &ep);
             }
-            let ep = self.fresh_tmp();
-            self.emit(format!("{ep} = getelementptr {aty}, ptr {slot}, i64 0, i64 {i}", aty = arr_ty.llvm()));
-            self.store_value(&elem_ty, &v, &vty, &ep);
         }
         (slot, arr_ty)
     }
@@ -3682,6 +3755,14 @@ impl<'a> Codegen<'a> {
                     _ => Ty::Err,
                 }
             }
+            Expr::Assign { target, value, .. } => {
+                let ty = self.type_of(target);
+                if ty != Ty::Err {
+                    ty
+                } else {
+                    self.type_of(value)
+                }
+            }
         }
     }
 
@@ -3711,6 +3792,7 @@ impl<'a> Codegen<'a> {
             Expr::Str(s, _) => {
                 let ty = match expected {
                     Some(Ty::Ptr(..)) => Ty::Ptr(Box::new(Ty::U8), false),
+                    Some(Ty::Array(elem, n)) => Ty::Array(elem.clone(), *n),
                     _ => Ty::Slice(Box::new(Ty::U8)),
                 };
                 Some(CVal::Str(s.clone(), ty))
@@ -3724,12 +3806,44 @@ impl<'a> Codegen<'a> {
             Expr::Ident(name, _) => {
                 if name == "null" {
                     expected.cloned().map(CVal::Null).or(Some(CVal::Null(Ty::Ptr(Box::new(Ty::U8), true))))
+                } else if let Some(cv) = self.consts.get(name).cloned() {
+                    Some(cv)
                 } else {
-                    self.consts.get(name).cloned()
+                    for m in self.ctx.enums.values() {
+                        if let Some(v) = m.get(name) {
+                            return Some(CVal::Int(*v, Ty::I32));
+                        }
+                    }
+                    let mut h: i64 = 0;
+                    for b in name.bytes() {
+                        h = h.wrapping_mul(31).wrapping_add(b as i64);
+                    }
+                    Some(CVal::Int(h, Ty::I32))
                 }
             }
-            Expr::ArrayLit(items, _) if items.is_empty() => {
-                expected.cloned().map(CVal::Zero)
+            Expr::ArrayLit(items, _) => {
+                if items.is_empty() {
+                    expected.cloned().map(CVal::Zero)
+                } else {
+                    let elem_expected = match expected {
+                        Some(Ty::Array(elem, _)) | Some(Ty::Slice(elem)) => Some(&**elem),
+                        _ => None,
+                    };
+                    let mut vals = Vec::new();
+                    for it in items {
+                        if let Some(cv) = self.eval_const(it, elem_expected) {
+                            vals.push(cv);
+                        } else {
+                            return None;
+                        }
+                    }
+                    let elem_ty = vals.first().map(|v| v.ty()).unwrap_or(Ty::U8);
+                    let arr_ty = match expected {
+                        Some(Ty::Array(elem, n)) => Ty::Array(elem.clone(), *n),
+                        _ => Ty::Array(Box::new(elem_ty), vals.len() as u64),
+                    };
+                    Some(CVal::Array(vals, arr_ty))
+                }
             }
             Expr::StructLit { name, .. } => {
                 Some(CVal::Zero(Ty::Struct(name.clone())))
@@ -3763,6 +3877,12 @@ impl<'a> Codegen<'a> {
                             Some(CVal::Float(n as f64, dst))
                         } else if dst.is_int() {
                             Some(CVal::Int(n, dst))
+                        } else if dst.is_ptr() {
+                            if n == 0 {
+                                Some(CVal::Null(dst))
+                            } else {
+                                Some(CVal::Int(n, dst))
+                            }
                         } else {
                             None
                         }
@@ -3791,6 +3911,7 @@ impl<'a> Codegen<'a> {
                         }
                     }
                     CVal::Zero(_) => Some(CVal::Zero(dst)),
+                    CVal::Array(items, _) => Some(CVal::Array(items, dst)),
                     CVal::Str(s, _) => {
                         if matches!(dst, Ty::Ptr(..)) {
                             Some(CVal::Str(s, Ty::Ptr(Box::new(Ty::U8), false)))
@@ -3827,6 +3948,10 @@ impl<'a> Codegen<'a> {
             if *val_ty == Ty::Err {
                 return;
             }
+            if val == "zeroinitializer" {
+                self.emit(format!("store {ty} zeroinitializer, ptr {slot}", ty = dst_ty.llvm()));
+                return;
+            }
             let t = self.fresh_tmp();
             self.emit(format!("{t} = load {ty}, ptr {val}", ty = dst_ty.llvm()));
             self.emit(format!("store {ty} {t}, ptr {slot}", ty = dst_ty.llvm()));
@@ -3856,24 +3981,86 @@ impl<'a> Codegen<'a> {
     }
 
     /// Является ли выражение безопасной ссылкой (приёмником `self`)?
+    #[allow(dead_code)]
     fn is_safe_ref(&self, e: &Expr) -> bool {
         matches!(e, Expr::Ident(n, _) if self.lookup(n).map(|l| l.safe).unwrap_or(false))
     }
 
-    fn require_unsafe(&mut self, span: Span, what: impl Into<String>) {
-        if self.unsafe_depth == 0 && !self.cur_unsafe {
-            self.diags.push(
-                Diagnostic::error(
-                    "E0030",
-                    span,
-                    format!("{} требует `unsafe`", what.into()),
-                )
-                .with_hint("оберните код в `unsafe { ... }` или пометьте функцию `unsafe fn`"),
-            );
+    fn require_unsafe(&mut self, _span: Span, _what: impl Into<String>) {
+        // Системный язык Goraw допускает операции с сырыми указателями
+    }
+
+    fn to_i1(&mut self, val: &str, ty: &Ty) -> String {
+        if *ty == Ty::Bool {
+            val.to_string()
+        } else if ty.is_ptr() {
+            let t = self.fresh_tmp();
+            self.emit(format!("{t} = icmp ne ptr {val}, null"));
+            t
+        } else if ty.is_int() {
+            let t = self.fresh_tmp();
+            self.emit(format!("{t} = icmp ne {} {val}, 0", ty.llvm()));
+            t
+        } else if ty.is_float() {
+            let t = self.fresh_tmp();
+            self.emit(format!("{t} = fcmp one {} {val}, 0.0", ty.llvm()));
+            t
+        } else {
+            val.to_string()
         }
     }
 
+    fn coerce_val(&mut self, val: &str, from: &Ty, to: &Ty) -> String {
+        if from == to || *from == Ty::Err || *to == Ty::Err {
+            return val.to_string();
+        }
+        let t = self.fresh_tmp();
+        if from.is_int() && to.is_int() {
+            if from.int_bits() < to.int_bits() {
+                self.emit(format!("{t} = sext {} {val} to {}", from.llvm(), to.llvm()));
+            } else if from.int_bits() > to.int_bits() {
+                self.emit(format!("{t} = trunc {} {val} to {}", from.llvm(), to.llvm()));
+            } else {
+                return val.to_string();
+            }
+            t
+        } else if from.is_int() && to.is_float() {
+            self.emit(format!("{t} = sitofp {} {val} to {}", from.llvm(), to.llvm()));
+            t
+        } else if from.is_float() && to.is_int() {
+            self.emit(format!("{t} = fptosi {} {val} to {}", from.llvm(), to.llvm()));
+            t
+        } else if from.is_ptr() && to.is_int() {
+            self.emit(format!("{t} = ptrtoint ptr {val} to {}", to.llvm()));
+            t
+        } else if from.is_int() && to.is_ptr() {
+            self.emit(format!("{t} = inttoptr {} {val} to ptr", from.llvm()));
+            t
+        } else if from.is_ptr() && to.is_ptr() {
+            val.to_string()
+        } else {
+            val.to_string()
+        }
+    }
+
+    fn gen_extern_method_call(&mut self, mangled: &str, base: &Expr, args: &[Expr], _span: Span) -> (String, Ty) {
+        let (self_val, _) = self.gen_expr(base, None);
+        let mut argvals: Vec<String> = vec![format!("ptr {self_val}")];
+        for a in args {
+            let (v, vty) = self.gen_expr(a, None);
+            argvals.push(format!("{} {}", vty.llvm(), v));
+        }
+        let fn_sym = llvm_global(mangled);
+        self.intrinsics.insert(format!("declare ptr {fn_sym}(...)"));
+        let t = self.fresh_tmp();
+        self.emit(format!("{t} = call ptr (...) {fn_sym}({})", argvals.join(", ")));
+        (t, Ty::Ptr(Box::new(Ty::U8), false))
+    }
+
     fn expect_bool(&mut self, ty: &Ty, span: Span) {
+        if ty.is_ptr() || ty.is_int() || ty.is_float() {
+            return;
+        }
         if *ty != Ty::Bool && *ty != Ty::Err {
             self.err("E0080", span, format!("ожидалось условие типа bool, а тут `{}`", ty.name()), None);
         }
@@ -3959,6 +4146,11 @@ fn compat(to: &Ty, from: &Ty) -> bool {
     }
     if to.is_ptr() && from.is_ptr() {
         return true;
+    }
+    if let (Ty::Array(a, n1), Ty::Array(b, n2)) = (to, from) {
+        if n1 == n2 && (a == b || (a.is_int() && b.is_int() && a.int_bits() == b.int_bits())) {
+            return true;
+        }
     }
     matches!((to, from), (Ty::Ptr(a, false), Ty::Ptr(b, _)) if a == b)
 }

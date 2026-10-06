@@ -15,9 +15,34 @@ use std::sync::OnceLock;
 
 #[derive(Clone, Debug, Default)]
 pub struct SdkPaths {
+    /// Полный объединённый список include-путей (для обратной совместимости).
     pub includes: Vec<PathBuf>,
+    /// Заголовки, совместимые с target `x86_64-pc-windows-msvc`:
+    /// MSVC STL + ucrt/shared/um из Windows Kits.
+    pub msvc_includes: Vec<PathBuf>,
+    /// Заголовки сборки `x86_64-w64-windows-gnu`: автономный MinGW-сисрут Goraw.
+    pub mingw_includes: Vec<PathBuf>,
     pub libs: Vec<PathBuf>,
     pub link_exe: Option<PathBuf>,
+}
+
+impl SdkPaths {
+    /// Доступен ли согласованный MSVC-набор заголовков (STL + UCRT).
+    pub fn has_msvc(&self) -> bool {
+        !self.msvc_includes.is_empty()
+    }
+
+    /// Когерентный набор include-путей под выбранный target.
+    /// Смешивать MinGW- и MSVC-заголовки нельзя: MinGW-заголовки, попав
+    /// первыми при MSVC-таргете, ломают резолв `vcruntime.h`/STL и приводят
+    /// к recovery-AST (а значит — к кривому выводу транслятора).
+    pub fn includes_for_target(&self, target: &str) -> &[PathBuf] {
+        if target.contains("windows-msvc") {
+            &self.msvc_includes
+        } else {
+            &self.mingw_includes
+        }
+    }
 }
 
 static SDK_CACHE: OnceLock<SdkPaths> = OnceLock::new();
@@ -37,16 +62,16 @@ pub fn get_sdk_paths() -> &'static SdkPaths {
             let local_sdk = root.join("sdk");
             let local_inc = local_sdk.join("include");
             let local_lib = local_sdk.join("lib");
-            if local_inc.exists() && !paths.includes.contains(&local_inc) {
-                paths.includes.push(local_inc);
+            if local_inc.exists() && !paths.mingw_includes.contains(&local_inc) {
+                paths.mingw_includes.push(local_inc);
             }
             if local_lib.exists() && !paths.libs.contains(&local_lib) {
                 paths.libs.push(local_lib);
             }
             let mingw_inc = local_sdk.join("mingw").join("include");
             let mingw_lib = local_sdk.join("mingw").join("lib");
-            if mingw_inc.exists() && !paths.includes.contains(&mingw_inc) {
-                paths.includes.push(mingw_inc);
+            if mingw_inc.exists() && !paths.mingw_includes.contains(&mingw_inc) {
+                paths.mingw_includes.push(mingw_inc);
             }
             if mingw_lib.exists() && !paths.libs.contains(&mingw_lib) {
                 paths.libs.push(mingw_lib);
@@ -78,7 +103,7 @@ pub fn get_sdk_paths() -> &'static SdkPaths {
                     if let Some(latest) = versions.last() {
                         let inc = latest.join("include");
                         if inc.exists() {
-                            paths.includes.push(inc);
+                            paths.msvc_includes.push(inc);
                         }
                         let lib = latest.join("lib").join("x64");
                         if lib.exists() {
@@ -125,7 +150,7 @@ pub fn get_sdk_paths() -> &'static SdkPaths {
                         for sub in &["ucrt", "shared", "um"] {
                             let p = ver_inc.join(sub);
                             if p.exists() {
-                                paths.includes.push(p);
+                                paths.msvc_includes.push(p);
                             }
                         }
 
@@ -141,6 +166,14 @@ pub fn get_sdk_paths() -> &'static SdkPaths {
                 }
             }
         }
+
+        // Объединённый список (совместимость): сперва MSVC-набор, затем MinGW.
+        paths.includes = paths
+            .msvc_includes
+            .iter()
+            .chain(paths.mingw_includes.iter())
+            .cloned()
+            .collect();
 
         paths
     })

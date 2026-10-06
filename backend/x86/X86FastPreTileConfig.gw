@@ -12,7 +12,7 @@ struct X86FastPreTileConfigImpl {
     TRI: *TargetRegisterInfo,
     MBB: *mut MachineBasicBlock,
     CfgSS: i32,
-    VisitedPHIs: i32,
+    VisitedPHIs: DenseMap<MachineInstr *, struct PHIInfo>,
     StackSlotForVirtReg: IndexedMap<int, VirtReg2IndexFunctor>,
     MayLiveAcrossBlocks: BitVector,
 }
@@ -68,10 +68,10 @@ static mut ID: i8 = 0;
 
 fn dominates(MBB: *mut MachineBasicBlock, A: const_iterator, B: const_iterator) -> bool {
     let mut MBBEnd: iterator = MBB.end();
-    if B(MBBEnd) {
+    if B == MachineInstr> { MBBEnd, null } {
         return true;
     }
-    let mut I: const_iterator = MBB.begin();
+    let mut I: const_iterator = const_iterator { MBB.begin(), null };
     for ; &mut operator(I) != A && &mut operator(I) != B; operator(I) {
         
     }
@@ -79,7 +79,7 @@ fn dominates(MBB: *mut MachineBasicBlock, A: const_iterator, B: const_iterator) 
 }
 
 fn X86FastPreTileConfigImpl::getStackSpaceFor(self, VirtReg: Register) -> i32 {
-    let mut SS: i32 = 0;
+    let mut SS: i32 = self.StackSlotForVirtReg[VirtReg];
     if SS != -1 {
         return SS;
     }
@@ -87,6 +87,7 @@ fn X86FastPreTileConfigImpl::getStackSpaceFor(self, VirtReg: Register) -> i32 {
     let mut Size: u32 = self.TRI.getSpillSize(RC);
     let mut Alignment: Align = self.TRI.getSpillAlign(RC);
     let mut FrameIdx: i32 = self.MFI.CreateSpillStackObject(Size, Alignment, Default);
+    self.StackSlotForVirtReg[VirtReg] = FrameIdx;
     return FrameIdx;
 }
 
@@ -94,37 +95,49 @@ fn X86FastPreTileConfigImpl::mayLiveOut(self, VirtReg: Register, CfgMI: *mut Mac
     if self.MayLiveAcrossBlocks.test(VirtReg.virtRegIndex()) {
         return true;
     }
+    for UseInst in self.MRI.use_nodbg_instructions(VirtReg) {
+        if UseInst.getParent() != self.MBB {
+            self.MayLiveAcrossBlocks.set(VirtReg.virtRegIndex());
+            return true;
+        }
+        if CfgMI {
+            if dominates(*self.MBB, *CfgMI, UseInst) {
+                self.MayLiveAcrossBlocks.set(VirtReg.virtRegIndex());
+                return true;
+            }
+        }
+    }
     return false;
 }
 
 fn X86FastPreTileConfigImpl::InitializeTileConfigStackSpace(self) {
     let mut MBB: *mut MachineBasicBlock = self.MF.front();
     let mut MI: *mut MachineInstr = &mut operator(MBB.getFirstNonPHI());
-    let mut DL: DebugLoc = DebugLoc { Loc: null };
+    let mut DL: DebugLoc = null;
     if self.ST.hasAVX512() {
-        let mut Xmm: Register = self.MRI;
-        BuildMI(MBB, MI, DL, self.TII.get, Xmm);
-        let mut Zmm: Register = self.MRI;
-        BuildMI(MBB, MI, DL, self.TII.get, Zmm)(Xmm);
-        addFrameReference(BuildMI(MBB, MI, DL, self.TII.get), self.CfgSS)(Zmm);
+        let mut Xmm: Register = self.MRI.createVirtualRegister(&mut VR128XRegClass, "");
+        BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(AVX512_128_SET0), Xmm);
+        let mut Zmm: Register = self.MRI.createVirtualRegister(&mut VR512RegClass, "");
+        BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SUBREG_TO_REG), Zmm).addReg(Xmm, RegState {}, 0).addImm(sub_xmm);
+        addFrameReference(BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(VMOVUPSZmr)), self.CfgSS, 0).addReg(Zmm, RegState {}, 0);
     } else if self.ST.hasAVX2() {
-        let mut Xmm: Register = self.MRI;
-        BuildMI(MBB, MI, DL, self.TII.get, Xmm);
-        let mut Ymm: Register = self.MRI;
-        BuildMI(MBB, MI, DL, self.TII.get, Ymm)(Xmm);
-        addFrameReference(BuildMI(MBB, MI, DL, self.TII.get), self.CfgSS)(Ymm);
-        addFrameReference(BuildMI(MBB, MI, DL, self.TII.get), self.CfgSS, 32)(Ymm);
+        let mut Xmm: Register = self.MRI.createVirtualRegister(&mut VR128RegClass, "");
+        BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(V_SET0), Xmm);
+        let mut Ymm: Register = self.MRI.createVirtualRegister(&mut VR256RegClass, "");
+        BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SUBREG_TO_REG), Ymm).addReg(Xmm, RegState {}, 0).addImm(sub_xmm);
+        addFrameReference(BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(VMOVUPSYmr)), self.CfgSS, 0).addReg(Ymm, RegState {}, 0);
+        addFrameReference(BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(VMOVUPSYmr)), self.CfgSS, 32).addReg(Ymm, RegState {}, 0);
     } else {
         assert!(self.ST.hasSSE2(), "AMX should assume SSE2 enabled");
-        let mut StoreOpc: u32 = 0;
-        let mut Xmm: Register = self.MRI;
-        BuildMI(MBB, MI, DL, self.TII.get, Xmm);
-        addFrameReference(BuildMI(MBB, MI, DL, self.TII.get), self.CfgSS)(Xmm);
-        addFrameReference(BuildMI(MBB, MI, DL, self.TII.get), self.CfgSS, 16)(Xmm);
-        addFrameReference(BuildMI(MBB, MI, DL, self.TII.get), self.CfgSS, 32)(Xmm);
-        addFrameReference(BuildMI(MBB, MI, DL, self.TII.get), self.CfgSS, 48)(Xmm);
+        let mut StoreOpc: u32 = if self.ST.hasAVX() { VMOVUPSmr } else { MOVUPSmr };
+        let mut Xmm: Register = self.MRI.createVirtualRegister(&mut VR128RegClass, "");
+        BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(V_SET0), Xmm);
+        addFrameReference(BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(StoreOpc)), self.CfgSS, 0).addReg(Xmm, RegState {}, 0);
+        addFrameReference(BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(StoreOpc)), self.CfgSS, 16).addReg(Xmm, RegState {}, 0);
+        addFrameReference(BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(StoreOpc)), self.CfgSS, 32).addReg(Xmm, RegState {}, 0);
+        addFrameReference(BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(StoreOpc)), self.CfgSS, 48).addReg(Xmm, RegState {}, 0);
     }
-    addFrameReference(BuildMI(MBB, MI, DL, self.TII.get), self.CfgSS)(1);
+    addFrameReference(BuildMI(MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MOV8mi)), self.CfgSS, 0).addImm(1);
 }
 
 fn X86FastPreTileConfigImpl::spill(self, Before: iterator, VirtReg: Register, Kill: bool) {
@@ -146,23 +159,23 @@ fn X86FastPreTileConfigImpl::spill(self, Before: iterator, VirtReg: Register, Ki
         if !(false) { break; }
     }
     let mut RC: *TargetRegisterClass = *self.MRI.getRegClass(VirtReg);
-    self.TII.storeRegToStackSlot(*self.MBB, iterator { Before }, VirtReg, Kill, FI, &mut RC, Register { Reg: 0 }, NoFlags);
+    self.TII.storeRegToStackSlot(*self.MBB, Before, VirtReg, Kill, FI, &mut RC, Register { Reg: 0 }, NoFlags);
     operator(NumStores);
 }
 
 fn X86FastPreTileConfigImpl::reload(self, UseMI: iterator, OrigReg: Register, RowMO: *mut MachineOperand, ColMO: *mut MachineOperand) {
     let mut FI: i32 = self.getStackSpaceFor(OrigReg);
     let mut RC: *TargetRegisterClass = *self.MRI.getRegClass(OrigReg);
-    let mut TileReg: Register = Register { Reg: 0 };
+    let mut TileReg: Register = 0;
     if operator(UseMI).isCopy() {
         TileReg = operator(UseMI).getOperand(0).getReg();
     } else {
         TileReg = self.MRI.createVirtualRegister(&mut RC, "");
     }
-    let mut Opc: u32 = 0;
-    let mut StrideReg: Register = self.MRI;
-    let mut NewMI: *mut MachineInstr = BuildMI(*operator(UseMI).getParent(), UseMI, DebugLoc { Loc: null }, self.TII.get, StrideReg)(64);
-    NewMI = addFrameReference(BuildMI(*operator(UseMI).getParent(), UseMI, DebugLoc { Loc: null }, self.TII.get, TileReg)(RowMO.getReg())(ColMO.getReg()), FI);
+    let mut Opc: u32 = PTILELOADDV;
+    let mut StrideReg: Register = self.MRI.createVirtualRegister(&mut GR64_NOSPRegClass, "");
+    let mut NewMI: *mut MachineInstr = BuildMI(*operator(UseMI).getParent(), UseMI, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MOV64ri), StrideReg).addImm(64).operator llvm::MachineInstr *();
+    NewMI = addFrameReference(BuildMI(*operator(UseMI).getParent(), UseMI, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(Opc), TileReg).addReg(RowMO.getReg(), RegState {}, 0).addReg(ColMO.getReg(), RegState {}, 0), FI, 0).operator llvm::MachineInstr *();
     let mut MO: *mut MachineOperand = NewMI.getOperand(5);
     MO.setReg(StrideReg);
     MO.setIsKill(true);
@@ -189,10 +202,10 @@ fn X86FastPreTileConfigImpl::reload(self, UseMI: iterator, OrigReg: Register, Ro
 }
 
 fn isTileRegister(MRI: *mut MachineRegisterInfo, Reg: Register) -> bool {
-    if  {
+    if Reg.isVirtual() && (MRI.getRegClass(Reg).getID() == TILERegClassID) {
         return true;
     }
-    if  {
+    if Reg.operator unsigned int() >= TMM0 && Reg.operator unsigned int() <= TMM7 {
         return true;
     }
     return false;
@@ -220,16 +233,17 @@ fn getShape(MRI: *mut MachineRegisterInfo, TileReg: Register) -> ShapeT {
         return getShape(MRI, TileReg);
     }
     assert!(MI.isPHI(), "Unexpected PHI when get shape.");
-    llvm_unreachable_internal("Unexpected MI when get shape.", "llvm\\lib\\Target\\X86\\X86FastPreTileConfig.cpp", 326);
+    llvm_unreachable_internal("Unexpected MI when get shape.", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86FastPreTileConfig.cpp", 326);
 }
 
 fn X86FastPreTileConfigImpl::convertPHI(self, MBB: *mut MachineBasicBlock, PHI: *mut MachineInstr) {
-    let mut StackAddrReg: Register = self.MRI;
-    let mut AddrPHI: MachineInstrBuilder = BuildMI(*MBB, operator(PHI.getIterator()), DebugLoc { Loc: null }, self.TII.get, StackAddrReg);
-    let mut RowReg: Register = self.MRI;
-    let mut RowPHI: MachineInstrBuilder = BuildMI(*MBB, operator(PHI.getIterator()), DebugLoc { Loc: null }, self.TII.get, RowReg);
-    let mut ColReg: Register = self.MRI;
-    let mut ColPHI: MachineInstrBuilder = BuildMI(*MBB, operator(PHI.getIterator()), DebugLoc { Loc: null }, self.TII.get, ColReg);
+    let mut StackAddrReg: Register = self.MRI.createVirtualRegister(&mut GR64_NOSPRegClass, "");
+    let mut AddrPHI: MachineInstrBuilder = BuildMI(*MBB, operator(PHI.getIterator()), MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(PHI), StackAddrReg);
+    let mut RowReg: Register = self.MRI.createVirtualRegister(&mut GR16RegClass, "");
+    let mut RowPHI: MachineInstrBuilder = BuildMI(*MBB, operator(PHI.getIterator()), MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(PHI), RowReg);
+    let mut ColReg: Register = self.MRI.createVirtualRegister(&mut GR16RegClass, "");
+    let mut ColPHI: MachineInstrBuilder = BuildMI(*MBB, operator(PHI.getIterator()), MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(PHI), ColReg);
+    self.VisitedPHIs[&mut PHI] = PHIInfo { RowReg, ColReg, StackAddrReg };
     for let mut I: u32 = 1;
 let mut E: u32 = PHI.getNumOperands(); I != E; I += 2 {
         let mut InTileReg: Register = PHI.getOperand(I).getReg();
@@ -239,11 +253,11 @@ let mut E: u32 = PHI.getNumOperands(); I != E; I += 2 {
         let mut InsertPos: iterator = iterator {};
         if TileDefMI.isPHI() {
             InsertPos = TileDefMI.getParent().getFirstNonPHI();
-            let mut It: auto = zeroed();
-            if  {
-                let mut InRowReg: Register = ;
-                let mut InColReg: Register = ;
-                let mut InStackAddrReg: Register = ;
+            let mut It: iterator = self.VisitedPHIs.find(TileDefMI);
+            if It != self.VisitedPHIs.end() {
+                let mut InRowReg: Register = operator(It).second.Row;
+                let mut InColReg: Register = operator(It).second.Col;
+                let mut InStackAddrReg: Register = operator(It).second.StackAddr;
                 RowPHI.addReg(InRowReg, RegState {}, 0).addMBB(InMBB, 0);
                 ColPHI.addReg(InColReg, RegState {}, 0).addMBB(InMBB, 0);
                 AddrPHI.addReg(InStackAddrReg, RegState {}, 0).addMBB(InMBB, 0);
@@ -251,6 +265,7 @@ let mut E: u32 = PHI.getNumOperands(); I != E; I += 2 {
             } else {
                 self.convertPHI(TileDefMI.getParent(), *TileDefMI);
                 let mut TileLoad: *mut MachineInstr = self.MRI.getVRegDef(InTileReg);
+                assert!(TileLoad && TileLoad.getOpcode() == PTILELOADDV);
                 let mut InRowReg: Register = TileLoad.getOperand(1).getReg();
                 let mut InColReg: Register = TileLoad.getOperand(2).getReg();
                 let mut InStackAddrReg: Register = TileLoad.getOperand(3).getReg();
@@ -259,27 +274,28 @@ let mut E: u32 = PHI.getNumOperands(); I != E; I += 2 {
                 AddrPHI.addReg(InStackAddrReg, RegState {}, 0).addMBB(InMBB, 0);
             }
         } else {
-            InsertPos = MachineInstr> { TileDefMI.getIterator() };
+            InsertPos = TileDefMI.getIterator();
             let mut Shape: ShapeT = getShape(self.MRI, InTileReg);
             Shape.getRow().setIsKill(false);
             Shape.getCol().setIsKill(false);
             RowPHI.addReg(Shape.getRow().getReg(), RegState {}, 0).addMBB(InMBB, 0);
             ColPHI.addReg(Shape.getCol().getReg(), RegState {}, 0).addMBB(InMBB, 0);
             let mut FI: i32 = self.getStackSpaceFor(InTileReg);
-            let mut InStackAddrReg: Register = self.MRI;
-            addOffset(BuildMI(*TileDefMI.getParent(), InsertPos, DebugLoc { Loc: null }, self.TII.get, InStackAddrReg)(FI), 0);
+            let mut InStackAddrReg: Register = self.MRI.createVirtualRegister(&mut GR64_NOSPRegClass, "");
+            addOffset(BuildMI(*TileDefMI.getParent(), InsertPos, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(LEA64r), InStackAddrReg).addFrameIndex(FI), 0);
             AddrPHI.addReg(InStackAddrReg, RegState {}, 0).addMBB(InMBB, 0);
         }
     }
     let mut InsertPos: iterator = MBB.getFirstNonPHI();
-    let mut StrideReg: Register = self.MRI;
-    BuildMI(*MBB, InsertPos, DebugLoc { Loc: null }, self.TII.get, StrideReg)(64);
+    let mut StrideReg: Register = self.MRI.createVirtualRegister(&mut GR64_NOSPRegClass, "");
+    BuildMI(*MBB, InsertPos, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MOV64ri), StrideReg).addImm(64);
     let mut TileReg: Register = PHI.getOperand(0).getReg();
-    let mut NewMI: *mut MachineInstr = addDirectMem(BuildMI(*MBB, InsertPos, DebugLoc { Loc: null }, self.TII.get, TileReg)(RowReg)(ColReg), StackAddrReg);
+    let mut NewMI: *mut MachineInstr = addDirectMem(BuildMI(*MBB, InsertPos, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(PTILELOADDV), TileReg).addReg(RowReg, RegState {}, 0).addReg(ColReg, RegState {}, 0), StackAddrReg).operator llvm::MachineInstr *();
     let mut MO: *mut MachineOperand = NewMI.getOperand(5);
     MO.setReg(StrideReg);
     MO.setIsKill(true);
     PHI.eraseFromParent();
+    self.VisitedPHIs.erase(&mut PHI);
 }
 
 fn isTileRegDef(MRI: *mut MachineRegisterInfo, MI: *mut MachineInstr) -> bool {
@@ -291,7 +307,7 @@ fn isTileRegDef(MRI: *mut MachineRegisterInfo, MI: *mut MachineInstr) -> bool {
 }
 
 fn X86FastPreTileConfigImpl::canonicalizePHIs(self, MBB: *mut MachineBasicBlock) {
-    let mut PHIs: SmallVector<MachineInstr *, 8> = zeroed();
+    let mut PHIs: SmallVector<MachineInstr *, 8> = SmallVector<MachineInstr *, 8> {};
     for MI in MBB {
         if !MI.isPHI() {
             break;
@@ -299,10 +315,10 @@ fn X86FastPreTileConfigImpl::canonicalizePHIs(self, MBB: *mut MachineBasicBlock)
         if !isTileRegDef(self.MRI, MI) {
             continue;
         }
-        PHIs()(&mut MI);
+        PHIs.push(&mut MI);
     }
-    while operator!() {
-        let mut PHI: *mut MachineInstr = ();
+    while !PHIs.is_empty() {
+        let mut PHI: *mut MachineInstr = PHIs.pop_back_val();
         let mut InMO: *mut MachineOperand = null;
         let mut DefMI: *mut MachineInstr = null;
         for let mut I: u32 = 1;
@@ -319,7 +335,7 @@ let mut E: u32 = PHI.getNumOperands(); I != E; I += 2 {
         if !InMO {
             continue;
         }
-        let mut DefTileReg: Register = Register { Reg: 0 };
+        let mut DefTileReg: Register = 0;
         for let mut I: u32 = 1;
 let mut E: u32 = DefMI.getNumOperands(); I != E; I += 2 {
             let mut InMBB: *mut MachineBasicBlock = PHI.getOperand(I + 1).getMBB();
@@ -334,7 +350,7 @@ let mut E: u32 = DefMI.getNumOperands(); I != E; I += 2 {
 }
 
 fn X86FastPreTileConfigImpl::convertPHIs(self, MBB: *mut MachineBasicBlock) {
-    let mut PHIs: SmallVector<MachineInstr *, 8> = zeroed();
+    let mut PHIs: SmallVector<MachineInstr *, 8> = SmallVector<MachineInstr *, 8> {};
     for MI in MBB {
         if !MI.isPHI() {
             break;
@@ -342,10 +358,11 @@ fn X86FastPreTileConfigImpl::convertPHIs(self, MBB: *mut MachineBasicBlock) {
         if !isTileRegDef(self.MRI, MI) {
             continue;
         }
-        PHIs()(&mut MI);
+        PHIs.push(&mut MI);
     }
-    while operator!() {
-        let mut MI: *mut MachineInstr = ();
+    while !PHIs.is_empty() {
+        let mut MI: *mut MachineInstr = PHIs.pop_back_val();
+        self.VisitedPHIs.clear();
         self.convertPHI(&mut MBB, *MI);
     }
 }
@@ -358,6 +375,72 @@ fn X86FastPreTileConfigImpl::configBasicBlock(self, MBB: *mut MachineBasicBlock)
     let mut HasUnconfigTile: bool = false;
     let mut Config: Closure_1 = Closure_1 { cap_0: self, LastTileCfg: &mut LastTileCfg, MBB: &mut MBB, LastShapeMI: &mut LastShapeMI, Change: &mut Change };
     let mut HasTileOperand: Closure_2 = Closure_2 {};
+    for MI in reverse(MBB) {
+        if MI.isPHI() {
+            break;
+        }
+        if HasTileOperand.call(self.MRI, MI) {
+            HasUnconfigTile = true;
+        }
+        if MI.isCall(AnyInBundle) && HasUnconfigTile {
+            let mut I: iterator = iterator {};
+            if LastShapeMI && dominates(MBB, MI, LastShapeMI) {
+                I = operator(LastShapeMI.getIterator());
+            } else {
+                let mut UseIt: self_iterator = MI.getIterator();
+                while UseIt != MBB.end() {
+                    if HasTileOperand.call(self.MRI, operator(UseIt)) {
+                        break;
+                    }
+                    operator(UseIt);
+                }
+                I = UseIt;
+            }
+            Config.call(operator(I));
+            HasUnconfigTile = false;
+            continue;
+        }
+        if !isTileDef(self.MRI, MI) {
+            continue;
+        }
+        if LastShapeMI && dominates(MBB, MI, LastShapeMI) {
+            Config.call(operator((operator(LastShapeMI.getIterator()))));
+        }
+        let mut RowMO: *mut MachineOperand = &mut MI.getOperand(1);
+        let mut ColMO: *mut MachineOperand = &mut MI.getOperand(2);
+        let mut RowMI: *mut MachineInstr = self.MRI.getVRegDef(RowMO.getReg());
+        let mut ColMI: *mut MachineInstr = self.MRI.getVRegDef(ColMO.getReg());
+        if RowMI.getParent() == &mut MBB {
+            if !LastShapeMI {
+                LastShapeMI = RowMI;
+            } else if dominates(MBB, LastShapeMI, RowMI) {
+                LastShapeMI = RowMI;
+            }
+        }
+        if ColMI.getParent() == &mut MBB {
+            if !LastShapeMI {
+                LastShapeMI = ColMI;
+            } else if dominates(MBB, LastShapeMI, ColMI) {
+                LastShapeMI = ColMI;
+            }
+        }
+        let mut TileReg: Register = MI.getOperand(0).getReg();
+        if self.mayLiveOut(TileReg, LastTileCfg) {
+            self.spill(operator(MI.getIterator()), TileReg, false);
+        }
+        for UseMI in self.MRI.use_instructions(TileReg) {
+            if UseMI.getParent() == &mut MBB {
+                if !LastTileCfg || !dominates(MBB, LastTileCfg, UseMI) {
+                    continue;
+                }
+                self.reload(UseMI.getIterator(), TileReg, RowMO, ColMO);
+            } else {
+                if !UseMI.isPHI() {
+                    self.reload(UseMI.getIterator(), TileReg, RowMO, ColMO);
+                }
+            }
+        }
+    }
     if HasUnconfigTile {
         let mut Before: *mut MachineInstr = null;
         if LastShapeMI == null || LastShapeMI.isPHI() {
@@ -371,18 +454,19 @@ fn X86FastPreTileConfigImpl::configBasicBlock(self, MBB: *mut MachineBasicBlock)
 }
 
 fn X86FastPreTileConfigImpl::runOnMachineFunction(self, MFunc: *mut MachineFunction) -> bool {
-    self.X86FI = MFunc;
+    self.X86FI = MFunc.getInfo();
     if self.X86FI.getAMXProgModel() != ManagedRA {
         return false;
     }
     self.MF = &mut MFunc;
     self.MRI = &mut MFunc.getRegInfo();
-    self.ST = operator&(MFunc);
-    self.TII;
+    self.ST = &mut MFunc.getSubtarget();
+    self.TII = self.ST.getInstrInfo();
     self.MFI = &mut MFunc.getFrameInfo();
-    self.TRI;
+    self.TRI = self.ST.getRegisterInfo();
     self.CfgSS = -1;
     let mut NumVirtRegs: u32 = self.MRI.getNumVirtRegs();
+    self.StackSlotForVirtReg.resize(NumVirtRegs);
     self.MayLiveAcrossBlocks.clear();
     self.MayLiveAcrossBlocks.resize(NumVirtRegs * 3, false);
     let mut Change: bool = false;
@@ -390,10 +474,15 @@ fn X86FastPreTileConfigImpl::runOnMachineFunction(self, MFunc: *mut MachineFunct
     for MBB in MFunc {
         self.canonicalizePHIs(MBB);
     }
-    let mut RPOT: i32 = self.MF;
+    let mut RPOT: ReversePostOrderTraversal<MachineFunction *> = self.MF;
+    for MBB in RPOT {
+        self.convertPHIs(*MBB);
+        Change |= self.configBasicBlock(*MBB);
+    }
     if Change {
         self.InitializeTileConfigStackSpace();
     }
+    self.StackSlotForVirtReg.clear();
     return Change;
 }
 
@@ -424,7 +513,7 @@ unsafe fn Closure_1::call(self: *mut Closure_1, Before: *mut MachineInstr) {
         if self.CfgSS == -1 {
             self.CfgSS = self.MFI.CreateStackObject(self.ST.getTileConfigSize(), self.ST.getTileConfigAlignment(), false, null, 0);
         }
-        (*self.LastTileCfg) = addFrameReference(BuildMI((*self.MBB), Before, DebugLoc { Loc: null }, self.TII.get), self.CfgSS);
+        (*self.LastTileCfg) = addFrameReference(BuildMI((*self.MBB), Before, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(PLDTILECFGV)), self.CfgSS, 0).operator llvm::MachineInstr *();
         (*self.LastTileCfg).setImplicitPhysRegDefsDead();
         (*self.LastShapeMI) = null;
         (*self.Change) = true;

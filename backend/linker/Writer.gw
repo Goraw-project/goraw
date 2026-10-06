@@ -12,22 +12,35 @@ struct DebugDirectoryChunk {
     p2Align: u8,
     osidx: u16,
     rva: u32,
-    timeDateStamps: i32,
-    records: i32,
+    timeDateStamps: []*mut ulittle32_t,
+    records: *[]DebugType, Chunk *>,
     writeRepro: bool,
     ctx: *COFFLinkerContext,
 }
 
-fn DebugDirectoryChunk::getSize(self: *DebugDirectoryChunk) -> u64 {}
+fn DebugDirectoryChunk::getSize(self: *DebugDirectoryChunk) -> u64 {
+    return (self.records.len + self.writeRepro) * ;
+}
 
 fn DebugDirectoryChunk::writeTo(self: *DebugDirectoryChunk, b: *mut u8) {
     let mut d: *mut debug_directory = b as *mut debug_directory;
+    for record in self.records {
+        let mut c: *mut Chunk = record.second;
+        let mut os: *OutputSection = self.ctx.getOutputSection(c);
+        let mut offs: u64 = os.getFileOff() + (c.getRVA() - os.getRVA());
+        self.fillEntry(d, record.first, c.getSize(), c.getRVA(), offs);
+        d += 1;
+    }
     if self.writeRepro {
         self.fillEntry(d, IMAGE_DEBUG_TYPE_REPRO, 0, 0, 0);
     }
 }
 
-fn DebugDirectoryChunk::setTimeDateStamp(self, timeDateStamp: u32) {}
+fn DebugDirectoryChunk::setTimeDateStamp(self, timeDateStamp: u32) {
+    for tds in self.timeDateStamps {
+        *tds = timeDateStamp;
+    }
+}
 
 fn DebugDirectoryChunk::fillEntry(self: *DebugDirectoryChunk, d: *mut debug_directory, debugType: DebugType, size: u64, rva: u64, offs: u64) {
     d.Characteristics = 0;
@@ -38,6 +51,7 @@ fn DebugDirectoryChunk::fillEntry(self: *DebugDirectoryChunk, d: *mut debug_dire
     d.SizeOfData = size;
     d.AddressOfRawData = rva;
     d.PointerToRawData = offs;
+    self.timeDateStamps.push(&mut d.TimeDateStamp);
 }
 
 fn DebugDirectoryChunk::kind(self: *DebugDirectoryChunk) -> Kind {
@@ -49,7 +63,7 @@ fn DebugDirectoryChunk::getAlignment(self: *DebugDirectoryChunk) -> u32 {
 }
 
 fn DebugDirectoryChunk::setAlignment(self, align: u32) {
-    align = if align {} else { 1 };
+    align = if align { align } else { 1 };
     assert!(isPowerOf2_32(align), "alignment is not a power of 2");
     self.p2Align = Log2_32(align);
     assert!(self.p2Align <= Log2MaxSectionAlignment, "impossible requested alignment");
@@ -76,7 +90,7 @@ fn DebugDirectoryChunk::getOutputCharacteristics(self: *DebugDirectoryChunk) -> 
 }
 
 fn DebugDirectoryChunk::getSectionName(self: *DebugDirectoryChunk) -> str {
-    llvm_unreachable_internal("unimplemented getSectionName", "lld\\COFF\\Chunks.h", 176);
+    llvm_unreachable_internal("unimplemented getSectionName", "P:/Goraw/llvm-project/lld/COFF\\Chunks.h", 176);
 }
 
 fn DebugDirectoryChunk::getBaserels(self, res: *mut []Baserel) {}
@@ -137,7 +151,7 @@ fn CVDebugRecordChunk::getAlignment(self: *CVDebugRecordChunk) -> u32 {
 }
 
 fn CVDebugRecordChunk::setAlignment(self, align: u32) {
-    align = if align {} else { 1 };
+    align = if align { align } else { 1 };
     assert!(isPowerOf2_32(align), "alignment is not a power of 2");
     self.p2Align = Log2_32(align);
     assert!(self.p2Align <= Log2MaxSectionAlignment, "impossible requested alignment");
@@ -164,7 +178,7 @@ fn CVDebugRecordChunk::getOutputCharacteristics(self: *CVDebugRecordChunk) -> u3
 }
 
 fn CVDebugRecordChunk::getSectionName(self: *CVDebugRecordChunk) -> str {
-    llvm_unreachable_internal("unimplemented getSectionName", "lld\\COFF\\Chunks.h", 176);
+    llvm_unreachable_internal("unimplemented getSectionName", "P:/Goraw/llvm-project/lld/COFF\\Chunks.h", 176);
 }
 
 fn CVDebugRecordChunk::getBaserels(self, res: *mut []Baserel) {}
@@ -219,7 +233,7 @@ fn ExtendedDllCharacteristicsChunk::getAlignment(self: *ExtendedDllCharacteristi
 }
 
 fn ExtendedDllCharacteristicsChunk::setAlignment(self, align: u32) {
-    align = if align {} else { 1 };
+    align = if align { align } else { 1 };
     assert!(isPowerOf2_32(align), "alignment is not a power of 2");
     self.p2Align = Log2_32(align);
     assert!(self.p2Align <= Log2MaxSectionAlignment, "impossible requested alignment");
@@ -246,7 +260,7 @@ fn ExtendedDllCharacteristicsChunk::getOutputCharacteristics(self: *ExtendedDllC
 }
 
 fn ExtendedDllCharacteristicsChunk::getSectionName(self: *ExtendedDllCharacteristicsChunk) -> str {
-    llvm_unreachable_internal("unimplemented getSectionName", "lld\\COFF\\Chunks.h", 176);
+    llvm_unreachable_internal("unimplemented getSectionName", "P:/Goraw/llvm-project/lld/COFF\\Chunks.h", 176);
 }
 
 fn ExtendedDllCharacteristicsChunk::getBaserels(self, res: *mut []Baserel) {}
@@ -297,11 +311,11 @@ struct ChunkRange {
 }
 
 struct Writer {
-    buffer: *mut i32,
-    partialSections: i32,
+    buffer: *mut unique_ptr<FileOutputBuffer>,
+    partialSections: map<PartialSectionKey, PartialSection *>,
     strtab: StringTableBuilder,
-    outputSymtab: i32,
-    codeMap: i32,
+    outputSymtab: []coff_symbol16,
+    codeMap: []ECCodeMapEntry,
     idata: IdataContents,
     importTableStart: *mut Chunk,
     importTableSize: u64,
@@ -311,10 +325,10 @@ struct Writer {
     setNoSEHCharacteristic: bool,
     tlsAlignment: u32,
     debugDirectory: *mut DebugDirectoryChunk,
-    debugRecords: i32,
+    debugRecords: []DebugType, Chunk *>,
     buildId: *mut CVDebugRecordChunk,
     sectionTable: ArrayRef<uint8_t>,
-    exportThunks: i32,
+    exportThunks: []pair<Chunk *, Defined *>,
     fileSize: u64,
     pointerToSymbolTable: u32,
     sizeOfImage: u64,
@@ -348,8 +362,8 @@ struct Writer {
 }
 
 fn writeResult(ctx: *mut COFFLinkerContext) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Write output(s)" };
-    Writer { ctx }.run();
+    let mut timeScope: TimeTraceScope = "Write output(s)";
+    ctx.run();
 }
 
 fn OutputSection::addChunk(self, c: *mut Chunk) {
@@ -357,7 +371,7 @@ fn OutputSection::addChunk(self, c: *mut Chunk) {
 }
 
 fn OutputSection::insertChunkAtStart(self, c: *mut Chunk) {
-    self.chunks;
+    self.chunks.insert(self.chunks.begin(), c);
 }
 
 fn OutputSection::setPermissions(self, c: u32) {
@@ -366,9 +380,9 @@ fn OutputSection::setPermissions(self, c: u32) {
 }
 
 fn OutputSection::merge(self, other: *mut OutputSection) {
-    self.chunks;
+    self.chunks.insert(self.chunks.end(), other.chunks.begin(), other.chunks.end());
     other.chunks.clear();
-    self.contribSections;
+    self.contribSections.insert(self.contribSections.end(), other.contribSections.begin(), other.contribSections.end());
     other.contribSections.clear();
     if other.header.Characteristics.operator unsigned int() & IMAGE_SCN_CNT_CODE {
         operator(self.header.Characteristics, IMAGE_SCN_CNT_CODE);
@@ -383,7 +397,7 @@ fn OutputSection::writeHeaderTo(self, buf: *mut u8, isDebug: bool) {
         encodeSectionName(hdr.Name, self.stringTableOff);
     } else {
         assert!(!isDebug || self.name.len <= NameSize || (hdr.Characteristics.operator unsigned int() & IMAGE_SCN_MEM_DISCARDABLE) == 0);
-        strncpy(hdr.Name, self.name.ptr, min(self.name.len, NameSize as u64));
+        strncpy(hdr.Name, self.name.ptr, if self.name.len < NameSize as u64 { self.name.len } else { NameSize as u64 });
     }
 }
 
@@ -430,10 +444,10 @@ fn Writer::isInRange(self, relType: u16, s: u64, p: u64, margin: i32, machine: M
     }
 }
 
-fn Writer::getThunk(self, lastThunks: *mut i32, target: *mut Defined, p: u64, type: u16, margin: i32, machine: MachineTypes) -> pair<Defined *, bool> {
-    let mut lastThunk: *mut *mut Defined = [target.getRVA()];
+fn Writer::getThunk(self, lastThunks: *mut DenseMap<uint64_t, Defined *>, target: *mut Defined, p: u64, type: u16, margin: i32, machine: MachineTypes) -> pair<Defined *, bool> {
+    let mut lastThunk: *mut *mut Defined = lastThunks[target.getRVA()];
     if lastThunk && self.isInRange(type, lastThunk.getRVA(), p, margin, machine) {
-        return void { lastThunk, false };
+        return pair<Defined *, bool> { lastThunk, false };
     }
     let mut c: *mut Chunk = null;
     match getMachineArchType(machine) {
@@ -444,24 +458,24 @@ fn Writer::getThunk(self, lastThunks: *mut i32, target: *mut Defined, p: u64, ty
             c = make(machine, target);
         },
         _ => {
-            llvm_unreachable_internal("Unexpected architecture", "lld\\COFF\\Writer.cpp", 471);
+            llvm_unreachable_internal("Unexpected architecture", "P:/Goraw/llvm-project/lld/COFF/Writer.cpp", 471);
         },
     }
     let mut d: *mut Defined = make("range_extension_thunk", c);
     lastThunk = d;
-    return void { d, true };
+    return pair<Defined *, bool> { d, true };
 }
 
 fn Writer::createThunks(self, os: *mut OutputSection, margin: i32) -> bool {
     let mut addressesChanged: bool = false;
-    let mut lastThunks: i32 = 0;
-    let mut thunkSymtabIndices: i32 = 0;
+    let mut lastThunks: DenseMap<uint64_t, Defined *> = DenseMap<uint64_t, Defined *> {};
+    let mut thunkSymtabIndices: pair<ObjFile *, Defined *>, uint32_t> = pair<ObjFile *, Defined *>, uint32_t> {};
     let mut thunksSize: u64 = 0;
     for let mut i: u64 = 0; i != os.chunks.len; i += 1 {
         let mut sc: *mut SectionChunk = dyn_cast(os.chunks[i]);
         if !sc {
-            let mut chunk: auto = cast(os.chunks[i]);
-            if () {
+            let mut chunk: CastReturnType = cast(os.chunks[i]);
+            if chunk.extendRanges() {
                 size;
             } else {
                 thunksSize += size;
@@ -473,7 +487,7 @@ fn Writer::createThunks(self, os: *mut OutputSection, margin: i32) -> bool {
         let mut thunkInsertionSpot: u64 = i + 1;
         let mut thunkInsertionRVA: u64 = sc.getRVA() + sc.getSize() + thunksSize;
         let mut file: *mut ObjFile = sc.file;
-        let mut relocReplacements: i32 = 0;
+        let mut relocReplacements: []pair<uint32_t, uint32_t> = []pair<uint32_t, uint32_t> {};
         let mut originalRelocs: ArrayRef<coff_relocation> = file.getCOFFObj().getRelocations(sc.header);
         for let mut j: u64 = 0;
 let mut e: u64 = originalRelocs.len; j < e; j += 1 {
@@ -488,40 +502,40 @@ let mut e: u64 = originalRelocs.len; j < e; j += 1 {
             if self.isInRange(rel.Type.operator unsigned short(), s, p, margin, machine) {
                 continue;
             }
-            if  {
-                let mut thunkChunk: *mut Chunk = ();
+            if wasNew {
+                let mut thunkChunk: *mut Chunk = thunk.getChunk();
                 thunkChunk.setRVA(thunkInsertionRVA);
-                os.chunks(os.chunks.begin, thunkChunk);
+                os.chunks.insert(os.chunks.begin() + thunkInsertionSpot, thunkChunk);
                 thunkInsertionSpot += 1;
                 thunksSize += thunkChunk.getSize();
                 thunkInsertionRVA += thunkChunk.getSize();
                 addressesChanged = true;
             }
-            let mut insertion: auto = (void { void { file,  }, ~0 });
-            let mut thunkSymbolIndex: *mut u32 = ;
-            if insertion() {
-                thunkSymbolIndex = file.addRangeThunkSymbol();
+            let mut insertion: pair<iterator, bool> = thunkSymtabIndices.insert(Defined *>, unsigned int> { Defined *> { file, thunk }, ~0 });
+            let mut thunkSymbolIndex: *mut u32 = operator(insertion.first).second;
+            if insertion.second {
+                thunkSymbolIndex = file.addRangeThunkSymbol(thunk);
             }
-            relocReplacements()(j, thunkSymbolIndex);
+            relocReplacements.push(j, thunkSymbolIndex);
         }
         let mut curRelocs: ArrayRef<coff_relocation> = sc.getRelocs();
-        let mut newRelocs: MutableArrayRef<coff_relocation> = zeroed();
+        let mut newRelocs: MutableArrayRef<coff_relocation> = MutableArrayRef<coff_relocation> {};
         if originalRelocs.ptr == curRelocs.ptr {
-            newRelocs() = bAlloc();
+            newRelocs = coff_relocation> { bAlloc().Allocate(originalRelocs.len), originalRelocs.len };
         } else {
-            newRelocs() = curRelocs.ptr;
+            newRelocs = coff_relocation> { curRelocs.ptr, curRelocs.len };
         }
-        let mut nextReplacement: auto = ();
-        let mut endReplacement: auto = ();
+        let mut nextReplacement: iterator = relocReplacements.begin();
+        let mut endReplacement: iterator = relocReplacements.end();
         for let mut i: u64 = 0;
 let mut e: u64 = originalRelocs.len; i != e; i += 1 {
-            newRelocs()[i] = originalRelocs[i];
-            if nextReplacement() !=  &&  == i {
-                newRelocs()[i] = ;
-                 += 1;
+            newRelocs[i] = originalRelocs[i];
+            if !nextReplacement == endReplacement && operator(nextReplacement).first == i {
+                newRelocs[i].SymbolTableIndex = operator(nextReplacement).second;
+                operator(nextReplacement);
             }
         }
-        sc.setRelocs();
+        sc.setRelocs(newRelocs);
     }
     return addressesChanged;
 }
@@ -530,16 +544,54 @@ fn Writer::createECCodeMap(self) {
     if !self.ctx.symtab.isEC() {
         return;
     }
+    self.codeMap.clear();
     let mut lastType: optional<chpe_range_type> = optional<chpe_range_type> {};
     let mut first: *mut Chunk = null;
     let mut last: *mut Chunk = null;
     let mut closeRange: Closure_2 = Closure_2 { lastType: &mut lastType, cap_1: self, first: &mut first, last: &mut last };
+    for sec in self.ctx.outputSections {
+        for c in sec.chunks {
+            if isa(c) && !c.getSize() {
+                continue;
+            }
+            let mut chunkType: optional<chpe_range_type> = c.getArm64ECRangeType();
+            if chunkType != lastType {
+                closeRange.call();
+                first = c;
+                lastType = chunkType;
+            }
+            last = c;
+        }
+    }
     closeRange.call();
     let mut tableCountSym: *mut Symbol = self.ctx.symtab.findUnderscore("__hybrid_code_map_count");
-    cast(tableCountSym);
+    cast(tableCountSym).setVA(self.codeMap.len);
 }
 
-fn Writer::verifyRanges(self, chunks: i32) -> bool {
+fn Writer::verifyRanges(self, chunks: []*mut Chunk) -> bool {
+    for c in chunks {
+        let mut sc: *mut SectionChunk = dyn_cast(c);
+        if !sc {
+            if !cast(c).verifyRanges() {
+                return false;
+            }
+            continue;
+        }
+        let mut machine: MachineTypes = sc.getMachine();
+        let mut relocs: ArrayRef<coff_relocation> = sc.getRelocs();
+        for rel in relocs {
+            let mut relocTarget: *mut Symbol = sc.file.getSymbol(rel.SymbolTableIndex.operator unsigned int());
+            let mut sym: *mut Defined = dyn_cast_or_null(relocTarget);
+            if !sym {
+                continue;
+            }
+            let mut p: u64 = sc.getRVA() + rel.VirtualAddress.operator unsigned int();
+            let mut s: u64 = sym.getRVA();
+            if !self.isInRange(rel.Type.operator unsigned short(), s, p, 0, machine) {
+                return false;
+            }
+        }
+    }
     return true;
 }
 
@@ -549,30 +601,47 @@ fn Writer::finalizeAddresses(self) {
         return;
     }
     let mut origNumChunks: u64 = 0;
+    for sec in self.ctx.outputSections {
+        sec.origChunks = sec.chunks;
+        origNumChunks += sec.chunks.len;
+    }
     let mut pass: i32 = 0;
     let mut margin: i32 = 1024 * 100;
     while true {
-        let mut timeScope2: TimeTraceScope = TimeTraceScope { Entry: "Add thunks pass" };
+        let mut timeScope2: TimeTraceScope = "Add thunks pass";
         let mut rangesOk: bool = true;
         let mut numChunks: u64 = 0;
         {
-            let mut timeScope3: TimeTraceScope = TimeTraceScope { Entry: "Verify ranges" };
+            let mut timeScope3: TimeTraceScope = "Verify ranges";
+            for sec in self.ctx.outputSections {
+                if !self.verifyRanges(sec.chunks) {
+                    rangesOk = false;
+                    break;
+                }
+                numChunks += sec.chunks.len;
+            }
         }
         if rangesOk {
             if pass > 0 {
-                Log(self.ctx) << "Added " << " thunks with " << "margin " << margin << " in " << pass << " passes";
+                Log(self.ctx) << "Added " << (numChunks - origNumChunks) << " thunks with " << "margin " << margin << " in " << pass << " passes";
             }
             return;
         }
         if pass >= 10 {
-            Fatal(self.ctx) << "adding thunks hasn't converged after " << " passes";
+            Fatal(self.ctx) << "adding thunks hasn't converged after " << pass << " passes";
         }
         if pass > 0 {
+            for sec in self.ctx.outputSections {
+                sec.chunks = sec.origChunks;
+            }
             margin *= 2;
         }
         let mut addressesChanged: bool = false;
         {
-            let mut timeScope3: TimeTraceScope = TimeTraceScope { Entry: "Create thunks" };
+            let mut timeScope3: TimeTraceScope = "Create thunks";
+            for sec in self.ctx.outputSections {
+                addressesChanged |= self.createThunks(sec, margin);
+            }
         }
         assert!(addressesChanged);
         addressesChanged as void;
@@ -585,9 +654,9 @@ fn Writer::writePEChecksum(self) {
     if !self.ctx.config.writeCheckSum {
         return;
     }
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "PE checksum" };
-    let mut buf: *mut u32 = null;
-    let mut size: u32 = 0;
+    let mut timeScope: TimeTraceScope = "PE checksum";
+    let mut buf: *mut u32 = operator(self.buffer).getBufferStart() as *mut u32;
+    let mut size: u32 = (operator(self.buffer).getBufferSize()) as u32;
     let mut peHeader: *mut pe32_header = (buf as *mut u8 + self.coffHeaderOffset + ) as *mut pe32_header;
     let mut sum: u64 = 0;
     let mut count: u32 = size;
@@ -608,8 +677,8 @@ fn Writer::writePEChecksum(self) {
 
 fn Writer::run(self) {
     {
-        let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Write PE" };
-        let mut t1: ScopedTimer = self.ctx;
+        let mut timeScope: TimeTraceScope = "Write PE";
+        let mut t1: ScopedTimer = self.ctx.codeLayoutTimer;
         self.calculateStubDependentSizes();
         if self.ctx.config.machine == ARM64X {
             self.ctx.dynamicRelocs = make();
@@ -632,20 +701,24 @@ fn Writer::run(self) {
         self.setECSymbols();
         self.createSymbolAndStringTable();
         if self.fileSize > 4294967295 {
-            Fatal(self.ctx) << "image size (" << ") " << "exceeds maximum allowable size (" << 4294967295 << ")";
+            Fatal(self.ctx) << "image size (" << self.fileSize << ") " << "exceeds maximum allowable size (" << 4294967295 << ")";
         }
         self.openFile(self.ctx.config.outputFile);
-        if self.ctx.config.is64() {} else {}
+        if self.ctx.config.is64() {
+            self.writeHeader();
+        } else {
+            self.writeHeader();
+        }
         self.writeSections();
         self.prepareLoadConfig();
         self.sortExceptionTables();
         if self.tlsAlignment {
-            self.ctx.forEachSymtab;
+            self.ctx.forEachSymtab(Closure_3 { cap_0: self });
         }
     }
     if !self.ctx.config.pdbPath.is_empty() && self.ctx.config.debug {
         assert!(self.buildId);
-        createPDB(self.ctx, ArrayRef<uint8_t> { self.sectionTable }, self.buildId.buildId);
+        createPDB(self.ctx, self.sectionTable, self.buildId.buildId);
     }
     self.writeBuildId();
     writeLLDMapFile(self.ctx);
@@ -655,8 +728,13 @@ fn Writer::run(self) {
     if errorCount() {
         return;
     }
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Commit PE to disk" };
-    let mut t2: ScopedTimer = self.ctx;
+    let mut timeScope: TimeTraceScope = "Commit PE to disk";
+    let mut t2: ScopedTimer = self.ctx.outputCommitTimer;
+    if operator(self.buffer).commit() {
+        e;
+    } else {
+        Fatal(self.ctx) << "failed to write output '" << operator(self.buffer).getPath() << "': " << toString(move(e));
+    }
 }
 
 fn getOutputSectionName(name: str, isMinGW: bool) -> str {
@@ -667,35 +745,60 @@ fn getOutputSectionName(name: str, isMinGW: bool) -> str {
     return s[0..0 + s.find('.', 1)];
 }
 
-fn Writer::sortBySectionOrder(self, chunks: *mut i32) {
-    let mut getPriority: Closure_3 = Closure_3 { ctx: &mut self.ctx };
-    stable_sort(Closure_4 { cap_0: getPriority });
+fn Writer::sortBySectionOrder(self, chunks: *mut []*mut Chunk) {
+    let mut getPriority: Closure_4 = Closure_4 { ctx: &mut self.ctx };
+    stable_sort(chunks, Closure_5 { cap_0: getPriority });
 }
 
-fn Writer::fixPartialSectionChars(self, name: str, chars: u32) {}
+fn Writer::fixPartialSectionChars(self, name: str, chars: u32) {
+    for it in self.partialSections {
+        let mut pSec: *mut PartialSection = it.second;
+        let mut curName: str = pSec.name;
+        if !curName.consume_front(name) || (!curName.is_empty() && !curName.starts_with("$")) {
+            continue;
+        }
+        if pSec.characteristics == chars {
+            continue;
+        }
+        let mut destSec: *mut PartialSection = self.createPartialSection(pSec.name, chars);
+        destSec.chunks.insert(destSec.chunks.end(), pSec.chunks.begin(), pSec.chunks.end());
+        pSec.chunks.clear();
+    }
+}
 
 fn Writer::fixGnuImportChunks(self) -> bool {
     let mut rdata: u32 = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
     self.fixPartialSectionChars(".idata", rdata);
     let mut hasIdata: bool = false;
+    for it in self.partialSections {
+        let mut pSec: *mut PartialSection = it.second;
+        if !pSec.name.starts_with(".idata") {
+            continue;
+        }
+        if !pSec.chunks.is_empty() {
+            hasIdata = true;
+        }
+        stable_sort(pSec.chunks, Closure_6 {});
+    }
     return hasIdata;
 }
 
 fn Writer::addSyntheticIdata(self) {
     let mut rdata: u32 = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
-    let mut add: Closure_5 = Closure_5 { cap_0: self, rdata: &mut rdata };
-    add(".idata$2");
-    add(".idata$4");
-    add(".idata$5");
-    if  {
-        add(".idata$6");
+    self.idata.create(self.ctx);
+    let mut add: Closure_7 = Closure_7 { cap_0: self, rdata: &mut rdata };
+    add.call(".idata$2", self.idata.dirs);
+    add.call(".idata$4", self.idata.lookups);
+    add.call(".idata$5", self.idata.addresses);
+    if !self.idata.hints.is_empty() {
+        add.call(".idata$6", self.idata.hints);
     }
-    add(".idata$7");
-    if  {
-        add(".idata$9");
+    add.call(".idata$7", self.idata.dllNames);
+    if !self.idata.auxIat.is_empty() {
+        add.call(".idata$9", self.idata.auxIat);
     }
-    if  {
-        add(".idata$a");
+    if !self.idata.auxIatCopy.is_empty() {
+        add.call(".idata$a", self.idata.auxIatCopy);
     }
 }
 
@@ -708,21 +811,22 @@ fn Writer::appendECImportTables(self) {
         importAddresses;
     } else {
         if !self.rdataSec.chunks.is_empty() {
-            self.rdataSec.chunks.front().setAlignment(max(4096, self.rdataSec.chunks.front().getAlignment()));
+            self.rdataSec.chunks.front().setAlignment(if 4096 > self.rdataSec.chunks.front().getAlignment() { 4096 } else { self.rdataSec.chunks.front().getAlignment() });
         }
         self.iatSize = alignTo(self.iatSize, 4096);
-        self.rdataSec.chunks;
-        self.rdataSec.contribSections;
+        self.rdataSec.chunks.insert(self.rdataSec.chunks.begin(), importAddresses.chunks.begin(), importAddresses.chunks.end());
+        self.rdataSec.contribSections.insert(self.rdataSec.contribSections.begin(), importAddresses);
     }
     if self.findPartialSection(".idata$9", rdata) {
         auxIat;
     } else {
         auxIat.chunks.front().setAlignment(4096);
-        self.rdataSec.chunks;
+        self.rdataSec.chunks.insert(self.rdataSec.chunks.end(), auxIat.chunks.begin(), auxIat.chunks.end());
         self.rdataSec.addContributingPartialSection(auxIat);
     }
-    if  {
-        self.rdataSec.chunks;
+    if !self.delayIdata.getAuxIat().is_empty() {
+        self.delayIdata.getAuxIat().front().setAlignment(4096);
+        self.rdataSec.chunks.insert(self.rdataSec.chunks.end(), self.delayIdata.getAuxIat().begin(), self.delayIdata.getAuxIat().end());
     }
 }
 
@@ -734,12 +838,18 @@ fn Writer::locateImportTables(self) {
         if !importDirs.chunks.is_empty() {
             self.importTableStart = importDirs.chunks.front();
         }
+        for c in importDirs.chunks {
+            self.importTableSize += c.getSize();
+        }
     }
     if self.findPartialSection(".idata$5", rdata) {
         importAddresses;
     } else {
         if !importAddresses.chunks.is_empty() {
             self.iatStart = importAddresses.chunks.front();
+        }
+        for c in importAddresses.chunks {
+            self.iatSize += c.getSize();
         }
     }
 }
@@ -756,7 +866,19 @@ fn shouldStripSectionSuffix(sc: *mut SectionChunk, name: str, isMinGW: bool) -> 
 
 fn Writer::sortSections(self) {
     if !self.ctx.config.callGraphProfile.is_empty() {
-        let mut order: i32 = 0;
+        let mut order: DenseMap<const SectionChunk *, int> = computeCallGraphProfileOrder(self.ctx);
+        for it in order {
+            if it.first.sym {
+                sym;
+            } else {
+                self.ctx.config.order[sym.getName()] = it.second;
+            }
+        }
+    }
+    if !self.ctx.config.order.is_empty() {
+        for it in self.partialSections {
+            self.sortBySectionOrder(it.second.chunks);
+        }
     }
 }
 
@@ -772,7 +894,7 @@ fn Writer::calculateStubDependentSizes(self) {
 }
 
 fn Writer::createSections(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Output sections" };
+    let mut timeScope: TimeTraceScope = "Output sections";
     let mut data: u32 = IMAGE_SCN_CNT_INITIALIZED_DATA;
     let mut bss: u32 = IMAGE_SCN_CNT_UNINITIALIZED_DATA;
     let mut code: u32 = IMAGE_SCN_CNT_CODE;
@@ -780,33 +902,58 @@ fn Writer::createSections(self) {
     let mut r: u32 = IMAGE_SCN_MEM_READ;
     let mut w: u32 = IMAGE_SCN_MEM_WRITE;
     let mut x: u32 = IMAGE_SCN_MEM_EXECUTE;
-    let mut sections: i32 = 0;
-    let mut createSection: Closure_6 = Closure_6 { cap_0: self };
-    self.textSec = createSection(".text", code | r | x);
+    let mut sections: pair<StringRef, uint32_t>, OutputSection *> = pair<StringRef, uint32_t>, OutputSection *> {};
+    let mut createSection: Closure_8 = Closure_8 { sections: &mut sections, cap_1: self };
+    self.textSec = createSection.call(".text", code | r | x);
     if isArm64EC(self.ctx.config.machine) {
-        self.wowthkSec = createSection(".wowthk", code | r | x);
-        self.hexpthkSec = createSection(".hexpthk", code | r | x);
+        self.wowthkSec = createSection.call(".wowthk", code | r | x);
+        self.hexpthkSec = createSection.call(".hexpthk", code | r | x);
     }
-    self.bssSec = createSection(".bss", bss | r | w);
-    self.rdataSec = createSection(".rdata", data | r);
-    self.buildidSec = createSection(".buildid", data | r);
-    self.cvinfoSec = createSection(".cvinfo", data | r);
-    self.dataSec = createSection(".data", data | r | w);
-    self.pdataSec = createSection(".pdata", data | r);
-    self.idataSec = createSection(".idata", data | r);
-    self.edataSec = createSection(".edata", data | r);
-    self.didatSec = createSection(".didat", data | r);
+    self.bssSec = createSection.call(".bss", bss | r | w);
+    self.rdataSec = createSection.call(".rdata", data | r);
+    self.buildidSec = createSection.call(".buildid", data | r);
+    self.cvinfoSec = createSection.call(".cvinfo", data | r);
+    self.dataSec = createSection.call(".data", data | r | w);
+    self.pdataSec = createSection.call(".pdata", data | r);
+    self.idataSec = createSection.call(".idata", data | r);
+    self.edataSec = createSection.call(".edata", data | r);
+    self.didatSec = createSection.call(".didat", data | r);
     if isArm64EC(self.ctx.config.machine) {
-        self.a64xrmSec = createSection(".a64xrm", data | r);
+        self.a64xrmSec = createSection.call(".a64xrm", data | r);
     }
-    self.rsrcSec = createSection(".rsrc", data | r);
-    self.relocSec = createSection(".reloc", data | discardable | r);
-    self.ctorsSec = createSection(".ctors", data | r | w);
-    self.dtorsSec = createSection(".dtors", data | r | w);
+    self.rsrcSec = createSection.call(".rsrc", data | r);
+    self.relocSec = createSection.call(".reloc", data | discardable | r);
+    self.ctorsSec = createSection.call(".ctors", data | r | w);
+    self.dtorsSec = createSection.call(".dtors", data | r | w);
+    for c in self.ctx.driver.getChunks() {
+        let mut sc: *mut SectionChunk = dyn_cast(c);
+        if sc && !sc.live {
+            if self.ctx.config.verbose {
+                sc.printDiscardedMessage();
+            }
+            continue;
+        }
+        if dyn_cast(c) {
+            cc;
+        } else {
+            if !cc.live {
+                continue;
+            }
+        }
+        let mut name: str = c.getSectionName();
+        if shouldStripSectionSuffix(sc, name, self.ctx.config.mingw) {
+            name = name.split('$').first;
+        }
+        if name.starts_with(".tls") {
+            self.tlsAlignment = if self.tlsAlignment > c.getAlignment() { self.tlsAlignment } else { c.getAlignment() };
+        }
+        let mut pSec: *mut PartialSection = self.createPartialSection(name, c.getOutputCharacteristics());
+        pSec.chunks.push(c);
+    }
     self.fixPartialSectionChars(".rsrc", data | r);
     self.fixPartialSectionChars(".edata", data | r);
     let mut hasIdata: bool = self.fixGnuImportChunks();
-    if  {
+    if !self.idata.is_empty() {
         hasIdata = true;
     }
     if hasIdata {
@@ -816,19 +963,40 @@ fn Writer::createSections(self) {
     if hasIdata {
         self.locateImportTables();
     }
-    if self.ctx {
+    for thunk in self.ctx.symtab.sameAddressThunks {
+        self.wowthkSec.addChunk(thunk);
+    }
+    for it in self.partialSections {
+        let mut pSec: *mut PartialSection = it.second;
+        let mut name: str = getOutputSectionName(pSec.name, self.ctx.config.mingw);
+        let mut outChars: u32 = pSec.characteristics;
+        if name == ".CRT" {
+            outChars = data | r;
+            Log(self.ctx) << "Processing section " << pSec.name << " -> " << name;
+            self.sortCRTSectionChunks(pSec.chunks);
+        }
+        if isArm64EC(self.ctx.config.machine) && (pSec.name == ".idata$5" || pSec.name == ".idata$9") {
+            continue;
+        }
+        let mut sec: *mut OutputSection = createSection.call(name, outChars);
+        for c in pSec.chunks {
+            sec.addChunk(c);
+        }
+        sec.addContributingPartialSection(pSec);
+    }
+    if self.ctx.hybridSymtab {
         if self.findSection(".CRT") {
             sec;
         } else {
             sec.splitECChunks();
         }
     }
-    let mut sectionOrder: Closure_7 = Closure_7 { cap_0: self };
-    stable_sort(self.ctx, Closure_8 { sectionOrder: &mut sectionOrder });
+    let mut sectionOrder: Closure_9 = Closure_9 { cap_0: self };
+    stable_sort(self.ctx.outputSections, Closure_10 { sectionOrder: &mut sectionOrder });
 }
 
 fn Writer::createMiscChunks(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Misc chunks" };
+    let mut timeScope: TimeTraceScope = "Misc chunks";
     let mut config: *mut Configuration = &mut self.ctx.config;
     for p in self.ctx.mergeChunkInstances[..] {
         if p {
@@ -836,7 +1004,7 @@ fn Writer::createMiscChunks(self) {
             self.rdataSec.addChunk(p);
         }
     }
-    self.ctx.forEachSymtab;
+    self.ctx.forEachSymtab(Closure_11 { cap_0: self });
     if config.mingw {
         self.debugInfoSec = self.buildidSec;
     } else if !config.mergeDebugDirectory {
@@ -845,13 +1013,14 @@ fn Writer::createMiscChunks(self) {
         self.debugInfoSec = self.rdataSec;
     }
     if config.buildIDHash != None || config.debug || config.repro || config.cetCompat || config.cetCompatStrict || config.cetCompatIpValidationRelaxed || config.cetCompatDynamicApisInProcOnly || config.hotpatchCompat {
-        self.debugDirectory = make(self.ctx, config.repro);
-        self.debugDirectory.setAlignment;
-        self.debugInfoSec.addChunk;
+        self.debugDirectory = make(self.ctx, self.debugRecords, config.repro);
+        self.debugDirectory.setAlignment(4);
+        self.debugInfoSec.addChunk(self.debugDirectory);
     }
     if config.debug || config.buildIDHash != None {
         self.buildId = make(self.ctx);
-        self.ctx.forEachSymtab;
+        self.debugRecords.push(IMAGE_DEBUG_TYPE_CODEVIEW, self.buildId);
+        self.ctx.forEachSymtab(Closure_12 { cap_0: self });
     }
     let mut ex_characteristics_flags: u16 = 0;
     if config.cetCompat {
@@ -869,7 +1038,13 @@ fn Writer::createMiscChunks(self) {
     if config.hotpatchCompat {
         ex_characteristics_flags |= IMAGE_DLL_CHARACTERISTICS_EX_HOTPATCH_COMPATIBLE;
     }
-    if ex_characteristics_flags {}
+    if ex_characteristics_flags {
+        self.debugRecords.push(IMAGE_DEBUG_TYPE_EX_DLLCHARACTERISTICS, make(ex_characteristics_flags));
+    }
+    for r in self.debugRecords {
+        r.second.setAlignment(4);
+        self.debugInfoSec.addChunk(r.second);
+    }
     if config.safeSEH {
         self.createSEHTable();
     }
@@ -885,72 +1060,164 @@ fn Writer::createMiscChunks(self) {
 }
 
 fn Writer::createImportTables(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Import tables" };
+    let mut timeScope: TimeTraceScope = "Import tables";
+    for file in self.ctx.importFileInstances {
+        if !file.live {
+            continue;
+        }
+        let mut dll: str = file.dllName.lower();
+        self.ctx.config.dllOrder.try_emplace(dll, self.ctx.config.dllOrder.len);
+        if file.impSym && !isa(file.impSym) {
+            Fatal(self.ctx) << file.symtab.printSymbol(file.impSym) << " was replaced";
+        }
+        let mut impSym: *mut DefinedImportData = cast_or_null(file.impSym);
+        if self.ctx.config.delayLoads.contains(file.dllName.lower()) {
+            if !file.thunkSym {
+                Fatal(self.ctx) << "cannot delay-load " << toString(file) << " due to import of data: " << file.symtab.printSymbol(impSym);
+            }
+            self.delayIdata.add(impSym);
+        } else {
+            self.idata.add(impSym);
+        }
+    }
 }
 
 fn Writer::appendImportThunks(self) {
-    if self.ctx() {
+    if self.ctx.importFileInstances.is_empty() {
         return;
     }
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Import thunks" };
-    if  {}
+    let mut timeScope: TimeTraceScope = "Import thunks";
+    for file in self.ctx.importFileInstances {
+        if !file.live {
+            continue;
+        }
+        if file.thunkSym {
+            if !isa(file.thunkSym) {
+                Fatal(self.ctx) << file.symtab.printSymbol(file.thunkSym) << " was replaced";
+            }
+            let mut chunk: *mut ImportThunkChunk = cast(file.thunkSym).getChunk();
+            if chunk.live {
+                self.textSec.addChunk(chunk);
+            }
+        }
+        if file.auxThunkSym {
+            if !isa(file.auxThunkSym) {
+                Fatal(self.ctx) << file.symtab.printSymbol(file.auxThunkSym) << " was replaced";
+            }
+            let mut chunk: *mut ImportThunkChunk = cast(file.auxThunkSym).getChunk();
+            if chunk.live {
+                self.textSec.addChunk(chunk);
+            }
+        }
+        if file.impchkThunk {
+            self.textSec.addChunk(file.impchkThunk);
+        }
+    }
+    if !self.delayIdata.is_empty() {
+        self.delayIdata.create();
+        for c in self.delayIdata.getChunks() {
+            self.didatSec.addChunk(c);
+        }
+        for c in self.delayIdata.getDataChunks() {
+            self.dataSec.addChunk(c);
+        }
+        for c in self.delayIdata.getCodeChunks() {
+            self.textSec.addChunk(c);
+        }
+        for c in self.delayIdata.getCodePData() {
+            self.pdataSec.addChunk(c);
+        }
+        for c in self.delayIdata.getAuxIatCopy() {
+            self.rdataSec.addChunk(c);
+        }
+        for c in self.delayIdata.getCodeUnwindInfo() {
+            self.rdataSec.addChunk(c);
+        }
+    }
 }
 
 fn Writer::createExportTable(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Export table" };
+    let mut timeScope: TimeTraceScope = "Export table";
     if !self.edataSec.chunks.is_empty() {
-        if operator!(self.ctx) {
+        if !self.ctx.hybridSymtab {
             self.ctx.symtab.edataStart = self.edataSec.chunks.front();
             self.ctx.symtab.edataEnd = self.edataSec.chunks.back();
         } else {
-            stable_sort(self.edataSec.chunks, Closure_9 {});
+            stable_sort(self.edataSec.chunks, Closure_13 {});
+            for chunk in self.edataSec.chunks {
+                if chunk.getMachine() != ARM64 {
+                    self.ctx.symtab.edataStart = chunk;
+                    self.ctx.symtab.edataEnd = self.edataSec.chunks.back();
+                    break;
+                }
+                if !operator(self.ctx.hybridSymtab).edataStart {
+                    operator(self.ctx.hybridSymtab).edataStart = chunk;
+                }
+                operator(self.ctx.hybridSymtab).edataEnd = chunk;
+            }
         }
     }
-    self.ctx.forEachActiveSymtab;
+    self.ctx.forEachActiveSymtab(Closure_14 { cap_0: self });
 }
 
 fn Writer::removeUnusedSections(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Remove unused sections" };
-    let mut isUnused: Closure_10 = Closure_10 { cap_0: self };
-    erase_if(self.ctx, isUnused);
+    let mut timeScope: TimeTraceScope = "Remove unused sections";
+    let mut isUnused: Closure_15 = Closure_15 { cap_0: self };
+    erase_if(self.ctx.outputSections, isUnused);
 }
 
 fn Writer::layoutSections(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Layout sections" };
-    if self.ctx.config.sectionOrder.len == 0 {
+    let mut timeScope: TimeTraceScope = "Layout sections";
+    if self.ctx.config.sectionOrder.is_empty() {
         return;
     }
-    stable_sort(self.ctx, Closure_11 { cap_0: self });
+    stable_sort(self.ctx.outputSections, Closure_16 { cap_0: self });
 }
 
 fn Writer::removeEmptySections(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Remove empty sections" };
-    let mut isEmpty: Closure_12 = Closure_12 {};
-    erase_if(self.ctx, isEmpty);
+    let mut timeScope: TimeTraceScope = "Remove empty sections";
+    let mut isEmpty: Closure_17 = Closure_17 {};
+    erase_if(self.ctx.outputSections, isEmpty);
 }
 
 fn Writer::assignOutputSectionIndices(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Output sections indices" };
+    let mut timeScope: TimeTraceScope = "Output sections indices";
     let mut idx: u32 = 1;
+    for os in self.ctx.outputSections {
+        os.sectionIndex = idx;
+        for c in os.chunks {
+            c.setOutputSectionIdx(idx);
+        }
+        idx += 1;
+    }
+    for mc in self.ctx.mergeChunkInstances[..] {
+        if mc {
+            for sc in mc.sections {
+                if sc && sc.live {
+                    sc.setOutputSectionIdx(mc.getOutputSectionIdx());
+                }
+            }
+        }
+    }
 }
 
 fn Writer::createSymbol(self, def: *mut Defined) -> optional<coff_symbol16> {
     let mut sym: coff_symbol16 = coff_symbol16 {};
     match def.kind() {
         DefinedAbsoluteKind => {
-            let mut da: *mut auto = dyn_cast(def);
-            sym.Value = ();
+            let mut da: *mut DefinedAbsolute = dyn_cast(def);
+            sym.Value = da.getVA();
             sym.SectionNumber = IMAGE_SYM_ABSOLUTE;
             break;
         },
         _ => {
             let mut c: *mut Chunk = def.getChunk();
             if !c {
-                return nullopt();
+                return nullopt;
             }
             let mut os: *mut OutputSection = self.ctx.getOutputSection(c);
             if !os {
-                return nullopt();
+                return nullopt;
             }
             sym.Value = def.getRVA() - os.getRVA();
             sym.SectionNumber = os.sectionIndex;
@@ -958,7 +1225,7 @@ fn Writer::createSymbol(self, def: *mut Defined) -> optional<coff_symbol16> {
         },
     }
     if def.isRuntimePseudoReloc {
-        return nullopt();
+        return nullopt;
     }
     let mut name: str = def.getName();
     if name.len > NameSize {
@@ -969,57 +1236,115 @@ fn Writer::createSymbol(self, def: *mut Defined) -> optional<coff_symbol16> {
         memset(sym.Name.ShortName, 0, NameSize);
         memcpy(sym.Name.ShortName, name.ptr, name.len);
     }
-    if  {
-        let mut ref: COFFSymbolRef = ();
+    if dyn_cast(def) {
+        d;
+    } else {
+        let mut ref: COFFSymbolRef = d.getCOFFSymbol();
         sym.Type = ref.getType();
         sym.StorageClass = ref.getStorageClass();
-    } else if def.kind() == DefinedImportThunkKind {
-        sym.Type = (IMAGE_SYM_DTYPE_FUNCTION << SCT_COMPLEX_TYPE_SHIFT) | IMAGE_SYM_TYPE_NULL;
-        sym.StorageClass = IMAGE_SYM_CLASS_EXTERNAL;
-    } else {
-        sym.Type = IMAGE_SYM_TYPE_NULL;
-        sym.StorageClass = IMAGE_SYM_CLASS_EXTERNAL;
     }
     sym.NumberOfAuxSymbols = 0;
     return sym;
 }
 
 fn Writer::createSymbolAndStringTable(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Symbol and string table" };
-    let mut longNameSections: i32 = 0;
-    let mut longNameSymbols: i32 = 0;
-    if self.ctx.config.writeSymtab {}
-    if  {
+    let mut timeScope: TimeTraceScope = "Symbol and string table";
+    let mut longNameSections: SmallVector<OutputSection *> = SmallVector<OutputSection *> {};
+    for sec in self.ctx.outputSections {
+        if sec.name.len <= NameSize {
+            continue;
+        }
+        if (sec.header.Characteristics.operator unsigned int() & IMAGE_SCN_MEM_DISCARDABLE) == 0 {
+            continue;
+        }
+        if self.ctx.config.warnLongSectionNames {
+            Warn(self.ctx) << "section name " << sec.name << " is longer than 8 characters and will use a non-standard string table";
+        }
+        self.strtab.add(sec.name, 255);
+        longNameSections.push(sec);
+    }
+    let mut longNameSymbols: []pair<size_t, StringRef> = []pair<size_t, StringRef> {};
+    if self.ctx.config.writeSymtab {
+        for file in self.ctx.objFileInstances {
+            for b in file.getSymbols() {
+                let mut d: *mut Defined = dyn_cast_or_null(b);
+                if !d || d.writtenToSymtab {
+                    continue;
+                }
+                d.writtenToSymtab = true;
+                if dyn_cast_or_null(d) {
+                    dc;
+                } else {
+                    let mut symRef: COFFSymbolRef = dc.getCOFFSymbol();
+                    if symRef.isSectionDefinition() || symRef.getStorageClass() == IMAGE_SYM_CLASS_LABEL {
+                        continue;
+                    }
+                }
+                if self.createSymbol(d) {
+                    sym;
+                } else {
+                    if d.getName().len > NameSize {
+                        longNameSymbols.push(self.outputSymtab.len, d.getName());
+                    }
+                    self.outputSymtab.push(operator(sym));
+                }
+                if dyn_cast(d) {
+                    dthunk;
+                } else {
+                    if !dthunk.wrappedSym.writtenToSymtab {
+                        dthunk.wrappedSym.writtenToSymtab = true;
+                        if self.createSymbol(dthunk.wrappedSym) {
+                            sym;
+                        } else {
+                            if dthunk.wrappedSym.getName().len > NameSize {
+                                longNameSymbols.push(self.outputSymtab.len, dthunk.wrappedSym.getName());
+                            }
+                            self.outputSymtab.push(operator(sym));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if self.outputSymtab.is_empty() && self.strtab.is_empty() {
         return;
     }
     self.strtab.finalize();
+    for sec in longNameSections {
+        sec.setStringTableOff(self.strtab.getOffset(sec.name));
+    }
+    for P in longNameSymbols {
+        let mut sym: *mut coff_symbol16 = self.outputSymtab[P.first];
+        sym.Name.Offset.Offset = self.strtab.getOffset(P.second);
+    }
     let mut fileOff: u64 = self.fileSize;
     self.pointerToSymbolTable = fileOff;
+    fileOff += self.outputSymtab.len * ;
     fileOff += self.strtab.getSize();
     self.fileSize = alignTo(fileOff, self.ctx.config.fileAlign);
 }
 
 fn Writer::getMergeDestination(self, fromSection: str, toSection: str) -> str {
-    let mut names: i32 = 0;
+    let mut names: StringSet<> = StringSet<> {};
     while true {
-        if operator!((toSection)) {
-            Fatal(self.ctx) << "/merge: cycle found for section '" << "'";
+        if !names.insert(toSection).second {
+            Fatal(self.ctx) << "/merge: cycle found for section '" << fromSection << "'";
         }
-        let mut i: auto = self.ctx.config.merge.find;
-        if i() == self.ctx.config.merge.end {
+        let mut i: iterator = self.ctx.config.merge.find(toSection);
+        if i == self.ctx.config.merge.end() {
             break;
         }
-        toSection = ;
+        toSection = operator(i).second;
     }
     return toSection;
 }
 
-fn Writer::mergeSection(self, p: i32) {
-    if p() ==  {
+fn Writer::mergeSection(self, p: *value_type) {
+    if p.first == p.second {
         return;
     }
-    let mut toSection: str = self.getMergeDestination();
-    let mut from: *mut OutputSection = self.findSection();
+    let mut toSection: str = self.getMergeDestination(p.first, p.second);
+    let mut from: *mut OutputSection = self.findSection(p.first);
     let mut to: *mut OutputSection = self.findSection(toSection);
     if !from {
         return;
@@ -1032,19 +1357,38 @@ fn Writer::mergeSection(self, p: i32) {
 }
 
 fn Writer::mergeSections(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Merge sections" };
+    let mut timeScope: TimeTraceScope = "Merge sections";
     if !self.pdataSec.chunks.is_empty() {
         if isArm64EC(self.ctx.config.machine) {
-            stable_sort(self.pdataSec.chunks, Closure_13 {});
+            stable_sort(self.pdataSec.chunks, Closure_18 {});
+            for chunk in self.pdataSec.chunks {
+                if chunk.getMachine() == AMD64 {
+                    self.hybridPdata.first = chunk;
+                    self.hybridPdata.last = self.pdataSec.chunks.back();
+                    break;
+                }
+                if !self.pdata.first {
+                    self.pdata.first = chunk;
+                }
+                self.pdata.last = chunk;
+            }
         } else {
             self.pdata.first = self.pdataSec.chunks.front();
             self.pdata.last = self.pdataSec.chunks.back();
         }
     }
-    let mut it: auto = self.ctx.config.merge.find;
-    if it() != self.ctx.config.merge.end {
-        let mut toSection: str = self.getMergeDestination();
-        let mut secIt: auto = self.ctx.config.section.find;
+    for p in self.ctx.config.merge {
+        if p.first != ".bss" {
+            self.mergeSection(p);
+        }
+    }
+    let mut it: iterator = self.ctx.config.merge.find(".bss");
+    if !it == self.ctx.config.merge.end() {
+        let mut toSection: str = self.getMergeDestination(operator(it).first, operator(it).second);
+        let mut secIt: iterator = self.ctx.config.section.find(toSection);
+        if secIt == self.ctx.config.section.end() || !(operator(secIt).second & IMAGE_SCN_MEM_SHARED) {
+            self.mergeSection(value_type { operator(it).first, toSection });
+        }
     }
 }
 
@@ -1052,17 +1396,69 @@ fn Writer::sortECChunks(self) {
     if !isArm64EC(self.ctx.config.machine) {
         return;
     }
+    for sec in self.ctx.outputSections {
+        if sec.isCodeSection() {
+            stable_sort(sec.chunks, Closure_19 {});
+        }
+    }
 }
 
 fn Writer::assignAddresses(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Assign addresses" };
+    let mut timeScope: TimeTraceScope = "Assign addresses";
     let mut config: *mut Configuration = &mut self.ctx.config;
     self.createECCodeMap();
-    self.sizeOfHeaders = self.dosStubSize + (PEMagic) +  +  * numberOfDataDirectory +  * self.ctx();
+    self.sizeOfHeaders = self.dosStubSize + (PEMagic) +  +  * numberOfDataDirectory +  * self.ctx.outputSections.len;
     self.sizeOfHeaders += if config.is64() {  } else {  };
     self.sizeOfHeaders = alignTo(self.sizeOfHeaders, config.fileAlign);
     self.fileSize = self.sizeOfHeaders;
     let mut rva: u64 = alignTo(self.sizeOfHeaders, config.align);
+    for sec in self.ctx.outputSections {
+        let mut timeScope: TimeTraceScope = TimeTraceScope { "Section: ", sec.name };
+        if sec == self.relocSec {
+            sec.chunks.clear();
+            self.addBaserels();
+            if self.ctx.dynamicRelocs {
+                self.ctx.dynamicRelocs.finalize();
+                self.relocSec.addChunk(self.ctx.dynamicRelocs);
+            }
+        }
+        let mut rawSize: u64 = 0;
+        let mut virtualSize: u64 = 0;
+        sec.header.VirtualAddress = rva;
+        let mut padding: u32 = if sec.isCodeSection() { config.functionPadMin } else { 0 };
+        let mut prevECRange: optional<chpe_range_type> = optional<chpe_range_type> {};
+        for c in sec.chunks {
+            if isArm64EC(self.ctx.config.machine) && sec.isCodeSection() {
+                let mut rangeType: optional<chpe_range_type> = c.getArm64ECRangeType();
+                if rangeType != prevECRange {
+                    virtualSize = alignTo(virtualSize, 4096);
+                    prevECRange = rangeType;
+                }
+            }
+            if padding && c.isHotPatchable() {
+                virtualSize += padding;
+            }
+            if c.getEntryThunk() {
+                virtualSize += ;
+            }
+            virtualSize = alignTo(virtualSize, c.getAlignment());
+            c.setRVA(rva + virtualSize);
+            virtualSize += c.getSize();
+            if c.hasData {
+                rawSize = alignTo(virtualSize, config.fileAlign);
+            }
+        }
+        if virtualSize > 4294967295 {
+            Err(self.ctx) << "section larger than 4 GiB: " << sec.name;
+        }
+        sec.header.VirtualSize = virtualSize;
+        sec.header.SizeOfRawData = rawSize;
+        if rawSize != 0 {
+            sec.header.PointerToRawData = self.fileSize;
+        }
+        rva += alignTo(virtualSize, config.align);
+        self.fileSize += alignTo(rawSize, config.fileAlign);
+    }
     self.sizeOfImage = alignTo(rva, config.align);
     for mc in self.ctx.mergeChunkInstances[..] {
         if mc {
@@ -1071,12 +1467,20 @@ fn Writer::assignAddresses(self) {
     }
 }
 
-fn Writer::openFile(self, path: str) {}
+fn Writer::openFile(self, path: str) {
+    self.buffer = check2((create(path, self.fileSize, F_executable)), string ()> { Closure_20 { path: &mut path }, null, null });
+}
 
 fn Writer::createSEHTable(self) {
     let mut handlers: SymbolRVASet = SymbolRVASet {};
-    self.setNoSEHCharacteristic = handlers.len == 0 || !self.ctx.symtab.findUnderscore("_load_config_used");
-    self.maybeAddRVATable(move(handlers), "__safe_se_handler_table", "__safe_se_handler_count");
+    for file in self.ctx.objFileInstances {
+        if !file.hasSafeSEH() {
+            Err(self.ctx) << "/safeseh: " << file.getName() << " is not compatible with SEH";
+        }
+        self.markSymbolsForRVATable(file, file.getSXDataChunks(), handlers);
+    }
+    self.setNoSEHCharacteristic = handlers.is_empty() || !self.ctx.symtab.findUnderscore("_load_config_used");
+    self.maybeAddRVATable(move(handlers), "__safe_se_handler_table", "__safe_se_handler_count", false);
 }
 
 fn addSymbolToRVASet(rvaSet: *mut SymbolRVASet, s: *mut Defined) {
@@ -1084,11 +1488,13 @@ fn addSymbolToRVASet(rvaSet: *mut SymbolRVASet, s: *mut Defined) {
     if !c {
         return;
     }
-    if  {
-        c = ;
+    if dyn_cast(c) {
+        sc;
+    } else {
+        c = sc.repl;
     }
     let mut off: u32 = s.getRVA() - (if c { c.getRVA() } else { 0 });
-    rvaSet.insert;
+    rvaSet.insert(ChunkAndOffset { inputChunk: c, offset: off });
 }
 
 fn maybeAddAddressTakenFunction(addressTakenSyms: *mut SymbolRVASet, s: *mut Symbol) {
@@ -1106,9 +1512,11 @@ fn maybeAddAddressTakenFunction(addressTakenSyms: *mut SymbolRVASet, s: *mut Sym
             break;
         },
         DefinedSyntheticKind => {
-            if  {
+            if dyn_cast_or_null(cast(s).getChunk()) {
+                expChunk;
+            } else {
                 addSymbolToRVASet(addressTakenSyms, cast(s));
-                addSymbolToRVASet(addressTakenSyms);
+                addSymbolToRVASet(addressTakenSyms, expChunk.target);
             }
         },
         LazyArchiveKind => {
@@ -1118,11 +1526,11 @@ fn maybeAddAddressTakenFunction(addressTakenSyms: *mut SymbolRVASet, s: *mut Sym
             addSymbolToRVASet(addressTakenSyms, cast(s));
         },
         DefinedRegularKind => {
-            let mut d: *mut auto = cast(s);
-            if d()()() == IMAGE_SYM_DTYPE_FUNCTION {
-                let mut sc: *mut SectionChunk = dyn_cast();
+            let mut d: *mut DefinedRegular = cast(s);
+            if d.getCOFFSymbol().getComplexType() == IMAGE_SYM_DTYPE_FUNCTION {
+                let mut sc: *mut SectionChunk = dyn_cast(d.getChunk());
                 if sc && sc.live && sc.getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE {
-                    addSymbolToRVASet(addressTakenSyms);
+                    addSymbolToRVASet(addressTakenSyms, d);
                 }
             }
             break;
@@ -1136,27 +1544,67 @@ fn Writer::markSymbolsWithRelocations(self, file: *mut ObjFile, usedSymbols: *mu
         if !sc || !sc.live {
             continue;
         }
+        for reloc in sc.getRelocs() {
+            if self.ctx.config.machine == I386 && reloc.Type.operator unsigned short() == IMAGE_REL_I386_REL32 {
+                continue;
+            }
+            let mut ref: *mut Symbol = sc.file.getSymbol(reloc.SymbolTableIndex.operator unsigned int());
+            maybeAddAddressTakenFunction(usedSymbols, ref);
+        }
     }
 }
 
 fn Writer::createGuardCFTables(self) {
     let mut config: *mut Configuration = &mut self.ctx.config;
     if config.guardCF == Off {
+        for file in self.ctx.objFileInstances {
+            if file.hasGuardCF() {
+                self.ctx.forEachSymtab(Closure_21 {});
+                break;
+            }
+        }
         return;
     }
-    let mut addressTakenSyms: SymbolRVASet = ;
-    let mut giatsRVASet: SymbolRVASet = ;
-    let mut giatsSymbols: i32 = 0;
-    let mut longJmpTargets: SymbolRVASet = ;
-    let mut ehContTargets: SymbolRVASet = ;
-    self.ctx.forEachSymtab;
-    self.maybeAddRVATable(move(addressTakenSyms), "__guard_fids_table", "__guard_fids_count");
-    self.maybeAddRVATable(move(giatsRVASet), "__guard_iat_table", "__guard_iat_count");
+    let mut addressTakenSyms: SymbolRVASet = SymbolRVASet {};
+    let mut giatsRVASet: SymbolRVASet = SymbolRVASet {};
+    let mut giatsSymbols: []*mut Symbol = []*mut Symbol {};
+    let mut longJmpTargets: SymbolRVASet = SymbolRVASet {};
+    let mut ehContTargets: SymbolRVASet = SymbolRVASet {};
+    for file in self.ctx.objFileInstances {
+        if file.hasGuardCF() {
+            self.markSymbolsForRVATable(file, file.getGuardFidChunks(), addressTakenSyms);
+            self.markSymbolsForRVATable(file, file.getGuardIATChunks(), giatsRVASet);
+            self.getSymbolsFromSections(file, file.getGuardIATChunks(), giatsSymbols);
+            self.markSymbolsForRVATable(file, file.getGuardLJmpChunks(), longJmpTargets);
+        } else {
+            self.markSymbolsWithRelocations(file, addressTakenSyms);
+        }
+        if file.hasGuardEHCont() {
+            self.markSymbolsForRVATable(file, file.getGuardEHContChunks(), ehContTargets);
+        }
+    }
+    self.ctx.forEachSymtab(Closure_22 { addressTakenSyms: &mut addressTakenSyms });
+    for s in giatsSymbols {
+        if dyn_cast(s) {
+            di;
+        } else {
+            if di.loadThunkSym {
+                addSymbolToRVASet(addressTakenSyms, di.loadThunkSym);
+            }
+        }
+    }
+    for c in addressTakenSyms {
+        if c.inputChunk.getAlignment() < 16 {
+            c.inputChunk.setAlignment(16);
+        }
+    }
+    self.maybeAddRVATable(move(addressTakenSyms), "__guard_fids_table", "__guard_fids_count", false);
+    self.maybeAddRVATable(move(giatsRVASet), "__guard_iat_table", "__guard_iat_count", false);
     if config.guardCF & LongJmp {
-        self.maybeAddRVATable(move(longJmpTargets), "__guard_longjmp_table", "__guard_longjmp_count");
+        self.maybeAddRVATable(move(longJmpTargets), "__guard_longjmp_table", "__guard_longjmp_count", false);
     }
     if config.guardCF & EHCont {
-        self.maybeAddRVATable(move(ehContTargets), "__guard_eh_cont_table", "__guard_eh_cont_count");
+        self.maybeAddRVATable(move(ehContTargets), "__guard_eh_cont_table", "__guard_eh_cont_count", false);
     }
     let mut guardFlags: u32 = CF_INSTRUMENTED | CF_FUNCTION_TABLE_PRESENT;
     if config.guardCF & LongJmp {
@@ -1165,30 +1613,47 @@ fn Writer::createGuardCFTables(self) {
     if config.guardCF & EHCont {
         guardFlags |= EH_CONTINUATION_TABLE_PRESENT;
     }
-    self.ctx.forEachSymtab;
+    self.ctx.forEachSymtab(Closure_23 { guardFlags: guardFlags });
 }
 
-fn Writer::getSymbolsFromSections(self, file: *mut ObjFile, symIdxChunks: ArrayRef<SectionChunk *>, symbols: *mut i32) {
+fn Writer::getSymbolsFromSections(self, file: *mut ObjFile, symIdxChunks: ArrayRef<SectionChunk *>, symbols: *mut []*mut Symbol) {
     for c in symIdxChunks {
         if !c.live {
             continue;
         }
         let mut data: ArrayRef<uint8_t> = c.getContents();
         if data.len % 4 != 0 {
-            Warn(self.ctx) << "ignoring " << " symbol table index section in object " << file;
+            Warn(self.ctx) << "ignoring " << c.getSectionName() << " symbol table index section in object " << file;
             continue;
         }
-        let mut symIndices: ArrayRef<ulittle32_t> = zeroed();
+        let mut symIndices: ArrayRef<ulittle32_t> = ArrayRef<ulittle32_t> { data.ptr as *ulittle32_t, data.len / 4 };
         let mut objSymbols: ArrayRef<Symbol *> = file.getSymbols();
+        for symIndex in symIndices {
+            if symIndex >= objSymbols.len {
+                Warn(self.ctx) << "ignoring invalid symbol table index in section " << c.getSectionName() << " in object " << file;
+                continue;
+            }
+            if objSymbols[symIndex] {
+                s;
+            } else {
+                if s.isLive() {
+                    symbols.push(cast(s));
+                }
+            }
+        }
     }
 }
 
 fn Writer::markSymbolsForRVATable(self, file: *mut ObjFile, symIdxChunks: ArrayRef<SectionChunk *>, tableSymbols: *mut SymbolRVASet) {
-    let mut syms: i32 = 0;
+    let mut syms: []*mut Symbol = []*mut Symbol {};
+    self.getSymbolsFromSections(file, symIdxChunks, syms);
+    for s in syms {
+        addSymbolToRVASet(tableSymbols, cast(s));
+    }
 }
 
 fn Writer::maybeAddRVATable(self, tableSymbols: SymbolRVASet, tableSym: str, countSym: str, hasFlag: bool) {
-    if tableSymbols.len == 0 {
+    if tableSymbols.is_empty() {
         return;
     }
     let mut tableChunk: *mut NonSectionChunk = null;
@@ -1198,34 +1663,50 @@ fn Writer::maybeAddRVATable(self, tableSymbols: SymbolRVASet, tableSym: str, cou
         tableChunk = make(move(tableSymbols));
     }
     self.rdataSec.addChunk(tableChunk);
-    self.ctx.forEachSymtab;
+    self.ctx.forEachSymtab(Closure_24 { tableSym: &mut tableSym, countSym: &mut countSym, tableChunk: &mut tableChunk, hasFlag: &mut hasFlag });
 }
 
 fn Writer::createECChunks(self) {
     if !self.ctx.symtab.isEC() {
         return;
     }
-    let mut codeMapChunk: auto = make();
-    self.rdataSec.addChunk();
+    for s in self.ctx.symtab.expSymbols {
+        let mut sym: CastReturnType = dyn_cast(s);
+        if !sym || !sym.getChunk() {
+            continue;
+        }
+        if dyn_cast(sym.getChunk()) {
+            thunk;
+        } else {
+            self.hexpthkSec.addChunk(thunk);
+            self.exportThunks.push(Defined *> { thunk, thunk.target });
+        }
+    }
+    let mut codeMapChunk: *mut ECCodeMapChunk = make(self.codeMap);
+    self.rdataSec.addChunk(codeMapChunk);
     let mut codeMapSym: *mut Symbol = self.ctx.symtab.findUnderscore("__hybrid_code_map");
-    replaceSymbol(codeMapSym, codeMapSym.getName());
-    let mut ranges: *mut CHPECodeRangesChunk = make();
+    replaceSymbol(codeMapSym, codeMapSym.getName(), codeMapChunk);
+    let mut ranges: *mut CHPECodeRangesChunk = make(self.exportThunks);
     self.rdataSec.addChunk(ranges);
     let mut rangesSym: *mut Symbol = self.ctx.symtab.findUnderscore("__x64_code_ranges_to_entry_points");
     replaceSymbol(rangesSym, rangesSym.getName(), ranges);
-    let mut entryPoints: *mut CHPERedirectionChunk = make();
+    let mut entryPoints: *mut CHPERedirectionChunk = make(self.exportThunks);
     self.a64xrmSec.addChunk(entryPoints);
     let mut entryPointsSym: *mut Symbol = self.ctx.symtab.findUnderscore("__arm64x_redirection_metadata");
     replaceSymbol(entryPointsSym, entryPointsSym.getName(), entryPoints);
+    for thunk in self.ctx.symtab.sameAddressThunks {
+        self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, sizeof, Arm64XRelocVal { thunk, 0 }, Arm64XRelocVal { 0 });
+        self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, sizeof, Arm64XRelocVal { thunk,  }, Arm64XRelocVal { 0 });
+    }
 }
 
 fn Writer::createRuntimePseudoRelocs(self) {
-    self.ctx.forEachSymtab;
+    self.ctx.forEachSymtab(Closure_25 { cap_0: self });
 }
 
 fn Writer::insertCtorDtorSymbols(self) {
-    self.ctx.forEachSymtab;
-    if self.ctx {
+    self.ctx.forEachSymtab(Closure_26 { cap_0: self });
+    if self.ctx.hybridSymtab {
         self.ctorsSec.splitECChunks();
         self.dtorsSec.splitECChunks();
     }
@@ -1249,65 +1730,98 @@ fn Writer::insertBssDataStartEndSymbols(self) {
 }
 
 fn Writer::setSectionPermissions(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Sections permissions" };
+    let mut timeScope: TimeTraceScope = "Sections permissions";
+    for p in self.ctx.config.section {
+        let mut name: str = p.first;
+        let mut perm: u32 = p.second;
+        for sec in self.ctx.outputSections {
+            if sec.name == name {
+                sec.setPermissions(perm);
+            }
+        }
+    }
 }
 
 fn Writer::setECSymbols(self) {
     if !self.ctx.symtab.isEC() {
         return;
     }
-    stable_sort(Closure_14 {});
+    stable_sort(self.exportThunks, Closure_27 {});
     let mut chpePdata: *mut ChunkRange = if self.ctx.config.machine == ARM64X { self.hybridPdata } else { self.pdata };
     let mut rfeTableSym: *mut Symbol = self.ctx.symtab.findUnderscore("__arm64x_extra_rfe_table");
     replaceSymbol(rfeTableSym, "__arm64x_extra_rfe_table", chpePdata.first);
     if chpePdata.first {
         let mut rfeSizeSym: *mut Symbol = self.ctx.symtab.findUnderscore("__arm64x_extra_rfe_table_size");
-        cast(rfeSizeSym)(chpePdata.last.getRVA() + chpePdata.last.getSize() - chpePdata.first.getRVA());
+        cast(rfeSizeSym).setVA(chpePdata.last.getRVA() + chpePdata.last.getSize() - chpePdata.first.getRVA());
     }
     let mut rangesCountSym: *mut Symbol = self.ctx.symtab.findUnderscore("__x64_code_ranges_to_entry_points_count");
-    cast(rangesCountSym);
+    cast(rangesCountSym).setVA(self.exportThunks.len);
     let mut entryPointCountSym: *mut Symbol = self.ctx.symtab.findUnderscore("__arm64x_redirection_metadata_count");
-    cast(entryPointCountSym);
+    cast(entryPointCountSym).setVA(self.exportThunks.len);
     let mut iatSym: *mut Symbol = self.ctx.symtab.findUnderscore("__hybrid_auxiliary_iat");
-    replaceSymbol(iatSym, "__hybrid_auxiliary_iat");
+    replaceSymbol(iatSym, "__hybrid_auxiliary_iat", if self.idata.auxIat.is_empty() { null } else { self.idata.auxIat.front() });
     let mut iatCopySym: *mut Symbol = self.ctx.symtab.findUnderscore("__hybrid_auxiliary_iat_copy");
-    replaceSymbol(iatCopySym, "__hybrid_auxiliary_iat_copy");
+    replaceSymbol(iatCopySym, "__hybrid_auxiliary_iat_copy", if self.idata.auxIatCopy.is_empty() { null } else { self.idata.auxIatCopy.front() });
     let mut delayIatSym: *mut Symbol = self.ctx.symtab.findUnderscore("__hybrid_auxiliary_delayload_iat");
-    replaceSymbol(delayIatSym, "__hybrid_auxiliary_delayload_iat");
+    replaceSymbol(delayIatSym, "__hybrid_auxiliary_delayload_iat", if self.delayIdata.getAuxIat().is_empty() { null } else { self.delayIdata.getAuxIat().front() });
     let mut delayIatCopySym: *mut Symbol = self.ctx.symtab.findUnderscore("__hybrid_auxiliary_delayload_iat_copy");
-    replaceSymbol(delayIatCopySym, "__hybrid_auxiliary_delayload_iat_copy");
+    replaceSymbol(delayIatCopySym, "__hybrid_auxiliary_delayload_iat_copy", if self.delayIdata.getAuxIatCopy().is_empty() { null } else { self.delayIdata.getAuxIatCopy().front() });
     if self.ctx.config.machine == ARM64X {
-        if  {
-            if  {
-                altEntrySym() = ;
+        if cast_or_null(self.ctx.symtab.entry) {
+            altEntrySym;
+        } else {
+            if dyn_cast(altEntrySym.getChunk()) {
+                thunkChunk;
+            } else {
+                altEntrySym = thunkChunk.target;
             }
-            self.ctx.symtab.findUnderscore("__arm64x_native_entrypoint").replaceKeepingName();
+            self.ctx.symtab.findUnderscore("__arm64x_native_entrypoint").replaceKeepingName(altEntrySym, sizeof);
         }
         if self.ctx.symtab.edataStart {
-            self.ctx.dynamicRelocs.set(Arm64XRelocVal { self.dataDirOffset64 + EXPORT_TABLE *  +  }, Arm64XRelocVal { self.ctx.symtab.edataEnd.getRVA() - self.ctx.symtab.edataStart.getRVA() + self.ctx.symtab.edataEnd.getSize() });
+            self.ctx.dynamicRelocs.set(self.dataDirOffset64 + EXPORT_TABLE *  + , self.ctx.symtab.edataEnd.getRVA() - self.ctx.symtab.edataStart.getRVA() + self.ctx.symtab.edataEnd.getSize());
         }
         if self.hybridPdata.first {
-            self.ctx.dynamicRelocs.set(Arm64XRelocVal { self.dataDirOffset64 + EXCEPTION_TABLE *  +  }, Arm64XRelocVal { self.hybridPdata.last.getRVA() - self.hybridPdata.first.getRVA() + self.hybridPdata.last.getSize() });
+            self.ctx.dynamicRelocs.set(self.dataDirOffset64 + EXCEPTION_TABLE *  + , self.hybridPdata.last.getRVA() - self.hybridPdata.first.getRVA() + self.hybridPdata.last.getSize());
         }
         if self.chpeSym && self.pdata.first {
-            self.ctx.dynamicRelocs.set(Arm64XRelocVal { self.chpeSym.getRVA() +  }, Arm64XRelocVal { self.pdata.last.getRVA() + self.pdata.last.getSize() - self.pdata.first.getRVA() });
+            self.ctx.dynamicRelocs.set(self.chpeSym.getRVA() + , self.pdata.last.getRVA() + self.pdata.last.getSize() - self.pdata.first.getRVA());
         }
+    }
+    for thunk in self.ctx.symtab.sameAddressThunks {
+        thunk.setDynamicRelocs(self.ctx);
     }
 }
 
 fn Writer::writeSections(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Write sections" };
-    let mut buf: *mut u8 = null;
+    let mut timeScope: TimeTraceScope = "Write sections";
+    let mut buf: *mut u8 = operator(self.buffer).getBufferStart();
+    for sec in self.ctx.outputSections {
+        let mut secBuf: *mut u8 = buf + sec.getFileOff();
+        if (sec.header.Characteristics.operator unsigned int() & IMAGE_SCN_CNT_CODE) && (self.ctx.config.machine == AMD64 || self.ctx.config.machine == I386) {
+            let mut prevEnd: u32 = 0;
+            let mut rawSize: u32 = sec.getRawSize();
+            for c in sec.chunks {
+                let mut off: u32 = c.getRVA() - sec.getRVA();
+                if off >= rawSize {
+                    break;
+                }
+                memset(secBuf + prevEnd, 204, off - prevEnd);
+                prevEnd = if off + c.getSize() as u32 < rawSize { off + c.getSize() as u32 } else { rawSize };
+            }
+            memset(secBuf + prevEnd, 204, rawSize - prevEnd);
+        }
+        parallelForEach(sec.chunks, Closure_28 { secBuf: &mut secBuf, sec: &mut sec });
+    }
 }
 
 fn Writer::writeBuildId(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Write build ID" };
+    let mut timeScope: TimeTraceScope = "Write build ID";
     let mut config: *mut Configuration = &mut self.ctx.config;
     let mut generateSyntheticBuildId: bool = config.buildIDHash == Binary;
     if generateSyntheticBuildId {
         assert!(self.buildId, "BuildId is not set!");
     }
-    let mut outputFileData: str = zeroed();
+    let mut outputFileData: str = operator(self.buffer).getBufferStart() as *u8[0..operator(self.buffer).getBufferSize()];
     let mut timestamp: u32 = config.timestamp;
     let mut hash: u64 = 0;
     if config.repro || generateSyntheticBuildId {
@@ -1325,17 +1839,17 @@ fn Writer::writeBuildId(self) {
     if self.debugDirectory {
         self.debugDirectory.setTimeDateStamp(timestamp);
     }
-    let mut buf: *mut u8 = null;
+    let mut buf: *mut u8 = operator(self.buffer).getBufferStart();
     buf += self.dosStubSize + (PEMagic);
     let mut coffHeader: *mut coff_file_header = buf as *mut coff_file_header;
     coffHeader.TimeDateStamp = timestamp;
 }
 
 fn Writer::sortExceptionTables(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Sort exception table" };
+    let mut timeScope: TimeTraceScope = "Sort exception table";
     match self.ctx.config.machine {
         AMD64 => {
-            
+            self.sortExceptionTable(self.pdata);
         },
         ARM64EC => {
             ARM64X;
@@ -1345,24 +1859,39 @@ fn Writer::sortExceptionTables(self) {
         },
         _ => {
             if self.pdata.first {
-                self.ctx() << "warning: don't know how to handle .pdata\n";
+                self.ctx.e.errs() << "warning: don't know how to handle .pdata\n";
             }
         },
     }
 }
 
-fn Writer::sortCRTSectionChunks(self, chunks: *mut i32) {
-    let mut sectionChunkOrder: Closure_15 = Closure_15 {};
-    stable_sort(sectionChunkOrder);
-    if self.ctx.config.verbose {}
+fn Writer::sortCRTSectionChunks(self, chunks: *mut []*mut Chunk) {
+    let mut sectionChunkOrder: Closure_29 = Closure_29 {};
+    stable_sort(chunks, sectionChunkOrder);
+    if self.ctx.config.verbose {
+        for c in chunks {
+            let mut sc: CastReturnType = dyn_cast(c);
+            Log(self.ctx) << "  " << sc.file.mb.getBufferIdentifier() << ", SectionID: " << sc.getSectionNumber();
+        }
+    }
 }
 
 fn Writer::findSection(self, name: str) -> *mut OutputSection {
+    for sec in self.ctx.outputSections {
+        if sec.name == name {
+            return sec;
+        }
+    }
     return null;
 }
 
 fn Writer::getSizeOfInitializedData(self) -> u32 {
     let mut res: u32 = 0;
+    for s in self.ctx.outputSections {
+        if s.header.Characteristics.operator unsigned int() & IMAGE_SCN_CNT_INITIALIZED_DATA {
+            res += s.getRawSize();
+        }
+    }
     return res;
 }
 
@@ -1370,73 +1899,86 @@ fn Writer::addBaserels(self) {
     if !self.ctx.config.relocatable {
         return;
     }
-    let mut v: i32 = 0;
+    let mut v: []Baserel = []Baserel {};
+    for sec in self.ctx.outputSections {
+        if sec.header.Characteristics.operator unsigned int() & IMAGE_SCN_MEM_DISCARDABLE {
+            continue;
+        }
+        let mut timeScope: TimeTraceScope = TimeTraceScope { "Base relocations: ", sec.name };
+        for c in sec.chunks {
+            c.getBaserels(&mut v);
+        }
+        if !v.is_empty() {
+            self.addBaserelBlocks(v);
+        }
+        v.clear();
+    }
 }
 
-fn Writer::addBaserelBlocks(self, v: *mut i32) {
+fn Writer::addBaserelBlocks(self, v: *mut []Baserel) {
     let mut mask: u32 = ~pageSize - 1;
-    let mut page: u32 = [0] & mask;
+    let mut page: u32 = v[0].rva & mask;
     let mut i: u64 = 0;
     let mut j: u64 = 1;
-    sort(Closure_16 {});
-    for let mut e: u64 = (); j < e; j += 1 {
-        let mut p: u32 = [j] & mask;
+    sort(v, Closure_30 {});
+    for let mut e: u64 = v.len; j < e; j += 1 {
+        let mut p: u32 = v[j].rva & mask;
         if p == page {
             continue;
         }
-        self.relocSec.addChunk(make(page, operator&([i]), operator&([0]) + j));
+        self.relocSec.addChunk(make(page, &mut v[i], &mut v[0] + j));
         i = j;
         page = p;
     }
     if i == j {
         return;
     }
-    self.relocSec.addChunk(make(page, operator&([i]), operator&([0]) + j));
+    self.relocSec.addChunk(make(page, &mut v[i], &mut v[0] + j));
 }
 
 fn Writer::createDynamicRelocs(self) {
     if !self.ctx.dynamicRelocs {
         return;
     }
-    self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, Arm64XRelocVal { self.coffHeaderOffset +  }, Arm64XRelocVal { AMD64 });
-    if self.ctx.symtab.entry != self.ctx || self.pdata.first != self.hybridPdata.first {
+    self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, sizeof, self.coffHeaderOffset + , AMD64);
+    if self.ctx.symtab.entry != operator(self.ctx.hybridSymtab).entry || self.pdata.first != self.hybridPdata.first {
         self.chpeSym = cast_or_null(self.ctx.symtab.findUnderscore("__chpe_metadata"));
         if !self.chpeSym {
             Warn(self.ctx) << "'__chpe_metadata' is missing for ARM64X target";
         }
     }
-    if self.ctx.symtab.entry != self.ctx {
-        self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, self.peHeaderOffset + , cast_or_null(self.ctx.symtab.entry));
+    if self.ctx.symtab.entry != operator(self.ctx.hybridSymtab).entry {
+        self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, sizeof, self.peHeaderOffset + , Arm64XRelocVal { cast_or_null(self.ctx.symtab.entry), 0 });
         if self.chpeSym {
-            self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, Arm64XRelocVal { self.chpeSym,  }, cast_or_null(self.ctx));
+            self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, sizeof, Arm64XRelocVal { self.chpeSym,  }, Arm64XRelocVal { cast_or_null(operator(self.ctx.hybridSymtab).entry), 0 });
         }
     }
-    if self.ctx.symtab.edataStart != self.ctx {
-        self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, Arm64XRelocVal { self.dataDirOffset64 + EXPORT_TABLE *  +  }, Arm64XRelocVal { self.ctx.symtab.edataStart, 0 });
-        self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, Arm64XRelocVal { self.dataDirOffset64 + EXPORT_TABLE *  +  }, Arm64XRelocVal { 0 });
+    if self.ctx.symtab.edataStart != operator(self.ctx.hybridSymtab).edataStart {
+        self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, sizeof, self.dataDirOffset64 + EXPORT_TABLE *  + , Arm64XRelocVal { self.ctx.symtab.edataStart, 0 });
+        self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, sizeof, self.dataDirOffset64 + EXPORT_TABLE *  + , Arm64XRelocVal { 0 });
     }
     if self.pdata.first != self.hybridPdata.first {
-        self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, Arm64XRelocVal { self.dataDirOffset64 + EXCEPTION_TABLE *  +  }, Arm64XRelocVal { self.hybridPdata.first, 0 });
-        self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, Arm64XRelocVal { self.dataDirOffset64 + EXCEPTION_TABLE *  +  }, Arm64XRelocVal { 0 });
+        self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, sizeof, self.dataDirOffset64 + EXCEPTION_TABLE *  + , Arm64XRelocVal { self.hybridPdata.first, 0 });
+        self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, sizeof, self.dataDirOffset64 + EXCEPTION_TABLE *  + , Arm64XRelocVal { 0 });
         if self.chpeSym {
-            self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, Arm64XRelocVal { self.chpeSym,  }, Arm64XRelocVal { self.pdata.first, 0 });
-            self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, Arm64XRelocVal { self.chpeSym,  }, Arm64XRelocVal { 0 });
+            self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, sizeof, Arm64XRelocVal { self.chpeSym,  }, Arm64XRelocVal { self.pdata.first, 0 });
+            self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, sizeof, Arm64XRelocVal { self.chpeSym,  }, Arm64XRelocVal { 0 });
         }
     }
-    self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, Arm64XRelocVal { self.dataDirOffset64 + LOAD_CONFIG_TABLE *  +  }, Arm64XRelocVal { self.ctx.symtab.loadConfigSym, 0 });
-    self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, Arm64XRelocVal { self.dataDirOffset64 + LOAD_CONFIG_TABLE *  +  }, Arm64XRelocVal { self.ctx.symtab.loadConfigSize });
-    let mut nativeTlsUsed: auto = dyn_cast_or_null(self.ctx("_tls_used"));
-    let mut ecTlsUsed: auto = dyn_cast_or_null(self.ctx.symtab.findUnderscore("_tls_used"));
-    if nativeTlsUsed() ||  {
-        self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, Arm64XRelocVal { self.dataDirOffset64 + TLS_TABLE *  +  });
-        if operator!() || operator!() {
-            self.ctx.dynamicRelocs.add;
+    self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, sizeof, self.dataDirOffset64 + LOAD_CONFIG_TABLE *  + , Arm64XRelocVal { self.ctx.symtab.loadConfigSym, 0 });
+    self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, sizeof, self.dataDirOffset64 + LOAD_CONFIG_TABLE *  + , self.ctx.symtab.loadConfigSize);
+    let mut nativeTlsUsed: CastReturnType = dyn_cast_or_null(operator(self.ctx.hybridSymtab).findUnderscore("_tls_used"));
+    let mut ecTlsUsed: CastReturnType = dyn_cast_or_null(self.ctx.symtab.findUnderscore("_tls_used"));
+    if nativeTlsUsed || ecTlsUsed {
+        self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, sizeof, self.dataDirOffset64 + TLS_TABLE *  + , Arm64XRelocVal { ecTlsUsed, 0 });
+        if !nativeTlsUsed || !ecTlsUsed {
+            self.ctx.dynamicRelocs.add(IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE, sizeof, self.dataDirOffset64 + TLS_TABLE *  + , if ecTlsUsed {  } else { 0 });
         }
     }
 }
 
 fn Writer::createPartialSection(self, name: str, outChars: u32) -> *mut PartialSection {
-    let mut pSec: *mut *mut PartialSection = null;
+    let mut pSec: *mut *mut PartialSection = self.partialSections[key_type { name, outChars }];
     if pSec {
         return pSec;
     }
@@ -1445,9 +1987,9 @@ fn Writer::createPartialSection(self, name: str, outChars: u32) -> *mut PartialS
 }
 
 fn Writer::findPartialSection(self, name: str, outChars: u32) -> *mut PartialSection {
-    let mut it: auto = zeroed();
-    if  {
-        return ;
+    let mut it: iterator = self.partialSections.find(key_type { name, outChars });
+    if !it == self.partialSections.end() {
+        return operator(it).second;
     }
     return null;
 }
@@ -1459,23 +2001,23 @@ fn Writer::fixTlsAlignment(self, symtab: *mut SymbolTable) {
     }
     let mut sec: *mut OutputSection = self.ctx.getOutputSection(tlsSym.getChunk());
     assert!(sec && tlsSym.getRVA() >= sec.getRVA(), "no output section for _tls_used");
-    let mut secBuf: *mut u8 = null;
+    let mut secBuf: *mut u8 = operator(self.buffer).getBufferStart() + sec.getFileOff();
     let mut tlsOffset: u64 = tlsSym.getRVA() - sec.getRVA();
-    let mut directorySize: u64 = 0;
+    let mut directorySize: u64 = if self.ctx.config.is64() {  } else {  };
     if tlsOffset + directorySize > sec.getRawSize() {
         Fatal(self.ctx) << "_tls_used sym is malformed";
     }
     if self.ctx.config.is64() {
         let mut tlsDir: *mut coff_tls_directory64 = &mut secBuf[tlsOffset] as *mut coff_tls_directory64;
-        tlsDir()(self.tlsAlignment);
+        tlsDir.setAlignment(self.tlsAlignment);
     } else {
         let mut tlsDir: *mut coff_tls_directory32 = &mut secBuf[tlsOffset] as *mut coff_tls_directory32;
-        tlsDir()(self.tlsAlignment);
+        tlsDir.setAlignment(self.tlsAlignment);
     }
 }
 
 fn Writer::prepareLoadConfig(self) {
-    self.ctx.forEachActiveSymtab;
+    self.ctx.forEachActiveSymtab(Closure_31 { cap_0: self });
 }
 
 fn Writer::printSummary(self) {
@@ -1483,26 +2025,26 @@ fn Writer::printSummary(self) {
         return;
     }
     let mut buffer: str = "";
-    let mut stream: raw_svector_ostream = raw_svector_ostream { buffer };
+    let mut stream: raw_svector_ostream = buffer;
     stream << center_justify("Summary", 80) << 10 << 80[0..'-'] << 10;
-    let mut print: Closure_17 = Closure_17 { stream: &mut stream };
-    let mut hasStats: bool = self.ctx();
-    print(self.ctx(), "Input OBJ files (expanded from all cmd-line inputs)");
+    let mut print: Closure_32 = Closure_32 { stream: &mut stream };
+    let mut hasStats: bool = self.ctx.pdbStats.has_value();
+    print.call(self.ctx.objFileInstances.len, "Input OBJ files (expanded from all cmd-line inputs)");
     print.call(self.ctx.consumedInputsSize, "Size of all consumed OBJ files (non-lazy), in bytes");
-    print(self.ctx(), "PDB type server dependencies");
-    print(self.ctx(), "Precomp OBJ dependencies");
-    print(if hasStats { self.ctx } else { 0 }, "Input debug type records");
-    print(if hasStats { self.ctx } else { 0 }, "Size of all input debug type records, in bytes");
-    print(if hasStats { self.ctx } else { 0 }, "Merged TPI records");
-    print(if hasStats { self.ctx } else { 0 }, "Merged IPI records");
-    print(if hasStats { self.ctx } else { 0 }, "Output PDB strings");
-    print(if hasStats { self.ctx } else { 0 }, "Global symbol records");
-    print(if hasStats { self.ctx } else { 0 }, "Module symbol records");
-    print(if hasStats { self.ctx } else { 0 }, "Public symbol records");
+    print.call(self.ctx.typeServerSourceMappings.len, "PDB type server dependencies");
+    print.call(self.ctx.precompSourceMappings.len, "Precomp OBJ dependencies");
+    print.call(if hasStats { operator(self.ctx.pdbStats).nbTypeRecords } else { 0 }, "Input debug type records");
+    print.call(if hasStats { operator(self.ctx.pdbStats).nbTypeRecordsBytes } else { 0 }, "Size of all input debug type records, in bytes");
+    print.call(if hasStats { operator(self.ctx.pdbStats).nbTPIrecords } else { 0 }, "Merged TPI records");
+    print.call(if hasStats { operator(self.ctx.pdbStats).nbIPIrecords } else { 0 }, "Merged IPI records");
+    print.call(if hasStats { operator(self.ctx.pdbStats).strTabSize } else { 0 }, "Output PDB strings");
+    print.call(if hasStats { operator(self.ctx.pdbStats).globalSymbols } else { 0 }, "Global symbol records");
+    print.call(if hasStats { operator(self.ctx.pdbStats).moduleSymbols } else { 0 }, "Module symbol records");
+    print.call(if hasStats { operator(self.ctx.pdbStats).publicSymbols } else { 0 }, "Public symbol records");
     if hasStats {
-        stream << self.ctx;
+        stream << operator(self.ctx.pdbStats).largeInputTypeRecs;
     }
-    Msg(self.ctx);
+    Msg(self.ctx) << buffer;
 }
 
 struct Closure_1 {}
@@ -1520,49 +2062,82 @@ struct Closure_2 {
 
 unsafe fn Closure_2::call(self: *mut Closure_2) {
         if (*self.lastType) {
+            self.codeMap.push(ECCodeMapEntry { first: (*self.first), last: (*self.last), type: operator((*self.lastType)) });
             (*self.lastType).reset();
         }
     }
 
 struct Closure_3 {
+    cap_0: *mut Writer,
+}
+
+fn Closure_3::call(self: *Closure_3, symtab: *mut SymbolTable) {
+                self.fixTlsAlignment(symtab);
+            }
+
+struct Closure_4 {
     ctx: *mut COFFLinkerContext,
 }
 
-unsafe fn Closure_3::call(self: *mut Closure_3, c: *Chunk) -> auto {}
+unsafe fn Closure_4::call(self: *mut Closure_4, c: *Chunk) -> i32 {
+        if dyn_cast(c) {
+            sec;
+        } else if sec.sym {
+            return (*self.ctx).config.order.lookup(sec.sym.getName());
+        }
+        return 0;
+    }
 
-struct Closure_4 {
+struct Closure_5 {
     cap_0: (lambda at P:\Goraw\llvm-project\lld\COFF\Writer.cpp:856:22),
 }
 
-fn Closure_4::call(self: *Closure_4, a: *Chunk, b: *Chunk) -> auto {}
+fn Closure_5::call(self: *Closure_5, a: *Chunk, b: *Chunk) -> bool {
+        return getPriority.call(a) < getPriority.call(b);
+    }
 
-struct Closure_5 {
+struct Closure_6 {}
+
+fn Closure_6::call(self: *Closure_6, s: *mut Chunk, t: *mut Chunk) -> bool {
+            let mut sc1: *mut SectionChunk = dyn_cast(s);
+            let mut sc2: *mut SectionChunk = dyn_cast(t);
+            if !sc1 || !sc2 {
+                return sc1 != null;
+            }
+            let mut key1: str = (sc1.file.parentName + "/" + sc1.file.getName());
+            let mut key2: str = (sc2.file.parentName + "/" + sc2.file.getName());
+            return operator(key1, key2) < 0;
+        }
+
+struct Closure_7 {
     cap_0: *mut Writer,
     rdata: *mut u32,
 }
 
-unsafe fn Closure_5::call(self: *mut Closure_5, n: str, v: *mut i32) {
+unsafe fn Closure_7::call(self: *mut Closure_7, n: str, v: *mut []*mut Chunk) {
         let mut pSec: *mut PartialSection = self.createPartialSection(n, (*self.rdata));
-        pSec.chunks(pSec.chunks.end);
+        pSec.chunks.insert(pSec.chunks.end(), v.begin(), v.end());
     }
 
-struct Closure_6 {
-    cap_0: *mut Writer,
+struct Closure_8 {
+    sections: *mut pair<StringRef, uint32_t>, OutputSection *>,
+    cap_1: *mut Writer,
 }
 
-fn Closure_6::call(self: *Closure_6, name: str, outChars: u32) -> auto {
-        let mut sec: *mut *mut OutputSection = [void { name, outChars }];
+unsafe fn Closure_8::call(self: *mut Closure_8, name: str, outChars: u32) -> *mut OutputSection {
+        let mut sec: *mut *mut OutputSection = (*self.sections)[StringRef, unsigned int> { name, outChars }];
         if !sec {
             sec = make(name, outChars);
-            self.ctx(sec);
+            self.ctx.outputSections.push(sec);
         }
+        return sec;
     }
 
-struct Closure_7 {
+struct Closure_9 {
     cap_0: *mut Writer,
 }
 
-fn Closure_7::call(self: *Closure_7, s: *OutputSection) -> i32 {
+fn Closure_9::call(self: *Closure_9, s: *OutputSection) -> i32 {
         if s.header.Characteristics.operator unsigned int() & IMAGE_SCN_MEM_DISCARDABLE {
             if s.name.starts_with(".debug_") {
                 return 3;
@@ -1575,79 +2150,288 @@ fn Closure_7::call(self: *Closure_7, s: *OutputSection) -> i32 {
         return 0;
     }
 
-struct Closure_8 {
+struct Closure_10 {
     sectionOrder: *mut (lambda at P:\Goraw\llvm-project\lld\COFF\Writer.cpp:1195:23),
 }
 
-unsafe fn Closure_8::call(self: *mut Closure_8, s: *OutputSection, t: *OutputSection) -> bool {
+unsafe fn Closure_10::call(self: *mut Closure_10, s: *OutputSection, t: *OutputSection) -> bool {
         return (*self.sectionOrder).call(s) < (*self.sectionOrder).call(t);
-    }
-
-struct Closure_9 {}
-
-fn Closure_9::call(self: *Closure_9, a: *Chunk, b: *Chunk) -> bool {
-                return (a.getMachine() != ARM64) < (b.getMachine() != ARM64);
-            }
-
-struct Closure_10 {
-    cap_0: *mut Writer,
-}
-
-fn Closure_10::call(self: *Closure_10, s: *mut OutputSection) -> bool {
-        if s == self.relocSec {
-            return false;
-        }
-        return s.chunks.len == 0;
     }
 
 struct Closure_11 {
     cap_0: *mut Writer,
 }
 
-fn Closure_11::call(self: *Closure_11, a: *OutputSection, b: *OutputSection) -> auto {
-        let mut itA: auto = self.ctx.config.sectionOrder.find;
-        let mut itB: auto = self.ctx.config.sectionOrder.find;
-        let mut aInOrder: bool =  != self.ctx.config.sectionOrder.end;
-        let mut bInOrder: bool =  != self.ctx.config.sectionOrder.end;
-        if aInOrder && bInOrder {} else if aInOrder && !bInOrder {} else {}
+fn Closure_11::call(self: *Closure_11, symtab: *mut SymbolTable) {
+        if !symtab.localImportChunks.is_empty() {
+            for c in symtab.localImportChunks {
+                self.rdataSec.addChunk(c);
+            }
+        }
     }
 
-struct Closure_12 {}
+struct Closure_12 {
+    cap_0: *mut Writer,
+}
 
-fn Closure_12::call(self: *Closure_12, s: *mut OutputSection) -> bool {
-        return s.getVirtualSize() == 0;
-    }
+fn Closure_12::call(self: *Closure_12, symtab: *mut SymbolTable) {
+            if symtab.findUnderscore("__buildid") {
+                buildidSym;
+            } else {
+                replaceSymbol(buildidSym, buildidSym.getName(), self.buildId, 4);
+            }
+        }
 
 struct Closure_13 {}
 
 fn Closure_13::call(self: *Closure_13, a: *Chunk, b: *Chunk) -> bool {
+                return (a.getMachine() != ARM64) < (b.getMachine() != ARM64);
+            }
+
+struct Closure_14 {
+    cap_0: *mut Writer,
+}
+
+fn Closure_14::call(self: *Closure_14, symtab: *mut SymbolTable) {
+        if symtab.edataStart {
+            if symtab.hadExplicitExports {
+                Warn(self.ctx) << "literal .edata sections override exports";
+            }
+        } else if !symtab.exports.is_empty() {
+            let mut edataChunks: []*mut Chunk = []*mut Chunk {};
+            createEdataChunks(symtab, edataChunks);
+            for c in edataChunks {
+                self.edataSec.addChunk(c);
+            }
+            symtab.edataStart = edataChunks.front();
+            symtab.edataEnd = edataChunks.back();
+        }
+        for e in symtab.exports {
+            if e.sym && e.sym.getName().starts_with("??_G") {
+                Warn(self.ctx) << "export of deleting dtor: " << toString(self.ctx, *e.sym);
+            }
+        }
+    }
+
+struct Closure_15 {
+    cap_0: *mut Writer,
+}
+
+fn Closure_15::call(self: *Closure_15, s: *mut OutputSection) -> bool {
+        if s == self.relocSec {
+            return false;
+        }
+        return s.chunks.is_empty();
+    }
+
+struct Closure_16 {
+    cap_0: *mut Writer,
+}
+
+fn Closure_16::call(self: *Closure_16, a: *OutputSection, b: *OutputSection) -> bool {
+        let mut itA: iterator = self.ctx.config.sectionOrder.find(a.name);
+        let mut itB: iterator = self.ctx.config.sectionOrder.find(b.name);
+        let mut aInOrder: bool = !itA == self.ctx.config.sectionOrder.end();
+        let mut bInOrder: bool = !itB == self.ctx.config.sectionOrder.end();
+        if aInOrder && bInOrder {
+            return operator(itA).second < operator(itB).second;
+        } else if aInOrder && !bInOrder {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+struct Closure_17 {}
+
+fn Closure_17::call(self: *Closure_17, s: *mut OutputSection) -> bool {
+        return s.getVirtualSize() == 0;
+    }
+
+struct Closure_18 {}
+
+fn Closure_18::call(self: *Closure_18, a: *Chunk, b: *Chunk) -> bool {
                 return (a.getMachine() == AMD64) < (b.getMachine() == AMD64);
             }
 
-struct Closure_14 {}
+struct Closure_19 {}
 
-fn Closure_14::call(self: *Closure_14, a: *pair<Chunk *, Defined *>, b: *pair<Chunk *, Defined *>) -> auto {}
+fn Closure_19::call(self: *Closure_19, a: *Chunk, b: *Chunk) -> bool {
+                let mut aType: optional<chpe_range_type> = a.getArm64ECRangeType();
+                let mut bType: optional<chpe_range_type> = b.getArm64ECRangeType();
+                return bType && (!aType || operator(aType) < operator(bType));
+            }
 
-struct Closure_15 {}
+struct Closure_20 {
+    path: *mut str,
+}
 
-fn Closure_15::call(self: *Closure_15, a: *Chunk, b: *Chunk) -> auto {
-        let mut sa: auto = dyn_cast(a);
-        let mut sb: auto = dyn_cast(b);
-        (((operator!(operator!((sa() &&  && "Non-section chunks in CRT section!")))) || (_wassert(L"sa && sb && \"Non-section chunks in CRT section!\"", L"lld\\COFF\\Writer.cpp", (2791) as u32) , 0)) as void);
-        let mut sAObj: str = ();
-        let mut sBObj: str = ();
+unsafe fn Closure_20::call(self: *mut Closure_20) -> auto {
+        return toString("failed to open " + (*self.path));
     }
 
-struct Closure_16 {}
+struct Closure_21 {}
 
-fn Closure_16::call(self: *Closure_16, x: *Baserel, y: *Baserel) -> bool {
+fn Closure_21::call(self: *Closure_21, symtab: *mut SymbolTable) {
+                    let mut flagSym: *mut Symbol = symtab.findUnderscore("__guard_flags");
+                    cast(flagSym).setVA(CF_INSTRUMENTED);
+                }
+
+struct Closure_22 {
+    addressTakenSyms: *mut SymbolRVASet,
+}
+
+unsafe fn Closure_22::call(self: *mut Closure_22, symtab: *mut SymbolTable) {
+        if symtab.entry {
+            maybeAddAddressTakenFunction((*self.addressTakenSyms), symtab.entry);
+        }
+        for e in symtab.exports {
+            maybeAddAddressTakenFunction((*self.addressTakenSyms), e.sym);
+        }
+    }
+
+struct Closure_23 {
+    guardFlags: u32,
+}
+
+fn Closure_23::call(self: *Closure_23, symtab: *mut SymbolTable) {
+        let mut flagSym: *mut Symbol = symtab.findUnderscore("__guard_flags");
+        cast(flagSym).setVA(self.guardFlags);
+    }
+
+struct Closure_24 {
+    tableSym: *mut str,
+    countSym: *mut str,
+    tableChunk: *mut *mut NonSectionChunk,
+    hasFlag: *mut bool,
+}
+
+unsafe fn Closure_24::call(self: *mut Closure_24, symtab: *mut SymbolTable) {
+        let mut t: *mut Symbol = symtab.findUnderscore((*self.tableSym));
+        let mut c: *mut Symbol = symtab.findUnderscore((*self.countSym));
+        replaceSymbol(t, t.getName(), (*self.tableChunk));
+        cast(c).setVA((*self.tableChunk).getSize() / (if (*self.hasFlag) { 5 } else { 4 }));
+    }
+
+struct Closure_25 {
+    cap_0: *mut Writer,
+}
+
+fn Closure_25::call(self: *Closure_25, symtab: *mut SymbolTable) {
+        let mut rels: []RuntimePseudoReloc = []RuntimePseudoReloc {};
+        for c in self.ctx.driver.getChunks() {
+            let mut sc: *mut SectionChunk = dyn_cast(c);
+            if !sc || !sc.live || &mut sc.file.symtab != &mut symtab {
+                continue;
+            }
+            if sc.header.Characteristics.operator unsigned int() & IMAGE_SCN_MEM_DISCARDABLE {
+                continue;
+            }
+            sc.getRuntimePseudoRelocs(rels);
+        }
+        if !self.ctx.config.pseudoRelocs {
+            for rpr in rels {
+                Err(self.ctx) << "automatic dllimport of " << rpr.sym.getName() << " in " << toString(rpr.target.file) << " requires pseudo relocations";
+            }
+            return;
+        }
+        if !rels.is_empty() {
+            Log(self.ctx) << "Writing " << rels.len << " runtime pseudo relocations";
+            let mut symbolName: *u8 = "_pei386_runtime_relocator";
+            let mut relocator: *mut Symbol = symtab.findUnderscore(symbolName);
+            if !relocator {
+                Err(self.ctx) << "output image has runtime pseudo relocations, but the function " << symbolName << " is missing; it is needed for fixing the relocations at runtime";
+            }
+        }
+        let mut table: *mut PseudoRelocTableChunk = make(rels);
+        self.rdataSec.addChunk(table);
+        let mut endOfList: *mut EmptyChunk = make();
+        self.rdataSec.addChunk(endOfList);
+        let mut headSym: *mut Symbol = symtab.findUnderscore("__RUNTIME_PSEUDO_RELOC_LIST__");
+        let mut endSym: *mut Symbol = symtab.findUnderscore("__RUNTIME_PSEUDO_RELOC_LIST_END__");
+        replaceSymbol(headSym, headSym.getName(), table);
+        replaceSymbol(endSym, endSym.getName(), endOfList);
+    }
+
+struct Closure_26 {
+    cap_0: *mut Writer,
+}
+
+fn Closure_26::call(self: *Closure_26, symtab: *mut SymbolTable) {
+        let mut ctorListHead: *mut AbsolutePointerChunk = make(symtab, -1);
+        let mut ctorListEnd: *mut AbsolutePointerChunk = make(symtab, 0);
+        let mut dtorListHead: *mut AbsolutePointerChunk = make(symtab, -1);
+        let mut dtorListEnd: *mut AbsolutePointerChunk = make(symtab, 0);
+        self.ctorsSec.insertChunkAtStart(ctorListHead);
+        self.ctorsSec.addChunk(ctorListEnd);
+        self.dtorsSec.insertChunkAtStart(dtorListHead);
+        self.dtorsSec.addChunk(dtorListEnd);
+        let mut ctorListSym: *mut Symbol = symtab.findUnderscore("__CTOR_LIST__");
+        let mut dtorListSym: *mut Symbol = symtab.findUnderscore("__DTOR_LIST__");
+        replaceSymbol(ctorListSym, ctorListSym.getName(), ctorListHead);
+        replaceSymbol(dtorListSym, dtorListSym.getName(), dtorListHead);
+    }
+
+struct Closure_27 {}
+
+fn Closure_27::call(self: *Closure_27, a: *pair<Chunk *, Defined *>, b: *pair<Chunk *, Defined *>) -> bool {
+        return a.first.getRVA() < b.first.getRVA();
+    }
+
+struct Closure_28 {
+    secBuf: *mut *mut u8,
+    sec: *mut *mut OutputSection,
+}
+
+unsafe fn Closure_28::call(self: *mut Closure_28, c: *mut Chunk) {
+            let mut buf: *mut u8 = (*self.secBuf) + c.getRVA() - (*self.sec).getRVA();
+            c.writeTo(buf);
+            if c.getEntryThunk() {
+                entryThunk;
+            } else {
+                write32le(buf - , entryThunk.getRVA() - c.getRVA() + 1);
+            }
+        }
+
+struct Closure_29 {}
+
+fn Closure_29::call(self: *Closure_29, a: *Chunk, b: *Chunk) -> bool {
+        let mut sa: CastReturnType = dyn_cast(a);
+        let mut sb: CastReturnType = dyn_cast(b);
+        assert!(sa && sb, "Non-section chunks in CRT section!");
+        let mut sAObj: str = sa.file.mb.getBufferIdentifier();
+        let mut sBObj: str = sb.file.mb.getBufferIdentifier();
+        return sAObj == sBObj && sa.getSectionNumber() < sb.getSectionNumber();
+    }
+
+struct Closure_30 {}
+
+fn Closure_30::call(self: *Closure_30, x: *Baserel, y: *Baserel) -> bool {
         return x.rva < y.rva;
     }
 
-struct Closure_17 {
+struct Closure_31 {
+    cap_0: *mut Writer,
+}
+
+fn Closure_31::call(self: *Closure_31, symtab: *mut SymbolTable) {
+        if !symtab.loadConfigSym {
+            return;
+        }
+        let mut sec: *mut OutputSection = self.ctx.getOutputSection(symtab.loadConfigSym.getChunk());
+        let mut secBuf: *mut u8 = operator(self.buffer).getBufferStart() + sec.getFileOff();
+        let mut symBuf: *mut u8 = secBuf + (symtab.loadConfigSym.getRVA() - sec.getRVA());
+        if self.ctx.config.is64() {
+            self.prepareLoadConfig(symtab, symBuf as *mut coff_load_configuration64);
+        } else {
+            self.prepareLoadConfig(symtab, symBuf as *mut coff_load_configuration32);
+        }
+    }
+
+struct Closure_32 {
     stream: *mut raw_svector_ostream,
 }
 
-unsafe fn Closure_17::call(self: *mut Closure_17, v: u64, s: str) {
-        (*self.stream) << formatv("{0}", fmt_align(formatv("{0:N}", v), Right, 20)) << " " << s << 10;
+unsafe fn Closure_32::call(self: *mut Closure_32, v: u64, s: str) {
+        (*self.stream) << formatv("{0}", fmt_align(formatv("{0:N}", v), Right, 20, ' ')) << " " << s << 10;
     }

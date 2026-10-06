@@ -61,43 +61,73 @@ static mut ID: i8 = 0;
 
 fn AArch64CompressJumpTablesImpl::computeBlockSize(self, MBB: *mut MachineBasicBlock) -> optional<int> {
     let mut Size: i32 = 0;
+    for MI in MBB {
+        if MI.getOpcode() == INLINEASM || MI.getOpcode() == INLINEASM_BR {
+            return nullopt;
+        }
+        Size += self.TII.getInstSizeInBytes(MI);
+    }
     return Size;
 }
 
 fn AArch64CompressJumpTablesImpl::scanFunction(self) -> bool {
+    self.BlockInfo.clear();
+    self.BlockInfo.resize(self.MF.getNumBlockIDs());
     let mut Offset: u32 = 0;
+    for MBB in *self.MF {
+        let mut Alignment: Align = MBB.getAlignment();
+        let mut OffsetAfterAlignment: u32 = Offset;
+        if Alignment > 4 {
+            OffsetAfterAlignment += Alignment.value() - 4;
+        }
+        self.BlockInfo[MBB.getNumber()] = OffsetAfterAlignment;
+        let mut BlockSize: optional<int> = self.computeBlockSize(MBB);
+        if !BlockSize {
+            return false;
+        }
+        Offset = OffsetAfterAlignment + operator(BlockSize);
+    }
     return true;
 }
 
 fn AArch64CompressJumpTablesImpl::compressJumpTable(self, MI: *mut MachineInstr, Offset: i32) -> bool {
-    if  {
+    if MI.getOpcode() != JumpTableDest32 {
         return false;
     }
     let mut JTIdx: i32 = MI.getOperand(4).getIndex();
     let mut JTInfo: *mut MachineJumpTableInfo = *self.MF.getJumpTableInfo();
-    let mut JT: *MachineJumpTableEntry = JTInfo()()[JTIdx];
-    if JT()() {
+    let mut JT: *MachineJumpTableEntry = JTInfo.getJumpTables()[JTIdx];
+    if JT.MBBs.is_empty() {
         return false;
     }
     let mut MaxOffset: i32 = min();
     let mut MinOffset: i32 = max();
     let mut MinBlock: *mut MachineBasicBlock = null;
+    for Block in JT.MBBs {
+        let mut BlockOffset: i32 = self.BlockInfo[Block.getNumber()];
+        assert!(BlockOffset % 4 == 0, "misaligned basic block");
+        MaxOffset = if MaxOffset > BlockOffset { MaxOffset } else { BlockOffset };
+        if BlockOffset <= MinOffset {
+            MinOffset = BlockOffset;
+            MinBlock = Block;
+        }
+    }
     assert!(MinBlock, "Failed to find minimum offset block");
     if !isInt(MinOffset - Offset) {
         operator(NumJT32);
         return false;
     }
     let mut Span: i32 = MaxOffset - MinOffset;
-    let mut AFI: *mut auto = self.MF;
+    let mut AFI: *mut AArch64FunctionInfo = self.MF.getInfo();
     if isUInt(Span / 4) {
-        AFI()(JTIdx, 1, MinBlock.getSymbol());
-        MI.setDesc(self.TII.get);
+        AFI.setJumpTableEntryInfo(JTIdx, 1, MinBlock.getSymbol());
+        MI.setDesc(self.TII.get(JumpTableDest8));
         operator(NumJT8);
         return true;
     }
     if isUInt(Span / 4) {
-        AFI()(JTIdx, 2, MinBlock.getSymbol());
-        MI.setDesc(self.TII.get);
+        AFI.setJumpTableEntryInfo(JTIdx, 2, MinBlock.getSymbol());
+        MI.setDesc(self.TII.get(JumpTableDest16));
         operator(NumJT16);
         return true;
     }
@@ -108,13 +138,20 @@ fn AArch64CompressJumpTablesImpl::compressJumpTable(self, MI: *mut MachineInstr,
 fn AArch64CompressJumpTablesImpl::run(self, MFIn: *mut MachineFunction) -> bool {
     let mut Changed: bool = false;
     self.MF = &mut MFIn;
-    let mut ST: *auto = self.MF;
-    self.TII = ();
-    if ST()() && !self.MF.getFunction().hasMinSize() {
+    let mut ST: *AArch64Subtarget const = self.MF.getSubtarget();
+    self.TII = ST.getInstrInfo();
+    if ST.force32BitJumpTables() && !self.MF.getFunction().hasMinSize() {
         return false;
     }
     if !self.scanFunction() {
         return false;
+    }
+    for MBB in *self.MF {
+        let mut Offset: i32 = self.BlockInfo[MBB.getNumber()];
+        for MI in MBB {
+            Changed |= self.compressJumpTable(MI, Offset);
+            Offset += self.TII.getInstSizeInBytes(MI);
+        }
     }
     return Changed;
 }
@@ -129,7 +166,7 @@ fn AArch64CompressJumpTablesPass::run(self, MF: *mut MachineFunction, MFAM: *mut
         return all();
     }
     let mut PA: PreservedAnalyses = getMachineFunctionPassPreservedAnalyses();
-    PA;
+    PA.preserveSet();
     return PA;
 }
 

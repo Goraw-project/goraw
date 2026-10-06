@@ -19,7 +19,7 @@ struct X86DynAllocaExpanderLegacy {
 }
 
 fn X86DynAllocaExpanderLegacy::getAnalysisUsage(self: *X86DynAllocaExpanderLegacy, AU: *mut AnalysisUsage) {
-    AU;
+    AU.addPreserved();
     self.getAnalysisUsage(AU);
 }
 
@@ -68,10 +68,11 @@ fn createX86DynAllocaExpanderLegacyPass() -> *mut FunctionPass {
 }
 
 fn getDynAllocaAmount(MI: *mut MachineInstr, MRI: *mut MachineRegisterInfo) -> i64 {
+    assert!(MI.getOpcode() == DYN_ALLOCA_32 || MI.getOpcode() == DYN_ALLOCA_64);
     assert!(MI.getOperand(0).isReg();
     let mut AmountReg: Register = MI.getOperand(0).getReg();
     let mut Def: *mut MachineInstr = MRI.getUniqueVRegDef(AmountReg);
-    if  {
+    if !Def || (Def.getOpcode() != MOV32ri && Def.getOpcode() != MOV64ri) || !Def.getOperand(1).isImm() {
         return -1;
     }
     return Def.getOperand(1).getImm();
@@ -89,6 +90,9 @@ fn X86DynAllocaExpander::getLowering(self, CurrentOffset: i64, AllocaAmount: i64
 
 fn isPushPop(MI: *MachineInstr) -> bool {
     match MI.getOpcode() {
+        PUSH32r => {
+            PUSH32rmm;
+        },
         _ => {
             return false;
         },
@@ -96,38 +100,79 @@ fn isPushPop(MI: *MachineInstr) -> bool {
 }
 
 fn X86DynAllocaExpander::computeLowerings(self, MF: *mut MachineFunction, Lowerings: *mut LoweringMap) {
-    let mut OutOffset: i32 = 0;
+    let mut OutOffset: DenseMap<MachineBasicBlock *, int64_t> = DenseMap<MachineBasicBlock *, int64_t> {};
     for MBB in MF {
-        OutOffset()[&mut MBB] = 2147483647;
+        OutOffset[&mut MBB] = 2147483647;
     }
-    let mut RPO: i32 = &mut MF;
+    let mut RPO: ReversePostOrderTraversal<MachineFunction *> = &mut MF;
+    for MBB in RPO {
+        let mut Offset: i64 = -1;
+        for Pred in MBB.predecessors() {
+            Offset = if Offset > OutOffset[Pred] { Offset } else { OutOffset[Pred] };
+        }
+        if Offset == -1 {
+            Offset = 2147483647;
+        }
+        for MI in *MBB {
+            if MI.getOpcode() == DYN_ALLOCA_32 || MI.getOpcode() == DYN_ALLOCA_64 {
+                let mut Amount: i64 = getDynAllocaAmount(&mut MI, self.MRI);
+                let mut L: Lowering = self.getLowering(Offset, Amount);
+                Lowerings[&mut MI] = L;
+                match L {
+                    Sub => {
+                        Offset += Amount;
+                    },
+                    TouchAndSub => {
+                        Offset = Amount;
+                    },
+                    Probe => {
+                        Offset = 0;
+                    },
+                }
+            } else if MI.isCall(AnyInBundle) || isPushPop(MI) {
+                Offset = 0;
+            } else if MI.getOpcode() == ADJCALLSTACKUP32 || MI.getOpcode() == ADJCALLSTACKUP64 {
+                Offset -= MI.getOperand(0).getImm();
+            } else if MI.getOpcode() == ADJCALLSTACKDOWN32 || MI.getOpcode() == ADJCALLSTACKDOWN64 {
+                Offset += MI.getOperand(0).getImm();
+            } else if MI.modifiesRegister(self.StackPtr, self.TRI) {
+                Offset = 2147483647;
+            }
+        }
+        OutOffset[MBB] = Offset;
+    }
 }
 
-fn getSubOpcode(Is64Bit: bool) -> u32 {}
+fn getSubOpcode(Is64Bit: bool) -> u32 {
+    if Is64Bit {
+        return SUB64ri32;
+    }
+    return SUB32ri;
+}
 
 fn X86DynAllocaExpander::lower(self, MI: *mut MachineInstr, L: Lowering) {
     let mut DL: *DebugLoc = MI.getDebugLoc();
     let mut MBB: *mut MachineBasicBlock = MI.getParent();
-    let mut I: iterator = iterator { *MI };
+    let mut I: iterator = *MI;
     let mut Amount: i64 = getDynAllocaAmount(MI, self.MRI);
     if Amount == 0 {
         MI.eraseFromParent();
         return;
     }
-    let mut Is64Bit: bool = self.STI();
-    let mut Is64BitAlloca: bool = false;
+    let mut Is64Bit: bool = self.STI.is64Bit();
+    let mut Is64BitAlloca: bool = MI.getOpcode() == DYN_ALLOCA_64;
     assert!(self.SlotSize == 4 || self.SlotSize == 8);
-    let mut InstrNum: DebugInstrOperandPair> = zeroed();
+    let mut InstrNum: DebugInstrOperandPair> = DebugInstrOperandPair> {};
     if MI.peekDebugInstrNum() {
         Num;
     } else {
-        InstrNum() = void { Num, 2 };
+        InstrNum = pair<unsigned int, unsigned int> { Num, 2 };
     }
     match L {
         TouchAndSub => {
             assert!(Amount >= self.SlotSize);
-            let mut RegA: u32 = 0;
-            BuildMI(*MBB, I, DL, self.TII.get)(RegA, Undef);
+            let mut RegA: u32 = if Is64Bit { RAX } else { EAX };
+            BuildMI(*MBB, I, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(if Is64Bit { PUSH64r } else { PUSH32r })).addReg(RegA, Undef, 0);
             Amount -= self.SlotSize;
             if !Amount {
                 break;
@@ -138,11 +183,11 @@ fn X86DynAllocaExpander::lower(self, MI: *mut MachineInstr, L: Lowering) {
         },
         Probe => {
             if !self.NoStackArgProbe {
-                let mut RegA: u32 = 0;
-                BuildMI(*MBB, MI, DL, self.TII.get, RegA)(MI.getOperand(0).getReg());
-                self.STI.getFrameLowering().emitStackProbe(*MBB.getParent(), *MBB, MI, DL, false);
+                let mut RegA: u32 = if Is64BitAlloca { RAX } else { EAX };
+                BuildMI(*MBB, MI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(COPY), RegA).addReg(MI.getOperand(0).getReg(), RegState {}, 0);
+                self.STI.getFrameLowering().emitStackProbe(*MBB.getParent(), *MBB, MI, DL, false, InstrNum);
             } else {
-                BuildMI(*MBB, I, DL, self.TII.get, self.StackPtr)(self.StackPtr)(MI.getOperand(0).getReg());
+                BuildMI(*MBB, I, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(if Is64BitAlloca { SUB64rr } else { SUB32rr }), self.StackPtr).addReg(self.StackPtr, RegState {}, 0).addReg(MI.getOperand(0).getReg(), RegState {}, 0);
             }
         },
     }
@@ -158,12 +203,12 @@ fn X86DynAllocaExpander::lower(self, MI: *mut MachineInstr, L: Lowering) {
 }
 
 fn X86DynAllocaExpander::run(self, MF: *mut MachineFunction) -> bool {
-    if operator!(MF()) {
+    if !MF.getInfo().hasDynAlloca() {
         return false;
     }
     self.MRI = &mut MF.getRegInfo();
-    self.STI = operator&(MF);
-    self.TII;
+    self.STI = &mut MF.getSubtarget();
+    self.TII = self.STI.getInstrInfo();
     self.TRI = self.STI.getRegisterInfo();
     self.StackPtr = self.TRI.getStackRegister();
     self.SlotSize = self.TRI.getSlotSize();
@@ -172,8 +217,11 @@ fn X86DynAllocaExpander::run(self, MF: *mut MachineFunction) -> bool {
     if self.NoStackArgProbe {
         self.StackProbeSize = 9223372036854775807;
     }
-    let mut Lowerings: LoweringMap = zeroed();
+    let mut Lowerings: LoweringMap = LoweringMap {};
     self.computeLowerings(MF, Lowerings);
+    for P in Lowerings {
+        self.lower(P.first, P.second);
+    }
     return true;
 }
 
@@ -186,5 +234,5 @@ fn X86DynAllocaExpanderPass::run(self, MF: *mut MachineFunction, MFAM: *mut Mach
     if !Changed {
         return all();
     }
-    return getMachineFunctionPassPreservedAnalyses();
+    return getMachineFunctionPassPreservedAnalyses().preserveSet();
 }

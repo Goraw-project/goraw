@@ -13,7 +13,7 @@ fn X86CleanupLocalDynamicTLSLegacy::getPassName(self: *X86CleanupLocalDynamicTLS
 
 fn X86CleanupLocalDynamicTLSLegacy::getAnalysisUsage(self: *X86CleanupLocalDynamicTLSLegacy, AU: *mut AnalysisUsage) {
     AU.setPreservesCFG();
-    AU;
+    AU.addRequired();
     self.getAnalysisUsage(AU);
 }
 
@@ -59,46 +59,52 @@ fn createCleanupLocalDynamicTLSLegacyPass() -> *mut FunctionPass {
 
 fn ReplaceTLSBaseAddrCall(I: *mut MachineInstr, TLSBaseAddrReg: Register) -> *mut MachineInstr {
     let mut MF: *mut MachineFunction = I.getParent().getParent();
-    let mut STI: *X86Subtarget = MF;
-    let mut is64Bit: bool = STI()();
+    let mut STI: *X86Subtarget = MF.getSubtarget();
+    let mut is64Bit: bool = STI.is64Bit();
     let mut TII: *X86InstrInfo = STI.getInstrInfo();
-    let mut Copy: *mut MachineInstr = BuildMI(*I.getParent(), I, I.getDebugLoc(), TII()(COPY))(TLSBaseAddrReg);
+    let mut Copy: *mut MachineInstr = BuildMI(*I.getParent(), I, MIMetadata { DL: I.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(COPY), if is64Bit { RAX } else { EAX }).addReg(TLSBaseAddrReg, RegState {}, 0).operator llvm::MachineInstr *();
     I.eraseFromParent();
     return Copy;
 }
 
 fn SetRegister(I: *mut MachineInstr, TLSBaseAddrReg: *mut Register) -> *mut MachineInstr {
     let mut MF: *mut MachineFunction = I.getParent().getParent();
-    let mut STI: *X86Subtarget = MF;
-    let mut is64Bit: bool = STI()();
+    let mut STI: *X86Subtarget = MF.getSubtarget();
+    let mut is64Bit: bool = STI.is64Bit();
     let mut TII: *X86InstrInfo = STI.getInstrInfo();
     let mut RegInfo: *mut MachineRegisterInfo = MF.getRegInfo();
-    *TLSBaseAddrReg = RegInfo;
+    *TLSBaseAddrReg = RegInfo.createVirtualRegister(if is64Bit { &mut GR64RegClass } else { &mut GR32RegClass }, "");
     let mut Next: *mut MachineInstr = I.getNextNode();
-    let mut Copy: *mut MachineInstr = BuildMI(*I.getParent(), Next, I.getDebugLoc(), TII()(COPY), *TLSBaseAddrReg);
+    let mut Copy: *mut MachineInstr = BuildMI(*I.getParent(), Next, MIMetadata { DL: I.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(COPY), *TLSBaseAddrReg).addReg(if is64Bit { RAX } else { EAX }, RegState {}, 0).operator llvm::MachineInstr *();
     return Copy;
 }
 
 fn VisitNode(Node: *mut MachineDomTreeNode, TLSBaseAddrReg: Register) -> bool {
-    let mut BB: *mut MachineBasicBlock = Node()();
+    let mut BB: *mut MachineBasicBlock = Node.getBlock();
     let mut Changed: bool = false;
     for let mut I: iterator = BB.begin();
 let mut E: iterator = BB.end(); I != E; operator(I) {
         match operator(I).getOpcode() {
+            TLS_base_addr32 => {
+                TLS_base_addr64;
+            },
             _ => {
                 break;
             },
         }
     }
+    for I in Node.children() {
+        Changed |= VisitNode(I, TLSBaseAddrReg);
+    }
     return Changed;
 }
 
 fn cleanupLocalDynamicTLS(DT: *mut MachineDominatorTree) -> bool {
-    return VisitNode(DT()(), Register { Reg: 0 });
+    return VisitNode(DT.getRootNode(), Register { Reg: 0 });
 }
 
 fn shouldSkipLocalDynamicTLS(MF: *mut MachineFunction) -> bool {
-    let mut MFI: *mut X86MachineFunctionInfo = MF;
+    let mut MFI: *mut X86MachineFunctionInfo = MF.getInfo();
     if MFI.getNumLocalDynamicTLSAccesses() < 2 {
         return true;
     }
@@ -109,7 +115,7 @@ fn X86CleanupLocalDynamicTLSLegacy::runOnMachineFunction(self, MF: *mut MachineF
     if self.skipFunction(MF.getFunction()) || shouldSkipLocalDynamicTLS(MF) {
         return false;
     }
-    let mut DT: *mut MachineDominatorTree = ();
+    let mut DT: *mut MachineDominatorTree = self.getAnalysis().getDomTree();
     return cleanupLocalDynamicTLS(DT);
 }
 
@@ -117,6 +123,6 @@ fn X86CleanupLocalDynamicTLSPass::run(self, MF: *mut MachineFunction, MFAM: *mut
     if shouldSkipLocalDynamicTLS(MF) {
         return all();
     }
-    let mut DT: *mut MachineDominatorTree = MFAM;
-    return if cleanupLocalDynamicTLS(DT) { getMachineFunctionPassPreservedAnalyses() } else { all() };
+    let mut DT: *mut MachineDominatorTree = MFAM.getResult(MF);
+    return if cleanupLocalDynamicTLS(DT) { getMachineFunctionPassPreservedAnalyses().preserveSet() } else { all() };
 }

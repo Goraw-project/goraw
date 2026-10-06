@@ -25,12 +25,12 @@ fn Negator::~Negator(self) {
 }
 
 fn Negator::getSortedOperandsOfBinOp(self, I: *mut Instruction) -> array<Value *, 2> {
-    (((operator!(operator!((I.getNumOperands == 2 && "Only for binops!")))) || (_wassert(L"I->getNumOperands() == 2 && \"Only for binops!\"", L"llvm\\lib\\Transforms\\InstCombine\\InstCombineNegator.cpp", (101) as u32) , 0)) as void);
-    let mut Ops: array<Value *, 2> = zeroed();
-    if I.isCommutative() && getComplexity(I.getOperand) < getComplexity(I.getOperand) {
-        swap([0], [1]);
+    assert!(I.getNumOperands() == 2, "Only for binops!");
+    let mut Ops: array<Value *, 2> = array<Value *, 2> { [I.getOperand(0), I.getOperand(1)] };
+    if I.isCommutative() && getComplexity(I.getOperand(0)) < getComplexity(I.getOperand(1)) {
+        swap(Ops[0], Ops[1]);
     }
-    return ;
+    return Ops;
 }
 
 fn Negator::visitImpl(self, V: *mut Value, IsNSW: bool, Depth: u32) -> *mut Value {
@@ -44,7 +44,7 @@ fn Negator::visitImpl(self, V: *mut Value, IsNSW: bool, Depth: u32) -> *mut Valu
     if match(V, m_Neg(m_Value(X))) {
         return X;
     }
-    if match(V) {
+    if match(V, m_AnyIntegralConstant()) {
         return getNeg(cast(V), false);
     }
     if !isa(V) {
@@ -53,15 +53,22 @@ fn Negator::visitImpl(self, V: *mut Value, IsNSW: bool, Depth: u32) -> *mut Valu
     if !V.hasOneUse() && !self.IsTrulyNegation {
         return null;
     }
-    let mut I: *mut auto = cast(V);
-    let mut BitWidth: u32 = ()();
-    match I()() {
+    let mut I: *mut Instruction = cast(V);
+    let mut BitWidth: u32 = I.getType().getScalarSizeInBits();
+    let mut Guard: InsertPointGuard = self.Builder;
+    self.Builder.SetInsertPoint(I);
+    match I.getOpcode() {
         Add => {
-            let mut Ops: array<Value *, 2> = zeroed();
+            let mut Ops: array<Value *, 2> = self.getSortedOperandsOfBinOp(I);
+            if match(Ops[1], m_One()) {
+                return self.Builder.CreateNot(Ops[0], I.getName() + ".neg");
+            }
             break;
         },
         Xor => {
-            
+            if match(I, m_Not(m_Value(X))) {
+                return self.Builder.CreateAdd(X, get(X.getType(), 1, false, false), I.getName() + ".neg", false, false);
+            }
         },
         AShr => {
             LShr;
@@ -70,51 +77,64 @@ fn Negator::visitImpl(self, V: *mut Value, IsNSW: bool, Depth: u32) -> *mut Valu
             ZExt;
         },
         Select => {
-            let mut Sel: *mut auto = cast();
+            let mut Sel: *mut SelectInst = cast(I);
             let mut TrueC: *mut Constant = null;
             let mut FalseC: *mut Constant = null;
-            if match(m_ImmConstant(TrueC)) && match(m_ImmConstant(FalseC)) {
+            if match(Sel.getTrueValue(), m_ImmConstant(TrueC)) && match(Sel.getFalseValue(), m_ImmConstant(FalseC)) {
                 let mut NegTrueC: *mut Constant = getNeg(TrueC, false);
                 let mut NegFalseC: *mut Constant = getNeg(FalseC, false);
+                return self.Builder.CreateSelect(Sel.getCondition(), NegTrueC, NegFalseC, I.getName() + ".neg", I);
             }
             break;
         },
         Call => {
-            
+            let mut CI: *mut CmpIntrinsic = dyn_cast(I);
+            if CI && CI.hasOneUse() {
+                return self.Builder.CreateIntrinsic(CI.getType(), CI.getIntrinsicID(), [CI.getRHS(), CI.getLHS()], FMFSource {}, "", function_ref<void (CallInst *)> { Closure_1 {}, null, null });
+            }
         },
         _ => {
             break;
         },
     }
-    if I()() == Sub && (I()() || match((0), m_ImmConstant())) {}
+    if I.getOpcode() == Sub && (I.hasOneUse() || match(I.getOperand(0), m_ImmConstant())) {
+        return self.Builder.CreateSub(I.getOperand(1), I.getOperand(0), I.getName() + ".neg", false, IsNSW && I.hasNoSignedWrap());
+    }
     if !V.hasOneUse() {
         return null;
     }
-    match I()() {
+    match I.getOpcode() {
         ZExt => {
-            let mut SrcOp: *mut Value = (0);
+            let mut SrcOp: *mut Value = I.getOperand(0);
             let mut SrcWidth: u32 = SrcOp.getType().getScalarSizeInBits();
             let mut FullShift: *APInt = APInt { SrcWidth, SrcWidth - 1, false, false };
-            if self.IsTrulyNegation && match(SrcOp, m_LShr(m_Value(X))) {
-                let mut Ashr: *mut Value = null;
+            if self.IsTrulyNegation && match(SrcOp, m_LShr(m_Value(X), m_SpecificIntAllowPoison(FullShift))) {
+                let mut Ashr: *mut Value = self.Builder.CreateAShr(X, FullShift, "", false);
+                return self.Builder.CreateSExt(Ashr, I.getType(), "");
             }
             break;
         },
         And => {
             let mut ShAmt: *mut Constant = null;
-            if self.IsTrulyNegation && match(m_And(m_OneUse(m_TruncOrSelf(m_LShr(m_Value(X), m_ImmConstant(ShAmt)))))) {
+            if self.IsTrulyNegation && match(I, m_And(m_OneUse(m_TruncOrSelf(m_LShr(m_Value(X), m_ImmConstant(ShAmt)))), m_One())) {
                 let mut BW: u32 = X.getType().getScalarSizeInBits();
                 let mut BWMinusOne: *mut Constant = get(X.getType(), BW - 1, false, false);
-                let mut R: *mut Value = null;
+                let mut R: *mut Value = self.Builder.CreateShl(X, self.Builder.CreateSub(BWMinusOne, ShAmt, "", false, false), "", false, false);
+                R = self.Builder.CreateAShr(R, BWMinusOne, "", false);
+                return self.Builder.CreateTruncOrBitCast(R, I.getType(), "");
             }
             break;
         },
         SDiv => {
-            if  {
-                if operator!() && () && () {
-                    let mut BO: *mut Value = null;
-                    if  {
-                        NewInstr()();
+            if dyn_cast(I.getOperand(1)) {
+                Op1C;
+            } else {
+                if !Op1C.containsUndefOrPoisonElement() && Op1C.isNotMinSignedValue() && Op1C.isNotOneValue() {
+                    let mut BO: *mut Value = self.Builder.CreateSDiv(I.getOperand(0), getNeg(Op1C, false), I.getName() + ".neg", false);
+                    if dyn_cast(BO) {
+                        NewInstr;
+                    } else {
+                        NewInstr.setIsExact(I.isExact());
                     }
                     return BO;
                 }
@@ -133,127 +153,174 @@ fn Negator::visitImpl(self, V: *mut Value, IsNSW: bool, Depth: u32) -> *mut Valu
         operator(NegatorTimesDepthLimitReached);
         return null;
     }
-    match I()() {
+    match I.getOpcode() {
         Freeze => {
-            let mut NegOp: *mut Value = self.negate((0), IsNSW, Depth + 1);
+            let mut NegOp: *mut Value = self.negate(I.getOperand(0), IsNSW, Depth + 1);
             if !NegOp {
                 return null;
             }
+            return self.Builder.CreateFreeze(NegOp, I.getName() + ".neg");
         },
         PHI => {
-            let mut PHI: *mut auto = cast();
-            let mut NegatedIncomingValues: SmallVector<Value *, 4> = zeroed();
-            let mut NegatedPHI: *mut PHINode = null;
+            let mut PHI: *mut PHINode = cast(I);
+            let mut NegatedIncomingValues: SmallVector<Value *, 4> = PHI.getNumOperands();
+            for I in zip(PHI.incoming_values(), NegatedIncomingValues) {
+                if self.DT.dominates(PHI.getParent(), get(I)) {
+                    return null;
+                }
+                if !(get(I) = self.negate(get(I).operator llvm::Value *(), IsNSW, Depth + 1)) {
+                    return null;
+                }
+            }
+            let mut NegatedPHI: *mut PHINode = self.Builder.CreatePHI(PHI.getType(), PHI.getNumOperands(), PHI.getName() + ".neg");
+            for I in zip(NegatedIncomingValues, PHI.blocks()) {
+                NegatedPHI.addIncoming(get(I), get(I));
+            }
             return NegatedPHI;
         },
         Select => {
-            if isKnownNegation((1), (2), false, false) {
-                let mut NewSelect: *mut auto = cast();
-                NewSelect()();
-                NewSelect()(() + ".neg");
-                let mut TV: *mut Value = ();
-                let mut FV: *mut Value = ();
+            if isKnownNegation(I.getOperand(1), I.getOperand(2), false, false) {
+                let mut NewSelect: *mut SelectInst = cast(I.clone());
+                NewSelect.swapValues();
+                NewSelect.setName(I.getName() + ".neg");
+                let mut TV: *mut Value = NewSelect.getTrueValue();
+                let mut FV: *mut Value = NewSelect.getFalseValue();
                 if match(TV, m_Neg(m_Specific(FV))) {
-                    cast(TV)();
+                    cast(TV).dropPoisonGeneratingFlags();
                 } else if match(FV, m_Neg(m_Specific(TV))) {
-                    cast(FV)();
+                    cast(FV).dropPoisonGeneratingFlags();
                 } else {
-                    cast(TV)();
-                    cast(FV)();
+                    cast(TV).dropPoisonGeneratingFlags();
+                    cast(FV).dropPoisonGeneratingFlags();
                 }
-                return ;
+                self.Builder.Insert(NewSelect, "");
+                return NewSelect;
             }
-            let mut NegOp1: *mut Value = self.negate((1), IsNSW, Depth + 1);
+            let mut NegOp1: *mut Value = self.negate(I.getOperand(1), IsNSW, Depth + 1);
             if !NegOp1 {
                 return null;
             }
-            let mut NegOp2: *mut Value = self.negate((2), IsNSW, Depth + 1);
+            let mut NegOp2: *mut Value = self.negate(I.getOperand(2), IsNSW, Depth + 1);
             if !NegOp2 {
                 return null;
             }
+            return self.Builder.CreateSelect(I.getOperand(0), NegOp1, NegOp2, I.getName() + ".neg", I);
         },
         ShuffleVector => {
-            let mut Shuf: *mut auto = cast();
-            let mut NegOp0: *mut Value = self.negate((0), IsNSW, Depth + 1);
+            let mut Shuf: *mut ShuffleVectorInst = cast(I);
+            let mut NegOp0: *mut Value = self.negate(I.getOperand(0), IsNSW, Depth + 1);
             if !NegOp0 {
                 return null;
             }
-            let mut NegOp1: *mut Value = self.negate((1), IsNSW, Depth + 1);
+            let mut NegOp1: *mut Value = self.negate(I.getOperand(1), IsNSW, Depth + 1);
             if !NegOp1 {
                 return null;
             }
+            return self.Builder.CreateShuffleVector(NegOp0, NegOp1, Shuf.getShuffleMask(), I.getName() + ".neg");
         },
         ExtractElement => {
-            let mut EEI: *mut auto = cast();
-            let mut NegVector: *mut Value = self.negate(IsNSW, Depth + 1);
+            let mut EEI: *mut ExtractElementInst = cast(I);
+            let mut NegVector: *mut Value = self.negate(EEI.getVectorOperand(), IsNSW, Depth + 1);
             if !NegVector {
                 return null;
             }
+            return self.Builder.CreateExtractElement(NegVector, EEI.getIndexOperand(), I.getName() + ".neg");
         },
         InsertElement => {
-            let mut IEI: *mut auto = cast();
-            let mut NegVector: *mut Value = self.negate((0), IsNSW, Depth + 1);
+            let mut IEI: *mut InsertElementInst = cast(I);
+            let mut NegVector: *mut Value = self.negate(IEI.getOperand(0), IsNSW, Depth + 1);
             if !NegVector {
                 return null;
             }
-            let mut NegNewElt: *mut Value = self.negate((1), IsNSW, Depth + 1);
+            let mut NegNewElt: *mut Value = self.negate(IEI.getOperand(1), IsNSW, Depth + 1);
             if !NegNewElt {
                 return null;
             }
+            return self.Builder.CreateInsertElement(NegVector, NegNewElt, IEI.getOperand(2), I.getName() + ".neg");
         },
         Trunc => {
-            let mut NegOp: *mut Value = self.negate((0), false, Depth + 1);
+            let mut NegOp: *mut Value = self.negate(I.getOperand(0), false, Depth + 1);
             if !NegOp {
                 return null;
             }
+            return self.Builder.CreateTrunc(NegOp, I.getType(), I.getName() + ".neg", false, false);
         },
         Shl => {
-            operator&=(IsNSW);
+            IsNSW &= I.hasNoSignedWrap();
+            if self.negate(I.getOperand(0), IsNSW, Depth + 1) {
+                NegOp0;
+            } else {
+                return self.Builder.CreateShl(NegOp0, I.getOperand(1), I.getName() + ".neg", false, IsNSW);
+            }
             let mut Op1C: *mut Constant = null;
-            if operator!(match((1), m_ImmConstant(Op1C))) || !self.IsTrulyNegation {
+            if !match(I.getOperand(1), m_ImmConstant(Op1C)) || !self.IsTrulyNegation {
                 return null;
             }
+            return self.Builder.CreateMul(I.getOperand(0), self.Builder.CreateShl(getAllOnesValue(Op1C.getType()), Op1C, "", false, false), I.getName() + ".neg", false, IsNSW);
         },
         Or => {
-            if operator!(cast()()) {
+            if !cast(I).isDisjoint() {
                 return null;
             }
-            let mut Ops: array<Value *, 2> = zeroed();
+            let mut Ops: array<Value *, 2> = self.getSortedOperandsOfBinOp(I);
+            if match(Ops[1], m_One()) {
+                return self.Builder.CreateNot(Ops[0], I.getName() + ".neg");
+            }
         },
         Add => {
-            let mut NegatedOps: SmallVector<Value *, 2> = zeroed();
-            let mut NonNegatedOps: SmallVector<Value *, 2> = zeroed();
-            (((operator!(operator!(((NegatedOps()() + ()) == 2 && "Internal consistency check failed.")))) || (_wassert(L"(NegatedOps.size() + NonNegatedOps.size()) == 2 && \"Internal consistency check failed.\"", L"llvm\\lib\\Transforms\\InstCombine\\InstCombineNegator.cpp", (440) as u32) , 0)) as void);
+            let mut NegatedOps: SmallVector<Value *, 2> = SmallVector<Value *, 2> {};
+            let mut NonNegatedOps: SmallVector<Value *, 2> = SmallVector<Value *, 2> {};
+            for Op in I.operands() {
+                if self.negate(Op, false, Depth + 1) {
+                    NegOp;
+                } else {
+                    NegatedOps.push(NegOp);
+                    continue;
+                }
+                if !self.IsTrulyNegation {
+                    return null;
+                }
+                NonNegatedOps.push(Op);
+            }
+            assert!((NegatedOps.len + NonNegatedOps.len) == 2, "Internal consistency check failed.");
+            if NegatedOps.len == 2 {
+                return self.Builder.CreateAdd(NegatedOps[0], NegatedOps[1], I.getName() + ".neg", false, false);
+            }
             assert!(self.IsTrulyNegation, "We should have early-exited then.");
-            if NonNegatedOps()() == 2 {
+            if NonNegatedOps.len == 2 {
                 return null;
             }
+            return self.Builder.CreateSub(NegatedOps[0], NonNegatedOps[0], I.getName() + ".neg", false, false);
         },
         Xor => {
-            let mut Ops: array<Value *, 2> = zeroed();
-            if  {
+            let mut Ops: array<Value *, 2> = self.getSortedOperandsOfBinOp(I);
+            if dyn_cast(Ops[1]) {
+                C;
+            } else {
                 if self.IsTrulyNegation {
-                    let mut Xor: *mut Value = null;
+                    let mut Xor: *mut Value = self.Builder.CreateXor(Ops[0], getNot(C), "");
+                    return self.Builder.CreateAdd(Xor, get(Xor.getType(), 1, false, false), I.getName() + ".neg", false, false);
                 }
             }
             return null;
         },
         Mul => {
-            let mut Ops: array<Value *, 2> = zeroed();
+            let mut Ops: array<Value *, 2> = self.getSortedOperandsOfBinOp(I);
             let mut NegatedOp: *mut Value = null;
             let mut OtherOp: *mut Value = null;
-            if self.negate([1], false, Depth + 1) {
+            if self.negate(Ops[1], false, Depth + 1) {
                 NegOp1;
             } else {
                 NegatedOp = NegOp1;
-                OtherOp = [0];
+                OtherOp = Ops[0];
             }
+            return self.Builder.CreateMul(NegatedOp, OtherOp, I.getName() + ".neg", false, IsNSW && I.hasNoSignedWrap());
         },
         _ => {
             return null;
         },
     }
-    llvm_unreachable_internal("Can't get here. We always return from switch.", "llvm\\lib\\Transforms\\InstCombine\\InstCombineNegator.cpp", 488);
+    llvm_unreachable_internal("Can't get here. We always return from switch.", "P:/Goraw/llvm-project/llvm/lib/Transforms/InstCombine/InstCombineNegator.cpp", 488);
 }
 
 fn Negator::negate(self, V: *mut Value, IsNSW: bool, Depth: u32) -> *mut Value {
@@ -261,22 +328,28 @@ fn Negator::negate(self, V: *mut Value, IsNSW: bool, Depth: u32) -> *mut Value {
     operator(NegatorNumValuesVisited);
     self.NumValuesVisitedInThisNegator += 1;
     let mut Placeholder: *mut Value = -1 as u64 as *mut Value;
-    let mut NegationsCacheIterator: auto = zeroed();
-    if  {
+    let mut NegationsCacheIterator: iterator = self.NegationsCache.find(V);
+    if NegationsCacheIterator != self.NegationsCache.end() {
         operator(NegatorNumNegationsFoundInCache);
-        let mut NegatedV: *mut Value = ;
+        let mut NegatedV: *mut Value = operator(NegationsCacheIterator).second;
         assert!(NegatedV != Placeholder, "Encountered a cycle during negation.");
         return NegatedV;
     }
+    self.NegationsCache[V] = Placeholder;
     let mut NegatedV: *mut Value = self.visitImpl(V, IsNSW, Depth);
+    self.NegationsCache[V] = NegatedV;
     return NegatedV;
 }
 
 fn Negator::run(self, Root: *mut Value, IsNSW: bool) -> Result> {
     let mut Negated: *mut Value = self.negate(Root, IsNSW, 0);
     if !Negated {
-        return nullopt();
+        for I in reverse(self.NewInstructions) {
+            I.eraseFromParent();
+        }
+        return nullopt;
     }
+    return make_pair(self.NewInstructions, Negated);
 }
 
 fn Negator::Negate(self, LHSIsZero: bool, IsNSW: bool, Root: *mut Value, IC: *mut InstCombinerImpl) -> *mut Value {
@@ -289,12 +362,12 @@ fn Negator::Negate(self, LHSIsZero: bool, IsNSW: bool, Root: *mut Value, IC: *mu
     }
         if !(false) { break; }
     }
-    if operator!(IC()) || !shouldExecute(NegatorCounter) {
+    if !IC.CLOpts.negator_enabled || !shouldExecute(NegatorCounter) {
         return null;
     }
-    let mut N: Negator = Root.getContext();
-    let mut Res: optional<Result> = zeroed();
-    if operator!() {
+    let mut N: Negator = Negator { Root.getContext(), IC.getDataLayout(), IC.getDominatorTree(), LHSIsZero, IC.CLOpts.negator_max_depth };
+    let mut Res: optional<Result> = N.run(Root, IsNSW);
+    if !Res {
         while true {
             {
             if DebugFlag && isCurrentDebugType("instcombine", 1) {
@@ -308,7 +381,7 @@ fn Negator::Negate(self, LHSIsZero: bool, IsNSW: bool, Root: *mut Value, IC: *mu
     while true {
         {
         if DebugFlag && isCurrentDebugType("instcombine", 1) {
-            dbgs() << "Negator: successfully sunk negation into " << *Root << "\n         NEW: " << operator*() << "\n";
+            dbgs() << "Negator: successfully sunk negation into " << *Root << "\n         NEW: " << *operator(Res).second << "\n";
         }
     }
         if !(false) { break; }
@@ -317,12 +390,19 @@ fn Negator::Negate(self, LHSIsZero: bool, IsNSW: bool, Root: *mut Value, IC: *mu
     while true {
         {
         if DebugFlag && isCurrentDebugType("instcombine", 1) {
-            dbgs() << "Negator: Propagating " << () << " instrs to InstCombine\n";
+            dbgs() << "Negator: Propagating " << operator(Res).first.len << " instrs to InstCombine\n";
         }
     }
         if !(false) { break; }
     }
-    NegatorMaxInstructionsCreated.updateMax();
-    operator+=(NegatorNumInstructionsNegatedSuccess);
-    return ;
+    NegatorMaxInstructionsCreated.updateMax(operator(Res).first.len);
+    operator(NegatorNumInstructionsNegatedSuccess, operator(Res).first.len);
+    for I in operator(Res).first {
+        IC.addToWorklist(I);
+    }
+    return operator(Res).second;
 }
+
+struct Closure_1 {}
+
+fn Closure_1::call(self: *Closure_1, arg: *mut CallInst) {}

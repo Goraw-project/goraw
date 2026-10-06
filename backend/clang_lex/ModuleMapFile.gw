@@ -55,20 +55,20 @@ let mut N: u32 = Id.len; I != N; I += 1 {
 }
 
 fn parseModuleMap(ID: FileID, Dir: DirectoryEntryRef, SM: *mut SourceManager, Diags: *mut DiagnosticsEngine, IsSystem: bool, ImplicitlyDiscovered: bool, Offset: *mut u32) -> optional<ModuleMapFile> {
-    let mut Buffer: MemoryBufferRef> = zeroed();
+    let mut Buffer: MemoryBufferRef> = SM.getBufferOrNone(ID, SourceLocation {});
     let mut LOpts: LangOptions = LangOptions {};
     LOpts.LangStd = lang_c99;
-    let mut L: Lexer = SM.getLocForStartOfFile(ID);
+    let mut L: Lexer = Lexer { SM.getLocForStartOfFile(ID), LOpts, operator(Buffer).getBufferStart(), operator(Buffer).getBufferStart() + (if Offset { *Offset } else { 0 }), operator(Buffer).getBufferEnd(), true };
     let mut Start: SourceLocation = L.getSourceLocation();
-    let mut Parser: ModuleMapFileParser = ModuleMapFileParser { L: L, Diags: Diags, MMF: ModuleMapFile { ID: FileID {}, Dir: OptionalDirectoryEntryRef {}, Start: SourceLocation {}, IsSystem: , ImplicitlyDiscovered: , Decls: []TopLevelDecl {} }, HadError: false, Tok: MMToken { , (anonymous union at P:\Goraw\llvm-project\clang\lib\Lex\ModuleMapFile.cpp:63:3) {} } };
+    let mut Parser: ModuleMapFileParser = ModuleMapFileParser { L: L, Diags: Diags, MMF: ModuleMapFile { ID: FileID {}, Dir: OptionalDirectoryEntryRef {}, Start: SourceLocation {}, IsSystem: , ImplicitlyDiscovered: , Decls: []TopLevelDecl {} }, HadError: false, Tok: MMToken { , , , (anonymous union at P:\Goraw\llvm-project\clang\lib\Lex\ModuleMapFile.cpp:63:3) {} } };
     let mut Failed: bool = Parser.parseTopLevelDecls();
     if Offset {
-        let mut Loc: auto = SM()(Parser.getLocation());
-        assert!(Loc() == ID, "stopped in a different file?");
-        *Offset = ;
+        let mut Loc: FileIDAndOffset = SM.getDecomposedLoc(Parser.getLocation());
+        assert!(Loc.first == ID, "stopped in a different file?");
+        *Offset = Loc.second;
     }
     if Failed {
-        return nullopt();
+        return nullopt;
     }
     Parser.MMF.ID = ID;
     Parser.MMF.Dir = Dir;
@@ -88,9 +88,9 @@ fn ModuleMapFileParser::parseTopLevelDecls(self) -> bool {
                 return self.HadError;
             },
             ExternKeyword => {
-                let mut EMD: optional<ExternModuleDecl> = zeroed();
-                if EMD() {
-                    self.MMF.Decls(move(*));
+                let mut EMD: optional<ExternModuleDecl> = self.parseExternModuleDecl();
+                if EMD {
+                    self.MMF.Decls.push(move(operator(EMD)));
                 }
                 break;
             },
@@ -124,10 +124,10 @@ fn ModuleMapFileParser::parseModuleDecl(self, TopLevel: bool) -> optional<Module
         MDecl.Framework = true;
     }
     if !self.Tok.is(ModuleKeyword) {
-        self.Diags;
+        self.Diags.Report(self.Tok.getLocation(), err_mmap_expected_module);
         self.consumeToken();
         self.HadError = true;
-        return nullopt();
+        return nullopt;
     }
     let mut ModuleLoc: SourceLocation = self.consumeToken();
     if !MDecl.Location.isValid() {
@@ -135,112 +135,112 @@ fn ModuleMapFileParser::parseModuleDecl(self, TopLevel: bool) -> optional<Module
     }
     if self.Tok.is(Star) {
         let mut StarLoc: SourceLocation = self.consumeToken();
-        MDecl.Id;
+        MDecl.Id.push(SourceLocation> { "*", StarLoc });
         if TopLevel && !MDecl.Framework {
-            self.Diags;
+            self.Diags.Report(StarLoc, err_mmap_top_level_inferred_submodule);
             self.HadError = true;
-            return nullopt();
+            return nullopt;
         }
     } else {
         if self.parseModuleId(MDecl.Id) {
             self.HadError = true;
-            return nullopt();
+            return nullopt;
         }
         if !TopLevel {
             if MDecl.Id.len > 1 {
-                self.Diags << SourceRange { B: MDecl.Id.front().second, E: MDecl.Id.back().second };
+                self.Diags.Report(MDecl.Id.front().second, err_mmap_nested_submodule_id) << SourceRange { B: MDecl.Id.front().second, E: MDecl.Id.back().second };
                 self.HadError = true;
             }
         } else if MDecl.Id.len == 1 && MDecl.Explicit {
-            self.Diags;
+            self.Diags.Report(ExplicitLoc, err_mmap_explicit_top_level);
             MDecl.Explicit = false;
             self.HadError = true;
         }
     }
     if self.parseOptionalAttributes(MDecl.Attrs) {
-        return nullopt();
+        return nullopt;
     }
     if !self.Tok.is(LBrace) {
-        self.Diags << MDecl.Id.back().first;
+        self.Diags.Report(self.Tok.getLocation(), err_mmap_expected_lbrace) << MDecl.Id.back().first;
         self.HadError = true;
-        return nullopt();
+        return nullopt;
     }
     let mut LBraceLoc: SourceLocation = self.consumeToken();
     let mut Done: bool = false;
     while true {
         {
-        let mut SubDecl: optional<Decl> = zeroed();
+        let mut SubDecl: optional<Decl> = optional<Decl> {};
         match self.Tok.Kind {
             EndOfFile => {
                 RBrace;
             },
             ConfigMacros => {
                 if !TopLevel {
-                    self.Diags;
+                    self.Diags.Report(self.Tok.getLocation(), err_mmap_config_macro_submodule);
                 }
             },
             Conflict => {
-                SubDecl() = self.parseConflictDecl;
+                SubDecl = self.parseConflictDecl();
             },
             ExternKeyword => {
-                SubDecl() = self.parseExternModuleDecl;
+                SubDecl = self.parseExternModuleDecl();
             },
             ExplicitKeyword => {
                 FrameworkKeyword;
             },
             ExportKeyword => {
-                SubDecl() = self.parseExportDecl;
+                SubDecl = self.parseExportDecl();
             },
             ExportAsKeyword => {
                 if !TopLevel {
-                    self.Diags;
-                    self.parseExportAsDecl;
+                    self.Diags.Report(self.Tok.getLocation(), err_mmap_submodule_export_as);
+                    self.parseExportAsDecl();
                 } else {
-                    SubDecl() = self.parseExportAsDecl;
+                    SubDecl = self.parseExportAsDecl();
                 }
             },
             UseKeyword => {
-                SubDecl() = self.parseUseDecl;
+                SubDecl = self.parseUseDecl();
             },
             RequiresKeyword => {
-                SubDecl() = self.parseRequiresDecl;
+                SubDecl = self.parseRequiresDecl();
             },
             TextualKeyword => {
-                SubDecl() = self.parseHeaderDecl;
+                SubDecl = self.parseHeaderDecl(TextualKeyword, self.consumeToken());
             },
             UmbrellaKeyword => {
                 let mut UmbrellaLoc: SourceLocation = self.consumeToken();
                 if self.Tok.is(HeaderKeyword) {
-                    SubDecl() = self.parseHeaderDecl;
+                    SubDecl = self.parseHeaderDecl(UmbrellaKeyword, UmbrellaLoc);
                 } else {
-                    SubDecl() = self.parseUmbrellaDirDecl;
+                    SubDecl = self.parseUmbrellaDirDecl(UmbrellaLoc);
                 }
                 break;
             },
             ExcludeKeyword => {
                 let mut ExcludeLoc: SourceLocation = self.consumeToken();
                 if self.Tok.is(HeaderKeyword) {
-                    SubDecl() = self.parseHeaderDecl;
+                    SubDecl = self.parseHeaderDecl(ExcludeKeyword, ExcludeLoc);
                 } else {
-                    SubDecl() = self.parseExcludeDecl;
+                    SubDecl = self.parseExcludeDecl(ExcludeLoc);
                 }
                 break;
             },
             PrivateKeyword => {
-                SubDecl() = self.parseHeaderDecl;
+                SubDecl = self.parseHeaderDecl(PrivateKeyword, self.consumeToken());
             },
             HeaderKeyword => {
-                SubDecl() = self.parseHeaderDecl;
+                SubDecl = self.parseHeaderDecl(HeaderKeyword, self.consumeToken());
             },
             LinkKeyword => {
-                SubDecl() = self.parseLinkDecl;
+                SubDecl = self.parseLinkDecl();
             },
             _ => {
-                self.Diags;
+                self.Diags.Report(self.Tok.getLocation(), err_mmap_expected_member);
             },
         }
-        if SubDecl() {
-            MDecl.Decls(move(*));
+        if SubDecl {
+            MDecl.Decls.push(move(operator(SubDecl)));
         }
     }
         if !(!Done) { break; }
@@ -248,8 +248,8 @@ fn ModuleMapFileParser::parseModuleDecl(self, TopLevel: bool) -> optional<Module
     if self.Tok.is(RBrace) {
         self.consumeToken();
     } else {
-        self.Diags;
-        self.Diags;
+        self.Diags.Report(self.Tok.getLocation(), err_mmap_expected_rbrace);
+        self.Diags.Report(LBraceLoc, note_mmap_lbrace_match);
         self.HadError = true;
     }
     return move(MDecl);
@@ -260,20 +260,20 @@ fn ModuleMapFileParser::parseExternModuleDecl(self) -> optional<ExternModuleDecl
     let mut EMD: ExternModuleDecl = ExternModuleDecl {};
     EMD.Location = self.consumeToken();
     if !self.Tok.is(ModuleKeyword) {
-        self.Diags;
+        self.Diags.Report(self.Tok.getLocation(), err_mmap_expected_module);
         self.consumeToken();
         self.HadError = true;
-        return nullopt();
+        return nullopt;
     }
     self.consumeToken();
     if self.parseModuleId(EMD.Id) {
         self.HadError = true;
-        return nullopt();
+        return nullopt;
     }
     if !self.Tok.is(StringLiteral) {
-        self.Diags;
+        self.Diags.Report(self.Tok.getLocation(), err_mmap_expected_mmap_file);
         self.HadError = true;
-        return nullopt();
+        return nullopt;
     }
     EMD.Path = self.Tok.getString();
     self.consumeToken();
@@ -286,11 +286,11 @@ fn ModuleMapFileParser::parseConfigMacrosDecl(self) -> optional<ConfigMacrosDecl
     CMDecl.Location = self.consumeToken();
     let mut Attrs: ModuleAttributes = ModuleAttributes {};
     if self.parseOptionalAttributes(Attrs) {
-        return nullopt();
+        return nullopt;
     }
     CMDecl.Exhaustive = Attrs.IsExhaustive;
     if !self.Tok.is(Identifier) {
-        return nullopt();
+        return nullopt;
     }
     CMDecl.Macros.push(self.Tok.getString());
     self.consumeToken();
@@ -301,8 +301,8 @@ fn ModuleMapFileParser::parseConfigMacrosDecl(self) -> optional<ConfigMacrosDecl
         }
         self.consumeToken();
         if !self.Tok.is(Identifier) {
-            self.Diags;
-            return nullopt();
+            self.Diags.Report(self.Tok.getLocation(), err_mmap_expected_config_macro);
+            return nullopt;
         }
         CMDecl.Macros.push(self.Tok.getString());
         self.consumeToken();
@@ -317,16 +317,16 @@ fn ModuleMapFileParser::parseConflictDecl(self) -> optional<ConflictDecl> {
     let mut CD: ConflictDecl = ConflictDecl {};
     CD.Location = self.consumeToken();
     if self.parseModuleId(CD.Id) {
-        return nullopt();
+        return nullopt;
     }
     if !self.Tok.is(Comma) {
-        self.Diags << CD.Location;
-        return nullopt();
+        self.Diags.Report(self.Tok.getLocation(), err_mmap_expected_conflicts_comma) << CD.Location;
+        return nullopt;
     }
     self.consumeToken();
     if !self.Tok.is(StringLiteral) {
-        self.Diags << formatModuleId(CD.Id);
-        return nullopt();
+        self.Diags.Report(self.Tok.getLocation(), err_mmap_expected_conflicts_message) << formatModuleId(CD.Id);
+        return nullopt;
     }
     CD.Message = self.Tok.getString();
     self.consumeToken();
@@ -341,7 +341,7 @@ fn ModuleMapFileParser::parseExportDecl(self) -> optional<ExportDecl> {
     while true {
         {
         if self.Tok.is(Identifier) {
-            ED.Id(make_pair(self.Tok.getString(), self.Tok.getLocation()));
+            ED.Id.push(make_pair(self.Tok.getString()[0..allocator<char> {}], self.Tok.getLocation()));
             self.consumeToken();
             if self.Tok.is(Period) {
                 self.consumeToken();
@@ -354,9 +354,9 @@ fn ModuleMapFileParser::parseExportDecl(self) -> optional<ExportDecl> {
             self.consumeToken();
             break;
         }
-        self.Diags;
+        self.Diags.Report(self.Tok.getLocation(), err_mmap_module_id);
         self.HadError = true;
-        return nullopt();
+        return nullopt;
     }
         if !(true) { break; }
     }
@@ -368,15 +368,15 @@ fn ModuleMapFileParser::parseExportAsDecl(self) -> optional<ExportAsDecl> {
     let mut EAD: ExportAsDecl = ExportAsDecl {};
     EAD.Location = self.consumeToken();
     if !self.Tok.is(Identifier) {
-        self.Diags;
+        self.Diags.Report(self.Tok.getLocation(), err_mmap_module_id);
         self.HadError = true;
-        return nullopt();
+        return nullopt;
     }
     if self.parseModuleId(EAD.Id) {
-        return nullopt();
+        return nullopt;
     }
     if EAD.Id.len > 1 {
-        self.Diags;
+        self.Diags.Report(EAD.Id[1].second, err_mmap_qualified_export_as);
     }
     return move(EAD);
 }
@@ -386,7 +386,7 @@ fn ModuleMapFileParser::parseUseDecl(self) -> optional<UseDecl> {
     let mut UD: UseDecl = UseDecl {};
     UD.Location = self.consumeToken();
     if self.parseModuleId(UD.Id) {
-        return nullopt();
+        return nullopt;
     }
     return move(UD);
 }
@@ -403,15 +403,15 @@ fn ModuleMapFileParser::parseRequiresDecl(self) -> optional<RequiresDecl> {
             self.consumeToken();
         }
         if !self.Tok.is(Identifier) {
-            self.Diags;
+            self.Diags.Report(self.Tok.getLocation(), err_mmap_expected_feature);
             self.HadError = true;
-            return nullopt();
+            return nullopt;
         }
         let mut RF: RequiresFeature = RequiresFeature {};
         RF.Feature = self.Tok.getString();
         RF.Location = self.consumeToken();
         RF.RequiredState = RequiredState;
-        RD.Features(move(RF));
+        RD.Features.push(move(RF));
         if !self.Tok.is(Comma) {
             break;
         }
@@ -442,15 +442,15 @@ fn ModuleMapFileParser::parseHeaderDecl(self, LeadingToken: TokenKind, LeadingLo
     }
     if LeadingToken != HeaderKeyword {
         if !self.Tok.is(HeaderKeyword) {
-            self.Diags << (if LeadingToken == PrivateKeyword { "private" } else { if LeadingToken == ExcludeKeyword { "exclude" } else { if LeadingToken == TextualKeyword { "textual" } else { "umbrella" } } });
-            return nullopt();
+            self.Diags.Report(self.Tok.getLocation(), err_mmap_expected_header) << (if LeadingToken == PrivateKeyword { "private" } else { if LeadingToken == ExcludeKeyword { "exclude" } else { if LeadingToken == TextualKeyword { "textual" } else { "umbrella" } } });
+            return nullopt;
         }
         self.consumeToken();
     }
     if !self.Tok.is(StringLiteral) {
-        self.Diags << "header";
+        self.Diags.Report(self.Tok.getLocation(), err_mmap_expected_header) << "header";
         self.HadError = true;
-        return nullopt();
+        return nullopt;
     }
     HD.Path = self.Tok.getString();
     HD.PathLoc = self.consumeToken();
@@ -460,27 +460,27 @@ fn ModuleMapFileParser::parseHeaderDecl(self, LeadingToken: TokenKind, LeadingLo
         while !self.Tok.is(RBrace) && !self.Tok.is(EndOfFile) {
             let mut Str: str = self.Tok.getString();
             let mut Loc: SourceLocation = self.consumeToken();
-            match  {
+            match Str.Case("size", Size).Case("mtime", ModTime).Default(Unknown) {
                 Size => {
                     if HD.Size {
-                        self.Diags << Str;
+                        self.Diags.Report(Loc, err_mmap_duplicate_header_attribute) << Str;
                     }
                 },
                 ModTime => {
                     if HD.MTime {
-                        self.Diags << Str;
+                        self.Diags.Report(Loc, err_mmap_duplicate_header_attribute) << Str;
                     }
                 },
                 Unknown => {
-                    self.Diags;
+                    self.Diags.Report(Loc, err_mmap_expected_header_attribute);
                 },
             }
         }
         if self.Tok.is(RBrace) {
             self.consumeToken();
         } else {
-            self.Diags;
-            self.Diags;
+            self.Diags.Report(self.Tok.getLocation(), err_mmap_expected_rbrace);
+            self.Diags.Report(LBraceLoc, note_mmap_lbrace_match);
             self.HadError = true;
         }
     }
@@ -489,9 +489,9 @@ fn ModuleMapFileParser::parseHeaderDecl(self, LeadingToken: TokenKind, LeadingLo
 
 fn ModuleMapFileParser::parseExcludeDecl(self, LeadingLoc: SourceLocation) -> optional<ExcludeDecl> {
     if !self.Tok.is(Identifier) {
-        self.Diags;
+        self.Diags.Report(self.Tok.getLocation(), err_mmap_missing_exclude_name);
         self.HadError = true;
-        return nullopt();
+        return nullopt;
     }
     let mut ED: ExcludeDecl = ExcludeDecl {};
     ED.Location = LeadingLoc;
@@ -504,9 +504,9 @@ fn ModuleMapFileParser::parseUmbrellaDirDecl(self, UmbrellaLoc: SourceLocation) 
     let mut UDD: UmbrellaDirDecl = UmbrellaDirDecl {};
     UDD.Location = UmbrellaLoc;
     if !self.Tok.is(StringLiteral) {
-        self.Diags << "umbrella";
+        self.Diags.Report(self.Tok.getLocation(), err_mmap_expected_header) << "umbrella";
         self.HadError = true;
-        return nullopt();
+        return nullopt;
     }
     UDD.Path = self.Tok.getString();
     self.consumeToken();
@@ -523,9 +523,9 @@ fn ModuleMapFileParser::parseLinkDecl(self) -> optional<LinkDecl> {
         LD.Framework = true;
     }
     if !self.Tok.is(StringLiteral) {
-        self.Diags << LD.Framework << LD.Location;
+        self.Diags.Report(self.Tok.getLocation(), err_mmap_expected_library_name) << LD.Framework << LD.Location;
         self.HadError = true;
-        return nullopt();
+        return nullopt;
     }
     LD.Library = self.Tok.getString();
     self.consumeToken();
@@ -543,6 +543,7 @@ fn ModuleMapFileParser::consumeToken(self) -> SourceLocation {
             let mut RI: str = LToken.getRawIdentifier();
             self.Tok..StringData = RI.ptr;
             self.Tok.StringLength = RI.len;
+            self.Tok.Kind = RI.Case("config_macros", ConfigMacros).Case("conflict", Conflict).Case("exclude", ExcludeKeyword).Case("explicit", ExplicitKeyword).Case("export", ExportKeyword).Case("export_as", ExportAsKeyword).Case("extern", ExternKeyword).Case("framework", FrameworkKeyword).Case("header", HeaderKeyword).Case("link", LinkKeyword).Case("module", ModuleKeyword).Case("private", PrivateKeyword).Case("requires", RequiresKeyword).Case("textual", TextualKeyword).Case("umbrella", UmbrellaKeyword).Case("use", UseKeyword).Default(Identifier);
             break;
         },
         comma => {
@@ -574,7 +575,7 @@ fn ModuleMapFileParser::consumeToken(self) -> SourceLocation {
         },
         string_literal => {
             if LToken.hasUDSuffix() {
-                self.Diags;
+                self.Diags.Report(LToken.getLocation(), err_invalid_string_udl);
                 self.HadError = true;
             }
             self.Tok.Kind = StringLiteral;
@@ -584,8 +585,8 @@ fn ModuleMapFileParser::consumeToken(self) -> SourceLocation {
         },
         numeric_constant => {
             let mut Value: u64 = 0;
-            if LToken.getLiteralData()[0..LToken.getLength()] {
-                self.Diags;
+            if LToken.getLiteralData()[0..LToken.getLength()].getAsInteger(0, Value) {
+                self.Diags.Report(self.Tok.getLocation(), err_mmap_unknown_token);
                 self.HadError = true;
             }
             self.Tok.Kind = IntegerLiteral;
@@ -603,7 +604,7 @@ fn ModuleMapFileParser::consumeToken(self) -> SourceLocation {
             }
         },
         _ => {
-            self.Diags;
+            self.Diags.Report(self.Tok.getLocation(), err_mmap_unknown_token);
         },
     }
     return Result;
@@ -659,10 +660,10 @@ fn ModuleMapFileParser::parseModuleId(self, Id: *mut ModuleId) -> bool {
     while true {
         {
         if self.Tok.is(Identifier) || self.Tok.is(StringLiteral) {
-            Id(make_pair(self.Tok.getString(), self.Tok.getLocation()));
+            Id.push(make_pair(self.Tok.getString()[0..allocator<char> {}], self.Tok.getLocation()));
             self.consumeToken();
         } else {
-            self.Diags;
+            self.Diags.Report(self.Tok.getLocation(), err_mmap_expected_module_name);
             return true;
         }
         if !self.Tok.is(Period) {
@@ -680,17 +681,17 @@ fn ModuleMapFileParser::parseOptionalAttributes(self, Attrs: *mut ModuleAttribut
     while self.Tok.is(LSquare) {
         let mut LSquareLoc: SourceLocation = self.consumeToken();
         if !self.Tok.is(Identifier) {
-            self.Diags;
+            self.Diags.Report(self.Tok.getLocation(), err_mmap_expected_attribute);
             self.skipUntil(RSquare);
             if self.Tok.is(RSquare) {
                 self.consumeToken();
             }
             Error = true;
         }
-        let mut Attribute: AttributeKind = zeroed();
+        let mut Attribute: AttributeKind = self.Tok.getString().Case("exhaustive", AT_exhaustive).Case("extern_c", AT_extern_c).Case("no_undeclared_includes", AT_no_undeclared_includes).Case("system", AT_system).Default(AT_unknown);
         match Attribute {
             AT_unknown => {
-                self.Diags << self.Tok.getString();
+                self.Diags.Report(self.Tok.getLocation(), warn_mmap_unknown_attribute) << self.Tok.getString();
             },
             AT_system => {
                 Attrs.IsSystem = true;
@@ -707,8 +708,8 @@ fn ModuleMapFileParser::parseOptionalAttributes(self, Attrs: *mut ModuleAttribut
         }
         self.consumeToken();
         if !self.Tok.is(RSquare) {
-            self.Diags;
-            self.Diags;
+            self.Diags.Report(self.Tok.getLocation(), err_mmap_expected_rsquare);
+            self.Diags.Report(LSquareLoc, note_mmap_lsquare_match);
             self.skipUntil(RSquare);
             Error = true;
         }
@@ -727,7 +728,11 @@ fn dumpExternModule(EMD: *ExternModuleDecl, out: *mut raw_ostream, depth: i32) {
     out << "extern module " << formatModuleId(EMD.Id) << " \"" << EMD.Path << "\"\n";
 }
 
-fn dumpDecls(Decls: ArrayRef<Decl>, out: *mut raw_ostream, depth: i32) {}
+fn dumpDecls(Decls: ArrayRef<Decl>, out: *mut raw_ostream, depth: i32) {
+    for Decl in Decls {
+        visit(makeVisitor(Closure_2 { out: &mut out, depth: &mut depth }, Closure_3 { out: &mut out, depth: &mut depth }, Closure_4 { out: &mut out, depth: &mut depth }, Closure_5 { out: &mut out, depth: &mut depth }, Closure_6 { out: &mut out, depth: &mut depth }, Closure_7 { out: &mut out, depth: &mut depth }, Closure_8 { out: &mut out, depth: &mut depth }, Closure_9 { out: &mut out, depth: &mut depth }, Closure_10 { out: &mut out, depth: &mut depth }, Closure_11 { out: &mut out, depth: &mut depth }, Closure_12 { out: &mut out, depth: &mut depth }, Closure_13 { out: &mut out, depth: &mut depth }), Decl);
+    }
+}
 
 fn dumpModule(MD: *ModuleDecl, out: *mut raw_ostream, depth: i32) {
     out.indent(depth * 2);
@@ -735,7 +740,11 @@ fn dumpModule(MD: *ModuleDecl, out: *mut raw_ostream, depth: i32) {
     dumpDecls(MD.Decls, out, depth + 1);
 }
 
-fn ModuleMapFile::dump(self: *ModuleMapFile, out: *mut raw_ostream) {}
+fn ModuleMapFile::dump(self: *ModuleMapFile, out: *mut raw_ostream) {
+    for Decl in self.Decls {
+        visit(makeVisitor(Closure_14 { out: &mut out }, Closure_15 { out: &mut out }), Decl);
+    }
+}
 
 struct Closure_1 {
     cap_0: *mut ModuleMapFileParser,
@@ -746,3 +755,156 @@ unsafe fn Closure_1::call(self: *mut Closure_1, Str: str) -> auto {
                 self.L.LexFromRawLexer((*self.LToken));
                 return !(*self.LToken).isAtStartOfLine() && (*self.LToken).is(raw_identifier) && (*self.LToken).getRawIdentifier() == Str;
             }
+
+struct Closure_2 {
+    out: *mut raw_ostream,
+    depth: *mut i32,
+}
+
+unsafe fn Closure_2::call(self: *mut Closure_2, RD: *RequiresDecl) {
+            (*self.out).indent((*self.depth) * 2);
+            (*self.out) << "requires\n";
+        }
+
+struct Closure_3 {
+    out: *mut raw_ostream,
+    depth: *mut i32,
+}
+
+unsafe fn Closure_3::call(self: *mut Closure_3, HD: *HeaderDecl) {
+            (*self.out).indent((*self.depth) * 2);
+            if HD.Private {
+                (*self.out) << "private ";
+            }
+            if HD.Textual {
+                (*self.out) << "textual ";
+            }
+            if HD.Excluded {
+                (*self.out) << "excluded ";
+            }
+            if HD.Umbrella {
+                (*self.out) << "umbrella ";
+            }
+            (*self.out) << "header \"" << HD.Path << "\"\n";
+        }
+
+struct Closure_4 {
+    out: *mut raw_ostream,
+    depth: *mut i32,
+}
+
+unsafe fn Closure_4::call(self: *mut Closure_4, UDD: *UmbrellaDirDecl) {
+            (*self.out).indent((*self.depth) * 2);
+            (*self.out) << "umbrella\n";
+        }
+
+struct Closure_5 {
+    out: *mut raw_ostream,
+    depth: *mut i32,
+}
+
+unsafe fn Closure_5::call(self: *mut Closure_5, MD: *ModuleDecl) {
+            dumpModule(MD, (*self.out), (*self.depth));
+        }
+
+struct Closure_6 {
+    out: *mut raw_ostream,
+    depth: *mut i32,
+}
+
+unsafe fn Closure_6::call(self: *mut Closure_6, ED: *ExcludeDecl) {
+            (*self.out).indent((*self.depth) * 2);
+            (*self.out) << "exclude " << ED.Module << "\n";
+        }
+
+struct Closure_7 {
+    out: *mut raw_ostream,
+    depth: *mut i32,
+}
+
+unsafe fn Closure_7::call(self: *mut Closure_7, ED: *ExportDecl) {
+            (*self.out).indent((*self.depth) * 2);
+            (*self.out) << "export " << (if ED.Wildcard { "*" } else { formatModuleId(ED.Id) }) << "\n";
+        }
+
+struct Closure_8 {
+    out: *mut raw_ostream,
+    depth: *mut i32,
+}
+
+unsafe fn Closure_8::call(self: *mut Closure_8, EAD: *ExportAsDecl) {
+            (*self.out).indent((*self.depth) * 2);
+            (*self.out) << "export as\n";
+        }
+
+struct Closure_9 {
+    out: *mut raw_ostream,
+    depth: *mut i32,
+}
+
+unsafe fn Closure_9::call(self: *mut Closure_9, EMD: *ExternModuleDecl) {
+            dumpExternModule(EMD, (*self.out), (*self.depth));
+        }
+
+struct Closure_10 {
+    out: *mut raw_ostream,
+    depth: *mut i32,
+}
+
+unsafe fn Closure_10::call(self: *mut Closure_10, UD: *UseDecl) {
+            (*self.out).indent((*self.depth) * 2);
+            (*self.out) << "use\n";
+        }
+
+struct Closure_11 {
+    out: *mut raw_ostream,
+    depth: *mut i32,
+}
+
+unsafe fn Closure_11::call(self: *mut Closure_11, LD: *LinkDecl) {
+            (*self.out).indent((*self.depth) * 2);
+            (*self.out) << "link\n";
+        }
+
+struct Closure_12 {
+    out: *mut raw_ostream,
+    depth: *mut i32,
+}
+
+unsafe fn Closure_12::call(self: *mut Closure_12, CMD: *ConfigMacrosDecl) {
+            (*self.out).indent((*self.depth) * 2);
+            (*self.out) << "config_macros ";
+            if CMD.Exhaustive {
+                (*self.out) << "[exhaustive] ";
+            }
+            for Macro in CMD.Macros {
+                (*self.out) << Macro << " ";
+            }
+            (*self.out) << "\n";
+        }
+
+struct Closure_13 {
+    out: *mut raw_ostream,
+    depth: *mut i32,
+}
+
+unsafe fn Closure_13::call(self: *mut Closure_13, CD: *ConflictDecl) {
+            (*self.out).indent((*self.depth) * 2);
+            (*self.out) << "conflicts\n";
+        }
+
+struct Closure_14 {
+    out: *mut raw_ostream,
+}
+
+unsafe fn Closure_14::call(self: *mut Closure_14, MD: *ModuleDecl) {
+            dumpModule(MD, (*self.out), 0);
+        }
+
+struct Closure_15 {
+    out: *mut raw_ostream,
+}
+
+unsafe fn Closure_15::call(self: *mut Closure_15, EMD: *ExternModuleDecl) {
+            dumpExternModule(EMD, (*self.out), 0);
+        }

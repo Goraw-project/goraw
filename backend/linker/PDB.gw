@@ -10,6 +10,10 @@ struct PDBLinker {
     nativePath: str,
 }
 
+fn PDBLinker::PDBLinker(self, ctx: *mut COFFLinkerContext) {
+    self.pdbStrTab.insert("");
+}
+
 struct UnrelocatedFpoData {
     debugChunk: *mut SectionChunk,
     subsecData: ArrayRef<uint8_t>,
@@ -22,8 +26,8 @@ struct DebugSHandler {
     file: *mut ObjFile,
     cvStrTab: DebugStringTableSubsectionRef,
     checksums: DebugChecksumsSubsectionRef,
-    frameDataSubsecs: i32,
-    stringTableFixups: i32,
+    frameDataSubsecs: []UnrelocatedFpoData,
+    stringTableFixups: []StringTableFixup,
     moduleStreamSize: u32,
     nextRelocIndex: u32,
 }
@@ -32,7 +36,7 @@ fn PDBLinker::pdbMakeAbsolute(self, fileName: *mut SmallVectorImpl<char>) {
     if is_absolute(fileName, windows) || is_absolute(fileName, posix) {
         return;
     }
-    if self.ctx.config.pdbSourcePath.len == 0 {
+    if self.ctx.config.pdbSourcePath.is_empty() {
         native(fileName, native);
         make_absolute(fileName);
         remove_dots(fileName, true, native);
@@ -48,19 +52,23 @@ fn PDBLinker::pdbMakeAbsolute(self, fileName: *mut SmallVectorImpl<char>) {
 
 fn addTypeInfo(tpiBuilder: *mut TpiStreamBuilder, typeTable: *mut TypeCollection) {
     tpiBuilder.setVersionHeader(PdbTpiV80);
-    typeTable;
+    typeTable.ForEachRecord(Closure_1 { tpiBuilder: &mut tpiBuilder });
 }
 
 fn addGHashTypeInfo(ctx: *mut COFFLinkerContext, builder: *mut PDBFileBuilder) {
     builder.getTpiBuilder().setVersionHeader(PdbTpiV80);
     builder.getIpiBuilder().setVersionHeader(PdbTpiV80);
+    for source in ctx.tpiSourceList {
+        builder.getTpiBuilder().addTypeRecords(source.mergedTpi.recs, source.mergedTpi.recSizes, source.mergedTpi.recHashes);
+        builder.getIpiBuilder().addTypeRecords(source.mergedIpi.recs, source.mergedIpi.recSizes, source.mergedIpi.recHashes);
+    }
 }
 
-fn recordStringTableReferences(sym: CVSymbol, symOffset: u32, stringTableFixups: *mut i32) {
-    match sym()() {
+fn recordStringTableReferences(sym: CVSymbol, symOffset: u32, stringTableFixups: *mut []StringTableFixup) {
+    match sym.kind() {
         S_FILESTATIC => {
-            let mut ref: u32 = *operator&(()[8]) as *ulittle32_t.operator unsigned int();
-            stringTableFixups()(void { ref, symOffset + 8 });
+            let mut ref: u32 = *&mut sym.ptr[8] as *ulittle32_t.operator unsigned int();
+            stringTableFixups.push(StringTableFixup { StrTabOffset: ref, SymOffsetOfReference: symOffset + 8 });
             break;
         },
         S_DEFRANGE => {
@@ -79,36 +87,36 @@ fn symbolKind(recordData: ArrayRef<uint8_t>) -> SymbolKind {
 
 fn PDBLinker::translateIdSymbols(self, recordData: *mut MutableArrayRef<uint8_t>, source: *mut TpiSource) {
     let mut prefix: *mut RecordPrefix = recordData.ptr as *mut RecordPrefix;
-    let mut kind: SymbolKind = symbolKind(ArrayRef<uint8_t> { recordData });
+    let mut kind: SymbolKind = symbolKind(recordData);
     if kind == S_PROC_ID_END {
         prefix.RecordKind = S_END;
         return;
     }
     if kind == S_GPROC32_ID || kind == S_LPROC32_ID {
-        let mut refs: SmallVector<TiReference, 1> = zeroed();
-        let mut content: MutableArrayRef<unsigned char> = recordData.drop_front();
-        let mut sym: CVSymbol = zeroed();
-        discoverTypeIndicesInSymbol();
-        (((operator!(operator!((refs()() == 1)))) || (_wassert(L"refs.size() == 1", L"lld\\COFF\\PDB.cpp", (346) as u32) , 0)) as void);
-        (((operator!(operator!((refs()() == 1)))) || (_wassert(L"refs.front().Count == 1", L"lld\\COFF\\PDB.cpp", (347) as u32) , 0)) as void);
-        let mut ti: *mut TypeIndex = content.ptr + [0] as *mut TypeIndex;
+        let mut refs: SmallVector<TiReference, 1> = SmallVector<TiReference, 1> {};
+        let mut content: MutableArrayRef<unsigned char> = recordData.drop_front(sizeof);
+        let mut sym: CVSymbol = recordData;
+        discoverTypeIndicesInSymbol(sym, refs);
+        assert!(refs.len == 1);
+        assert!(refs.front().Count == 1);
+        let mut ti: *mut TypeIndex = content.ptr + refs[0].Offset as *mut TypeIndex;
         if !ti.isSimple() && !ti.isNoneType() {
-            let mut newType: TypeIndex = TypeIndex { Index: NotTranslated };
+            let mut newType: TypeIndex = NotTranslated;
             if self.ctx.config.debugGHashes {
-                let mut idToType: auto = zeroed();
-                if  {
-                    newType = ;
+                let mut idToType: iterator = self.tMerger.funcIdToType.find(*ti);
+                if idToType != self.tMerger.funcIdToType.end() {
+                    newType = operator(idToType).second;
                 }
             } else {
-                if  {
-                    let mut funcIdData: CVType = zeroed();
-                    if funcIdData()() >= 8 && (funcIdData()() == LF_FUNC_ID || () == LF_MFUNC_ID) {
-                        newType = *operator&(()[8]) as *TypeIndex;
+                if self.tMerger.getIDTable().contains(*ti) {
+                    let mut funcIdData: CVType = self.tMerger.getIDTable().getType(*ti);
+                    if funcIdData.len >= 8 && (funcIdData.kind() == LF_FUNC_ID || funcIdData.kind() == LF_MFUNC_ID) {
+                        newType = *&mut funcIdData.ptr[8] as *TypeIndex;
                     }
                 }
             }
-            if newType == TypeIndex { Index: NotTranslated } {
-                Warn(self.ctx) << formatv("procedure symbol record for `{0}` in {1} refers to PDB item index {2:X} which is not a valid function ID record", getSymbolName(recordData()), source.file.getName(), ti.getIndex());
+            if newType == NotTranslated {
+                Warn(self.ctx) << formatv("procedure symbol record for `{0}` in {1} refers to PDB item index {2:X} which is not a valid function ID record", getSymbolName(recordData), source.file.getName(), ti.getIndex());
             }
             *ti = newType;
         }
@@ -126,25 +134,25 @@ fn getSymbolScopeFields(sym: *mut void) -> *mut ScopeRecord {
     return sym as *mut u8 +  as *mut ScopeRecord;
 }
 
-fn scopeStackOpen(stack: *mut SmallVectorImpl<uint32_t>, storage: *mut i32) {
-    stack()();
+fn scopeStackOpen(stack: *mut SmallVectorImpl<uint32_t>, storage: *mut []u8) {
+    stack.push(storage.len);
 }
 
-fn scopeStackClose(ctx: *mut COFFLinkerContext, stack: *mut SmallVectorImpl<uint32_t>, storage: *mut i32, storageBaseOffset: u32, file: *mut ObjFile) {
-    if stack()() {
-        Warn(ctx) << "symbol scopes are not balanced in ";
+fn scopeStackClose(ctx: *mut COFFLinkerContext, stack: *mut SmallVectorImpl<uint32_t>, storage: *mut []u8, storageBaseOffset: u32, file: *mut ObjFile) {
+    if stack.is_empty() {
+        Warn(ctx) << "symbol scopes are not balanced in " << file.getName();
         return;
     }
-    let mut offOpen: u32 = stack()();
-    let mut offEnd: u32 = storageBaseOffset + ();
-    let mut offParent: u32 = if stack()() { 0 } else { (stack()() + storageBaseOffset) };
-    let mut scopeRec: *mut ScopeRecord = getSymbolScopeFields(operator&((storage())[offOpen]));
+    let mut offOpen: u32 = stack.pop_back_val();
+    let mut offEnd: u32 = storageBaseOffset + storage.len;
+    let mut offParent: u32 = if stack.is_empty() { 0 } else { (stack.back() + storageBaseOffset) };
+    let mut scopeRec: *mut ScopeRecord = getSymbolScopeFields(&mut (storage)[offOpen]);
     scopeRec.ptrParent = offParent;
     scopeRec.ptrEnd = offEnd;
 }
 
 fn symbolGoesInModuleStream(sym: *CVSymbol, symbolScopeDepth: u32) -> bool {
-    match sym()() {
+    match sym.kind() {
         S_GDATA32 => {
             S_GTHREAD32;
         },
@@ -158,7 +166,7 @@ fn symbolGoesInModuleStream(sym: *CVSymbol, symbolScopeDepth: u32) -> bool {
 }
 
 fn symbolGoesInGlobalsStream(sym: *CVSymbol, symbolScopeDepth: u32) -> bool {
-    match sym()() {
+    match sym.kind() {
         S_GDATA32 => {
             S_GTHREAD32;
         },
@@ -171,9 +179,9 @@ fn symbolGoesInGlobalsStream(sym: *CVSymbol, symbolScopeDepth: u32) -> bool {
     }
 }
 
-fn addGlobalSymbol(builder: *mut GSIStreamBuilder, modIndex: u16, symOffset: u32, symStorage: *mut i32) {
-    let mut sym: CVSymbol = zeroed();
-    match sym()() {
+fn addGlobalSymbol(builder: *mut GSIStreamBuilder, modIndex: u16, symOffset: u32, symStorage: *mut []u8) {
+    let mut sym: CVSymbol = symStorage;
+    match sym.kind() {
         S_CONSTANT => {
             S_UDT;
         },
@@ -181,7 +189,7 @@ fn addGlobalSymbol(builder: *mut GSIStreamBuilder, modIndex: u16, symOffset: u32
             S_LPROC32;
         },
         _ => {
-            llvm_unreachable_internal("Invalid symbol kind!", "lld\\COFF\\PDB.cpp", 513);
+            llvm_unreachable_internal("Invalid symbol kind!", "P:/Goraw/llvm-project/lld/COFF/PDB.cpp", 513);
         },
     }
 }
@@ -202,33 +210,33 @@ fn replaceWithSkipRecord(recordBytes: MutableArrayRef<uint8_t>) {
     prefix.RecordLen = recordBytes.len - 2;
 }
 
-fn PDBLinker::writeSymbolRecord(self, debugChunk: *mut SectionChunk, sectionContents: ArrayRef<uint8_t>, sym: CVSymbol, alignedSize: u64, nextRelocIndex: *mut u32, storage: *mut i32) {
-    storage()(() + alignedSize);
-    let mut recordBytes: auto = .take_back(alignedSize);
-    debugChunk.writeAndRelocateSubsection(sectionContents, nextRelocIndex);
-    fixRecordAlignment();
+fn PDBLinker::writeSymbolRecord(self, debugChunk: *mut SectionChunk, sectionContents: ArrayRef<uint8_t>, sym: CVSymbol, alignedSize: u64, nextRelocIndex: *mut u32, storage: *mut []u8) {
+    storage.resize(storage.len + alignedSize);
+    let mut recordBytes: MutableArrayRef<unsigned char> = storage.take_back(alignedSize);
+    debugChunk.writeAndRelocateSubsection(sectionContents, sym.ptr, nextRelocIndex, recordBytes.ptr);
+    fixRecordAlignment(recordBytes, sym.len);
     let mut source: *mut TpiSource = debugChunk.file.debugTypesObj;
-    if operator!(source.remapTypesInSymbolRecord()) {
-        Log(self.ctx) << "ignoring unknown symbol record with kind 0x" << utohexstr();
-        replaceWithSkipRecord();
+    if !source.remapTypesInSymbolRecord(recordBytes) {
+        Log(self.ctx) << "ignoring unknown symbol record with kind 0x" << utohexstr(sym.kind(), false, 0);
+        replaceWithSkipRecord(recordBytes);
     }
-    self.translateIdSymbols(source);
+    self.translateIdSymbols(recordBytes, source);
 }
 
-fn PDBLinker::analyzeSymbolSubsection(self, debugChunk: *mut SectionChunk, moduleSymOffset: *mut u32, nextRelocIndex: *mut u32, stringTableFixups: *mut i32, symData: BinaryStreamRef) {
+fn PDBLinker::analyzeSymbolSubsection(self, debugChunk: *mut SectionChunk, moduleSymOffset: *mut u32, nextRelocIndex: *mut u32, stringTableFixups: *mut []StringTableFixup, symData: BinaryStreamRef) {
     let mut file: *mut ObjFile = debugChunk.file;
     let mut moduleSymStart: u32 = moduleSymOffset;
     let mut scopeLevel: u32 = 0;
-    let mut storage: i32 = 0;
+    let mut storage: []u8 = []u8 {};
     let mut sectionContents: ArrayRef<uint8_t> = debugChunk.getContents();
     let mut symsBuffer: ArrayRef<uint8_t> = ArrayRef<uint8_t> {};
     cantFail(symData.readBytes(0, symData.getLength(), symsBuffer), null);
-    if symsBuffer.len == 0 {
-        Warn(self.ctx) << "empty symbols subsection in ";
+    if symsBuffer.is_empty() {
+        Warn(self.ctx) << "empty symbols subsection in " << file.getName();
     }
-    let mut ec: Error = forEachCodeViewRecord(symsBuffer, Closure_1 { scopeLevel: &mut scopeLevel, cap_1: self, debugChunk: &mut debugChunk, sectionContents: &mut sectionContents, nextRelocIndex: &mut nextRelocIndex, file: &mut file, moduleSymOffset: &mut moduleSymOffset });
+    let mut ec: Error = forEachCodeViewRecord(symsBuffer, Closure_2 { scopeLevel: &mut scopeLevel, storage: &mut storage, cap_2: self, debugChunk: &mut debugChunk, sectionContents: &mut sectionContents, nextRelocIndex: &mut nextRelocIndex, file: &mut file, moduleSymOffset: &mut moduleSymOffset, stringTableFixups: &mut stringTableFixups });
     if ec {
-        Warn(self.ctx) << "corrupt symbol records in ";
+        Warn(self.ctx) << "corrupt symbol records in " << file.getName();
         moduleSymOffset = moduleSymStart;
         consumeError(move(ec));
     }
@@ -236,18 +244,39 @@ fn PDBLinker::analyzeSymbolSubsection(self, debugChunk: *mut SectionChunk, modul
 
 fn PDBLinker::writeAllModuleSymbolRecords(self, file: *mut ObjFile, writer: *mut BinaryStreamWriter) -> Error {
     let mut exitOnErr: ExitOnError = ExitOnError { Banner: "", GetExitCode: 1 };
-    let mut storage: i32 = 0;
-    let mut scopes: SmallVector<uint32_t, 4> = zeroed();
+    let mut storage: []u8 = []u8 {};
+    let mut scopes: SmallVector<uint32_t, 4> = SmallVector<uint32_t, 4> {};
     for debugChunk in file.getDebugChunks() {
         if !debugChunk.live || debugChunk.getSize() == 0 || debugChunk.getSectionName() != ".debug$S" {
             continue;
         }
         let mut sectionContents: ArrayRef<uint8_t> = debugChunk.getContents();
-        let mut contents: ArrayRef<uint8_t> = consumeDebugMagic(ArrayRef<uint8_t> { sectionContents }, ".debug$S");
-        let mut subsections: i32 = 0;
-        let mut reader: BinaryStreamReader = BinaryStreamReader { Stream: ArrayRef<uint8_t> { contents }, Offset: little };
-        exitOnErr(reader(contents.len));
+        let mut contents: ArrayRef<uint8_t> = consumeDebugMagic(sectionContents, ".debug$S");
+        let mut subsections: DebugSubsectionArray = DebugSubsectionArray {};
+        let mut reader: BinaryStreamReader = BinaryStreamReader { Stream: contents, Offset: little };
+        exitOnErr.call(reader.readArray(subsections, contents.len, 0));
         let mut nextRelocIndex: u32 = 0;
+        for ss in subsections {
+            if ss.kind() != Symbols {
+                continue;
+            }
+            let mut moduleSymStart: u32 = writer.getOffset();
+            scopes.clear();
+            storage.clear();
+            let mut symsBuffer: ArrayRef<uint8_t> = ArrayRef<uint8_t> {};
+            let mut sr: BinaryStreamRef = ss.getRecordData();
+            cantFail(sr.readBytes(0, sr.getLength(), symsBuffer), null);
+            let mut ec: Error = forEachCodeViewRecord(symsBuffer, Closure_3 { scopes: &mut scopes, storage: &mut storage, cap_2: self, moduleSymStart: &mut moduleSymStart, file: &mut file, debugChunk: &mut debugChunk, sectionContents: &mut sectionContents, nextRelocIndex: &mut nextRelocIndex });
+            if ec {
+                consumeError(move(ec));
+                storage.clear();
+            }
+            if writer.writeBytes(storage) {
+                e;
+            } else {
+                return e;
+            }
+        }
     }
     return success();
 }
@@ -261,18 +290,17 @@ fn createSectionContrib(ctx: *mut COFFLinkerContext, c: *Chunk, modi: u32) -> Se
     let mut sc: SectionContrib = SectionContrib {};
     memset(&mut sc, 0, (sc));
     sc.ISect = if os { os.sectionIndex } else { kInvalidStreamIndex };
-    sc() = if c && os { c.getRVA() - os.getRVA() } else { 0 };
-    sc() = if c { c.getSize() } else { -1 };
-    if  {
-        sc.Characteristics = ;
-        sc.Imod = ();
-        let mut contents: ArrayRef<uint8_t> = ();
-        let mut crc: JamCRC = JamCRC { CRC: 0 };
-        crc.update(ArrayRef<uint8_t> { contents });
-        sc.DataCrc = crc.getCRC();
+    sc.Off = if c && os { c.getRVA() - os.getRVA() } else { 0 };
+    sc.Size = if c { c.getSize() } else { -1 };
+    if dyn_cast_or_null(c) {
+        secChunk;
     } else {
-        sc.Characteristics = if os { os.header.Characteristics.operator unsigned int() } else { 0 };
-        sc.Imod = modi;
+        sc.Characteristics = secChunk.header.Characteristics;
+        sc.Imod = secChunk.file.moduleDBI.getModuleIndex();
+        let mut contents: ArrayRef<uint8_t> = secChunk.getContents();
+        let mut crc: JamCRC = 0;
+        crc.update(contents);
+        sc.DataCrc = crc.getCRC();
     }
     sc.RelocCrc = 0;
     return sc;
@@ -290,13 +318,52 @@ fn translateStringTableIndex(ctx: *mut COFFLinkerContext, objIndex: u32, objStrT
 
 fn DebugSHandler::handleDebugS(self, debugChunk: *mut SectionChunk) {
     let mut contents: ArrayRef<uint8_t> = debugChunk.getContents();
-    contents = consumeDebugMagic(ArrayRef<uint8_t> { contents }, ".debug$S");
-    let mut subsections: i32 = 0;
-    let mut reader: BinaryStreamReader = BinaryStreamReader { Stream: ArrayRef<uint8_t> { contents }, Offset: little };
+    contents = consumeDebugMagic(contents, ".debug$S");
+    let mut subsections: DebugSubsectionArray = DebugSubsectionArray {};
+    let mut reader: BinaryStreamReader = BinaryStreamReader { Stream: contents, Offset: little };
     let mut exitOnErr: ExitOnError = ExitOnError { Banner: "", GetExitCode: 1 };
-    exitOnErr(reader(contents.len));
+    exitOnErr.call(reader.readArray(subsections, contents.len, 0));
     debugChunk.sortRelocations();
     self.nextRelocIndex = 0;
+    for ss in subsections {
+        if ss.kind() & SubsectionIgnoreFlag {
+            continue;
+        }
+        match ss.kind() {
+            StringTable => {
+                assert!(!self.cvStrTab.valid(), "Encountered multiple string table subsections!");
+                exitOnErr.call(self.cvStrTab.initialize(ss.getRecordData()));
+                break;
+            },
+            FileChecksums => {
+                assert!(!self.checksums.valid(), "Encountered multiple checksum subsections!");
+            },
+            Lines => {
+                InlineeLines;
+            },
+            FrameData => {
+                self.addFrameDataSubsection(debugChunk, ss);
+            },
+            Symbols => {
+                self.linker.analyzeSymbolSubsection(debugChunk, self.moduleStreamSize, self.nextRelocIndex, self.stringTableFixups, ss.getRecordData());
+            },
+            CrossScopeImports => {
+                CrossScopeExports;
+            },
+            ILLines => {
+                FuncMDTokenMap;
+            },
+            CoffSymbolRVA => {
+                break;
+            },
+            XfgHashType => {
+                XfgHashVirtual;
+            },
+            _ => {
+                Warn(self.ctx) << "ignoring unknown debug$S subsection kind 0x" << utohexstr(ss.kind(), false, 0) << " in file " << toString(&mut self.file);
+            },
+        }
+    }
 }
 
 fn DebugSHandler::advanceRelocIndex(self, sc: *mut SectionChunk, subsec: ArrayRef<uint8_t>) {
@@ -330,61 +397,96 @@ fn UnrelocatedDebugSubsection::kind(self: *UnrelocatedDebugSubsection) -> DebugS
 }
 
 fn UnrelocatedDebugSubsection::commit(self: *UnrelocatedDebugSubsection, writer: *mut BinaryStreamWriter) -> Error {
-    let mut relocatedBytes: i32 = self.subsec.len;
+    let mut relocatedBytes: []u8 = []u8 { self.subsec.len, allocator<unsigned char> {} };
     let mut tmpRelocIndex: u32 = self.relocIndex;
-    self.debugChunk.writeAndRelocateSubsection(self.debugChunk.getContents(), self.subsec, tmpRelocIndex);
+    self.debugChunk.writeAndRelocateSubsection(self.debugChunk.getContents(), self.subsec, tmpRelocIndex, relocatedBytes.ptr);
     if self.kind() == InlineeLines && self.debugChunk.file.debugTypesObj {
         let mut source: *mut TpiSource = self.debugChunk.file.debugTypesObj;
         let mut inlineeLines: DebugInlineeLinesSubsectionRef = DebugInlineeLinesSubsectionRef {};
-        let mut storageReader: BinaryStreamReader = relocatedBytes();
+        let mut storageReader: BinaryStreamReader = BinaryStreamReader { Stream: relocatedBytes, Offset: little };
         let mut exitOnErr: ExitOnError = ExitOnError { Banner: "", GetExitCode: 1 };
         exitOnErr.call(inlineeLines.initialize(storageReader));
+        for line in inlineeLines {
+            let mut inlinee: *mut TypeIndex = *&mut line.Header.Inlinee;
+            if !source.remapTypeIndex(inlinee, IndexRef) {
+                log("bad inlinee line record in " + self.debugChunk.file.getName() + " with bad inlinee index 0x" + utohexstr(inlinee.getIndex(), false, 0));
+            }
+        }
     }
-    return writer.writeBytes();
+    return writer.writeBytes(relocatedBytes);
 }
 
 fn DebugSHandler::addUnrelocatedSubsection(self, debugChunk: *mut SectionChunk, ss: *DebugSubsectionRecord) {
     let mut subsec: ArrayRef<uint8_t> = ArrayRef<uint8_t> {};
     let mut sr: BinaryStreamRef = ss.getRecordData();
     cantFail(sr.readBytes(0, sr.getLength(), subsec), null);
-    self.advanceRelocIndex(debugChunk, ArrayRef<uint8_t> { subsec });
-    self.file.moduleDBI(make_shared(ss.kind(), debugChunk, subsec, self.nextRelocIndex));
+    self.advanceRelocIndex(debugChunk, subsec);
+    self.file.moduleDBI.addDebugSubsection(make_shared(ss.kind(), debugChunk, subsec, self.nextRelocIndex));
 }
 
 fn DebugSHandler::addFrameDataSubsection(self, debugChunk: *mut SectionChunk, ss: *DebugSubsectionRecord) {
     let mut subsec: ArrayRef<uint8_t> = ArrayRef<uint8_t> {};
     let mut sr: BinaryStreamRef = ss.getRecordData();
     cantFail(sr.readBytes(0, sr.getLength(), subsec), null);
-    self.advanceRelocIndex(debugChunk, ArrayRef<uint8_t> { subsec });
+    self.advanceRelocIndex(debugChunk, subsec);
+    self.frameDataSubsecs.push(UnrelocatedFpoData { debugChunk: debugChunk, subsecData: subsec, relocIndex: self.nextRelocIndex });
 }
 
 fn getFileName(strings: *DebugStringTableSubsectionRef, checksums: *DebugChecksumsSubsectionRef, fileID: u32) -> Expected<StringRef> {
-    let mut iter: auto = checksums()()(fileID);
-    if iter() == checksums()()() {
-        return Expected<StringRef> { make_error(no_records) };
+    let mut iter: Iterator = checksums.getArray().at(fileID);
+    if iter == checksums.getArray().end() {
+        return make_error(no_records);
     }
-    let mut offset: u32 = ;
+    let mut offset: u32 = operator(operator(iter)).FileNameOffset;
     return strings.getString(offset);
 }
 
 fn DebugSHandler::finish(self) {
-    let mut dbiBuilder: *mut DbiStreamBuilder = self.linker();
+    let mut dbiBuilder: *mut DbiStreamBuilder = self.linker.builder.getDbiBuilder();
     if self.moduleStreamSize > kSymbolStreamMagicSize {
         self.file.moduleDBI.addUnmergedSymbols(&mut self.file, self.moduleStreamSize - kSymbolStreamMagicSize);
     }
     if !self.cvStrTab.valid() {
-        if  {
+        if self.checksums.valid() {
             fatal(".debug$S sections with a checksums subsection must also contain a string table subsection");
         }
-        if  {
+        if !self.stringTableFixups.is_empty() {
             Warn(self.ctx) << "No StringTable subsection was encountered, but there are string table references";
         }
         return;
     }
     let mut exitOnErr: ExitOnError = ExitOnError { Banner: "", GetExitCode: 1 };
-    self.file.moduleDBI(move());
-    let mut newChecksums: auto = make_unique(self.linker);
-    self.file.moduleDBI(move());
+    for subsec in self.frameDataSubsecs {
+        let mut debugChunk: *mut SectionChunk = subsec.debugChunk;
+        let mut subsecData: ArrayRef<uint8_t> = subsec.subsecData;
+        let mut relocIndex: u32 = subsec.relocIndex;
+        let mut unrelocatedRvaStart: ArrayRef<unsigned char> = subsecData.take_front(sizeof);
+        let mut relocatedRvaStart: [4]u8 = zeroed();
+        debugChunk.writeAndRelocateSubsection(debugChunk.getContents(), unrelocatedRvaStart, relocIndex, &mut relocatedRvaStart[0]);
+        let mut rvaStart: ulittle32_t = ulittle32_t {};
+        memcpy(&mut rvaStart, &mut relocatedRvaStart[0], sizeof);
+        let mut fds: DebugFrameDataSubsectionRef = DebugFrameDataSubsectionRef {};
+        let mut reader: BinaryStreamReader = BinaryStreamReader { Stream: subsecData, Offset: little };
+        exitOnErr.call(fds.initialize(reader));
+        for fd in fds {
+            operator(fd.RvaStart, rvaStart.operator unsigned int());
+            fd.FrameFunc = translateStringTableIndex(self.ctx, fd.FrameFunc.operator unsigned int(), self.cvStrTab, self.linker.pdbStrTab);
+            dbiBuilder.addNewFpoData(fd);
+        }
+    }
+    for ref in self.stringTableFixups {
+        ref.StrTabOffset = translateStringTableIndex(self.ctx, ref.StrTabOffset, self.cvStrTab, self.linker.pdbStrTab);
+    }
+    self.file.moduleDBI.setStringTableFixups(move(self.stringTableFixups));
+    let mut newChecksums: DebugChecksumsSubsection> = make_unique(self.linker.pdbStrTab);
+    for fc in self.checksums {
+        let mut filename: str = exitOnErr.call(self.cvStrTab.getString(fc.FileNameOffset));
+        self.linker.pdbMakeAbsolute(filename);
+        exitOnErr.call(dbiBuilder.addModuleSourceFile(*self.file.moduleDBI, filename.operator StringRef()));
+        operator(newChecksums).addChecksum(filename.operator StringRef(), fc.Kind, fc.Checksum);
+    }
+    assert!(self.checksums.getArray().getUnderlyingStream().getLength() == operator(newChecksums).calculateSerializedSize(), "file checksum table must have same layout");
+    self.file.moduleDBI.addDebugSubsection(move(newChecksums));
 }
 
 fn warnUnusable(f: *mut InputFile, e: Error, shouldWarn: bool) {
@@ -400,20 +502,20 @@ fn warnUnusable(f: *mut InputFile, e: Error, shouldWarn: bool) {
 }
 
 fn relocateDebugChunk(debugChunk: *mut SectionChunk) -> ArrayRef<uint8_t> {
-    let mut buffer: *mut u8 = bAlloc();
+    let mut buffer: *mut u8 = bAlloc().Allocate(debugChunk.getSize());
     assert!(debugChunk.getOutputSectionIdx() == 0, "debug sections should not be in output sections");
     debugChunk.writeTo(buffer);
-    return buffer(debugChunk.getSize());
+    return ArrayRef<unsigned char> { buffer, debugChunk.getSize() };
 }
 
 fn PDBLinker::addDebugSymbols(self, source: *mut TpiSource) {
     if !source.file {
         return;
     }
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Merge symbols" };
-    let mut t: ScopedTimer = self.ctx;
+    let mut timeScope: TimeTraceScope = "Merge symbols";
+    let mut t: ScopedTimer = self.ctx.symbolMergingTimer;
     let mut exitOnErr: ExitOnError = ExitOnError { Banner: "", GetExitCode: 1 };
-    let mut dbiBuilder: *mut DbiStreamBuilder = null;
+    let mut dbiBuilder: *mut DbiStreamBuilder = self.builder.getDbiBuilder();
     let mut dsh: DebugSHandler = DebugSHandler { self.ctx, *self, *source.file };
     for debugChunk in source.file.getDebugChunks() {
         if !debugChunk.live || debugChunk.getSize() == 0 {
@@ -428,34 +530,37 @@ fn PDBLinker::addDebugSymbols(self, source: *mut TpiSource) {
             dsh.handleDebugS(debugChunk);
         } else if isDebugF {
             let mut relocatedDebugContents: ArrayRef<uint8_t> = relocateDebugChunk(*debugChunk);
-            let mut fpoRecords: FpoData> = zeroed();
-            let mut reader: BinaryStreamReader = BinaryStreamReader { Stream: ArrayRef<uint8_t> { relocatedDebugContents }, Offset: little };
+            let mut fpoRecords: FpoData> = FpoData> {};
+            let mut reader: BinaryStreamReader = BinaryStreamReader { Stream: relocatedDebugContents, Offset: little };
             let mut count: u32 = relocatedDebugContents.len / ;
-            exitOnErr(reader(count));
+            exitOnErr.call(reader.readArray(fpoRecords, count));
+            for fd in fpoRecords {
+                dbiBuilder.addOldFpoData(fd);
+            }
         }
     }
     dsh.finish();
 }
 
 fn PDBLinker::createModuleDBI(self, file: *mut ObjFile) {
-    let mut dbiBuilder: *mut DbiStreamBuilder = null;
+    let mut dbiBuilder: *mut DbiStreamBuilder = self.builder.getDbiBuilder();
     let mut objName: str = "";
     let mut exitOnErr: ExitOnError = ExitOnError { Banner: "", GetExitCode: 1 };
     let mut inArchive: bool = !file.parentName.is_empty();
     objName = if inArchive { file.parentName } else { file.getName() };
     self.pdbMakeAbsolute(objName);
     let mut modName: str = if inArchive { file.getName() } else { objName };
-    file.moduleDBI = operator&(exitOnErr(dbiBuilder.addModuleInfo));
+    file.moduleDBI = &mut exitOnErr.call(dbiBuilder.addModuleInfo(modName));
     file.moduleDBI.setObjFileName(objName.operator StringRef());
     file.moduleDBI.setMergeSymbolsCallback(self, &mut commitSymbolsForObject);
     let mut chunks: ArrayRef<Chunk *> = file.getChunks();
     let mut modi: u32 = file.moduleDBI.getModuleIndex();
     for c in chunks {
-        let mut secChunk: *mut auto = dyn_cast(c);
-        if operator!() || operator!() {
+        let mut secChunk: *mut SectionChunk = dyn_cast(c);
+        if !secChunk || !secChunk.live {
             continue;
         }
-        let mut sc: SectionContrib = createSectionContrib(self.ctx, modi);
+        let mut sc: SectionContrib = createSectionContrib(self.ctx, secChunk, modi);
         file.moduleDBI.setFirstSectionContrib(sc);
         break;
     }
@@ -463,9 +568,9 @@ fn PDBLinker::createModuleDBI(self, file: *mut ObjFile) {
 
 fn PDBLinker::addDebug(self, source: *mut TpiSource) {
     if !self.ctx.config.debugGHashes {
-        let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Merge types (Non-GHASH)" };
-        let mut t: ScopedTimer = self.ctx;
-        if source.mergeDebugT {
+        let mut timeScope: TimeTraceScope = "Merge types (Non-GHASH)";
+        let mut t: ScopedTimer = self.ctx.typeMergingTimer;
+        if source.mergeDebugT(&mut self.tMerger) {
             e;
         } else {
             warnUnusable(source.file, move(e), self.ctx.config.warnDebugInfoUnusable);
@@ -485,12 +590,12 @@ fn createPublic(ctx: *mut COFFLinkerContext, def: *mut Defined) -> BulkPublic {
     pub.Name = def.getName().ptr;
     pub.NameLen = def.getName().len;
     let mut flags: PublicSymFlags = None;
-    if  {
-        if d()()() {
+    if dyn_cast(def) {
+        d;
+    } else {
+        if d.getCOFFSymbol().isFunctionDefinition() {
             flags = Function;
         }
-    } else if isa(def) {
-        flags = Function;
     }
     pub.setFlags(flags);
     let mut os: *mut OutputSection = ctx.getOutputSection(def.getChunk());
@@ -504,39 +609,58 @@ fn createPublic(ctx: *mut COFFLinkerContext, def: *mut Defined) -> BulkPublic {
 
 fn PDBLinker::addObjectsToPDB(self) {
     {
-        let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Add objects to PDB" };
-        let mut t1: ScopedTimer = self.ctx;
-        {
-            let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Merge debug info (dependencies)" };
+        let mut timeScope: TimeTraceScope = "Add objects to PDB";
+        let mut t1: ScopedTimer = self.ctx.addObjectsTimer;
+        for obj in self.ctx.objFileInstances {
+            self.createModuleDBI(obj);
+        }
+        self.tMerger.sortDependencies();
+        if self.ctx.config.debugGHashes {
+            self.tMerger.mergeTypesWithGHash();
         }
         {
-            let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Merge debug info (objects)" };
+            let mut timeScope: TimeTraceScope = "Merge debug info (dependencies)";
+            for source in self.tMerger.dependencySources {
+                self.addDebug(source);
+            }
         }
+        {
+            let mut timeScope: TimeTraceScope = "Merge debug info (objects)";
+            for source in self.tMerger.objectSources {
+                self.addDebug(source);
+            }
+        }
+        self.builder.getStringTableBuilder().setStrings(self.pdbStrTab);
     }
     {
-        let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "TPI/IPI stream layout" };
-        let mut t2: ScopedTimer = self.ctx;
+        let mut timeScope: TimeTraceScope = "TPI/IPI stream layout";
+        let mut t2: ScopedTimer = self.ctx.tpiStreamLayoutTimer;
         if self.ctx.config.debugGHashes {
-            addGHashTypeInfo(self.ctx);
+            addGHashTypeInfo(self.ctx, self.builder);
         } else {
-            addTypeInfo();
-            addTypeInfo();
+            addTypeInfo(self.builder.getTpiBuilder(), self.tMerger.getTypeTable());
+            addTypeInfo(self.builder.getIpiBuilder(), self.tMerger.getIDTable());
         }
     }
-    if self.ctx() {}
+    if self.ctx.pdbStats.has_value() {
+        for source in self.ctx.tpiSourceList {
+            operator(self.ctx.pdbStats).nbTypeRecords += source.nbTypeRecords;
+            operator(self.ctx.pdbStats).nbTypeRecordsBytes += source.nbTypeRecordsBytes;
+        }
+    }
 }
 
 fn PDBLinker::addPublicsToPDB(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Publics layout" };
-    let mut t3: ScopedTimer = self.ctx;
-    let mut gsiBuilder: *mut auto = null;
-    let mut publics: i32 = 0;
-    self.ctx.symtab;
-    if self.ctx() {
-        self.ctx = ();
+    let mut timeScope: TimeTraceScope = "Publics layout";
+    let mut t3: ScopedTimer = self.ctx.publicsLayoutTimer;
+    let mut gsiBuilder: *mut GSIStreamBuilder = self.builder.getGsiBuilder();
+    let mut publics: []BulkPublic = []BulkPublic {};
+    self.ctx.symtab.forEachSymbol(Closure_4 { publics: &mut publics, cap_1: self });
+    if self.ctx.pdbStats.has_value() {
+        operator(self.ctx.pdbStats).publicSymbols = publics.len;
     }
-    if operator!() {
-        gsiBuilder()(move());
+    if !publics.is_empty() {
+        gsiBuilder.addPublicSymbols(move(publics));
     }
 }
 
@@ -544,23 +668,50 @@ fn PDBLinker::collectStats(self) {
     if !self.ctx.config.showSummary {
         return;
     }
+    operator(self.ctx.pdbStats).nbTPIrecords = self.builder.getTpiBuilder().getRecordCount();
+    operator(self.ctx.pdbStats).nbIPIrecords = self.builder.getIpiBuilder().getRecordCount();
+    operator(self.ctx.pdbStats).strTabSize = self.pdbStrTab.len;
     let mut buffer: str = "";
-    let mut stream: raw_svector_ostream = raw_svector_ostream { buffer };
-    let mut printLargeInputTypeRecs: Closure_2 = Closure_2 { stream: &mut stream, cap_1: self };
+    let mut stream: raw_svector_ostream = buffer;
+    let mut printLargeInputTypeRecs: Closure_5 = Closure_5 { stream: &mut stream, cap_1: self };
     if !self.ctx.config.debugGHashes {
-        printLargeInputTypeRecs("TPI");
-        printLargeInputTypeRecs("IPI");
-        self.ctx = buffer;
+        printLargeInputTypeRecs.call("TPI", self.tMerger.tpiCounts, self.tMerger.getTypeTable());
+        printLargeInputTypeRecs.call("IPI", self.tMerger.ipiCounts, self.tMerger.getIDTable());
+        operator(self.ctx.pdbStats).largeInputTypeRecs = buffer;
     }
 }
 
 fn PDBLinker::addNatvisFiles(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Natvis files" };
+    let mut timeScope: TimeTraceScope = "Natvis files";
+    for file in self.ctx.config.natvisFiles {
+        let mut dataOrErr: unique_ptr<MemoryBuffer>> = getFile(file, false, true, false, nullopt);
+        if !dataOrErr {
+            Warn(self.ctx) << "Cannot open input file: " << file;
+            continue;
+        }
+        let mut data: unique_ptr<MemoryBuffer> = move(operator(dataOrErr));
+        if self.ctx.driver.tar {
+            operator(self.ctx.driver.tar).append(relativeToRoot(operator(data).getBufferIdentifier()), operator(data).getBuffer());
+        }
+        self.builder.addInjectedSource(file, move(data));
+    }
 }
 
 fn PDBLinker::addNamedStreams(self) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Named streams" };
+    let mut timeScope: TimeTraceScope = "Named streams";
     let mut exitOnErr: ExitOnError = ExitOnError { Banner: "", GetExitCode: 1 };
+    for streamFile in self.ctx.config.namedStreams {
+        let mut stream: str = streamFile.getKey();
+        let mut file: str = streamFile.getValue();
+        let mut dataOrErr: unique_ptr<MemoryBuffer>> = getFile(file, false, true, false, nullopt);
+        if !dataOrErr {
+            Warn(self.ctx) << "Cannot open input file: " << file;
+            continue;
+        }
+        let mut data: unique_ptr<MemoryBuffer> = move(operator(dataOrErr));
+        exitOnErr.call(self.builder.addNamedStream(stream, operator(data).getBuffer()));
+        self.ctx.driver.takeBuffer(move(data));
+    }
 }
 
 fn toCodeViewMachine(machine: MachineTypes) -> CPUType {
@@ -587,7 +738,7 @@ fn toCodeViewMachine(machine: MachineTypes) -> CPUType {
             return Intel80386;
         },
         _ => {
-            llvm_unreachable_internal("Unsupported CPU Type", "lld\\COFF\\PDB.cpp", 1357);
+            llvm_unreachable_internal("Unsupported CPU Type", "P:/Goraw/llvm-project/lld/COFF/PDB.cpp", 1357);
         },
     }
 }
@@ -600,19 +751,19 @@ fn quote(args: ArrayRef<StringRef>) -> str {
             r.push(' ');
         }
         let mut hasWS: bool = a.contains(' ');
-        let mut hasQ: bool = a.contains('\"');
+        let mut hasQ: bool = a.contains('"');
         if hasWS || hasQ {
-            r.push('\"');
+            r.push('"');
         }
         if hasQ {
-            let mut s: SmallVector<StringRef, 4> = zeroed();
-            a.split(&mut s, '\"');
+            let mut s: SmallVector<StringRef, 4> = SmallVector<StringRef, 4> {};
+            a.split(s, '"', -1, true);
             r.append(join(s, "\"\""));
         } else {
-            r.append(a);
+            r.append(a[0..allocator<char> {}]);
         }
         if hasWS || hasQ {
-            r.push('\"');
+            r.push('"');
         }
     }
     return r;
@@ -634,9 +785,9 @@ fn fillLinkerVerRecord(cs: *mut Compile3Sym, machine: MachineTypes) {
 }
 
 fn PDBLinker::addCommonLinkerModuleSymbols(self, path: str, mod: *mut DbiModuleDescriptorBuilder) {
-    let mut ons: ObjNameSym = ObjNameSym {};
-    let mut ebs: EnvBlockSym = EnvBlockSym {};
-    let mut cs: Compile3Sym = Compile3Sym {};
+    let mut ons: ObjNameSym = ObjNameSym;
+    let mut ebs: EnvBlockSym = EnvBlockSym;
+    let mut cs: Compile3Sym = Compile3Sym;
     let mut machine: MachineTypes = self.ctx.config.machine;
     if isArm64EC(machine) {
         machine = ARM64X;
@@ -644,24 +795,24 @@ fn PDBLinker::addCommonLinkerModuleSymbols(self, path: str, mod: *mut DbiModuleD
     fillLinkerVerRecord(cs, machine);
     ons.Name = "* Linker *";
     ons.Signature = 0;
-    let mut args: ArrayRef<StringRef> = self.ctx.config.argv();
-    let mut argStr: str = quote(ArrayRef<StringRef> { args });
-    ebs()("cwd");
-    let mut cwd: str = zeroed();
-    if self.ctx.config.pdbSourcePath.len == 0 {
-        current_path();
+    let mut args: ArrayRef<StringRef> = self.ctx.config.argv.drop_front(1);
+    let mut argStr: str = quote(args);
+    ebs.Fields.push("cwd");
+    let mut cwd: str = "";
+    if self.ctx.config.pdbSourcePath.is_empty() {
+        current_path(cwd);
     } else {
-        cwd() = self.ctx.config.pdbSourcePath;
+        cwd = self.ctx.config.pdbSourcePath.operator StringRef();
     }
-    ebs()();
-    ebs()("exe");
-    let mut exe: str = zeroed();
-    self.pdbMakeAbsolute();
-    ebs()();
-    ebs()("pdb");
-    ebs()(path);
-    ebs()("cmd");
-    ebs()(argStr);
+    ebs.Fields.push(cwd.operator StringRef());
+    ebs.Fields.push("exe");
+    let mut exe: str = self.ctx.config.argv[0];
+    self.pdbMakeAbsolute(exe);
+    ebs.Fields.push(exe.operator StringRef());
+    ebs.Fields.push("pdb");
+    ebs.Fields.push(path);
+    ebs.Fields.push("cmd");
+    ebs.Fields.push(argStr);
     let mut bAlloc: *mut BumpPtrAllocator = bAlloc();
     mod.addSymbol(writeOneSymbol(ons, bAlloc, Pdb));
     mod.addSymbol(writeOneSymbol(cs, bAlloc, Pdb));
@@ -669,10 +820,10 @@ fn PDBLinker::addCommonLinkerModuleSymbols(self, path: str, mod: *mut DbiModuleD
 }
 
 fn addLinkerModuleCoffGroup(sec: *mut PartialSection, mod: *mut DbiModuleDescriptorBuilder, os: *mut OutputSection) {
-    (((operator!(operator!((operator!(sec()()))))) || (_wassert(L"!sec->chunks.empty()", L"lld\\COFF\\PDB.cpp", (1459) as u32) , 0)) as void);
-    let mut firstChunk: *Chunk = operator*(sec()());
-    let mut lastChunk: *Chunk = operator*(sec()());
-    let mut cgs: CoffGroupSym = CoffGroupSym {};
+    assert!(!sec.chunks.is_empty();
+    let mut firstChunk: *Chunk = operator(sec.chunks.begin());
+    let mut lastChunk: *Chunk = operator(sec.chunks.rbegin());
+    let mut cgs: CoffGroupSym = CoffGroupSym;
     cgs.Name = sec.name;
     cgs.Segment = os.sectionIndex;
     cgs.Offset = firstChunk.getRVA() - os.getRVA();
@@ -685,7 +836,7 @@ fn addLinkerModuleCoffGroup(sec: *mut PartialSection, mod: *mut DbiModuleDescrip
 }
 
 fn addLinkerModuleSectionSymbol(mod: *mut DbiModuleDescriptorBuilder, os: *mut OutputSection, isMinGW: bool) {
-    let mut sym: SectionSym = SectionSym {};
+    let mut sym: SectionSym = SectionSym;
     sym.Alignment = 12;
     sym.Characteristics = os.header.Characteristics.operator unsigned int();
     sym.Length = os.getVirtualSize();
@@ -696,35 +847,92 @@ fn addLinkerModuleSectionSymbol(mod: *mut DbiModuleDescriptorBuilder, os: *mut O
     if isMinGW {
         return;
     }
+    for sec in os.contribSections {
+        addLinkerModuleCoffGroup(sec, mod, os);
+    }
 }
 
 fn PDBLinker::addImportFilesToPDB(self) {
-    if self.ctx() {
+    if self.ctx.importFileInstances.is_empty() {
         return;
     }
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Import files" };
+    let mut timeScope: TimeTraceScope = "Import files";
     let mut exitOnErr: ExitOnError = ExitOnError { Banner: "", GetExitCode: 1 };
-    let mut dllToModuleDbi: i32 = 0;
+    let mut dllToModuleDbi: DbiModuleDescriptorBuilder *> = DbiModuleDescriptorBuilder *> {};
+    for file in self.ctx.importFileInstances {
+        if !file.live {
+            continue;
+        }
+        if !file.thunkSym {
+            continue;
+        }
+        if !file.thunkSym.isLive() {
+            continue;
+        }
+        let mut dll: str = file.dllName.lower();
+        let mut mod: *mut *mut DbiModuleDescriptorBuilder = dllToModuleDbi[dll];
+        if !mod {
+            let mut dbiBuilder: *mut DbiStreamBuilder = self.builder.getDbiBuilder();
+            let mut libPath: str = file.parentName;
+            self.pdbMakeAbsolute(libPath);
+            native(libPath, native);
+            let mut firstMod: *mut DbiModuleDescriptorBuilder = exitOnErr.call(dbiBuilder.addModuleInfo(file.dllName));
+            firstMod.setObjFileName(libPath.operator StringRef());
+            let mut sc: SectionContrib = createSectionContrib(self.ctx, null, kInvalidStreamIndex);
+            firstMod.setFirstSectionContrib(sc);
+            mod = &mut exitOnErr.call(dbiBuilder.addModuleInfo("Import:" + file.dllName));
+            mod.setObjFileName(libPath.operator StringRef());
+        }
+        let mut thunk: *mut DefinedImportThunk = cast(file.thunkSym);
+        let mut thunkChunk: *mut Chunk = thunk.getChunk();
+        let mut thunkOS: *mut OutputSection = self.ctx.getOutputSection(thunkChunk);
+        let mut ons: ObjNameSym = ObjNameSym;
+        let mut cs: Compile3Sym = Compile3Sym;
+        let mut ts: Thunk32Sym = Thunk32Sym;
+        let mut es: ScopeEndSym = ScopeEndSym;
+        ons.Name = file.dllName;
+        ons.Signature = 0;
+        fillLinkerVerRecord(cs, self.ctx.config.machine);
+        ts.Name = thunk.getName();
+        ts.Parent = 0;
+        ts.End = 0;
+        ts.Next = 0;
+        ts.Thunk = Standard;
+        ts.Length = thunkChunk.getSize();
+        ts.Segment = thunkOS.sectionIndex;
+        ts.Offset = thunkChunk.getRVA() - thunkOS.getRVA();
+        let mut bAlloc: *mut BumpPtrAllocator = bAlloc();
+        mod.addSymbol(writeOneSymbol(ons, bAlloc, Pdb));
+        mod.addSymbol(writeOneSymbol(cs, bAlloc, Pdb));
+        let mut newSym: CVSymbol = writeOneSymbol(ts, bAlloc, Pdb);
+        let mut thunkSymScope: *mut ScopeRecord = getSymbolScopeFields(newSym.ptr.ptr);
+        mod.addSymbol(newSym);
+        newSym = writeOneSymbol(es, bAlloc, Pdb);
+        thunkSymScope.ptrEnd = mod.getNextSymbolOffset();
+        mod.addSymbol(newSym);
+        let mut sc: SectionContrib = createSectionContrib(self.ctx, thunk.getChunk(), mod.getModuleIndex());
+        mod.setFirstSectionContrib(sc);
+    }
 }
 
 fn createPDB(ctx: *mut COFFLinkerContext, sectionTable: ArrayRef<uint8_t>, buildId: *mut DebugInfo) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "PDB file" };
-    let mut t1: ScopedTimer = ctx();
+    let mut timeScope: TimeTraceScope = "PDB file";
+    let mut t1: ScopedTimer = ctx.totalPdbLinkTimer;
     {
-        let mut pdb: PDBLinker = PDBLinker { ctx };
+        let mut pdb: PDBLinker = ctx;
         if ctx.config.showSummary {
-            ctx()();
+            ctx.pdbStats.emplace();
         }
         pdb.initialize(buildId);
         pdb.addObjectsToPDB();
         pdb.addImportFilesToPDB();
-        pdb.addSections(ArrayRef<uint8_t> { sectionTable });
+        pdb.addSections(sectionTable);
         pdb.addNatvisFiles();
         pdb.addNamedStreams();
         pdb.addPublicsToPDB();
         {
-            let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Commit PDB file to disk" };
-            let mut t2: ScopedTimer = ctx();
+            let mut timeScope: TimeTraceScope = "Commit PDB file to disk";
+            let mut t2: ScopedTimer = ctx.diskCommitTimer;
             let mut guid: GUID = GUID {};
             pdb.commit(&mut guid);
             memcpy(&mut buildId.PDB70.Signature, &mut guid, 16);
@@ -742,17 +950,17 @@ fn createPDB(ctx: *mut COFFLinkerContext, sectionTable: ArrayRef<uint8_t>, build
 
 fn PDBLinker::initialize(self, buildId: *mut DebugInfo) {
     let mut exitOnErr: ExitOnError = ExitOnError { Banner: "", GetExitCode: 1 };
-    exitOnErr();
+    exitOnErr.call(self.builder.initialize(self.ctx.config.pdbPageSize));
     buildId.Signature.CVSignature = PDB70;
     memset(buildId.PDB70.Signature, 0, 16);
     buildId.PDB70.Age = 1;
     for let mut i: i32 = 0; i < kSpecialStreamCount as i32; i += 1 {
-        exitOnErr();
+        exitOnErr.call(self.builder.getMsfBuilder().addStream(0));
     }
-    let mut infoBuilder: *mut auto = null;
-    infoBuilder()(PdbImplVC70);
-    infoBuilder()(true);
-    let mut dbiBuilder: *mut DbiStreamBuilder = null;
+    let mut infoBuilder: *mut InfoStreamBuilder = self.builder.getInfoBuilder();
+    infoBuilder.setVersion(PdbImplVC70);
+    infoBuilder.setHashPDBContentsToGUID(true);
+    let mut dbiBuilder: *mut DbiStreamBuilder = self.builder.getDbiBuilder();
     dbiBuilder.setAge(buildId.PDB70.Age.operator unsigned int());
     dbiBuilder.setVersionHeader(PdbDbiV70);
     dbiBuilder.setMachineType(self.ctx.config.machine);
@@ -760,29 +968,36 @@ fn PDBLinker::initialize(self, buildId: *mut DebugInfo) {
 }
 
 fn PDBLinker::addSections(self, sectionTable: ArrayRef<uint8_t>) {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "PDB output sections" };
+    let mut timeScope: TimeTraceScope = "PDB output sections";
     let mut exitOnErr: ExitOnError = ExitOnError { Banner: "", GetExitCode: 1 };
-    let mut dbiBuilder: *mut DbiStreamBuilder = null;
+    let mut dbiBuilder: *mut DbiStreamBuilder = self.builder.getDbiBuilder();
     self.nativePath = self.ctx.config.pdbPath;
     self.pdbMakeAbsolute(self.nativePath);
     let mut pdbFilePathNI: u32 = dbiBuilder.addECName(self.nativePath.operator StringRef());
-    let mut linkerModule: *mut auto = exitOnErr(dbiBuilder.addModuleInfo);
-    linkerModule()(pdbFilePathNI);
-    self.addCommonLinkerModuleSymbols(self.nativePath);
+    let mut linkerModule: *mut DbiModuleDescriptorBuilder = exitOnErr.call(dbiBuilder.addModuleInfo("* Linker *"));
+    linkerModule.setPdbFilePathNI(pdbFilePathNI);
+    self.addCommonLinkerModuleSymbols(self.nativePath.operator StringRef(), linkerModule);
+    for os in self.ctx.outputSections {
+        addLinkerModuleSectionSymbol(linkerModule, *os, self.ctx.config.mingw);
+        for c in os.chunks {
+            let mut sc: SectionContrib = createSectionContrib(self.ctx, c, linkerModule.getModuleIndex());
+            self.builder.getDbiBuilder().addSectionContrib(sc);
+        }
+    }
     let mut sc: SectionContrib = createSectionContrib(self.ctx, null, kInvalidStreamIndex);
-    linkerModule()(sc);
-    let mut sections: coff_section> = zeroed();
-    dbiBuilder.createSectionMap();
-    exitOnErr.call(dbiBuilder.addDbgStream(SectionHdr, ArrayRef<uint8_t> { sectionTable }));
+    linkerModule.setFirstSectionContrib(sc);
+    let mut sections: coff_section> = coff_section> { sectionTable.ptr as *coff_section, sectionTable.len /  };
+    dbiBuilder.createSectionMap(sections);
+    exitOnErr.call(dbiBuilder.addDbgStream(SectionHdr, sectionTable));
 }
 
 fn PDBLinker::commit(self, guid: *mut GUID) {
-    if  {
+    if self.builder.commit(self.ctx.config.pdbPath.operator StringRef(), guid) {
         e;
     } else {
-        e = handleErrors(move(e), Closure_3 { cap_0: self });
+        e = handleErrors(move(e), Closure_6 { cap_0: self });
         checkError(move(e));
-        Err(self.ctx) << "failed to write PDB file ";
+        Err(self.ctx) << "failed to write PDB file " << self.ctx.config.pdbPath;
     }
 }
 
@@ -801,7 +1016,7 @@ fn getSecrelReloc(arch: ArchType) -> u32 {
             return IMAGE_REL_ARM64_SECREL;
         },
         _ => {
-            llvm_unreachable_internal("unknown machine type", "lld\\COFF\\PDB.cpp", 1732);
+            llvm_unreachable_internal("unknown machine type", "P:/Goraw/llvm-project/lld/COFF/PDB.cpp", 1732);
         },
     }
 }
@@ -813,21 +1028,59 @@ fn findLineTable(c: *SectionChunk, addr: u32, cvStrTab: *mut DebugStringTableSub
         if dbgC.getSectionName() != ".debug$S" {
             continue;
         }
-        let mut secrels: i32 = 0;
+        let mut secrels: DenseMap<uint32_t, uint32_t> = DenseMap<uint32_t, uint32_t> {};
         for r in dbgC.getRelocs() {
             if r.Type.operator unsigned short() != secrelReloc {
                 continue;
             }
-            if  {
-                if s()() == c {
-                    secrels()[r.VirtualAddress] = ();
-                }
+            if dyn_cast_or_null(c.file.getSymbols()[r.SymbolTableIndex.operator unsigned int()]) {
+                s;
+            } else if s.getChunk() == c {
+                secrels[r.VirtualAddress.operator unsigned int()] = s.getValue();
             }
         }
         let mut contents: ArrayRef<uint8_t> = consumeDebugMagic(dbgC.getContents(), ".debug$S");
-        let mut subsections: i32 = 0;
-        let mut reader: BinaryStreamReader = BinaryStreamReader { Stream: ArrayRef<uint8_t> { contents }, Offset: little };
-        exitOnErr(reader(contents.len));
+        let mut subsections: DebugSubsectionArray = DebugSubsectionArray {};
+        let mut reader: BinaryStreamReader = BinaryStreamReader { Stream: contents, Offset: little };
+        exitOnErr.call(reader.readArray(subsections, contents.len, 0));
+        for ss in subsections {
+            match ss.kind() {
+                StringTable => {
+                    assert!(!cvStrTab.valid(), "Encountered multiple string table subsections!");
+                    exitOnErr.call(cvStrTab.initialize(ss.getRecordData()));
+                    break;
+                },
+                FileChecksums => {
+                    assert!(!checksums.valid(), "Encountered multiple checksum subsections!");
+                },
+                Lines => {
+                    let mut bytes: ArrayRef<uint8_t> = ArrayRef<uint8_t> {};
+                    let mut ref: BinaryStreamRef = ss.getRecordData();
+                    exitOnErr.call(ref.readLongestContiguousChunk(0, bytes));
+                    let mut offsetInDbgC: u64 = bytes.ptr - dbgC.getContents().ptr;
+                    let mut i: iterator = secrels.find(offsetInDbgC);
+                    if i == secrels.end() {
+                        break;
+                    }
+                    let mut linesTmp: DebugLinesSubsectionRef = DebugLinesSubsectionRef {};
+                    exitOnErr.call(linesTmp.initialize(ref));
+                    let mut offsetInC: u32 = operator(i).second + linesTmp.header().RelocOffset.operator unsigned int();
+                    if addr < offsetInC || addr >= offsetInC + linesTmp.header().CodeSize.operator unsigned int() {
+                        break;
+                    }
+                    assert!(!lines.header(), "Encountered multiple line tables for function!");
+                    exitOnErr.call(lines.initialize(ref));
+                    offsetInLinetable = addr - offsetInC;
+                    break;
+                },
+                _ => {
+                    break;
+                },
+            }
+            if cvStrTab.valid() && checksums.valid() && lines.header() {
+                return true;
+            }
+        }
     }
     return false;
 }
@@ -839,74 +1092,163 @@ fn getFileLineCodeView(c: *SectionChunk, addr: u32) -> pair<StringRef, uint32_t>
     let mut lines: DebugLinesSubsectionRef = DebugLinesSubsectionRef {};
     let mut offsetInLinetable: u32 = 0;
     if !findLineTable(c, addr, cvStrTab, checksums, lines, offsetInLinetable) {
-        return nullopt();
+        return nullopt;
     }
     let mut nameIndex: optional<uint32_t> = optional<uint32_t> {};
     let mut lineNumber: optional<uint32_t> = optional<uint32_t> {};
-    if !nameIndex {
-        return nullopt();
+    for entry in lines {
+        for ln in entry.LineNumbers {
+            let mut li: LineInfo = ln.Flags.operator unsigned int();
+            if ln.Offset.operator unsigned int() > offsetInLinetable {
+                if !nameIndex {
+                    nameIndex = entry.NameIndex;
+                    lineNumber = li.getStartLine();
+                }
+                let mut filename: str = exitOnErr.call(getFileName(cvStrTab, checksums, operator(nameIndex)));
+                return make_pair(filename, operator(lineNumber));
+            }
+            nameIndex = entry.NameIndex;
+            lineNumber = li.getStartLine();
+        }
     }
-    let mut filename: str = exitOnErr(getFileName(cvStrTab, checksums, operator(nameIndex)));
+    if !nameIndex {
+        return nullopt;
+    }
+    let mut filename: str = exitOnErr.call(getFileName(cvStrTab, checksums, operator(nameIndex)));
     return make_pair(filename, operator(lineNumber));
 }
 
 struct Closure_1 {
+    tpiBuilder: *mut TpiStreamBuilder,
+}
+
+unsafe fn Closure_1::call(self: *mut Closure_1, ti: TypeIndex, type: *CVType) {
+        let mut hash: Expected<uint32_t> = hashTypeRecord(type);
+        if hash.takeError() {
+            e;
+        } else {
+            fatal("type hashing error");
+        }
+        (*self.tpiBuilder).addTypeRecord(type.RecordData, operator(hash));
+    }
+
+struct Closure_2 {
     scopeLevel: *mut u32,
-    cap_1: *mut PDBLinker,
+    storage: *mut []u8,
+    cap_2: *mut PDBLinker,
     debugChunk: *mut *mut SectionChunk,
     sectionContents: *mut ArrayRef<uint8_t>,
     nextRelocIndex: *mut u32,
     file: *mut *mut ObjFile,
     moduleSymOffset: *mut u32,
+    stringTableFixups: *mut []StringTableFixup,
 }
 
-unsafe fn Closure_1::call(self: *mut Closure_1, sym: CVSymbol) -> auto {
-        if symbolOpensScope() {
+unsafe fn Closure_2::call(self: *mut Closure_2, sym: CVSymbol) -> auto {
+        if symbolOpensScope(sym.kind()) {
             (*self.scopeLevel) += 1;
-        } else if symbolEndsScope() {
+        } else if symbolEndsScope(sym.kind()) {
             (*self.scopeLevel) -= 1;
         }
-        let mut alignedSize: u32 = alignTo(alignOf(Pdb));
-        if symbolGoesInGlobalsStream((*self.scopeLevel)) {
-            storage()();
-            addGlobalSymbol((*self.file).moduleDBI.getModuleIndex(), (*self.moduleSymOffset));
-            if self.ctx() {
-                self.ctx += 1;
+        let mut alignedSize: u32 = alignTo(sym.len, alignOf(Pdb));
+        if symbolGoesInGlobalsStream(sym, (*self.scopeLevel)) {
+            (*self.storage).clear();
+            self.writeSymbolRecord((*self.debugChunk), (*self.sectionContents), sym, alignedSize, (*self.nextRelocIndex), (*self.storage));
+            addGlobalSymbol(self.builder.getGsiBuilder(), (*self.file).moduleDBI.getModuleIndex(), (*self.moduleSymOffset), (*self.storage));
+            if self.ctx.pdbStats.has_value() {
+                operator(self.ctx.pdbStats).globalSymbols += 1;
             }
         }
-        if symbolGoesInModuleStream((*self.scopeLevel)) {
-            recordStringTableReferences((*self.moduleSymOffset));
+        if symbolGoesInModuleStream(sym, (*self.scopeLevel)) {
+            recordStringTableReferences(sym, (*self.moduleSymOffset), (*self.stringTableFixups));
             (*self.moduleSymOffset) += alignedSize;
-            if self.ctx() {
-                self.ctx += 1;
+            if self.ctx.pdbStats.has_value() {
+                operator(self.ctx.pdbStats).moduleSymbols += 1;
             }
         }
         return success();
     }
 
-struct Closure_2 {
+struct Closure_3 {
+    scopes: *mut SmallVector<uint32_t, 4>,
+    storage: *mut []u8,
+    cap_2: *mut PDBLinker,
+    moduleSymStart: *mut u32,
+    file: *mut *mut ObjFile,
+    debugChunk: *mut *mut SectionChunk,
+    sectionContents: *mut ArrayRef<uint8_t>,
+    nextRelocIndex: *mut u32,
+}
+
+unsafe fn Closure_3::call(self: *mut Closure_3, sym: CVSymbol) -> auto {
+                if symbolOpensScope(sym.kind()) {
+                    scopeStackOpen((*self.scopes), (*self.storage));
+                } else if symbolEndsScope(sym.kind()) {
+                    scopeStackClose(self.ctx, (*self.scopes), (*self.storage), (*self.moduleSymStart), (*self.file));
+                }
+                if symbolGoesInModuleStream(sym, (*self.scopes).len) {
+                    let mut alignedSize: u32 = alignTo(sym.len, alignOf(Pdb));
+                    self.writeSymbolRecord((*self.debugChunk), (*self.sectionContents), sym, alignedSize, (*self.nextRelocIndex), (*self.storage));
+                }
+                return success();
+            }
+
+struct Closure_4 {
+    publics: *mut []BulkPublic,
+    cap_1: *mut PDBLinker,
+}
+
+unsafe fn Closure_4::call(self: *mut Closure_4, s: *mut Symbol) {
+        let mut def: *mut Defined = dyn_cast(s);
+        if def && def.isLive() && def.getChunk() {
+            let mut name: str = def.getName();
+            if name.ptr[0] == '_' && name.ptr[1] == '_' {
+                if self.ctx.config.machine == I386 {
+                    name = name.drop_front(1);
+                }
+                if name.starts_with("__profd_") || name.starts_with("__profc_") || name.starts_with("__covrec_") {
+                    return;
+                }
+            }
+            (*self.publics).push(createPublic(self.ctx, def));
+        }
+    }
+
+struct Closure_5 {
     stream: *mut raw_svector_ostream,
     cap_1: *mut PDBLinker,
 }
 
-unsafe fn Closure_2::call(self: *mut Closure_2, name: str, recCounts: ArrayRef<uint32_t>, records: *mut TypeCollection) {
-        let mut tsis: SmallVector<TypeSizeInfo, 0> = zeroed();
-        if operator!() {
+unsafe fn Closure_5::call(self: *mut Closure_5, name: str, recCounts: ArrayRef<uint32_t>, records: *mut TypeCollection) {
+        let mut tsis: SmallVector<TypeSizeInfo, 0> = SmallVector<TypeSizeInfo, 0> {};
+        for e in enumerate(recCounts) {
+            let mut typeIndex: TypeIndex = fromArrayIndex(e.index());
+            let mut typeSize: u32 = records.getType(typeIndex).len;
+            let mut dupCount: u32 = e.value();
+            tsis.push(ValueParamT { typeSize, dupCount, typeIndex });
+        }
+        if !tsis.is_empty() {
             (*self.stream) << "\nTop 10 types responsible for the most " << name << " input:\n";
             (*self.stream) << "       index     total bytes   count     size\n";
-            sort();
+            sort(tsis);
             let mut i: u32 = 0;
+            for tsi in reverse(tsis) {
+                (*self.stream) << formatv("  {0,10:X}: {1,14:N} = {2,5:N} * {3,6:N}\n", tsi.typeIndex.getIndex(), tsi.totalInputSize(), tsi.dupCount, tsi.typeSize);
+                if i += 1 >= 10 {
+                    break;
+                }
+            }
             (*self.stream) << "Run llvm-pdbutil to print details about a particular record:\n";
-            (*self.stream) << formatv("llvm-pdbutil dump -{0}s -{0}-index {1:X} {2}\n", (if name == "TPI" { "type" } else { "id" }), ()(), self.ctx.config.pdbPath);
+            (*self.stream) << formatv("llvm-pdbutil dump -{0}s -{0}-index {1:X} {2}\n", (if name == "TPI" { "type" } else { "id" }), tsis.back().typeIndex.getIndex(), self.ctx.config.pdbPath);
         }
     }
 
-struct Closure_3 {
+struct Closure_6 {
     cap_0: *mut PDBLinker,
 }
 
-fn Closure_3::call(self: *Closure_3, me: *MSFError) {
-            Err(self.ctx) << me()();
+fn Closure_6::call(self: *Closure_6, me: *MSFError) {
+            Err(self.ctx) << me.message();
             if me.isPageOverflow() {
                 Err(self.ctx) << "try setting a larger /pdbpagesize";
             }

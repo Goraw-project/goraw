@@ -2,7 +2,7 @@ struct ResetStackCleanup {
 }
 
 fn ResetStackCleanup::recoverResources(self) {
-    RestorePrettyStackState();
+    RestorePrettyStackState(self.resource);
 }
 
 struct PrettyStackTraceParserEntry {
@@ -42,9 +42,9 @@ fn PrettyStackTraceParserEntry::print(self: *PrettyStackTraceParserEntry, OS: *m
 }
 
 fn ParseAST(PP: *mut Preprocessor, Consumer: *mut ASTConsumer, Ctx: *mut ASTContext, PrintStats: bool, TUKind: TranslationUnitKind, CompletionConsumer: *mut CodeCompleteConsumer, SkipFunctionBodies: bool) {
-    let mut S: i32 = Sema { PP, Ctx, *Consumer, TUKind, CompletionConsumer };
-    let mut CleanupSema: i32 = S()();
-    ParseAST(operator*(), PrintStats, SkipFunctionBodies);
+    let mut S: unique_ptr<Sema> = Sema { PP, Ctx, *Consumer, TUKind, CompletionConsumer };
+    let mut CleanupSema: CrashRecoveryContextCleanupRegistrar<Sema> = S.get();
+    ParseAST(operator(S), PrintStats, SkipFunctionBodies);
 }
 
 fn ParseAST(S: *mut Sema, PrintStats: bool, SkipFunctionBodies: bool) {
@@ -55,11 +55,11 @@ fn ParseAST(S: *mut Sema, PrintStats: bool, SkipFunctionBodies: bool) {
     let mut OldCollectStats: bool = PrintStats;
     swap(OldCollectStats, S.CollectStats);
     let mut Consumer: *mut ASTConsumer = &mut S.getASTConsumer();
-    let mut ParseOP: i32 = Parser { S.getPreprocessor(), S, SkipFunctionBodies };
-    let mut P: *mut Parser = operator*();
-    let mut CleanupPrettyStack: CrashRecoveryContextCleanupRegistrar<const void, ResetStackCleanup> = zeroed();
+    let mut ParseOP: unique_ptr<Parser> = Parser { S.getPreprocessor(), S, SkipFunctionBodies };
+    let mut P: *mut Parser = operator(ParseOP);
+    let mut CleanupPrettyStack: CrashRecoveryContextCleanupRegistrar<const void, ResetStackCleanup> = SavePrettyStackState();
     let mut CrashInfo: PrettyStackTraceParserEntry = P;
-    let mut CleanupParser: i32 = ParseOP()();
+    let mut CleanupParser: CrashRecoveryContextCleanupRegistrar<Parser> = ParseOP.get();
     S.getPreprocessor().EnterMainSourceFile();
     let mut External: *mut ExternalASTSource = S.getASTContext().getExternalSource();
     if External {
@@ -67,16 +67,19 @@ fn ParseAST(S: *mut Sema, PrintStats: bool, SkipFunctionBodies: bool) {
     }
     let mut HaveLexer: bool = S.getPreprocessor().getCurrentLexer();
     if HaveLexer {
-        let mut TimeScope: TimeTraceScope = "Frontend";
+        let mut TimeScope: TimeTraceScope = TimeTraceScope { "Frontend", function_ref<TimeTraceMetadata ()> { Closure_1 { S: &mut S }, null, null } };
         P.Initialize();
-        let mut ADecl: DeclGroupPtrTy = zeroed();
+        let mut ADecl: DeclGroupPtrTy = null;
         let mut ImportState: ModuleImportState = zeroed();
         let mut PotentiallyEvaluated: EnterExpressionEvaluationContext = EnterExpressionEvaluationContext { S, PotentiallyEvaluated, null, EK_Other, true };
-        for let mut AtEOF: bool = P.ParseFirstTopLevelDecl(ImportState); !AtEOF; AtEOF = P(ImportState) {
-            if ADecl() && operator!(Consumer.HandleTopLevelDecl()) {
+        for let mut AtEOF: bool = P.ParseFirstTopLevelDecl(ADecl, ImportState); !AtEOF; AtEOF = P.ParseTopLevelDecl(ADecl, ImportState) {
+            if ADecl && !Consumer.HandleTopLevelDecl(ADecl.get()) {
                 return;
             }
         }
+    }
+    for D in S.WeakTopLevelDecls() {
+        Consumer.HandleTopLevelDecl(D);
     }
     Consumer.HandleTranslationUnit(S.getASTContext());
     swap(OldCollectStats, S.CollectStats);
@@ -91,3 +94,20 @@ fn ParseAST(S: *mut Sema, PrintStats: bool, SkipFunctionBodies: bool) {
         Consumer.PrintStats();
     }
 }
+
+struct Closure_1 {
+    S: *mut Sema,
+}
+
+unsafe fn Closure_1::call(self: *mut Closure_1) -> TimeTraceMetadata {
+            let mut M: TimeTraceMetadata = TimeTraceMetadata {};
+            if isTimeTraceVerbose() {
+                let mut SM: *SourceManager = (*self.S).getSourceManager();
+                if SM.getFileEntryForID(SM.getMainFileID()) {
+                    FE;
+                } else {
+                    M.File = FE.tryGetRealPathName();
+                }
+            }
+            return M;
+        }

@@ -1,4 +1,4 @@
-static mut HardenLoads: i32 = "aarch64-slh-loads";
+static mut HardenLoads: opt<bool> = opt<bool> { "aarch64-slh-loads", Hidden, "Sanitize loads from memory.", init(true) };
 
 struct AArch64SpeculationHardening {
     Resolver: *mut AnalysisResolver,
@@ -57,11 +57,11 @@ fn AArch64SpeculationHardening::getClearedProperties(self: *AArch64SpeculationHa
 static mut ID: i8 = 0;
 
 fn AArch64SpeculationHardening::endsWithCondControlFlow(self: *AArch64SpeculationHardening, MBB: *mut MachineBasicBlock, TBB: *mut *mut MachineBasicBlock, FBB: *mut *mut MachineBasicBlock, CondCode: *mut CondCode) -> bool {
-    let mut analyzeBranchCondCode: SmallVector<MachineOperand, 1> = zeroed();
-    if self.TII(MBB, TBB, FBB, false) {
+    let mut analyzeBranchCondCode: SmallVector<MachineOperand, 1> = SmallVector<MachineOperand, 1> {};
+    if self.TII.analyzeBranch(MBB, TBB, FBB, analyzeBranchCondCode, false) {
         return false;
     }
-    if analyzeBranchCondCode()() {
+    if analyzeBranchCondCode.is_empty() {
         return false;
     }
     assert!(TBB != null);
@@ -72,22 +72,22 @@ fn AArch64SpeculationHardening::endsWithCondControlFlow(self: *AArch64Speculatio
         return false;
     }
     assert!(MBB.succ_size() == 2);
-    (((operator!(operator!((analyzeBranchCondCode()() == 1 && "unknown Cond array format")))) || (_wassert(L"analyzeBranchCondCode.size() == 1 && \"unknown Cond array format\"", L"llvm\\lib\\Target\\AArch64\\AArch64SpeculationHardening.cpp", (207) as u32) , 0)) as void);
-    CondCode = [0]();
+    assert!(analyzeBranchCondCode.len == 1, "unknown Cond array format");
+    CondCode = analyzeBranchCondCode[0].getImm();
     return true;
 }
 
 fn AArch64SpeculationHardening::insertFullSpeculationBarrier(self: *AArch64SpeculationHardening, MBB: *mut MachineBasicBlock, MBBI: iterator, DL: DebugLoc) {
-    BuildMI(MBB, MBBI, DL, self.TII.get)(15);
-    BuildMI(MBB, MBBI, DL, self.TII.get)(15);
+    BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(DSB)).addImm(15);
+    BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ISB)).addImm(15);
 }
 
 fn AArch64SpeculationHardening::insertTrackingCode(self: *AArch64SpeculationHardening, SplitEdgeBB: *mut MachineBasicBlock, CondCode: *mut CondCode, DL: DebugLoc) {
     if self.UseControlFlowSpeculationBarrier {
         self.insertFullSpeculationBarrier(SplitEdgeBB, SplitEdgeBB.begin(), DL);
     } else {
-        BuildMI(SplitEdgeBB, SplitEdgeBB.begin(), DL, self.TII.get)(self.MisspeculatingTaintReg)(self.MisspeculatingTaintReg)(CondCode);
-        SplitEdgeBB;
+        BuildMI(SplitEdgeBB, SplitEdgeBB.begin(), MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(CSELXr)).addDef(self.MisspeculatingTaintReg, RegState {}, 0).addUse(self.MisspeculatingTaintReg, RegState {}, 0).addUse(XZR, RegState {}, 0).addImm(CondCode);
+        SplitEdgeBB.addLiveIn(NZCV, getAll());
     }
 }
 
@@ -143,8 +143,8 @@ fn AArch64SpeculationHardening::instrumentControlFlow(self, MBB: *mut MachineBas
         }
         Modified = true;
     }
-    let mut ReturnInstructions: pair<MachineInstr *, unsigned int>, 4> = zeroed();
-    let mut CallInstructions: pair<MachineInstr *, unsigned int>, 4> = zeroed();
+    let mut ReturnInstructions: pair<MachineInstr *, unsigned int>, 4> = pair<MachineInstr *, unsigned int>, 4> {};
+    let mut CallInstructions: pair<MachineInstr *, unsigned int>, 4> = pair<MachineInstr *, unsigned int>, 4> {};
     let mut TmpRegisterNotAvailableEverywhere: bool = false;
     let mut RS: RegScavenger = RegScavenger {};
     RS.enterBasicBlockEnd(MBB);
@@ -158,7 +158,7 @@ fn AArch64SpeculationHardening::instrumentControlFlow(self, MBB: *mut MachineBas
         } else {
             RS.backward(I);
         }
-        let mut TmpReg: Register = RS.FindUnusedReg;
+        let mut TmpReg: Register = RS.FindUnusedReg(&mut GPR64commonRegClass);
         while true {
             {
             if DebugFlag && isCurrentDebugType("aarch64-speculation-hardening", 1) {
@@ -175,16 +175,44 @@ fn AArch64SpeculationHardening::instrumentControlFlow(self, MBB: *mut MachineBas
             TmpRegisterNotAvailableEverywhere = true;
         }
         if MI.isReturn(AnyInBundle) {
-            ReturnInstructions()(void { &mut MI, TmpReg });
+            ReturnInstructions.push(ValueParamT { &mut MI, TmpReg });
         } else if MI.isCall(AnyInBundle) {
-            CallInstructions()(void { &mut MI, TmpReg });
+            CallInstructions.push(ValueParamT { &mut MI, TmpReg });
         }
     }
     if TmpRegisterNotAvailableEverywhere {
         self.insertFullSpeculationBarrier(MBB, MBB.begin(), operator((MBB.begin())).getDebugLoc());
         UsesFullSpeculationBarrier = true;
         Modified = true;
-    } else {}
+    } else {
+        for MI_Reg in ReturnInstructions {
+            assert!(MI_Reg.second != 0);
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("aarch64-speculation-hardening", 1) {
+                    dbgs() << " About to insert Reg to SP taint propagation with temp register " << printReg(MI_Reg.second, self.TRI, 0, null) << " on instruction: " << *MI_Reg.first;
+                }
+            }
+                if !(false) { break; }
+            }
+            self.insertRegToSPTaintPropagation(MBB, MI_Reg.first, MI_Reg.second);
+            Modified = true;
+        }
+        for MI_Reg in CallInstructions {
+            assert!(MI_Reg.second != 0);
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("aarch64-speculation-hardening", 1) {
+                    dbgs() << " About to insert Reg to SP and back taint propagation with temp register " << printReg(MI_Reg.second, self.TRI, 0, null) << " around instruction: " << *MI_Reg.first;
+                }
+            }
+                if !(false) { break; }
+            }
+            self.insertSPToRegTaintPropagation(MBB, next(MI_Reg.first as iterator, 1));
+            self.insertRegToSPTaintPropagation(MBB, MI_Reg.first, MI_Reg.second);
+            Modified = true;
+        }
+    }
     return Modified;
 }
 
@@ -193,17 +221,17 @@ fn AArch64SpeculationHardening::insertSPToRegTaintPropagation(self: *AArch64Spec
         self.insertFullSpeculationBarrier(MBB, MBBI, DebugLoc { Loc: null });
         return;
     }
-    BuildMI(MBB, MBBI, DebugLoc { Loc: null }, self.TII.get)(0)(0);
-    BuildMI(MBB, MBBI, DebugLoc { Loc: null }, self.TII.get)(self.MisspeculatingTaintReg)(EQ);
+    BuildMI(MBB, MBBI, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SUBSXri)).addDef(XZR, RegState {}, 0).addUse(SP, RegState {}, 0).addImm(0).addImm(0);
+    BuildMI(MBB, MBBI, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(CSINVXr)).addDef(self.MisspeculatingTaintReg, RegState {}, 0).addUse(XZR, RegState {}, 0).addUse(XZR, RegState {}, 0).addImm(EQ);
 }
 
 fn AArch64SpeculationHardening::insertRegToSPTaintPropagation(self: *AArch64SpeculationHardening, MBB: *mut MachineBasicBlock, MBBI: iterator, TmpReg: u32) {
     if self.UseControlFlowSpeculationBarrier {
         return;
     }
-    BuildMI(MBB, MBBI, DebugLoc { Loc: null }, self.TII.get)(TmpReg)(0)(0);
-    BuildMI(MBB, MBBI, DebugLoc { Loc: null }, self.TII.get)(TmpReg, Renamable)(TmpReg, Kill(Renamable))(self.MisspeculatingTaintReg, Kill)(0);
-    BuildMI(MBB, MBBI, DebugLoc { Loc: null }, self.TII.get)(TmpReg, Kill)(0)(0);
+    BuildMI(MBB, MBBI, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ADDXri)).addDef(TmpReg, RegState {}, 0).addUse(SP, RegState {}, 0).addImm(0).addImm(0);
+    BuildMI(MBB, MBBI, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ANDXrs)).addDef(TmpReg, Renamable, 0).addUse(TmpReg, Kill | Renamable, 0).addUse(self.MisspeculatingTaintReg, Kill, 0).addImm(0);
+    BuildMI(MBB, MBBI, MIMetadata { DL: DebugLoc { Loc: null }, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ADDXri)).addDef(SP, RegState {}, 0).addUse(TmpReg, Kill, 0).addImm(0).addImm(0);
 }
 
 fn AArch64SpeculationHardening::functionUsesHardeningRegister(self: *AArch64SpeculationHardening, MF: *mut MachineFunction) -> bool {
@@ -221,13 +249,14 @@ fn AArch64SpeculationHardening::functionUsesHardeningRegister(self: *AArch64Spec
 }
 
 fn AArch64SpeculationHardening::makeGPRSpeculationSafe(self, MBB: *mut MachineBasicBlock, MBBI: iterator, MI: *mut MachineInstr, Reg: u32) -> bool {
-    if  {
+    assert!(GPR32allRegClass.contains(Reg) || GPR64allRegClass.contains(Reg);
+    if Reg == SP || Reg == WSP {
         return false;
     }
     if self.RegsAlreadyMasked[Reg] {
         return false;
     }
-    let mut Is64Bit: bool = false;
+    let mut Is64Bit: bool = GPR64allRegClass.contains(Reg);
     while true {
         {
         if DebugFlag && isCurrentDebugType("aarch64-speculation-hardening", 1) {
@@ -236,7 +265,7 @@ fn AArch64SpeculationHardening::makeGPRSpeculationSafe(self, MBB: *mut MachineBa
     }
         if !(false) { break; }
     }
-    BuildMI(MBB, MBBI, MI.getDebugLoc(), self.TII.get)(Reg)(Reg);
+    BuildMI(MBB, MBBI, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(if Is64Bit { SpeculationSafeValueX } else { SpeculationSafeValueW })).addDef(Reg, RegState {}, 0).addUse(Reg, RegState {}, 0);
     self.RegsAlreadyMasked.set(Reg);
     return true;
 }
@@ -257,7 +286,7 @@ fn AArch64SpeculationHardening::slhLoads(self, MBB: *mut MachineBasicBlock) -> b
     let mut NextMBBI: iterator = iterator {};
     for ; MBBI != E; MBBI = NextMBBI {
         let mut MI: *mut MachineInstr = operator(MBBI);
-        NextMBBI = next(MBBI);
+        NextMBBI = next(MBBI, 1);
         if !MI.mayLoad(AnyInBundle) {
             continue;
         }
@@ -291,7 +320,7 @@ fn AArch64SpeculationHardening::slhLoads(self, MBB: *mut MachineBasicBlock) -> b
                     continue;
                 }
                 let mut Reg: Register = Use.getReg();
-                if  {
+                if !(GPR32allRegClass.contains(Reg.operator MCRegister()) || GPR64allRegClass.contains(Reg.operator MCRegister())) {
                     continue;
                 }
                 Modified |= self.makeGPRSpeculationSafe(MBB, MBBI, MI, Reg.operator unsigned int());
@@ -309,13 +338,28 @@ fn AArch64SpeculationHardening::expandSpeculationSafeValue(self, MBB: *mut Machi
         _ => {
             break;
         },
+        SpeculationSafeValueW => {
+            Is64Bit = false;
+        },
+        SpeculationSafeValueX => {
+            if !self.UseControlFlowSpeculationBarrier && !UsesFullSpeculationBarrier {
+                let mut DstReg: Register = MI.getOperand(0).getReg();
+                let mut SrcReg: Register = MI.getOperand(1).getReg();
+                for Op in MI.defs() {
+                    for let mut AI: MCRegAliasIterator = MCRegAliasIterator { Op.getReg().operator MCRegister(), self.TRI, true }; AI.isValid(); operator(AI) {
+                        self.RegsNeedingCSDBBeforeUse.set(operator(AI).operator unsigned int());
+                    }
+                }
+                BuildMI(MBB, MBBI, MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, if Is64Bit { self.TII.get(ANDXrs) } else { self.TII.get(ANDWrs) }).addDef(DstReg, RegState {}, 0).addUse(SrcReg, Kill, 0).addUse(if Is64Bit { self.MisspeculatingTaintReg } else { self.MisspeculatingTaintReg32Bit }, RegState {}, 0).addImm(0);
+            }
+        },
     }
     return false;
 }
 
 fn AArch64SpeculationHardening::insertCSDB(self, MBB: *mut MachineBasicBlock, MBBI: iterator, DL: DebugLoc) -> bool {
     assert!(!self.UseControlFlowSpeculationBarrier, "No need to insert CSDBs when control flow miss-speculation is already blocked");
-    BuildMI(MBB, MBBI, DL, self.TII.get)(20);
+    BuildMI(MBB, MBBI, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(HINT)).addImm(20);
     self.RegsNeedingCSDBBeforeUse.reset();
     return true;
 }
@@ -329,7 +373,7 @@ fn AArch64SpeculationHardening::lowerSpeculationSafeValuePseudos(self, MBB: *mut
     while MBBI != E {
         let mut MI: *mut MachineInstr = operator(MBBI);
         DL = MI.getDebugLoc();
-        let mut NMBBI: iterator = next(MBBI);
+        let mut NMBBI: iterator = next(MBBI, 1);
         let mut NeedToEmitBarrier: bool = false;
         if self.RegsNeedingCSDBBeforeUse.any() && (MI.isCall(AnyInBundle) || MI.isTerminator(AnyInBundle)) {
             NeedToEmitBarrier = true;
@@ -358,13 +402,15 @@ fn AArch64SpeculationHardening::runOnMachineFunction(self, MF: *mut MachineFunct
     if !MF.getFunction().hasFnAttribute(SpeculativeLoadHardening) {
         return false;
     }
+    self.MisspeculatingTaintReg = X16;
+    self.MisspeculatingTaintReg32Bit = W16;
     self.TII = MF.getSubtarget().getInstrInfo();
     self.TRI = MF.getSubtarget().getRegisterInfo();
     self.RegsNeedingCSDBBeforeUse.resize(self.TRI.getNumRegs(), false);
     self.RegsAlreadyMasked.resize(self.TRI.getNumRegs(), false);
     self.UseControlFlowSpeculationBarrier = self.functionUsesHardeningRegister(MF);
     let mut Modified: bool = false;
-    if HardenLoads() {
+    if HardenLoads {
         while true {
             {
             if DebugFlag && isCurrentDebugType("aarch64-speculation-hardening", 1) {
@@ -387,6 +433,9 @@ fn AArch64SpeculationHardening::runOnMachineFunction(self, MF: *mut MachineFunct
     }
     let mut EntryBlocks: SmallVector<MachineBasicBlock *, 2> = SmallVector<MachineBasicBlock *, 2> {};
     EntryBlocks.push(&mut MF.front());
+    for LPI in MF.getLandingPads() {
+        EntryBlocks.push(LPI.LandingPadBlock);
+    }
     for Entry in EntryBlocks {
         self.insertSPToRegTaintPropagation(*Entry, Entry.SkipPHIsLabelsAndDebug(Entry.begin(), Register { Reg: 0 }, true));
     }
@@ -404,4 +453,6 @@ fn createAArch64SpeculationHardeningPass() -> *mut FunctionPass {
 
 struct Closure_1 {}
 
-fn Closure_1::call(self: *Closure_1, Op: *mut MachineOperand) {}
+fn Closure_1::call(self: *Closure_1, Op: *mut MachineOperand) -> bool {
+            return Op.isReg() && (GPR32allRegClass.contains(Op.getReg().operator MCRegister()) || GPR64allRegClass.contains(Op.getReg().operator MCRegister()));
+        }

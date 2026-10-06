@@ -22,13 +22,14 @@ fn Preprocessor::Preprocessor(self, PPOpts: *PreprocessorOptions, diags: *mut Di
     self.PreprocessedOutput = false;
     self.ReadMacrosFromExternalSource = false;
     self.LastExportKeyword.startToken();
+    self.BuiltinInfo = make_unique();
     (self.Ident__VA_ARGS__ = self.getIdentifierInfo("__VA_ARGS__")).setIsPoisoned(true);
-    self.SetPoisonReason;
+    self.SetPoisonReason(self.Ident__VA_ARGS__, ext_pp_bad_vaargs_use);
     (self.Ident__VA_OPT__ = self.getIdentifierInfo("__VA_OPT__")).setIsPoisoned(true);
-    self.SetPoisonReason;
+    self.SetPoisonReason(self.Ident__VA_OPT__, ext_pp_bad_vaopt_use);
     self.RegisterBuiltinPragmas();
     self.RegisterBuiltinMacros();
-    if self.LangOpts {
+    if self.LangOpts.Borland {
         self.Ident__exception_info = self.getIdentifierInfo("_exception_info");
         self.Ident___exception_info = self.getIdentifierInfo("__exception_info");
         self.Ident_GetExceptionInfo = self.getIdentifierInfo("GetExceptionInformation");
@@ -46,19 +47,24 @@ fn Preprocessor::Preprocessor(self, PPOpts: *PreprocessorOptions, diags: *mut Di
         self.Ident_AbnormalTermination = null;
     }
     self.Ident__GLIBCXX__ = self.getIdentifierInfo("__GLIBCXX__");
-    self.IncrementalProcessing = self.LangOpts;
+    self.IncrementalProcessing = self.LangOpts.IncrementalExtensions;
     if self.usingPCHWithPragmaHdrStop() {
         self.SkippingUntilPragmaHdrStop = true;
     }
-    if operator!(self.PPOpts()) && operator!(self.PPOpts()) {
+    if !self.PPOpts.PCHThroughHeader.is_empty() && !self.PPOpts.ImplicitPCHInclude.is_empty() {
         self.SkippingUntilPCHThroughHeader = true;
     }
-    self.MaxTokens = self.LangOpts;
+    if self.PPOpts.GeneratePreamble {
+        self.PreambleConditionalStack.startRecording();
+    }
+    self.MaxTokens = self.LangOpts.MaxTokens;
 }
 
 fn Preprocessor::~Preprocessor(self) {
     assert!(!self.isBacktrackEnabled(), "EnableBacktrack/Backtrack imbalance!");
-    fill(null);
+    self.IncludeMacroStack.clear();
+    fill(self.TokenLexerCache, self.TokenLexerCache + self.NumCachedTokenLexers, null);
+    self.CurTokenLexer.reset(null);
     for let mut ArgList: *mut MacroArgs = self.MacroArgCache; ArgList;  {
         ArgList = ArgList.deallocate();
     }
@@ -72,7 +78,9 @@ fn Preprocessor::Initialize(self, Target: *TargetInfo, AuxTarget: *TargetInfo) {
     self.Target = &mut Target;
     assert!((!self.AuxTarget || self.AuxTarget == AuxTarget), "Invalid override of aux target information.");
     self.AuxTarget = AuxTarget;
+    operator(self.BuiltinInfo).InitializeTarget(Target, AuxTarget);
     self.HeaderInfo.setTarget(Target);
+    self.Identifiers.AddKeywords(self.LangOpts);
     self.setTUFPEvalMethod(self.getTargetInfo().getFPEvalMethod());
     if self.getLangOpts().getFPEvalMethod() == FEM_UnsetOnCommandLine {
         self.setCurrentFPEvalMethod(SourceLocation {}, Target.getFPEvalMethod());
@@ -83,21 +91,24 @@ fn Preprocessor::Initialize(self, Target: *TargetInfo, AuxTarget: *TargetInfo) {
 
 fn Preprocessor::InitializeForModelFile(self) {
     self.NumEnteredSourceFiles = 0;
+    self.PragmaHandlersBackup = move(self.PragmaHandlers);
+    self.PragmaHandlers = make_unique("");
     self.RegisterBuiltinPragmas();
     self.PredefinesFileID = FileID {};
 }
 
 fn Preprocessor::FinalizeForModelFile(self) {
     self.NumEnteredSourceFiles = 1;
+    self.PragmaHandlers = move(self.PragmaHandlersBackup);
 }
 
 fn Preprocessor::DumpToken(self: *Preprocessor, Tok: *Token, DumpFlags: bool) {
-    let mut TokenStr: str = zeroed();
-    let mut OS: raw_string_ostream = TokenStr();
+    let mut TokenStr: str = "";
+    let mut OS: raw_string_ostream = TokenStr;
     OS << formatv("{0,-16} ", getTokenName(Tok.getKind()));
     if !Tok.isAnnotation() {
         OS << "'";
-        OS.write_escaped();
+        OS.write_escaped(self.getSpelling(Tok, null), false);
         OS << "'";
     }
     errs() << formatv("{0,-48} ", OS);
@@ -105,98 +116,122 @@ fn Preprocessor::DumpToken(self: *Preprocessor, Tok: *Token, DumpFlags: bool) {
         return;
     }
     let mut Loc: SourceLocation = Tok.getLocation();
-    errs();
+    errs() << "Loc=<";
     self.DumpLocation(Loc);
-    errs();
+    errs() << ">";
     if Loc.isFileID() {
         let mut PLoc: PresumedLoc = self.SourceMgr.getPresumedLoc(Loc, true);
         if !PLoc.isInvalid() {
-            let mut LineWidth: i32 = (PLoc.getLine())();
-            let mut ColumnWidth: i32 = (PLoc.getColumn())();
+            let mut LineWidth: i32 = utostr(PLoc.getLine(), false).len;
+            let mut ColumnWidth: i32 = utostr(PLoc.getColumn(), false).len;
             let mut ReservedSpace: i32 = 6;
             let mut LeftSpace: i32 = ReservedSpace - LineWidth - ColumnWidth;
-            let mut Padding: i32 = max(0, LeftSpace);
-            errs().indent;
+            let mut Padding: i32 = if 0 > LeftSpace { 0 } else { LeftSpace };
+            errs().indent(Padding);
         }
     }
     if Tok.isAtStartOfLine() {
-        errs();
+        errs() << " [StartOfLine]";
     }
     if Tok.hasLeadingSpace() {
-        errs();
+        errs() << " [LeadingSpace]";
     }
     if Tok.isExpandDisabled() {
-        errs();
+        errs() << " [ExpandDisabled]";
     }
     if Tok.needsCleaning() {
         let mut Start: *u8 = self.SourceMgr.getCharacterData(Tok.getLocation(), null);
-        errs() << Start[0..Tok.getLength()] << "']";
+        errs() << " [UnClean='" << Start[0..Tok.getLength()] << "']";
     }
 }
 
 fn Preprocessor::DumpLocation(self: *Preprocessor, Loc: SourceLocation) {
-    Loc.print;
+    Loc.print(errs(), self.SourceMgr);
 }
 
 fn Preprocessor::DumpMacro(self: *Preprocessor, MI: *MacroInfo) {
-    errs();
+    errs() << "MACRO: ";
     for let mut i: u32 = 0;
 let mut e: u32 = MI.getNumTokens(); i != e; i += 1 {
         self.DumpToken(MI.getReplacementToken(i), false);
-        errs();
+        errs() << "  ";
     }
-    errs();
+    errs() << "\n";
 }
 
 fn Preprocessor::PrintStats(self) {
-    errs();
-    errs() << " directives found:\n";
-    errs() << self.NumDefined << " #define.\n";
-    errs() << self.NumUndefined << " #undef.\n";
-    errs();
-    errs() << self.NumEnteredSourceFiles << " source files entered.\n";
-    errs() << self.MaxIncludeStackDepth << " max include stack depth\n";
-    errs() << self.NumIf << " #if/#ifndef/#ifdef.\n";
-    errs() << self.NumElse << " #else/#elif/#elifdef/#elifndef.\n";
-    errs() << self.NumEndif << " #endif.\n";
-    errs() << self.NumPragma << " #pragma.\n";
-    errs() << " #if/#ifndef#ifdef regions skipped\n";
-    errs() << "/" << self.NumFnMacroExpanded << "/" << self.NumBuiltinMacroExpanded << " obj/fn/builtin macros expanded, " << self.NumFastMacroExpanded << " on the fast path.\n";
-    errs() << " token paste (##) operations performed, " << self.NumFastTokenPaste << " on the fast path.\n";
-    errs() << self.getTotalMemory() << "B total";
-    errs() << capacity_in_bytes();
-    errs() << capacity_in_bytes(self.CurSubmoduleState);
-    errs() << capacity_in_bytes();
-    errs() << capacity_in_bytes();
-    errs() << capacity_in_bytes() << "\n";
+    errs() << "\n*** Preprocessor Stats:\n";
+    errs() << self.NumDirectives << " directives found:\n";
+    errs() << "  " << self.NumDefined << " #define.\n";
+    errs() << "  " << self.NumUndefined << " #undef.\n";
+    errs() << "  #include/#include_next/#import:\n";
+    errs() << "    " << self.NumEnteredSourceFiles << " source files entered.\n";
+    errs() << "    " << self.MaxIncludeStackDepth << " max include stack depth\n";
+    errs() << "  " << self.NumIf << " #if/#ifndef/#ifdef.\n";
+    errs() << "  " << self.NumElse << " #else/#elif/#elifdef/#elifndef.\n";
+    errs() << "  " << self.NumEndif << " #endif.\n";
+    errs() << "  " << self.NumPragma << " #pragma.\n";
+    errs() << self.NumSkipped << " #if/#ifndef#ifdef regions skipped\n";
+    errs() << self.NumMacroExpanded << "/" << self.NumFnMacroExpanded << "/" << self.NumBuiltinMacroExpanded << " obj/fn/builtin macros expanded, " << self.NumFastMacroExpanded << " on the fast path.\n";
+    errs() << (self.NumFastTokenPaste + self.NumTokenPaste) << " token paste (##) operations performed, " << self.NumFastTokenPaste << " on the fast path.\n";
+    errs() << "\nPreprocessor Memory: " << self.getTotalMemory() << "B total";
+    errs() << "\n  BumpPtr: " << self.BP.getTotalMemory();
+    errs() << "\n  Macro Expanded Tokens: " << capacity_in_bytes(self.MacroExpandedTokens);
+    errs() << "\n  Predefines Buffer: " << self.Predefines.capacity();
+    errs() << "\n  Macros: " << capacity_in_bytes(self.CurSubmoduleState.Macros);
+    errs() << "\n  #pragma push_macro Info: " << capacity_in_bytes(self.PragmaPushMacroInfo);
+    errs() << "\n  Poison Reasons: " << capacity_in_bytes(self.PoisonReasons);
+    errs() << "\n  Comment Handlers: " << capacity_in_bytes(self.CommentHandlers) << "\n";
 }
 
-fn Preprocessor::macros(self: *Preprocessor, IncludeExternalMacros: bool) -> i32 {
+fn Preprocessor::macros(self: *Preprocessor, IncludeExternalMacros: bool) -> macro_iterator> {
     if IncludeExternalMacros && self.ExternalSource && !self.ReadMacrosFromExternalSource {
         self.ReadMacrosFromExternalSource = true;
         self.ExternalSource.ReadDefinedMacros();
     }
-    return self.CurSubmoduleState;
+    for Macro in self.ModuleMacros {
+        self.CurSubmoduleState.Macros.try_emplace(Macro.II);
+    }
+    return self.CurSubmoduleState.Macros;
 }
 
-fn Preprocessor::getTotalMemory(self: *Preprocessor) -> u64 {}
+fn Preprocessor::getTotalMemory(self: *Preprocessor) -> u64 {
+    return self.BP.getTotalMemory() + capacity_in_bytes(self.MacroExpandedTokens) + self.Predefines.capacity() + capacity_in_bytes(self.CurSubmoduleState.Macros) + capacity_in_bytes(self.PragmaPushMacroInfo) + capacity_in_bytes(self.PoisonReasons) + capacity_in_bytes(self.CommentHandlers);
+}
 
 fn MacroDefinitionEquals(MI: *MacroInfo, Tokens: ArrayRef<TokenValue>) -> bool {
-    return () == MI.getNumTokens() && equal(MI.tokens_begin());
+    return Tokens.len == MI.getNumTokens() && equal(Tokens.begin(), Tokens.end(), MI.tokens_begin());
 }
 
 fn Preprocessor::getLastMacroWithSpelling(self: *Preprocessor, Loc: SourceLocation, Tokens: ArrayRef<TokenValue>) -> str {
     let mut BestLocation: SourceLocation = SourceLocation {};
     let mut BestSpelling: str = "";
+    for M in self.macros(true) {
+        let mut Def: DefInfo = M.second.findDirectiveAtLoc(Loc, self.SourceMgr);
+        if !Def || !Def.getMacroInfo() {
+            continue;
+        }
+        if !Def.getMacroInfo().isObjectLike() {
+            continue;
+        }
+        if !MacroDefinitionEquals(Def.getMacroInfo(), Tokens) {
+            continue;
+        }
+        let mut Location: SourceLocation = Def.getLocation();
+        if BestLocation.isInvalid() || (Location.isValid() && self.SourceMgr.isBeforeInTranslationUnit(BestLocation, Location)) {
+            BestLocation = Location;
+            BestSpelling = M.first.getName();
+        }
+    }
     return BestSpelling;
 }
 
 fn Preprocessor::recomputeCurLexerKind(self) {
     if self.InCachingLexMode() {
         self.CurLexerCallback = CLK_CachingLexer;
-    } else if  {
-        
-    } else if  {
+    } else if self.CurLexer {
+        self.CurLexerCallback = if operator(self.CurLexer).isDependencyDirectivesLexer() { CLK_DependencyDirectivesLexer } else { CLK_Lexer };
+    } else if self.CurTokenLexer {
         self.CurLexerCallback = CLK_TokenLexer;
     } else {
         self.CurLexerCallback = CLK_Lexer;
@@ -206,11 +241,11 @@ fn Preprocessor::recomputeCurLexerKind(self) {
 fn Preprocessor::SetCodeCompletionPoint(self, File: FileEntryRef, CompleteLine: u32, CompleteColumn: u32) -> bool {
     assert!(CompleteLine && CompleteColumn, "Starts from 1:1");
     assert!(!self.CodeCompletionFile, "Already set");
-    let mut Buffer: MemoryBufferRef> = zeroed();
-    if operator!() {
+    let mut Buffer: MemoryBufferRef> = self.SourceMgr.getMemoryBufferForFileOrNone(File);
+    if !Buffer {
         return true;
     }
-    let mut Position: *u8 = ();
+    let mut Position: *u8 = operator(Buffer).getBufferStart();
     for let mut Line: u32 = 1; Line < CompleteLine; Line += 1 {
         for ; *Position; Position += 1 {
             if *Position != 13 && *Position != 10 {
@@ -224,18 +259,22 @@ fn Preprocessor::SetCodeCompletionPoint(self, File: FileEntryRef, CompleteLine: 
         }
     }
     Position += CompleteColumn - 1;
-    if  {}
-    if Position > () {
-        Position = ();
+    if self.SkipMainFilePreamble.first && self.SourceMgr.getFileEntryForID(self.SourceMgr.getMainFileID()) == File {
+        if Position - operator(Buffer).getBufferStart() < self.SkipMainFilePreamble.first {
+            Position = operator(Buffer).getBufferStart() + self.SkipMainFilePreamble.first;
+        }
+    }
+    if Position > operator(Buffer).getBufferEnd() {
+        Position = operator(Buffer).getBufferEnd();
     }
     self.CodeCompletionFile = File.operator const clang::FileEntry *();
-    self.CodeCompletionOffset = Position - ();
-    let mut NewBuffer: auto = (() + 1);
-    let mut NewBuf: *mut u8 = ();
-    let mut NewPos: *mut u8 = copy(Position, NewBuf);
+    self.CodeCompletionOffset = Position - operator(Buffer).getBufferStart();
+    let mut NewBuffer: unique_ptr<WritableMemoryBuffer> = getNewUninitMemBuffer(operator(Buffer).getBufferSize() + 1, operator(Buffer).getBufferIdentifier(), nullopt);
+    let mut NewBuf: *mut u8 = operator(NewBuffer).getBufferStart();
+    let mut NewPos: *mut u8 = copy(operator(Buffer).getBufferStart(), Position, NewBuf);
     *NewPos = 0;
-    copy(Position, NewPos + 1);
-    self.SourceMgr(File, move());
+    copy(Position, operator(Buffer).getBufferEnd(), NewPos + 1);
+    self.SourceMgr.overrideFileContents(File, move(NewBuffer));
     return false;
 }
 
@@ -262,9 +301,9 @@ fn Preprocessor::getSpelling(self: *Preprocessor, Tok: *Token, Buffer: *mut Smal
         }
     }
     if Tok.needsCleaning() {
-        Buffer()(Tok.getLength());
+        Buffer.resize(Tok.getLength());
     }
-    let mut Ptr: *u8 = Buffer()();
+    let mut Ptr: *u8 = Buffer.ptr;
     let mut Len: u32 = self.getSpelling(Tok, Ptr, Invalid);
     return Ptr[0..Len];
 }
@@ -272,7 +311,7 @@ fn Preprocessor::getSpelling(self: *Preprocessor, Tok: *Token, Buffer: *mut Smal
 fn Preprocessor::CreateString(self, Str: str, Tok: *mut Token, ExpansionLocStart: SourceLocation, ExpansionLocEnd: SourceLocation) {
     Tok.setLength(Str.len);
     let mut DestPtr: *u8 = null;
-    let mut Loc: SourceLocation = zeroed();
+    let mut Loc: SourceLocation = operator(self.ScratchBuf).getToken(Str.ptr, Str.len, DestPtr);
     if ExpansionLocStart.isValid() {
         Loc = self.SourceMgr.createExpansionLoc(Loc, ExpansionLocStart, ExpansionLocEnd, Str.len, true, 0, 0);
     }
@@ -287,14 +326,14 @@ fn Preprocessor::CreateString(self, Str: str, Tok: *mut Token, ExpansionLocStart
 fn Preprocessor::SplitToken(self, Loc: SourceLocation, Length: u32) -> SourceLocation {
     let mut SM: *mut SourceManager = self.getSourceManager();
     let mut SpellingLoc: SourceLocation = SM.getSpellingLoc(Loc);
-    let mut LocInfo: FileIDAndOffset = zeroed();
+    let mut LocInfo: FileIDAndOffset = SM.getDecomposedLoc(SpellingLoc);
     let mut Invalid: bool = false;
-    let mut Buffer: str = SM.getBufferData(&mut Invalid);
+    let mut Buffer: str = SM.getBufferData(LocInfo.first, &mut Invalid);
     if Invalid {
         return SourceLocation {};
     }
     let mut DestPtr: *u8 = null;
-    let mut Spelling: SourceLocation = zeroed();
+    let mut Spelling: SourceLocation = operator(self.ScratchBuf).getToken(Buffer.ptr + LocInfo.second, Length, DestPtr);
     return SM.createTokenSplitLoc(Spelling, Loc, Loc.getLocWithOffset(Length));
 }
 
@@ -302,14 +341,14 @@ fn Preprocessor::getCurrentModule(self) -> *mut Module {
     if !self.getLangOpts().isCompilingModule() {
         return null;
     }
-    return self.getHeaderSearchInfo()(self.getLangOpts());
+    return self.getHeaderSearchInfo().lookupModule(self.getLangOpts().CurrentModule, SourceLocation {}, true, false);
 }
 
 fn Preprocessor::getCurrentModuleImplementation(self) -> *mut Module {
     if !self.getLangOpts().isCompilingModuleImplementation() {
         return null;
     }
-    return self.getHeaderSearchInfo()(self.getLangOpts());
+    return self.getHeaderSearchInfo().lookupModule(self.getLangOpts().ModuleName, SourceLocation {}, true, false);
 }
 
 fn Preprocessor::EnterMainSourceFile(self) {
@@ -317,47 +356,61 @@ fn Preprocessor::EnterMainSourceFile(self) {
     let mut MainFileID: FileID = self.SourceMgr.getMainFileID();
     let mut MainFileModuleUnitKind: ModuleUnitKind = NotModuleUnit;
     if !self.SourceMgr.isLoadedFileID(MainFileID) {
-        self.EnterSourceFile;
-        if  {
-            self.markIncluded(*);
+        self.EnterSourceFile(MainFileID, null, SourceLocation {}, true);
+        if self.SkipMainFilePreamble.first > 0 {
+            operator(self.CurLexer).SetByteOffset(self.SkipMainFilePreamble.first, self.SkipMainFilePreamble.second);
         }
-        if self.getLangOpts() {
-            let mut Input: optional<StringRef> = zeroed();
-            if !self.isPreprocessedModuleFile() &&  {
-                self.MainFileIsPreprocessedModuleFile = isPreprocessedModuleFile(*);
+        if self.SourceMgr.getFileEntryRefForID(MainFileID) {
+            FE;
+        } else {
+            self.markIncluded(operator(FE));
+        }
+        if self.getLangOpts().CPlusPlusModules {
+            let mut Input: optional<StringRef> = self.getSourceManager().getBufferDataOrNone(MainFileID);
+            if !self.isPreprocessedModuleFile() && Input {
+                self.MainFileIsPreprocessedModuleFile = isPreprocessedModuleFile(operator(Input));
             }
-            if Input() && !self.MainFileIsPreprocessedModuleFile && self.hasDeferredGMFInputs() {
-                MainFileModuleUnitKind = scanInputForCXX20ModuleUnit(*);
+            if Input && !self.MainFileIsPreprocessedModuleFile && self.hasDeferredGMFInputs() {
+                MainFileModuleUnitKind = scanInputForCXX20ModuleUnit(operator(Input));
             }
-            let mut Tracer: auto = make_unique(*self);
-            self.DirTracer = ();
-            let mut FirstPPTok: optional<Token> = zeroed();
-            if FirstPPTok() {
-                self.FirstPPTokenLoc = ();
+            let mut Tracer: NoTrivialPPDirectiveTracer> = make_unique(*self);
+            self.DirTracer = Tracer.get();
+            self.addPPCallbacks(move(Tracer));
+            let mut FirstPPTok: optional<Token> = operator(self.CurLexer).peekNextPPToken();
+            if FirstPPTok {
+                self.FirstPPTokenLoc = operator(FirstPPTok).getLocation();
             }
         }
     }
     if self.hasDeferredGMFInputs() {
         if self.PredefinesWereReplaced {
-            if MainFileModuleUnitKind != NotModuleUnit {}
-        } else if MainFileModuleUnitKind == NotModuleUnit {}
+            if MainFileModuleUnitKind != NotModuleUnit {
+                self.DeferredGMFInputs = move(self.Predefines);
+                self.Predefines.clear();
+            }
+        } else if MainFileModuleUnitKind == NotModuleUnit {
+            operator(self.Predefines, self.DeferredGMFInputs);
+        }
         if MainFileModuleUnitKind == NamedModuleWithoutGlobalModuleFragment {
+            operator(self.Predefines, "# 1 \"<implicit-global-module-fragment>\" 1\nmodule;\n");
             self.HasSynthesizedGMF = true;
-        } else if MainFileModuleUnitKind == NotModuleUnit {}
+        } else if MainFileModuleUnitKind == NotModuleUnit {
+            self.DeferredGMFInputs.clear();
+        }
     }
-    let mut SB: i32 = ;
-    (((operator!(operator!((SB() && "Cannot create predefined source buffer")))) || (_wassert(L"SB && \"Cannot create predefined source buffer\"", L"clang\\lib\\Lex\\Preprocessor.cpp", (673) as u32) , 0)) as void);
-    let mut FID: FileID = self.SourceMgr(move());
+    let mut SB: MemoryBuffer> = getMemBufferCopy(self.Predefines, "<built-in>");
+    assert!(SB, "Cannot create predefined source buffer");
+    let mut FID: FileID = self.SourceMgr.createFileID(move(SB), C_User, 0, 0, SourceLocation {});
     assert!(FID.isValid(), "Could not create FileID for predefines?");
     self.setPredefinesFileID(FID);
-    self.EnterSourceFile;
-    if operator!(self.PPOpts()) {
-        let mut File: OptionalFileEntryRef = zeroed();
-        if operator!() {
-             << self.PPOpts;
+    self.EnterSourceFile(FID, null, SourceLocation {}, true);
+    if !self.PPOpts.PCHThroughHeader.is_empty() {
+        let mut File: OptionalFileEntryRef = self.LookupFile(SourceLocation {}, self.PPOpts.PCHThroughHeader, false, null, null, null, null, null, null, null, null, false, true, true);
+        if !File {
+            self.Diag(SourceLocation {}, err_pp_through_header_not_found) << self.PPOpts.PCHThroughHeader;
             return;
         }
-        self.setPCHThroughHeaderFileID(self.SourceMgr(*, SourceLocation {}, C_User));
+        self.setPCHThroughHeaderFileID(self.SourceMgr.createFileID(operator(File), SourceLocation {}, C_User, 0, 0));
     }
     if (self.usingPCHWithThroughHeader() && self.SkippingUntilPCHThroughHeader) || (self.usingPCHWithPragmaHdrStop() && self.SkippingUntilPragmaHdrStop) {
         self.SkipTokensWhileUsingPCH();
@@ -368,9 +421,10 @@ fn Preprocessor::EnterDeferredGMFInputs(self, IncludeLoc: SourceLocation) {
     if !self.hasDeferredGMFInputs() {
         return;
     }
-    let mut MB: i32 = ;
-    self.DeferredGMFInputsFileID = self.SourceMgr(move(), C_User, 0, 0, IncludeLoc);
-    self.EnterSourceFile;
+    let mut MB: MemoryBuffer> = getMemBufferCopy(self.DeferredGMFInputs, "<gmf-command-line-inputs>");
+    self.DeferredGMFInputs.clear();
+    self.DeferredGMFInputsFileID = self.SourceMgr.createFileID(move(MB), C_User, 0, 0, IncludeLoc);
+    self.EnterSourceFile(self.DeferredGMFInputsFileID, null, IncludeLoc, true);
 }
 
 fn Preprocessor::setPCHThroughHeaderFileID(self, FID: FileID) {
@@ -384,11 +438,11 @@ fn Preprocessor::isPCHThroughHeader(self, FE: *FileEntry) -> bool {
 }
 
 fn Preprocessor::creatingPCHWithThroughHeader(self) -> bool {
-    return self.TUKind == TU_Prefix && operator!(self.PPOpts()) && self.PCHThroughHeaderFileID.isValid();
+    return self.TUKind == TU_Prefix && !self.PPOpts.PCHThroughHeader.is_empty() && self.PCHThroughHeaderFileID.isValid();
 }
 
 fn Preprocessor::usingPCHWithThroughHeader(self) -> bool {
-    return self.TUKind != TU_Prefix && operator!(self.PPOpts()) && self.PCHThroughHeaderFileID.isValid();
+    return self.TUKind != TU_Prefix && !self.PPOpts.PCHThroughHeader.is_empty() && self.PCHThroughHeaderFileID.isValid();
 }
 
 fn Preprocessor::creatingPCHWithPragmaHdrStop(self) -> bool {
@@ -405,7 +459,7 @@ fn Preprocessor::SkipTokensWhileUsingPCH(self) {
     let mut UsingPragmaHdrStop: bool = self.SkippingUntilPragmaHdrStop;
     let mut Tok: Token = Token {};
     while true {
-        let mut InPredefines: bool = false;
+        let mut InPredefines: bool = (self.CurLexer && operator(self.CurLexer).getFileID() == self.getPredefinesFileID());
         self.CurLexerCallback(*self, Tok);
         if Tok.is(eof) && !InPredefines {
             ReachedMainFileEOF = true;
@@ -420,24 +474,29 @@ fn Preprocessor::SkipTokensWhileUsingPCH(self) {
     }
     if ReachedMainFileEOF {
         if UsingPCHThroughHeader {
-            << self.PPOpts << 1;
+            self.Diag(SourceLocation {}, err_pp_through_header_not_seen) << self.PPOpts.PCHThroughHeader << 1;
         } else if !self.PPOpts.PCHWithHdrStopCreate {
-            
+            self.Diag(SourceLocation {}, err_pp_pragma_hdrstop_not_seen);
         }
     }
 }
 
 fn Preprocessor::replayPreambleConditionalStack(self) {
-    if  {
+    if self.PreambleConditionalStack.isReplaying() {
         assert!(self.CurPPLexer, "CurPPLexer is null when calling replayPreambleConditionalStack.");
-        self.CurPPLexer.setConditionalLevels;
-        if  {
-            self.SkipExcludedConditionalBlock;
+        self.CurPPLexer.setConditionalLevels(self.PreambleConditionalStack.getStack());
+        self.PreambleConditionalStack.doneReplaying();
+        if self.PreambleConditionalStack.reachedEOFWhileSkipping() {
+            self.SkipExcludedConditionalBlock(operator(self.PreambleConditionalStack.SkipInfo).HashTokenLoc, operator(self.PreambleConditionalStack.SkipInfo).IfTokenLoc, operator(self.PreambleConditionalStack.SkipInfo).FoundNonSkipPortion, operator(self.PreambleConditionalStack.SkipInfo).FoundElse, operator(self.PreambleConditionalStack.SkipInfo).ElseLoc);
         }
     }
 }
 
-fn Preprocessor::EndSourceFile(self) {}
+fn Preprocessor::EndSourceFile(self) {
+    if self.Callbacks {
+        operator(self.Callbacks).EndOfMainFile();
+    }
+}
 
 fn Preprocessor::LookUpIdentifierInfo(self: *Preprocessor, Identifier: *mut Token) -> *mut IdentifierInfo {
     assert!(!Identifier.getRawIdentifier().is_empty(), "No raw identifier data!");
@@ -445,12 +504,12 @@ fn Preprocessor::LookUpIdentifierInfo(self: *Preprocessor, Identifier: *mut Toke
     if !Identifier.needsCleaning() && !Identifier.hasUCN() {
         II = self.getIdentifierInfo(Identifier.getRawIdentifier());
     } else {
-        let mut IdentifierBuffer: str = zeroed();
-        let mut CleanedStr: str = (Identifier);
+        let mut IdentifierBuffer: str = "";
+        let mut CleanedStr: str = self.getSpelling(Identifier, IdentifierBuffer, null);
         if Identifier.hasUCN() {
-            let mut UCNIdentifierBuffer: str = zeroed();
-            expandUCNs(CleanedStr);
-            II = self.getIdentifierInfo();
+            let mut UCNIdentifierBuffer: str = "";
+            expandUCNs(UCNIdentifierBuffer, CleanedStr);
+            II = self.getIdentifierInfo(UCNIdentifierBuffer.operator StringRef());
         } else {
             II = self.getIdentifierInfo(CleanedStr);
         }
@@ -460,7 +519,9 @@ fn Preprocessor::LookUpIdentifierInfo(self: *Preprocessor, Identifier: *mut Toke
     return II;
 }
 
-fn Preprocessor::SetPoisonReason(self, II: *mut IdentifierInfo, DiagID: u32) {}
+fn Preprocessor::SetPoisonReason(self, II: *mut IdentifierInfo, DiagID: u32) {
+    self.PoisonReasons[II] = DiagID;
+}
 
 fn Preprocessor::PoisonSEHIdentifiers(self, Poison: bool) {
     assert!(self.Ident__exception_code && self.Ident__exception_info);
@@ -478,11 +539,11 @@ fn Preprocessor::PoisonSEHIdentifiers(self, Poison: bool) {
 
 fn Preprocessor::HandlePoisonedIdentifier(self, Identifier: *mut Token) {
     assert!(Identifier.getIdentifierInfo(), "Can't handle identifiers without identifier info!");
-    let mut it: i32 = 0;
-    if  {
-        
+    let mut it: const_iterator = self.PoisonReasons.find(Identifier.getIdentifierInfo());
+    if it == self.PoisonReasons.end() {
+        self.Diag(Identifier, err_pp_used_poisoned_id);
     } else {
-        (Identifier) << Identifier.getIdentifierInfo();
+        self.Diag(Identifier, operator(it).second) << Identifier.getIdentifierInfo();
     }
 }
 
@@ -517,28 +578,28 @@ fn Preprocessor::HandleIdentifier(self, Identifier: *mut Token) -> bool {
         assert!(MI, "macro definition with no macro info?");
         if !self.DisableMacroExpansion {
             if !Identifier.isExpandDisabled() && MI.isEnabled() {
-                if !MI.isFunctionLike() ||  {
+                if !MI.isFunctionLike() || self.isNextPPTokenOneOf(l_paren) {
                     return self.HandleMacroExpandedIdentifier(Identifier, MD);
                 }
             } else {
                 Identifier.setFlag(DisableExpand);
-                if MI.isObjectLike() ||  {
-                    
+                if MI.isObjectLike() || self.isNextPPTokenOneOf(l_paren) {
+                    self.Diag(Identifier, pp_disabled_macro_expansion);
                 }
             }
         }
     }
     if II.isFutureCompatKeyword() && !self.DisableMacroExpansion {
-        self.Diag(Identifier, self.getIdentifierTable().getFutureCompatDiagKind(II, self.getLangOpts()));
+        self.Diag(Identifier, self.getIdentifierTable().getFutureCompatDiagKind(II, self.getLangOpts())) << II.getName();
         II.setIsFutureCompatKeyword(false);
     }
     if II.IsKeywordInCPlusPlus() && !self.DisableMacroExpansion {
-        << &mut II;
+        self.Diag(Identifier, warn_pp_identifier_is_cpp_keyword) << &mut II;
     }
     if II.isExtensionToken() && !self.DisableMacroExpansion {
-        
+        self.Diag(Identifier, ext_token_used);
     }
-    if  {
+    if self.getLangOpts().CPlusPlusModules && self.CurLexer && !operator(self.CurLexer).isLexingRawMode() && !operator(self.CurLexer).isPragmaLexer() && !operator(self.CurLexer).ParsingPreprocessorDirective && Identifier.isModuleContextualKeyword(true) && self.HandleModuleContextualKeyword(Identifier) {
         self.HandleDirective(Identifier);
         return self.hadModuleLoaderFatalFailure();
     }
@@ -558,7 +619,7 @@ fn Preprocessor::Lex(self, Result: *mut Token) {
         self.setCodeCompletionTokenRange(Result.getLocation(), Result.getEndLoc());
         Result.setIdentifierInfo(null);
     }
-    if self.getLangOpts() && self.LexLevel == 1 && !Result.getFlag(IsReinjected) {
+    if self.getLangOpts().CPlusPlusModules && self.LexLevel == 1 && !Result.getFlag(IsReinjected) {
         match Result.getKind() {
             l_paren => {
                 l_square;
@@ -581,7 +642,7 @@ fn Preprocessor::Lex(self, Result: *mut Token) {
                 }
             },
             colon => {
-                
+                self.ModuleDeclState.handleColon();
             },
             kw_import => {
                 if self.StdCXXImportSeqState.atTopLevel() {
@@ -595,39 +656,47 @@ fn Preprocessor::Lex(self, Result: *mut Token) {
                         Result.setFlag(HasSeenNoTrivialPPDirective);
                     }
                     self.TrackGMFState.handleModule(self.StdCXXImportSeqState.afterTopLevelSeq());
+                    self.ModuleDeclState.handleModule();
                 }
             },
             annot_module_name => {
-                
+                self.ModuleDeclState.handleModuleName(Result.getAnnotationValue() as *mut ModuleNameLoc);
             },
             _ => {
                 self.TrackGMFState.handleMisc();
             },
         }
     }
-    if  {
+    if self.RecordCheckPoints && self.CurLexer && self.CheckPointCounter += 1 == CheckPointStepSize {
+        self.CheckPoints[operator(self.CurLexer).getFileID()].push(operator(self.CurLexer).BufferPtr);
         self.CheckPointCounter = 0;
     }
     if Result.isNot(kw_export) {
         self.LastExportKeyword.startToken();
     }
     self.LexLevel -= 1;
+    if self.LexLevel == 0 && !self.PendingDestroyLexers.is_empty() {
+        self.PendingDestroyLexers.clear();
+    }
     if (self.LexLevel == 0 || self.PreprocessToken) && !Result.getFlag(IsReinjected) {
         if self.LexLevel == 0 {
             self.TokenCount += 1;
         }
+        if self.OnToken {
+            self.OnToken.call(Result);
+        }
     }
 }
 
-fn Preprocessor::LexTokensUntilEOF(self, Tokens: *mut i32) {
+fn Preprocessor::LexTokensUntilEOF(self, Tokens: *mut []Token) {
     while 1 {
         let mut Tok: Token = Token {};
         self.Lex(Tok);
-        if Tok {
+        if Tok.isOneOf(unknown, eof, eod, annot_repl_input_end) {
             break;
         }
-        if Tokens() != null {
-            Tokens()(Tok);
+        if Tokens != null {
+            Tokens.push(Tok);
         }
     }
 }
@@ -642,19 +711,19 @@ fn Preprocessor::LexHeaderName(self, FilenameTok: *mut Token, AllowMacroExpansio
     } else {
         self.Lex(FilenameTok);
     }
-    let mut FilenameBuffer: str = zeroed();
+    let mut FilenameBuffer: str = "";
     if FilenameTok.is(less) && AllowMacroExpansion {
         let mut StartOfLine: bool = FilenameTok.isAtStartOfLine();
         let mut LeadingSpace: bool = FilenameTok.hasLeadingSpace();
         let mut LeadingEmptyMacro: bool = FilenameTok.hasLeadingEmptyMacro();
         let mut Start: SourceLocation = FilenameTok.getLocation();
         let mut End: SourceLocation = SourceLocation {};
-        FilenameBuffer()('<');
+        FilenameBuffer.push('<');
         while FilenameTok.isNot(greater) {
             self.Lex(FilenameTok);
-            if FilenameTok {
-                 << greater;
-                 << less;
+            if FilenameTok.isOneOf(eod, eof) {
+                self.Diag(FilenameTok.getLocation(), err_expected) << greater;
+                self.Diag(Start, note_matching) << less;
                 return true;
             }
             End = FilenameTok.getLocation();
@@ -664,17 +733,17 @@ fn Preprocessor::LexHeaderName(self, FilenameTok: *mut Token, AllowMacroExpansio
                 continue;
             }
             if FilenameTok.hasLeadingSpace() {
-                FilenameBuffer()(' ');
+                FilenameBuffer.push(' ');
             }
-            let mut PreAppendSize: u64 = ();
-            FilenameBuffer()(PreAppendSize + FilenameTok.getLength());
-            let mut BufPtr: *u8 = operator&([PreAppendSize]);
+            let mut PreAppendSize: u64 = FilenameBuffer.len;
+            FilenameBuffer.resize(PreAppendSize + FilenameTok.getLength());
+            let mut BufPtr: *u8 = &mut FilenameBuffer[PreAppendSize];
             let mut ActualLen: u32 = self.getSpelling(FilenameTok, BufPtr, null);
-            if BufPtr != operator&([PreAppendSize]) {
-                memcpy(operator&([PreAppendSize]), BufPtr, ActualLen);
+            if BufPtr != &mut FilenameBuffer[PreAppendSize] {
+                memcpy(&mut FilenameBuffer[PreAppendSize], BufPtr, ActualLen);
             }
             if FilenameTok.getLength() != ActualLen {
-                FilenameBuffer()(PreAppendSize + ActualLen);
+                FilenameBuffer.resize(PreAppendSize + ActualLen);
             }
         }
         FilenameTok.startToken();
@@ -682,9 +751,9 @@ fn Preprocessor::LexHeaderName(self, FilenameTok: *mut Token, AllowMacroExpansio
         FilenameTok.setFlagValue(StartOfLine, StartOfLine);
         FilenameTok.setFlagValue(LeadingSpace, LeadingSpace);
         FilenameTok.setFlagValue(LeadingEmptyMacro, LeadingEmptyMacro);
-        self.CreateString(FilenameTok, Start, End);
+        self.CreateString(FilenameBuffer.operator StringRef(), FilenameTok, Start, End);
     } else if FilenameTok.is(string_literal) && AllowMacroExpansion {
-        let mut Str: str = (FilenameTok);
+        let mut Str: str = self.getSpelling(FilenameTok, FilenameBuffer, null);
         if Str.len >= 2 && Str.front() == '"' && Str.back() == '"' {
             FilenameTok.setKind(header_name);
         }
@@ -693,27 +762,52 @@ fn Preprocessor::LexHeaderName(self, FilenameTok: *mut Token, AllowMacroExpansio
 }
 
 fn Preprocessor::peekNextPPToken(self: *Preprocessor) -> optional<Token> {
-    let mut Val: optional<Token> = zeroed();
-    if operator!() {
+    let mut Val: optional<Token> = optional<Token> {};
+    if self.CurLexer {
+        Val = operator(self.CurLexer).peekNextPPToken();
+    } else {
+        Val = operator(self.CurTokenLexer).peekNextPPToken();
+    }
+    if !Val {
         if self.CurPPLexer {
-            return nullopt();
+            return nullopt;
+        }
+        for Entry in reverse(self.IncludeMacroStack) {
+            if Entry.TheLexer {
+                Val = operator(Entry.TheLexer).peekNextPPToken();
+            } else {
+                Val = operator(Entry.TheTokenLexer).peekNextPPToken();
+            }
+            if Val {
+                break;
+            }
+            if Entry.ThePPLexer {
+                return nullopt;
+            }
         }
     }
-    return ;
+    return Val;
 }
 
 fn ModuleLoader::getFlatNameFromPath(self, Path: ModuleIdPath) -> str {
-    let mut Name: str = zeroed();
-    if Path()() {
-        return ;
+    let mut Name: str = "";
+    if Path.is_empty() {
+        return Name;
     }
-    return ;
+    for Piece in Path {
+        assert!(Piece.getIdentifierInfo() && Piece.getLoc().isValid();
+        if !Name.is_empty() {
+            operator(Name, ".");
+        }
+        operator(Name, Piece.getIdentifierInfo().getName());
+    }
+    return Name;
 }
 
 fn ModuleNameLoc::Create(self, PP: *mut Preprocessor, Path: ModuleIdPath) -> *mut ModuleNameLoc {
-    (((operator!(operator!((operator!() && "expect at least one identifier in a module name")))) || (_wassert(L"!Path.empty() && \"expect at least one identifier in a module name\"", L"clang\\lib\\Lex\\Preprocessor.cpp", (1267) as u32) , 0)) as void);
-    let mut Mem: *mut void = PP()()(totalSizeToAlloc(), alignof);
-    return ;
+    assert!(!Path.is_empty(), "expect at least one identifier in a module name");
+    let mut Mem: *mut void = PP.getPreprocessorAllocator().Allocate(totalSizeToAlloc(Path.len), alignof);
+    return Path;
 }
 
 fn Preprocessor::LexModuleNameContinue(self, Tok: *mut Token, UseLoc: SourceLocation, Suffix: *mut SmallVectorImpl<Token>, Path: *mut SmallVectorImpl<IdentifierLoc>, AllowMacroExpansion: bool, IsPartition: bool) -> bool {
@@ -721,18 +815,19 @@ fn Preprocessor::LexModuleNameContinue(self, Tok: *mut Token, UseLoc: SourceLoca
     while true {
         if Tok.isNot(identifier) {
             if Tok.is(code_completion) {
-                self.CodeComplete.CodeCompleteModuleImport;
+                operator(self.CurLexer).cutOffLexing();
+                self.CodeComplete.CodeCompleteModuleImport(UseLoc, Path);
                 return true;
             }
-             << Path()();
+            self.Diag(Tok, err_pp_module_expected_ident) << Path.is_empty();
             return true;
         }
         let mut MI: *mut MacroInfo = self.getMacroInfo(Tok.getIdentifierInfo());
-        if MI && MI.isObjectLike() && self.getLangOpts() && !AllowMacroExpansion {
-             << IsPartition << Tok.getIdentifierInfo();
-             << Tok.getIdentifierInfo();
+        if MI && MI.isObjectLike() && self.getLangOpts().CPlusPlus20 && !AllowMacroExpansion {
+            self.Diag(Tok, err_pp_module_name_is_macro) << IsPartition << Tok.getIdentifierInfo();
+            self.Diag(MI.getDefinitionLoc(), note_macro_here) << Tok.getIdentifierInfo();
         }
-        Path()(Tok.getLocation(), Tok.getIdentifierInfo());
+        Path.push(Tok.getLocation(), Tok.getIdentifierInfo());
         ConsumeToken.call();
         if Tok.isNot(period) {
             return false;
@@ -743,27 +838,27 @@ fn Preprocessor::LexModuleNameContinue(self, Tok: *mut Token, UseLoc: SourceLoca
 
 fn Preprocessor::HandleModuleName(self, DirType: str, UseLoc: SourceLocation, Tok: *mut Token, Path: *mut SmallVectorImpl<IdentifierLoc>, DirToks: *mut SmallVectorImpl<Token>, AllowMacroExpansion: bool, IsPartition: bool) -> bool {
     let mut LeadingSpace: bool = Tok.hasLeadingSpace();
-    let mut NumToksInDirective: u32 = DirToks()();
+    let mut NumToksInDirective: u32 = DirToks.len;
     if self.LexModuleNameContinue(Tok, UseLoc, DirToks, Path, AllowMacroExpansion, IsPartition) {
         if Tok.isNot(eod) {
             self.CheckEndOfDirective(DirType, false, &mut DirToks);
         }
-        self.EnterModuleSuffixTokenStream;
+        self.EnterModuleSuffixTokenStream(DirToks);
         return true;
     }
-    DirToks()(NumToksInDirective);
+    DirToks.resize(NumToksInDirective);
     let mut NameLoc: *mut ModuleNameLoc = Create(*self, Path);
-    DirToks()();
-    DirToks()()(annot_module_name);
-    DirToks()()(NameLoc.getRange());
-    DirToks()()(NameLoc as *mut void);
-    DirToks()()(LeadingSpace, LeadingSpace);
-    DirToks()(Tok);
+    DirToks.push();
+    DirToks.back().setKind(annot_module_name);
+    DirToks.back().setAnnotationRange(NameLoc.getRange());
+    DirToks.back().setAnnotationValue(NameLoc as *mut void);
+    DirToks.back().setFlagValue(LeadingSpace, LeadingSpace);
+    DirToks.push(Tok);
     return false;
 }
 
 fn Preprocessor::HandleModuleContextualKeyword(self, Result: *mut Token) -> bool {
-    if operator!(self.getLangOpts()) || !Result.isModuleContextualKeyword(true) {
+    if !self.getLangOpts().CPlusPlusModules || !Result.isModuleContextualKeyword(true) {
         return false;
     }
     if Result.is(kw_export) {
@@ -785,13 +880,15 @@ fn Preprocessor::HandleModuleContextualKeyword(self, Result: *mut Token) -> bool
         return false;
     }
     assert!(self.CurPPLexer, "CurPPLexer must not be null");
-    let mut SavedParsingPreprocessorDirective: SaveAndRestore<bool> = zeroed();
+    let mut SavedParsingPreprocessorDirective: SaveAndRestore<bool> = SaveAndRestore<bool> { self.CurPPLexer.ParsingPreprocessorDirective, true };
     if II.isModuleKeyword() {
-        if  {
-            if NextTok()(raw_identifier) {
-                self.LookUpIdentifierInfo(*);
+        if self.peekNextPPToken() {
+            NextTok;
+        } else {
+            if operator(NextTok).is(raw_identifier) {
+                self.LookUpIdentifierInfo(operator(NextTok));
             }
-            if NextTok()(identifier, colon, semi) {
+            if operator(NextTok).isOneOf(identifier, colon, semi) {
                 Result.setKind(kw_module);
                 self.ModuleDeclLoc = Result.getLocation();
                 return true;
@@ -800,12 +897,14 @@ fn Preprocessor::HandleModuleContextualKeyword(self, Result: *mut Token) -> bool
         return false;
     }
     if II.isImportKeyword() {
-        let mut SavedParsingFilename: SaveAndRestore<bool> = zeroed();
-        if  {
-            if NextTok()(raw_identifier) {
-                self.LookUpIdentifierInfo(*);
+        let mut SavedParsingFilename: SaveAndRestore<bool> = SaveAndRestore<bool> { self.CurPPLexer.ParsingFilename, true };
+        if self.peekNextPPToken() {
+            NextTok;
+        } else {
+            if operator(NextTok).is(raw_identifier) {
+                self.LookUpIdentifierInfo(operator(NextTok));
             }
-            if NextTok()(header_name, identifier, colon, less, code_completion) {
+            if operator(NextTok).isOneOf(header_name, identifier, colon, less, code_completion) {
                 Result.setKind(kw_import);
                 self.ModuleImportLoc = Result.getLocation();
                 return true;
@@ -818,15 +917,15 @@ fn Preprocessor::HandleModuleContextualKeyword(self, Result: *mut Token) -> bool
 
 fn Preprocessor::CollectPPImportSuffixAndEnterStream(self, Toks: *mut SmallVectorImpl<Token>, StopUntilEOD: bool) -> bool {
     self.CollectPPImportSuffix(Toks, false);
-    self.EnterModuleSuffixTokenStream;
+    self.EnterModuleSuffixTokenStream(Toks);
     return false;
 }
 
 fn Preprocessor::CollectPPImportSuffix(self, Toks: *mut SmallVectorImpl<Token>, StopUntilEOD: bool) {
     while true {
-        Toks()();
-        self.Lex(Toks()());
-        match Toks()()() {
+        Toks.push();
+        self.Lex(Toks.back());
+        match Toks.back().getKind() {
             semi => {
                 if !StopUntilEOD {
                     return;
@@ -843,29 +942,34 @@ fn Preprocessor::CollectPPImportSuffix(self, Toks: *mut SmallVectorImpl<Token>, 
 }
 
 fn Preprocessor::EnterModuleSuffixTokenStream(self, Toks: ArrayRef<Token>) {
-    if Toks()() {
+    if Toks.is_empty() {
         return;
     }
-    let mut ToksCopy: auto = make_unique();
-    copy();
-    (move(), false, false);
+    let mut ToksCopy: []Token = make_unique(Toks.len);
+    copy(Toks.begin(), Toks.end(), ToksCopy.get());
+    self.EnterTokenStream(move(ToksCopy), Toks.len, false, false);
+    assert!(self.CurTokenLexer, "Must have a TokenLexer");
+    operator(self.CurTokenLexer).setLexingCXXModuleDirective(true);
 }
 
 fn Preprocessor::makeModuleVisible(self, M: *mut Module, Loc: SourceLocation, IncludeExports: bool) {
-    self.CurSubmoduleState(M, Loc, IncludeExports, Closure_2 {}, Closure_3 { cap_0: self });
+    self.CurSubmoduleState.VisibleModules.setVisible(M, Loc, IncludeExports, VisibleCallback { Closure_2 {}, null, null }, ConflictCallback { Closure_3 { cap_0: self }, null, null });
+    if !self.BuildingSubmoduleStack.is_empty() && M != self.BuildingSubmoduleStack.back().M {
+        self.BuildingSubmoduleStack.back().M.Imports.push(M);
+    }
 }
 
 fn Preprocessor::FinishLexStringLiteral(self, Result: *mut Token, String: *mut str, DiagnosticTag: *u8, AllowMacroExpansion: bool) -> bool {
     if Result.isNot(string_literal) {
-         << 0 << DiagnosticTag;
+        self.Diag(Result, err_expected_string_literal) << 0 << DiagnosticTag;
         return false;
     }
-    let mut StrToks: SmallVector<Token, 4> = zeroed();
+    let mut StrToks: SmallVector<Token, 4> = SmallVector<Token, 4> {};
     while true {
         {
-        StrToks()(Result);
+        StrToks.push(Result);
         if Result.hasUDSuffix() {
-            
+            self.Diag(Result, err_invalid_string_udl);
         }
         if AllowMacroExpansion {
             self.Lex(Result);
@@ -875,24 +979,24 @@ fn Preprocessor::FinishLexStringLiteral(self, Result: *mut Token, String: *mut s
     }
         if !(Result.is(string_literal)) { break; }
     }
-    let mut Literal: StringLiteralParser = StrToks();
+    let mut Literal: StringLiteralParser = StringLiteralParser { StrToks, *self, Evaluated, CA_NoConversion };
     assert!(Literal.isOrdinary(), "Didn't allow wide strings in");
     if Literal.hadError {
         return false;
     }
     if Literal.Pascal {
-         << 0 << DiagnosticTag;
+        self.Diag(StrToks[0].getLocation(), err_expected_string_literal) << 0 << DiagnosticTag;
         return false;
     }
-    String(Literal.GetString());
+    String = Literal.GetString()[0..allocator<char> {}];
     return true;
 }
 
 fn Preprocessor::parseSimpleIntegerLiteral(self, Tok: *mut Token, Value: *mut u64) -> bool {
     assert!(Tok.is(numeric_constant);
-    let mut IntegerBuffer: str = zeroed();
+    let mut IntegerBuffer: str = "";
     let mut NumberInvalid: bool = false;
-    let mut Spelling: str = (Tok, &mut NumberInvalid);
+    let mut Spelling: str = self.getSpelling(Tok, IntegerBuffer, &mut NumberInvalid);
     if NumberInvalid {
         return false;
     }
@@ -911,15 +1015,23 @@ fn Preprocessor::parseSimpleIntegerLiteral(self, Tok: *mut Token, Value: *mut u6
 
 fn Preprocessor::addCommentHandler(self, Handler: *mut CommentHandler) {
     assert!(Handler, "NULL comment handler");
-    (((operator!(operator!((operator!(is_contained(Handler)) && "Comment handler already registered")))) || (_wassert(L"!llvm::is_contained(CommentHandlers, Handler) && \"Comment handler already registered\"", L"clang\\lib\\Lex\\Preprocessor.cpp", (1568) as u32) , 0)) as void);
+    assert!(!is_contained(self.CommentHandlers, Handler), "Comment handler already registered");
+    self.CommentHandlers.push(Handler);
 }
 
 fn Preprocessor::removeCommentHandler(self, Handler: *mut CommentHandler) {
-    let mut Pos: i32 = find(Handler);
+    let mut Pos: []*mut CommentHandler = find(self.CommentHandlers, Handler);
+    assert!(!Pos == self.CommentHandlers.end(), "Comment handler not registered");
+    self.CommentHandlers.erase(Pos);
 }
 
 fn Preprocessor::HandleComment(self, result: *mut Token, Comment: SourceRange) -> bool {
     let mut AnyPendingTokens: bool = false;
+    for H in self.CommentHandlers {
+        if H.HandleComment(*self, Comment) {
+            AnyPendingTokens = true;
+        }
+    }
     if !AnyPendingTokens || self.getCommentRetentionState() {
         return false;
     }
@@ -929,45 +1041,45 @@ fn Preprocessor::HandleComment(self, result: *mut Token, Comment: SourceRange) -
 
 fn Preprocessor::emitMacroDeprecationWarning(self: *Preprocessor, Identifier: *Token) {
     let mut A: *MacroAnnotations = self.getMacroAnnotations(Identifier.getIdentifierInfo());
-    (((operator!(operator!((A() && "Macro deprecation warning without recorded annotation!")))) || (_wassert(L"A.DeprecationInfo && \"Macro deprecation warning without recorded annotation!\"", L"clang\\lib\\Lex\\Preprocessor.cpp", (1595) as u32) , 0)) as void);
-    let mut Info: *MacroAnnotationInfo = *A();
-    if Info()() {
-        << Identifier.getIdentifierInfo() << 0;
+    assert!(A.DeprecationInfo, "Macro deprecation warning without recorded annotation!");
+    let mut Info: *MacroAnnotationInfo = operator(A.DeprecationInfo);
+    if Info.Message.is_empty() {
+        self.Diag(Identifier, warn_pragma_deprecated_macro_use) << Identifier.getIdentifierInfo() << 0;
     } else {
-        << Identifier.getIdentifierInfo() << 1 << Info();
+        self.Diag(Identifier, warn_pragma_deprecated_macro_use) << Identifier.getIdentifierInfo() << 1 << Info.Message;
     }
-     << 0;
+    self.Diag(Info.Location, note_pp_macro_annotation) << 0;
 }
 
 fn Preprocessor::emitRestrictExpansionWarning(self: *Preprocessor, Identifier: *Token) {
     let mut A: *MacroAnnotations = self.getMacroAnnotations(Identifier.getIdentifierInfo());
-    (((operator!(operator!((A() && "Macro restricted expansion warning without recorded annotation!")))) || (_wassert(L"A.RestrictExpansionInfo && \"Macro restricted expansion warning without recorded annotation!\"", L"clang\\lib\\Lex\\Preprocessor.cpp", (1610) as u32) , 0)) as void);
-    let mut Info: *MacroAnnotationInfo = *A();
-    if Info()() {
-        << Identifier.getIdentifierInfo() << 0;
+    assert!(A.RestrictExpansionInfo, "Macro restricted expansion warning without recorded annotation!");
+    let mut Info: *MacroAnnotationInfo = operator(A.RestrictExpansionInfo);
+    if Info.Message.is_empty() {
+        self.Diag(Identifier, warn_pragma_restrict_expansion_macro_use) << Identifier.getIdentifierInfo() << 0;
     } else {
-        << Identifier.getIdentifierInfo() << 1 << Info();
+        self.Diag(Identifier, warn_pragma_restrict_expansion_macro_use) << Identifier.getIdentifierInfo() << 1 << Info.Message;
     }
-     << 1;
+    self.Diag(Info.Location, note_pp_macro_annotation) << 1;
 }
 
 fn Preprocessor::emitRestrictInfNaNWarning(self: *Preprocessor, Identifier: *Token, DiagSelection: u32) {
-     << DiagSelection << 1;
+    self.Diag(Identifier, warn_fp_nan_inf_when_disabled) << DiagSelection << 1;
 }
 
 fn Preprocessor::emitFinalMacroWarning(self: *Preprocessor, Identifier: *Token, IsUndef: bool) {
     let mut A: *MacroAnnotations = self.getMacroAnnotations(Identifier.getIdentifierInfo());
-    (((operator!(operator!((A() && "Final macro warning without recorded annotation!")))) || (_wassert(L"A.FinalAnnotationLoc && \"Final macro warning without recorded annotation!\"", L"clang\\lib\\Lex\\Preprocessor.cpp", (1631) as u32) , 0)) as void);
-     << Identifier.getIdentifierInfo() << (if IsUndef { 0 } else { 1 });
-     << 2;
+    assert!(A.FinalAnnotationLoc, "Final macro warning without recorded annotation!");
+    self.Diag(Identifier, warn_pragma_final_macro) << Identifier.getIdentifierInfo() << (if IsUndef { 0 } else { 1 });
+    self.Diag(operator(A.FinalAnnotationLoc), note_pp_macro_annotation) << 2;
 }
 
 fn Preprocessor::isSafeBufferOptOut(self: *Preprocessor, SourceMgr: *SourceManager, Loc: *SourceLocation) -> bool {
     let mut TestInMap: Closure_4 = Closure_4 { SourceMgr: &mut SourceMgr };
     if SourceMgr.isLocalSourceLocation(Loc) {
-        return TestInMap(Loc);
+        return TestInMap.call(self.SafeBufferOptOutMap, Loc);
     }
-    let mut LoadedRegions: *SafeBufferOptOutRegionsTy = null;
+    let mut LoadedRegions: *SafeBufferOptOutRegionsTy = self.LoadedSafeBufferOptOutMap.lookupLoadedOptOutMap(Loc, SourceMgr);
     if LoadedRegions {
         return TestInMap.call(*LoadedRegions, Loc);
     }
@@ -981,18 +1093,20 @@ fn Preprocessor::enterOrExitSafeBufferOptOutRegion(self, isEnter: bool, Loc: *So
         }
         self.InSafeBufferOptOutRegion = true;
         self.CurrentSafeBufferOptOutStart = Loc;
-        if  {
-            let mut PrevRegion: *mut auto = null;
-            (((operator!(operator!((PrevRegion() !=  && "Shall not begin a safe buffer opt-out region before closing the previous one.")))) || (_wassert(L"PrevRegion->first != PrevRegion->second && \"Shall not begin a safe buffer opt-out region before closing the \" \"previous one.\"", L"clang\\lib\\Lex\\Preprocessor.cpp", (1706) as u32) , 0)) as void);
+        if !self.SafeBufferOptOutMap.is_empty() {
+            let mut PrevRegion: *mut SourceLocation> = &mut self.SafeBufferOptOutMap.back();
+            assert!(PrevRegion.first != PrevRegion.second, "Shall not begin a safe buffer opt-out region before closing the previous one.");
         }
+        self.SafeBufferOptOutMap.push(Loc, Loc);
     } else {
         if !self.isPPInSafeBufferOptOutRegion() {
             return true;
         }
         self.InSafeBufferOptOutRegion = false;
-        let mut CurrRegion: *mut auto = null;
-        (((operator!(operator!((CurrRegion() ==  && "Set end location to a closed safe buffer opt-out region")))) || (_wassert(L"CurrRegion->first == CurrRegion->second && \"Set end location to a closed safe buffer opt-out region\"", L"clang\\lib\\Lex\\Preprocessor.cpp", (1723) as u32) , 0)) as void);
-        CurrRegion() = Loc;
+        assert!(!self.SafeBufferOptOutMap.is_empty(), "Misordered safe buffer opt-out regions");
+        let mut CurrRegion: *mut SourceLocation> = &mut self.SafeBufferOptOutMap.back();
+        assert!(CurrRegion.first == CurrRegion.second, "Set end location to a closed safe buffer opt-out region");
+        CurrRegion.second = Loc;
     }
     return false;
 }
@@ -1008,24 +1122,28 @@ fn Preprocessor::isPPInSafeBufferOptOutRegion(self, StartLoc: *mut SourceLocatio
 
 fn Preprocessor::serializeSafeBufferOptOutMap(self: *Preprocessor) -> SmallVector<SourceLocation, 64> {
     assert!(!self.InSafeBufferOptOutRegion, "Attempt to serialize safe buffer opt-out regions before file being completely preprocessed");
-    let mut SrcSeq: SmallVector<SourceLocation, 64> = zeroed();
-    return ;
+    let mut SrcSeq: SmallVector<SourceLocation, 64> = SmallVector<SourceLocation, 64> {};
+    for x in self.SafeBufferOptOutMap {
+        SrcSeq.push(begin);
+        SrcSeq.push(end);
+    }
+    return SrcSeq;
 }
 
 fn Preprocessor::setDeserializedSafeBufferOptOutMap(self, SourceLocations: *SmallVectorImpl<SourceLocation>) -> bool {
-    if SourceLocations()() == 0 {
+    if SourceLocations.len == 0 {
         return false;
     }
-    (((operator!(operator!((SourceLocations()() % 2 == 0 && "ill-formed SourceLocation sequence")))) || (_wassert(L"SourceLocations.size() % 2 == 0 && \"ill-formed SourceLocation sequence\"", L"clang\\lib\\Lex\\Preprocessor.cpp", (1763) as u32) , 0)) as void);
-    let mut It: auto = SourceLocations()();
-    let mut Regions: *mut SafeBufferOptOutRegionsTy = null;
+    assert!(SourceLocations.len % 2 == 0, "ill-formed SourceLocation sequence");
+    let mut It: const_iterator = SourceLocations.begin();
+    let mut Regions: *mut SafeBufferOptOutRegionsTy = self.LoadedSafeBufferOptOutMap.findAndConsLoadedOptOutMap(*It, self.SourceMgr);
     while true {
         {
-        let mut Begin: SourceLocation = * += 1;
-        let mut End: SourceLocation = * += 1;
-        Regions()(Begin, End);
+        let mut Begin: SourceLocation = *It += 1;
+        let mut End: SourceLocation = *It += 1;
+        Regions.push(Begin, End);
     }
-        if !( != SourceLocations()()) { break; }
+        if !(It != SourceLocations.end()) { break; }
     }
     return true;
 }
@@ -1043,22 +1161,28 @@ fn Preprocessor::createPreprocessingRecord(self) {
         return;
     }
     self.Record = self.getSourceManager();
+    self.addPPCallbacks(self.Record);
 }
 
 fn Preprocessor::removePPCallbacks(self) {
     let mut IsPreserved: Closure_6 = Closure_6 { cap_0: self };
-    let mut Released: SmallVector<PPCallbacks *, 2> = zeroed();
+    let mut Released: SmallVector<PPCallbacks *, 2> = SmallVector<PPCallbacks *, 2> {};
+    releaseIfPreserved(self.Callbacks, function_ref<bool (PPCallbacks *)> { IsPreserved, null, null }, Released);
+    self.Callbacks.reset(null);
+    for P in Released {
+        self.addPPCallbacks(P);
+    }
 }
 
 fn Preprocessor::getCheckPoint(self: *Preprocessor, FID: FileID, Start: *u8) -> *u8 {
-    let mut It: auto = zeroed();
-    if  {
-        let mut FileCheckPoints: i32 = ;
-        let mut P: auto = upper_bound(Start);
-        if P() == () {
+    let mut It: const_iterator = self.CheckPoints.find(FID);
+    if It != self.CheckPoints.end() {
+        let mut FileCheckPoints: *SmallVector<const char *> = operator(It).second;
+        let mut P: *char *const = upper_bound(FileCheckPoints, Start);
+        if P == FileCheckPoints.begin() {
             return null;
         }
-        return *prev();
+        return *prev(P, 1);
     }
     return null;
 }
@@ -1100,7 +1224,7 @@ unsafe fn Closure_1::call(self: *mut Closure_1) {
         } else {
             self.LexUnexpandedToken((*self.Tok));
         }
-        (*self.Suffix)()((*self.Tok));
+        (*self.Suffix).push((*self.Tok));
     }
 
 struct Closure_2 {}
@@ -1112,7 +1236,7 @@ struct Closure_3 {
 }
 
 fn Closure_3::call(self: *Closure_3, Path: ArrayRef<Module *>, Conflict: *mut Module, Message: str) {
-         << [0]() << Conflict.getFullModuleName << Message;
+        self.Diag(self.ModuleImportLoc, warn_module_conflict) << Path[0].getFullModuleName(false) << Conflict.getFullModuleName(false) << Message;
     }
 
 struct Closure_5 {
@@ -1120,19 +1244,21 @@ struct Closure_5 {
     Loc: *mut SourceLocation,
 }
 
-unsafe fn Closure_5::call(self: *mut Closure_5, Region: *pair<SourceLocation, SourceLocation>) -> auto {}
+unsafe fn Closure_5::call(self: *mut Closure_5, Region: *pair<SourceLocation, SourceLocation>) -> bool {
+            return (*self.SourceMgr).isBeforeInTranslationUnit(Region.second, (*self.Loc));
+        }
 
 struct Closure_4 {
     SourceMgr: *mut SourceManager,
 }
 
 unsafe fn Closure_4::call(self: *mut Closure_4, Map: *SafeBufferOptOutRegionsTy, Loc: *SourceLocation) -> auto {
-        let mut FirstRegionEndingAfterLoc: auto = partition_point(Map, Closure_5 { SourceMgr: &mut (*self.SourceMgr), Loc: &mut Loc });
-        if FirstRegionEndingAfterLoc() != Map()() {
-            return (*self.SourceMgr).isBeforeInTranslationUnit(Loc);
+        let mut FirstRegionEndingAfterLoc: *SourceLocation> = partition_point(Map, Closure_5 { SourceMgr: &mut (*self.SourceMgr), Loc: &mut Loc });
+        if FirstRegionEndingAfterLoc != Map.end() {
+            return (*self.SourceMgr).isBeforeInTranslationUnit(FirstRegionEndingAfterLoc.first, Loc);
         }
-        if operator!(Map()()) && Map()() == Map()() {
-            return (*self.SourceMgr).isBeforeInTranslationUnit(Map()(), Loc);
+        if !Map.is_empty() && Map.back().first == Map.back().second {
+            return (*self.SourceMgr).isBeforeInTranslationUnit(Map.back().first, Loc);
         }
         return false;
     }
@@ -1141,4 +1267,6 @@ struct Closure_6 {
     cap_0: *mut Preprocessor,
 }
 
-fn Closure_6::call(self: *Closure_6, C: *mut PPCallbacks) -> auto {}
+fn Closure_6::call(self: *Closure_6, C: *mut PPCallbacks) -> bool {
+        return C == self.Record || C == self.DirTracer;
+    }

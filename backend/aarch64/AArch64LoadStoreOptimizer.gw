@@ -18,15 +18,15 @@ static mut NumUMOVFoldedToFPRStore: Statistic = Statistic { "aarch64-ldst-opt", 
 
 static mut RegRenamingCounter: CounterInfo = CounterInfo { "aarch64-ldst-opt-reg-renaming", "Controls which pairs are considered for renaming" };
 
-static mut LdStLimit: i32 = "aarch64-load-store-scan-limit";
+static mut LdStLimit: opt<unsigned int> = opt<unsigned int> { "aarch64-load-store-scan-limit", init(20), Hidden };
 
-static mut UpdateLimit: i32 = "aarch64-update-scan-limit";
+static mut UpdateLimit: opt<unsigned int> = opt<unsigned int> { "aarch64-update-scan-limit", init(100), Hidden };
 
-static mut LdStConstLimit: i32 = "aarch64-load-store-const-scan-limit";
+static mut LdStConstLimit: opt<unsigned int> = opt<unsigned int> { "aarch64-load-store-const-scan-limit", init(10), Hidden };
 
-static mut UMOVFoldLimit: i32 = "aarch64-umov-fold-scan-limit";
+static mut UMOVFoldLimit: opt<unsigned int> = opt<unsigned int> { "aarch64-umov-fold-scan-limit", init(16), Hidden };
 
-static mut EnableRenaming: i32 = "aarch64-load-store-renaming";
+static mut EnableRenaming: opt<bool> = opt<bool> { "aarch64-load-store-renaming", init(true), Hidden };
 
 struct LdStPairFlags {
     MergeForward: bool,
@@ -50,11 +50,17 @@ fn LdStPairFlags::getSExtIdx(self: *LdStPairFlags) -> i32 {
     return self.SExtIdx;
 }
 
-fn LdStPairFlags::setRenameReg(self, R: MCPhysReg) {}
+fn LdStPairFlags::setRenameReg(self, R: MCPhysReg) {
+    self.RenameReg = R;
+}
 
-fn LdStPairFlags::clearRenameReg(self) {}
+fn LdStPairFlags::clearRenameReg(self) {
+    self.RenameReg = nullopt;
+}
 
-fn LdStPairFlags::getRenameReg(self: *LdStPairFlags) -> optional<MCPhysReg> {}
+fn LdStPairFlags::getRenameReg(self: *LdStPairFlags) -> optional<MCPhysReg> {
+    return self.RenameReg;
+}
 
 struct AArch64LoadStoreOpt {
     AA: *mut AliasAnalysis,
@@ -76,8 +82,8 @@ struct AArch64LoadStoreOptLegacy {
 }
 
 fn AArch64LoadStoreOptLegacy::getAnalysisUsage(self: *AArch64LoadStoreOptLegacy, AU: *mut AnalysisUsage) {
-    AU;
-    self.getAnalysisUsage;
+    AU.addRequired();
+    self.getAnalysisUsage(AU);
 }
 
 fn AArch64LoadStoreOptLegacy::getRequiredProperties(self: *AArch64LoadStoreOptLegacy) -> MachineFunctionProperties {
@@ -125,6 +131,9 @@ fn isNarrowStore(Opc: u32) -> bool {
         _ => {
             return false;
         },
+        STRBBui => {
+            STURBBi;
+        },
     }
 }
 
@@ -132,6 +141,9 @@ fn isTagStore(MI: *MachineInstr) -> bool {
     match MI.getOpcode() {
         _ => {
             return false;
+        },
+        STGi => {
+            STZGi;
         },
     }
 }
@@ -146,13 +158,43 @@ fn getMatchingNonSExtOpcode(Opc: u32, IsValidLdStrOpc: *mut bool) -> u32 {
                 *IsValidLdStrOpc = false;
             }
         },
+        STRDui => {
+            STURDi;
+        },
+        LDRSWui => {
+            return LDRWui;
+        },
+        LDURSWi => {
+            return LDURWi;
+        },
+        LDRSWpre => {
+            return LDRWpre;
+        },
     }
 }
 
 fn getMatchingWideOpcode(Opc: u32) -> u32 {
     match Opc {
         _ => {
-            llvm_unreachable_internal("Opcode has no wide equivalent!", "llvm\\lib\\Target\\AArch64\\AArch64LoadStoreOptimizer.cpp", 347);
+            llvm_unreachable_internal("Opcode has no wide equivalent!", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64LoadStoreOptimizer.cpp", 347);
+        },
+        STRBBui => {
+            return STRHHui;
+        },
+        STRHHui => {
+            return STRWui;
+        },
+        STURBBi => {
+            return STURHHi;
+        },
+        STURHHi => {
+            return STURWi;
+        },
+        STURWi => {
+            return STURXi;
+        },
+        STRWui => {
+            return STRXui;
         },
     }
 }
@@ -160,7 +202,73 @@ fn getMatchingWideOpcode(Opc: u32) -> u32 {
 fn getMatchingPairOpcode(Opc: u32) -> u32 {
     match Opc {
         _ => {
-            llvm_unreachable_internal("Opcode has no pairwise equivalent!", "llvm\\lib\\Target\\AArch64\\AArch64LoadStoreOptimizer.cpp", 366);
+            llvm_unreachable_internal("Opcode has no pairwise equivalent!", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64LoadStoreOptimizer.cpp", 366);
+        },
+        STRSui => {
+            STURSi;
+        },
+        STRSpre => {
+            return STPSpre;
+        },
+        STRDui => {
+            STURDi;
+        },
+        STRDpre => {
+            return STPDpre;
+        },
+        STRQui => {
+            STURQi;
+        },
+        STRQpre => {
+            return STPQpre;
+        },
+        STRWui => {
+            STURWi;
+        },
+        STRWpre => {
+            return STPWpre;
+        },
+        STRXui => {
+            STURXi;
+        },
+        STRXpre => {
+            return STPXpre;
+        },
+        LDRSui => {
+            LDURSi;
+        },
+        LDRSpre => {
+            return LDPSpre;
+        },
+        LDRDui => {
+            LDURDi;
+        },
+        LDRDpre => {
+            return LDPDpre;
+        },
+        LDRQui => {
+            LDURQi;
+        },
+        LDRQpre => {
+            return LDPQpre;
+        },
+        LDRWui => {
+            LDURWi;
+        },
+        LDRWpre => {
+            return LDPWpre;
+        },
+        LDRXui => {
+            LDURXi;
+        },
+        LDRXpre => {
+            return LDPXpre;
+        },
+        LDRSWui => {
+            LDURSWi;
+        },
+        LDRSWpre => {
+            return LDPSWpre;
         },
     }
 }
@@ -170,7 +278,31 @@ fn isMatchingStore(LoadInst: *mut MachineInstr, StoreInst: *mut MachineInstr) ->
     let mut StOpc: u32 = StoreInst.getOpcode();
     match LdOpc {
         _ => {
-            llvm_unreachable_internal("Unsupported load instruction!", "llvm\\lib\\Target\\AArch64\\AArch64LoadStoreOptimizer.cpp", 433);
+            llvm_unreachable_internal("Unsupported load instruction!", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64LoadStoreOptimizer.cpp", 433);
+        },
+        LDRBBui => {
+            return StOpc == STRBBui || StOpc == STRHHui || StOpc == STRWui || StOpc == STRXui;
+        },
+        LDURBBi => {
+            return StOpc == STURBBi || StOpc == STURHHi || StOpc == STURWi || StOpc == STURXi;
+        },
+        LDRHHui => {
+            return StOpc == STRHHui || StOpc == STRWui || StOpc == STRXui;
+        },
+        LDURHHi => {
+            return StOpc == STURHHi || StOpc == STURWi || StOpc == STURXi;
+        },
+        LDRWui => {
+            return StOpc == STRWui || StOpc == STRXui;
+        },
+        LDURWi => {
+            return StOpc == STURWi || StOpc == STURXi;
+        },
+        LDRXui => {
+            return StOpc == STRXui;
+        },
+        LDURXi => {
+            return StOpc == STURXi;
         },
     }
 }
@@ -178,7 +310,112 @@ fn isMatchingStore(LoadInst: *mut MachineInstr, StoreInst: *mut MachineInstr) ->
 fn getPreIndexedOpcode(Opc: u32) -> u32 {
     match Opc {
         _ => {
-            llvm_unreachable_internal("Opcode has no pre-indexed equivalent!", "llvm\\lib\\Target\\AArch64\\AArch64LoadStoreOptimizer.cpp", 464);
+            llvm_unreachable_internal("Opcode has no pre-indexed equivalent!", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64LoadStoreOptimizer.cpp", 464);
+        },
+        STRBui => {
+            return STRBpre;
+        },
+        STRHui => {
+            return STRHpre;
+        },
+        STRSui => {
+            return STRSpre;
+        },
+        STRDui => {
+            return STRDpre;
+        },
+        STRQui => {
+            return STRQpre;
+        },
+        STRBBui => {
+            return STRBBpre;
+        },
+        STRHHui => {
+            return STRHHpre;
+        },
+        STRWui => {
+            return STRWpre;
+        },
+        STRXui => {
+            return STRXpre;
+        },
+        LDRBui => {
+            return LDRBpre;
+        },
+        LDRHui => {
+            return LDRHpre;
+        },
+        LDRSui => {
+            return LDRSpre;
+        },
+        LDRDui => {
+            return LDRDpre;
+        },
+        LDRQui => {
+            return LDRQpre;
+        },
+        LDRBBui => {
+            return LDRBBpre;
+        },
+        LDRHHui => {
+            return LDRHHpre;
+        },
+        LDRWui => {
+            return LDRWpre;
+        },
+        LDRXui => {
+            return LDRXpre;
+        },
+        LDRSWui => {
+            return LDRSWpre;
+        },
+        LDPSi => {
+            return LDPSpre;
+        },
+        LDPSWi => {
+            return LDPSWpre;
+        },
+        LDPDi => {
+            return LDPDpre;
+        },
+        LDPQi => {
+            return LDPQpre;
+        },
+        LDPWi => {
+            return LDPWpre;
+        },
+        LDPXi => {
+            return LDPXpre;
+        },
+        STPSi => {
+            return STPSpre;
+        },
+        STPDi => {
+            return STPDpre;
+        },
+        STPQi => {
+            return STPQpre;
+        },
+        STPWi => {
+            return STPWpre;
+        },
+        STPXi => {
+            return STPXpre;
+        },
+        STGi => {
+            return STGPreIndex;
+        },
+        STZGi => {
+            return STZGPreIndex;
+        },
+        ST2Gi => {
+            return ST2GPreIndex;
+        },
+        STZ2Gi => {
+            return STZ2GPreIndex;
+        },
+        STGPi => {
+            return STGPpre;
         },
     }
 }
@@ -186,7 +423,49 @@ fn getPreIndexedOpcode(Opc: u32) -> u32 {
 fn getBaseAddressOpcode(Opc: u32) -> u32 {
     match Opc {
         _ => {
-            llvm_unreachable_internal("Opcode has no base address equivalent!", "llvm\\lib\\Target\\AArch64\\AArch64LoadStoreOptimizer.cpp", 542);
+            llvm_unreachable_internal("Opcode has no base address equivalent!", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64LoadStoreOptimizer.cpp", 542);
+        },
+        LDRBroX => {
+            return LDRBui;
+        },
+        LDRBBroX => {
+            return LDRBBui;
+        },
+        LDRSBXroX => {
+            return LDRSBXui;
+        },
+        LDRSBWroX => {
+            return LDRSBWui;
+        },
+        LDRHroX => {
+            return LDRHui;
+        },
+        LDRHHroX => {
+            return LDRHHui;
+        },
+        LDRSHXroX => {
+            return LDRSHXui;
+        },
+        LDRSHWroX => {
+            return LDRSHWui;
+        },
+        LDRWroX => {
+            return LDRWui;
+        },
+        LDRSroX => {
+            return LDRSui;
+        },
+        LDRSWroX => {
+            return LDRSWui;
+        },
+        LDRDroX => {
+            return LDRDui;
+        },
+        LDRXroX => {
+            return LDRXui;
+        },
+        LDRQroX => {
+            return LDRQui;
         },
     }
 }
@@ -194,7 +473,112 @@ fn getBaseAddressOpcode(Opc: u32) -> u32 {
 fn getPostIndexedOpcode(Opc: u32) -> u32 {
     match Opc {
         _ => {
-            llvm_unreachable_internal("Opcode has no post-indexed wise equivalent!", "llvm\\lib\\Target\\AArch64\\AArch64LoadStoreOptimizer.cpp", 577);
+            llvm_unreachable_internal("Opcode has no post-indexed wise equivalent!", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64LoadStoreOptimizer.cpp", 577);
+        },
+        STRBui => {
+            return STRBpost;
+        },
+        STRHui => {
+            return STRHpost;
+        },
+        STRSui => {
+            STURSi;
+        },
+        STRDui => {
+            STURDi;
+        },
+        STRQui => {
+            STURQi;
+        },
+        STRBBui => {
+            return STRBBpost;
+        },
+        STRHHui => {
+            return STRHHpost;
+        },
+        STRWui => {
+            STURWi;
+        },
+        STRXui => {
+            STURXi;
+        },
+        LDRBui => {
+            return LDRBpost;
+        },
+        LDRHui => {
+            return LDRHpost;
+        },
+        LDRSui => {
+            LDURSi;
+        },
+        LDRDui => {
+            LDURDi;
+        },
+        LDRQui => {
+            LDURQi;
+        },
+        LDRBBui => {
+            return LDRBBpost;
+        },
+        LDRHHui => {
+            return LDRHHpost;
+        },
+        LDRWui => {
+            LDURWi;
+        },
+        LDRXui => {
+            LDURXi;
+        },
+        LDRSWui => {
+            return LDRSWpost;
+        },
+        LDPSi => {
+            return LDPSpost;
+        },
+        LDPSWi => {
+            return LDPSWpost;
+        },
+        LDPDi => {
+            return LDPDpost;
+        },
+        LDPQi => {
+            return LDPQpost;
+        },
+        LDPWi => {
+            return LDPWpost;
+        },
+        LDPXi => {
+            return LDPXpost;
+        },
+        STPSi => {
+            return STPSpost;
+        },
+        STPDi => {
+            return STPDpost;
+        },
+        STPQi => {
+            return STPQpost;
+        },
+        STPWi => {
+            return STPWpost;
+        },
+        STPXi => {
+            return STPXpost;
+        },
+        STGi => {
+            return STGPostIndex;
+        },
+        STZGi => {
+            return STZGPostIndex;
+        },
+        ST2Gi => {
+            return ST2GPostIndex;
+        },
+        STZ2Gi => {
+            return STZ2GPostIndex;
+        },
+        STGPi => {
+            return STGPpost;
         },
     }
 }
@@ -205,6 +589,39 @@ fn isPreLdStPairCandidate(FirstMI: *mut MachineInstr, MI: *mut MachineInstr) -> 
     match OpcA {
         _ => {
             return false;
+        },
+        STRSpre => {
+            return (OpcB == STRSui) || (OpcB == STURSi);
+        },
+        STRDpre => {
+            return (OpcB == STRDui) || (OpcB == STURDi);
+        },
+        STRQpre => {
+            return (OpcB == STRQui) || (OpcB == STURQi);
+        },
+        STRWpre => {
+            return (OpcB == STRWui) || (OpcB == STURWi);
+        },
+        STRXpre => {
+            return (OpcB == STRXui) || (OpcB == STURXi);
+        },
+        LDRSpre => {
+            return (OpcB == LDRSui) || (OpcB == LDURSi);
+        },
+        LDRDpre => {
+            return (OpcB == LDRDui) || (OpcB == LDURDi);
+        },
+        LDRQpre => {
+            return (OpcB == LDRQui) || (OpcB == LDURQi);
+        },
+        LDRWpre => {
+            return (OpcB == LDRWui) || (OpcB == LDURWi);
+        },
+        LDRXpre => {
+            return (OpcB == LDRXui) || (OpcB == LDURXi);
+        },
+        LDRSWpre => {
+            return (OpcB == LDRSWui) || (OpcB == LDURSWi);
         },
     }
 }
@@ -243,12 +660,16 @@ fn isLdOffsetInRangeOfSt(LoadInst: *mut MachineInstr, StoreInst: *mut MachineIns
 
 fn isPromotableZeroStoreInst(MI: *mut MachineInstr) -> bool {
     let mut Opc: u32 = MI.getOpcode();
+    return (Opc == STRWui || Opc == STURWi || isNarrowStore(Opc)) && getLdStRegOp(MI, 0).getReg() == WZR;
 }
 
 fn isPromotableLoadFromStore(MI: *mut MachineInstr) -> bool {
     match MI.getOpcode() {
         _ => {
             return false;
+        },
+        LDRBBui => {
+            LDRHHui;
         },
     }
 }
@@ -259,6 +680,9 @@ fn isMergeableLdStUpdate(MI: *mut MachineInstr, AFI: *mut AArch64FunctionInfo) -
         _ => {
             return false;
         },
+        STRBui => {
+            STRHui;
+        },
     }
 }
 
@@ -268,6 +692,21 @@ fn isMergeableIndexLdSt(MI: *mut MachineInstr, Scale: *mut i32) -> bool {
         _ => {
             return false;
         },
+        LDRBroX => {
+            LDRBBroX;
+        },
+        LDRHroX => {
+            LDRHHroX;
+        },
+        LDRWroX => {
+            LDRSroX;
+        },
+        LDRDroX => {
+            LDRXroX;
+        },
+        LDRQroX => {
+            Scale = 16;
+        },
     }
 }
 
@@ -276,27 +715,30 @@ fn isRewritableImplicitDef(MI: *MachineInstr, MO: *MachineOperand) -> bool {
         _ => {
             return MO.isRenamable();
         },
+        ORRWrs => {
+            ADDWri;
+        },
     }
 }
 
-fn AArch64LoadStoreOpt::mergeNarrowZeroStores(self, I: i32, MergeMI: i32, Flags: *LdStPairFlags) -> i32 {
-    (((operator!(operator!((isPromotableZeroStoreInst(operator*()) && isPromotableZeroStoreInst(operator*()) && "Expected promotable zero stores.")))) || (_wassert(L"isPromotableZeroStoreInst(*I) && isPromotableZeroStoreInst(*MergeMI) && \"Expected promotable zero stores.\"", L"llvm\\lib\\Target\\AArch64\\AArch64LoadStoreOptimizer.cpp", (887) as u32) , 0)) as void);
-    let mut E: i32 = ()();
-    let mut NextI: i32 = next_nodbg();
-    if NextI() ==  {
-        NextI() = next_nodbg();
+fn AArch64LoadStoreOpt::mergeNarrowZeroStores(self, I: iterator, MergeMI: iterator, Flags: *LdStPairFlags) -> iterator {
+    assert!(isPromotableZeroStoreInst(operator(I)) && isPromotableZeroStoreInst(operator(MergeMI)), "Expected promotable zero stores.");
+    let mut E: iterator = operator(I).getParent().end();
+    let mut NextI: iterator = next_nodbg(I, E, true);
+    if NextI == MergeMI {
+        NextI = next_nodbg(NextI, E, true);
     }
-    let mut Opc: u32 = ();
-    let mut MergeMIOpc: u32 = ();
+    let mut Opc: u32 = operator(I).getOpcode();
+    let mut MergeMIOpc: u32 = operator(MergeMI).getOpcode();
     let mut IsScaled: bool = !self.TII.hasUnscaledLdStOffset(Opc);
     let mut IsMergedMIScaled: bool = !self.TII.hasUnscaledLdStOffset(MergeMIOpc);
-    let mut OffsetStride: i32 = if IsScaled { self.TII(operator*()) } else { 1 };
-    let mut MergeMIOffsetStride: i32 = if IsMergedMIScaled { self.TII(operator*()) } else { 1 };
+    let mut OffsetStride: i32 = if IsScaled { self.TII.getMemScale(operator(I)) } else { 1 };
+    let mut MergeMIOffsetStride: i32 = if IsMergedMIScaled { self.TII.getMemScale(operator(MergeMI)) } else { 1 };
     let mut MergeForward: bool = Flags.getMergeForward();
-    let mut InsertionPoint: i32 = if MergeForward {  } else {  };
-    let mut BaseRegOp: *MachineOperand = if MergeForward { getLdStBaseOp(operator*()) } else { getLdStBaseOp(operator*()) };
-    let mut IOffsetInBytes: i64 = getLdStOffsetOp(operator*())() * OffsetStride;
-    let mut MIOffsetInBytes: i64 = getLdStOffsetOp(operator*())() * MergeMIOffsetStride;
+    let mut InsertionPoint: iterator = if MergeForward { MergeMI } else { I };
+    let mut BaseRegOp: *MachineOperand = if MergeForward { getLdStBaseOp(operator(MergeMI)) } else { getLdStBaseOp(operator(I)) };
+    let mut IOffsetInBytes: i64 = getLdStOffsetOp(operator(I)).getImm() * OffsetStride;
+    let mut MIOffsetInBytes: i64 = getLdStOffsetOp(operator(MergeMI)).getImm() * MergeMIOffsetStride;
     let mut OffsetImm: i64 = 0;
     if IOffsetInBytes > MIOffsetInBytes {
         OffsetImm = MIOffsetInBytes;
@@ -309,10 +751,10 @@ fn AArch64LoadStoreOpt::mergeNarrowZeroStores(self, I: i32, MergeMI: i32, Flags:
         assert!(((OffsetImm % NewOffsetStride) == 0), "Offset should be a multiple of the store memory scale");
         OffsetImm = OffsetImm / NewOffsetStride;
     }
-    let mut DL: DebugLoc = ();
-    let mut MBB: *mut MachineBasicBlock = ();
+    let mut DL: DebugLoc = operator(I).getDebugLoc();
+    let mut MBB: *mut MachineBasicBlock = operator(I).getParent();
     let mut MIB: MachineInstrBuilder = MachineInstrBuilder {};
-    MIB = BuildMI(*MBB, DL, self.TII(NewOpcode))(BaseRegOp)(OffsetImm)(void { operator&(operator*()), operator&(operator*()) })((operator*()));
+    MIB = BuildMI(*MBB, InsertionPoint, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NewOpcode)).addReg(if isNarrowStore(Opc) { WZR } else { XZR }, RegState {}, 0).add(BaseRegOp).addImm(OffsetImm).cloneMergedMemRefs([&mut operator(I), &mut operator(MergeMI)]).setMIFlags(operator(I).mergeFlagsWith(operator(MergeMI)));
     MIB as void;
     while true {
         {
@@ -325,7 +767,7 @@ fn AArch64LoadStoreOpt::mergeNarrowZeroStores(self, I: i32, MergeMI: i32, Flags:
     while true {
         {
         if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
-            I()(dbgs());
+            operator(I).print(dbgs(), true, false, false, true, null);
         }
     }
         if !(false) { break; }
@@ -341,7 +783,7 @@ fn AArch64LoadStoreOpt::mergeNarrowZeroStores(self, I: i32, MergeMI: i32, Flags:
     while true {
         {
         if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
-            MergeMI()(dbgs());
+            operator(MergeMI).print(dbgs(), true, false, false, true, null);
         }
     }
         if !(false) { break; }
@@ -370,58 +812,93 @@ fn AArch64LoadStoreOpt::mergeNarrowZeroStores(self, I: i32, MergeMI: i32, Flags:
     }
         if !(false) { break; }
     }
-    I()();
-    MergeMI()();
-    return ;
+    operator(I).eraseFromParent();
+    operator(MergeMI).eraseFromParent();
+    return NextI;
 }
 
 fn forAllMIsUntilDef(MI: *mut MachineInstr, DefReg: MCPhysReg, TRI: *TargetRegisterInfo, Limit: u32, Fn: *mut function<bool (MachineInstr &, bool)>) -> bool {
     let mut MBB: *mut MachineBasicBlock = MI.getParent();
+    for I in instructionsWithoutDebug(MI.getReverseIterator(), MBB.instr_rend(), true) {
+        if !Limit {
+            return false;
+        }
+        Limit -= 1;
+        let mut isDef: bool = any_of(I.operands(), Closure_1 { DefReg: DefReg, TRI: TRI });
+        if !Fn.call(I, isDef) {
+            return false;
+        }
+        if isDef {
+            break;
+        }
+    }
     return true;
 }
 
-fn updateDefinedRegisters(MI: *mut MachineInstr, Units: *mut LiveRegUnits, TRI: *TargetRegisterInfo) {}
+fn updateDefinedRegisters(MI: *mut MachineInstr, Units: *mut LiveRegUnits, TRI: *TargetRegisterInfo) {
+    for MOP in phys_regs_and_masks(MI) {
+        if MOP.isReg() && MOP.isKill() {
+            Units.removeReg(MOP.getReg().operator MCRegister());
+        }
+    }
+    for MOP in phys_regs_and_masks(MI) {
+        if MOP.isReg() && !MOP.isKill() {
+            Units.addReg(MOP.getReg().operator MCRegister());
+        }
+    }
+}
 
 fn addDebugSubstitutionsToTable(MF: *mut MachineFunction, InstrNumToSet: u32, OriginalInstr: *mut MachineInstr, MergedInstr: *mut MachineInstr) {
     let mut Reg: Register = OriginalInstr.getOperand(0).getReg();
     let mut OperandNo: u32 = 0;
     let mut RegFound: bool = false;
+    for Op in MergedInstr.operands() {
+        if Op.getReg() == Reg {
+            RegFound = true;
+            break;
+        }
+        OperandNo += 1;
+    }
     if RegFound {
-        MF.makeDebugValueSubstitution;
+        MF.makeDebugValueSubstitution(DebugInstrOperandPair { OriginalInstr.peekDebugInstrNum(), 0 }, DebugInstrOperandPair { InstrNumToSet, OperandNo }, 0);
     }
 }
 
-fn AArch64LoadStoreOpt::mergePairedInsns(self, I: i32, Paired: i32, Flags: *LdStPairFlags) -> i32 {
-    let mut E: i32 = ()();
-    let mut NextI: i32 = next_nodbg();
-    if NextI() ==  {
-        NextI() = next_nodbg();
+fn AArch64LoadStoreOpt::mergePairedInsns(self, I: iterator, Paired: iterator, Flags: *LdStPairFlags) -> iterator {
+    let mut E: iterator = operator(I).getParent().end();
+    let mut NextI: iterator = next_nodbg(I, E, true);
+    if NextI == Paired {
+        NextI = next_nodbg(NextI, E, true);
     }
     let mut SExtIdx: i32 = Flags.getSExtIdx();
-    let mut Opc: u32 = if SExtIdx == -1 { () } else { getMatchingNonSExtOpcode() };
+    let mut Opc: u32 = if SExtIdx == -1 { operator(I).getOpcode() } else { getMatchingNonSExtOpcode(operator(I).getOpcode(), null) };
     let mut IsUnscaled: bool = self.TII.hasUnscaledLdStOffset(Opc);
-    let mut OffsetStride: i32 = if IsUnscaled { self.TII(operator*()) } else { 1 };
+    let mut OffsetStride: i32 = if IsUnscaled { self.TII.getMemScale(operator(I)) } else { 1 };
     let mut MergeForward: bool = Flags.getMergeForward();
-    let mut RenameReg: optional<MCPhysReg> = zeroed();
-    if RenameReg() {
-        let mut RegToRename: MCRegister = getLdStRegOp(operator*())();
-        let mut GetMatchingSubReg: Closure_1 = Closure_1 { cap_0: self };
-        let mut UpdateMIs: function<bool (MachineInstr &, bool)> = zeroed();
-        forAllMIsUntilDef(if MergeForward { operator*() } else { operator*() }, RegToRename, self.TRI, 4294967295);
-        let mut RegToCheck: MCPhysReg = operator*();
+    let mut RenameReg: optional<MCPhysReg> = Flags.getRenameReg();
+    if RenameReg {
+        let mut RegToRename: MCRegister = getLdStRegOp(operator(I), 0).getReg().operator MCRegister();
+        self.DefinedInBB.addReg(operator(RenameReg));
+        let mut GetMatchingSubReg: Closure_2 = Closure_2 { cap_0: self, cap_1: RenameReg };
+        let mut UpdateMIs: function<bool (MachineInstr &, bool)> = Closure_3 { cap_0: self, cap_1: RegToRename, cap_2: GetMatchingSubReg, MergeForward: MergeForward };
+        forAllMIsUntilDef(if MergeForward { operator(I) } else { *operator(Paired).getPrevNode() }, RegToRename.operator unsigned int(), self.TRI, 4294967295, UpdateMIs);
+        let mut RegToCheck: MCPhysReg = operator(RenameReg);
         if !MergeForward {
             RegToCheck = RegToRename.operator unsigned int();
         }
+        for MI in MachineInstr>> { if MergeForward { next(I, 1) } else { I }, if MergeForward { next(Paired, 1) } else { Paired } } {
+            assert!(all_of(MI.operands(), Closure_4 { cap_0: self, RegToCheck: RegToCheck }), "Rename register used between paired instruction, trashing the content");
+        }
     }
-    let mut InsertionPoint: i32 = if MergeForward {  } else {  };
-    let mut BaseRegOp: *MachineOperand = if MergeForward { getLdStBaseOp(operator*()) } else { getLdStBaseOp(operator*()) };
-    let mut Offset: i32 = getLdStOffsetOp(operator*())();
-    let mut PairedOffset: i32 = getLdStOffsetOp(operator*())();
-    let mut PairedIsUnscaled: bool = self.TII();
+    let mut InsertionPoint: iterator = if MergeForward { Paired } else { I };
+    let mut BaseRegOp: *MachineOperand = if MergeForward { getLdStBaseOp(operator(Paired)) } else { getLdStBaseOp(operator(I)) };
+    let mut Offset: i32 = getLdStOffsetOp(operator(I)).getImm();
+    let mut PairedOffset: i32 = getLdStOffsetOp(operator(Paired)).getImm();
+    let mut PairedIsUnscaled: bool = self.TII.hasUnscaledLdStOffset(operator(Paired).getOpcode());
     if IsUnscaled != PairedIsUnscaled {
-        let mut MemSize: i32 = self.TII(operator*());
+        let mut MemSize: i32 = self.TII.getMemScale(operator(Paired));
         if PairedIsUnscaled {
-            (((operator!(operator!((operator!((PairedOffset % self.TII(operator*()))) && "Offset should be a multiple of the stride!")))) || (_wassert(L"!(PairedOffset % TII->getMemScale(*Paired)) && \"Offset should be a multiple of the stride!\"", L"llvm\\lib\\Target\\AArch64\\AArch64LoadStoreOptimizer.cpp", (1170) as u32) , 0)) as void);
+            assert!(!(PairedOffset % self.TII.getMemScale(operator(Paired))), "Offset should be a multiple of the stride!");
             PairedOffset /= MemSize;
         } else {
             PairedOffset *= MemSize;
@@ -429,15 +906,15 @@ fn AArch64LoadStoreOpt::mergePairedInsns(self, I: i32, Paired: i32, Flags: *LdSt
     }
     let mut RtMI: *mut MachineInstr = null;
     let mut Rt2MI: *mut MachineInstr = null;
-    if Offset == PairedOffset + OffsetStride && operator!(isPreLdSt(operator*())) {
-        RtMI = operator&(operator*());
-        Rt2MI = operator&(operator*());
+    if Offset == PairedOffset + OffsetStride && !isPreLdSt(operator(I)) {
+        RtMI = &mut operator(Paired);
+        Rt2MI = &mut operator(I);
         if SExtIdx != -1 {
             SExtIdx = (SExtIdx + 1) % 2;
         }
     } else {
-        RtMI = operator&(operator*());
-        Rt2MI = operator&(operator*());
+        RtMI = &mut operator(I);
+        Rt2MI = &mut operator(Paired);
     }
     let mut OffsetImm: i32 = getLdStOffsetOp(*RtMI).getImm();
     if self.TII.hasUnscaledLdStOffset(RtMI.getOpcode()) {
@@ -445,28 +922,31 @@ fn AArch64LoadStoreOpt::mergePairedInsns(self, I: i32, Paired: i32, Flags: *LdSt
         OffsetImm /= self.TII.getMemScale(*RtMI);
     }
     let mut MIB: MachineInstrBuilder = MachineInstrBuilder {};
-    let mut DL: DebugLoc = ();
-    let mut MBB: *mut MachineBasicBlock = ();
+    let mut DL: DebugLoc = operator(I).getDebugLoc();
+    let mut MBB: *mut MachineBasicBlock = operator(I).getParent();
     let mut RegOp0: MachineOperand = getLdStRegOp(*RtMI, 0);
     let mut RegOp1: MachineOperand = getLdStRegOp(*Rt2MI, 0);
-    let mut PairedRegOp: *mut MachineOperand = if RtMI == operator&(operator*()) { RegOp0 } else { RegOp1 };
+    let mut PairedRegOp: *mut MachineOperand = if RtMI == &mut operator(Paired) { RegOp0 } else { RegOp1 };
     if RegOp0.isUse() {
         if !MergeForward {
-            for let mut It: auto = next(); It() !=  && PairedRegOp.isKill();  += 1 {
-                if It()(PairedRegOp.getReg(), self.TRI) {
+            for let mut It: MachineInstr> = next(I, 1); It != Paired && PairedRegOp.isKill(); operator(It) {
+                if operator(It).readsRegister(PairedRegOp.getReg(), self.TRI) {
                     PairedRegOp.setIsKill(false);
                 }
             }
         } else {
-            let mut Reg: Register = getLdStRegOp(operator*())();
+            let mut Reg: Register = getLdStRegOp(operator(I), 0).getReg();
+            for MI in make_range(next(operator(I).getIterator(), 1), operator(Paired).getIterator()) {
+                MI.clearRegisterKills(Reg, self.TRI);
+            }
         }
     }
     let mut MatchPairOpcode: u32 = getMatchingPairOpcode(Opc);
-    MIB = BuildMI(*MBB, DL, self.TII(MatchPairOpcode));
+    MIB = BuildMI(*MBB, InsertionPoint, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MatchPairOpcode));
     if isPreLdSt(*RtMI) {
-        MIB()(BaseRegOp.getReg(), Define);
+        MIB.addReg(BaseRegOp.getReg(), Define, 0);
     }
-    MIB()(RegOp0)(RegOp1)(BaseRegOp)(OffsetImm)(void { operator&(operator*()), operator&(operator*()) })((operator*()));
+    MIB.add(RegOp0).add(RegOp1).add(BaseRegOp).addImm(OffsetImm).cloneMergedMemRefs([&mut operator(I), &mut operator(Paired)]).setMIFlags(operator(I).mergeFlagsWith(operator(Paired)));
     MIB as void;
     while true {
         {
@@ -479,7 +959,7 @@ fn AArch64LoadStoreOpt::mergePairedInsns(self, I: i32, Paired: i32, Flags: *LdSt
     while true {
         {
         if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
-            I()(dbgs());
+            operator(I).print(dbgs(), true, false, false, true, null);
         }
     }
         if !(false) { break; }
@@ -495,7 +975,7 @@ fn AArch64LoadStoreOpt::mergePairedInsns(self, I: i32, Paired: i32, Flags: *LdSt
     while true {
         {
         if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
-            Paired()(dbgs());
+            operator(Paired).print(dbgs(), true, false, false, true, null);
         }
     }
         if !(false) { break; }
@@ -511,7 +991,7 @@ fn AArch64LoadStoreOpt::mergePairedInsns(self, I: i32, Paired: i32, Flags: *LdSt
     if SExtIdx != -1 {
         let mut DstMO: *mut MachineOperand = operator(MIB).getOperand(SExtIdx);
         let mut DstRegX: Register = DstMO.getReg();
-        let mut DstRegW: Register = self.TRI.getSubReg;
+        let mut DstRegW: Register = self.TRI.getSubReg(DstRegX.operator MCRegister(), sub_32);
         DstMO.setReg(DstRegW);
         while true {
             {
@@ -529,28 +1009,28 @@ fn AArch64LoadStoreOpt::mergePairedInsns(self, I: i32, Paired: i32, Flags: *LdSt
         }
             if !(false) { break; }
         }
-        let mut MIBKill: MachineInstrBuilder = BuildMI(*MBB, DL, self.TII(KILL), DstRegW)(DstRegW)(DstRegX, Define);
+        let mut MIBKill: MachineInstrBuilder = BuildMI(*MBB, InsertionPoint, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(KILL), DstRegW).addReg(DstRegW, RegState {}, 0).addReg(DstRegX, Define, 0);
         operator(MIBKill).getOperand(2).setImplicit(true);
-        let mut MIBSXTW: MachineInstrBuilder = BuildMI(*MBB, DL, self.TII, DstRegX)(DstRegX)(0)(31);
+        let mut MIBSXTW: MachineInstrBuilder = BuildMI(*MBB, InsertionPoint, MIMetadata { DL: DL, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(SBFMXri), DstRegX).addReg(DstRegX, RegState {}, 0).addImm(0).addImm(31);
         MIBSXTW as void;
-        if I()() {
+        if operator(I).peekDebugInstrNum() {
             let mut NewInstrNum: u32 = 0;
-            if DstRegX == (0)() {
+            if DstRegX == operator(I).getOperand(0).getReg() {
                 NewInstrNum = operator(MIBSXTW).getDebugInstrNum();
-                addDebugSubstitutionsToTable(MBB.getParent(), NewInstrNum, operator*(), *MIBSXTW.operator llvm::MachineInstr *());
+                addDebugSubstitutionsToTable(MBB.getParent(), NewInstrNum, operator(I), *MIBSXTW.operator llvm::MachineInstr *());
             } else {
                 NewInstrNum = operator(MIB).getDebugInstrNum();
-                addDebugSubstitutionsToTable(MBB.getParent(), NewInstrNum, operator*(), *MIB.operator llvm::MachineInstr *());
+                addDebugSubstitutionsToTable(MBB.getParent(), NewInstrNum, operator(I), *MIB.operator llvm::MachineInstr *());
             }
         }
-        if Paired()() {
+        if operator(Paired).peekDebugInstrNum() {
             let mut NewInstrNum: u32 = 0;
-            if DstRegX == (0)() {
+            if DstRegX == operator(Paired).getOperand(0).getReg() {
                 NewInstrNum = operator(MIBSXTW).getDebugInstrNum();
-                addDebugSubstitutionsToTable(MBB.getParent(), NewInstrNum, operator*(), *MIBSXTW.operator llvm::MachineInstr *());
+                addDebugSubstitutionsToTable(MBB.getParent(), NewInstrNum, operator(Paired), *MIBSXTW.operator llvm::MachineInstr *());
             } else {
                 NewInstrNum = operator(MIB).getDebugInstrNum();
-                addDebugSubstitutionsToTable(MBB.getParent(), NewInstrNum, operator*(), *MIB.operator llvm::MachineInstr *());
+                addDebugSubstitutionsToTable(MBB.getParent(), NewInstrNum, operator(Paired), *MIB.operator llvm::MachineInstr *());
             }
         }
         while true {
@@ -569,11 +1049,12 @@ fn AArch64LoadStoreOpt::mergePairedInsns(self, I: i32, Paired: i32, Flags: *LdSt
         }
             if !(false) { break; }
         }
-    } else if  {
+    } else if Opc == LDR_ZXI || Opc == STR_ZXI {
         let mut MOp0: *mut MachineOperand = operator(MIB).getOperand(0);
         let mut MOp1: *mut MachineOperand = operator(MIB).getOperand(1);
-        MOp0.setReg;
-        MOp1.setReg;
+        assert!(ZPRRegClass.contains(MOp0.getReg().operator MCRegister()) && ZPRRegClass.contains(MOp1.getReg().operator MCRegister()), "Invalid register.");
+        MOp0.setReg(Q0 + (MOp0.getReg().operator unsigned int() - Z0));
+        MOp1.setReg(Q0 + (MOp1.getReg().operator unsigned int() - Z0));
         while true {
             {
             if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
@@ -583,13 +1064,13 @@ fn AArch64LoadStoreOpt::mergePairedInsns(self, I: i32, Paired: i32, Flags: *LdSt
             if !(false) { break; }
         }
     } else {
-        if I()() {
+        if operator(I).peekDebugInstrNum() {
             let mut NewDebugInstrNum: u32 = operator(MIB).getDebugInstrNum();
-            addDebugSubstitutionsToTable(MBB.getParent(), NewDebugInstrNum, operator*(), *MIB.operator llvm::MachineInstr *());
+            addDebugSubstitutionsToTable(MBB.getParent(), NewDebugInstrNum, operator(I), *MIB.operator llvm::MachineInstr *());
         }
-        if Paired()() {
+        if operator(Paired).peekDebugInstrNum() {
             let mut NewDebugInstrNum: u32 = operator(MIB).getDebugInstrNum();
-            addDebugSubstitutionsToTable(MBB.getParent(), NewDebugInstrNum, operator*(), *MIB.operator llvm::MachineInstr *());
+            addDebugSubstitutionsToTable(MBB.getParent(), NewDebugInstrNum, operator(Paired), *MIB.operator llvm::MachineInstr *());
         }
         while true {
             {
@@ -608,25 +1089,38 @@ fn AArch64LoadStoreOpt::mergePairedInsns(self, I: i32, Paired: i32, Flags: *LdSt
     }
         if !(false) { break; }
     }
-    let mut CopyImplicitOps: Closure_2 = Closure_2 { MIB: &mut MIB };
-    CopyImplicitOps();
-    I()();
-    Paired()();
-    return ;
+    if MergeForward {
+        for MOP in phys_regs_and_masks(operator(I)) {
+            if MOP.isReg() && MOP.isKill() {
+                self.DefinedInBB.addReg(MOP.getReg().operator MCRegister());
+            }
+        }
+    }
+    let mut CopyImplicitOps: Closure_5 = Closure_5 { MIB: &mut MIB };
+    CopyImplicitOps.call(I, Paired);
+    operator(I).eraseFromParent();
+    operator(Paired).eraseFromParent();
+    return NextI;
 }
 
-fn AArch64LoadStoreOpt::promoteLoadFromStore(self, LoadI: i32, StoreI: i32) -> i32 {
-    let mut NextI: i32 = next_nodbg(()());
-    let mut LoadSize: i32 = self.TII(operator*());
-    let mut StoreSize: i32 = self.TII(operator*());
-    let mut LdRt: Register = getLdStRegOp(operator*())();
-    let mut StMO: *MachineOperand = getLdStRegOp(operator*());
-    let mut StRt: Register = getLdStRegOp(operator*())();
-    let mut IsStoreXReg: bool = self.TRI.getRegClass(StRt);
-    (((operator!(operator!(((IsStoreXReg || self.TRI.getRegClass(StRt)) && "Unexpected RegClass")))) || (_wassert(L"(IsStoreXReg || TRI->getRegClass(AArch64::GPR32RegClassID)->contains(StRt)) && \"Unexpected RegClass\"", L"llvm\\lib\\Target\\AArch64\\AArch64LoadStoreOptimizer.cpp", (1465) as u32) , 0)) as void);
+fn AArch64LoadStoreOpt::promoteLoadFromStore(self, LoadI: iterator, StoreI: iterator) -> iterator {
+    let mut NextI: iterator = next_nodbg(LoadI, operator(LoadI).getParent().end(), true);
+    let mut LoadSize: i32 = self.TII.getMemScale(operator(LoadI));
+    let mut StoreSize: i32 = self.TII.getMemScale(operator(StoreI));
+    let mut LdRt: Register = getLdStRegOp(operator(LoadI), 0).getReg();
+    let mut StMO: *MachineOperand = getLdStRegOp(operator(StoreI), 0);
+    let mut StRt: Register = getLdStRegOp(operator(StoreI), 0).getReg();
+    let mut IsStoreXReg: bool = self.TRI.getRegClass(GPR64RegClassID).contains(StRt.operator MCRegister());
+    assert!((IsStoreXReg || self.TRI.getRegClass(GPR32RegClassID).contains(StRt.operator MCRegister())), "Unexpected RegClass");
     let mut BitExtMI: *mut MachineInstr = null;
     if LoadSize == StoreSize && (LoadSize == 4 || LoadSize == 8) {
         if StRt == LdRt && LoadSize == 8 {
+            for MI in make_range(operator(StoreI).getIterator(), operator(LoadI).getIterator()) {
+                if MI.killsRegister(StRt, self.TRI) {
+                    MI.clearRegisterKills(StRt, self.TRI);
+                    break;
+                }
+            }
             while true {
                 {
                 if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
@@ -638,7 +1132,7 @@ fn AArch64LoadStoreOpt::promoteLoadFromStore(self, LoadI: i32, StoreI: i32) -> i
             while true {
                 {
                 if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
-                    LoadI()(dbgs());
+                    operator(LoadI).print(dbgs(), true, false, false, true, null);
                 }
             }
                 if !(false) { break; }
@@ -651,32 +1145,38 @@ fn AArch64LoadStoreOpt::promoteLoadFromStore(self, LoadI: i32, StoreI: i32) -> i
             }
                 if !(false) { break; }
             }
-            LoadI()();
-            return ;
+            operator(LoadI).eraseFromParent();
+            return NextI;
         }
-        BitExtMI = BuildMI(operator*(), self.TII, LdRt)(StMO)(getShifterImm(LSL, 0))();
+        BitExtMI = BuildMI(*operator(LoadI).getParent(), LoadI, MIMetadata { DL: operator(LoadI).getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(if IsStoreXReg { ORRXrs } else { ORRWrs }), LdRt).addReg(if IsStoreXReg { XZR } else { WZR }, RegState {}, 0).add(StMO).addImm(getShifterImm(LSL, 0)).setMIFlags(operator(LoadI).getFlags()).operator llvm::MachineInstr *();
     } else {
         if !self.Subtarget.isLittleEndian() {
-            return ;
+            return NextI;
         }
-        let mut IsUnscaled: bool = self.TII(operator*());
-        (((operator!(operator!((IsUnscaled == self.TII(operator*()) && "Unsupported ld/st match")))) || (_wassert(L"IsUnscaled == TII->hasUnscaledLdStOffset(*StoreI) && \"Unsupported ld/st match\"", L"llvm\\lib\\Target\\AArch64\\AArch64LoadStoreOptimizer.cpp", (1500) as u32) , 0)) as void);
+        let mut IsUnscaled: bool = self.TII.hasUnscaledLdStOffset(operator(LoadI));
+        assert!(IsUnscaled == self.TII.hasUnscaledLdStOffset(operator(StoreI)), "Unsupported ld/st match");
         assert!(LoadSize <= StoreSize, "Invalid load size");
-        let mut UnscaledLdOffset: i32 = if IsUnscaled { getLdStOffsetOp(operator*())() } else { getLdStOffsetOp(operator*())() * LoadSize };
-        let mut UnscaledStOffset: i32 = if IsUnscaled { getLdStOffsetOp(operator*())() } else { getLdStOffsetOp(operator*())() * StoreSize };
+        let mut UnscaledLdOffset: i32 = if IsUnscaled { getLdStOffsetOp(operator(LoadI)).getImm() } else { getLdStOffsetOp(operator(LoadI)).getImm() * LoadSize };
+        let mut UnscaledStOffset: i32 = if IsUnscaled { getLdStOffsetOp(operator(StoreI)).getImm() } else { getLdStOffsetOp(operator(StoreI)).getImm() * StoreSize };
         let mut Width: i32 = LoadSize * 8;
-        let mut DestReg: Register = if IsStoreXReg { self.TRI.getMatchingSuperReg } else { LdRt };
+        let mut DestReg: Register = if IsStoreXReg { self.TRI.getMatchingSuperReg(LdRt.operator MCRegister(), sub_32, &mut GPR64RegClass) } else { LdRt };
         assert!((UnscaledLdOffset >= UnscaledStOffset && (UnscaledLdOffset + LoadSize) <= UnscaledStOffset + StoreSize), "Invalid offset");
         let mut Immr: i32 = 8 * (UnscaledLdOffset - UnscaledStOffset);
         let mut Imms: i32 = Immr + Width - 1;
         if UnscaledLdOffset == UnscaledStOffset {
             let mut AndMaskEncoded: u32 = ((if IsStoreXReg { 1 } else { 0 }) << 12) | ((Immr) << 6) | ((Imms) << 0);
-            BitExtMI = BuildMI(operator*(), self.TII, DestReg)(StMO)(AndMaskEncoded)();
+            BitExtMI = BuildMI(*operator(LoadI).getParent(), LoadI, MIMetadata { DL: operator(LoadI).getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(if IsStoreXReg { ANDXri } else { ANDWri }), DestReg).add(StMO).addImm(AndMaskEncoded).setMIFlags(operator(LoadI).getFlags()).operator llvm::MachineInstr *();
         } else if IsStoreXReg && Imms == 31 {
             assert!(Immr <= Imms, "Expected LSR alias of UBFM");
-            BitExtMI = BuildMI(operator*(), self.TII, self.TRI.getSubReg)(self.TRI.getSubReg)(Immr)(Imms)();
+            BitExtMI = BuildMI(*operator(LoadI).getParent(), LoadI, MIMetadata { DL: operator(LoadI).getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(UBFMWri), self.TRI.getSubReg(DestReg.operator MCRegister(), sub_32)).addReg(self.TRI.getSubReg(StRt.operator MCRegister(), sub_32), RegState {}, 0).addImm(Immr).addImm(Imms).setMIFlags(operator(LoadI).getFlags()).operator llvm::MachineInstr *();
         } else {
-            BitExtMI = BuildMI(operator*(), self.TII, DestReg)(StMO)(Immr)(Imms)();
+            BitExtMI = BuildMI(*operator(LoadI).getParent(), LoadI, MIMetadata { DL: operator(LoadI).getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(if IsStoreXReg { UBFMXri } else { UBFMWri }), DestReg).add(StMO).addImm(Immr).addImm(Imms).setMIFlags(operator(LoadI).getFlags()).operator llvm::MachineInstr *();
+        }
+    }
+    for MI in make_range(operator(StoreI).getIterator(), BitExtMI.getIterator()) {
+        if MI.killsRegister(StRt, self.TRI) {
+            MI.clearRegisterKills(StRt, self.TRI);
+            break;
         }
     }
     while true {
@@ -690,7 +1190,7 @@ fn AArch64LoadStoreOpt::promoteLoadFromStore(self, LoadI: i32, StoreI: i32) -> i
     while true {
         {
         if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
-            StoreI()(dbgs());
+            operator(StoreI).print(dbgs(), true, false, false, true, null);
         }
     }
         if !(false) { break; }
@@ -706,7 +1206,7 @@ fn AArch64LoadStoreOpt::promoteLoadFromStore(self, LoadI: i32, StoreI: i32) -> i
     while true {
         {
         if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
-            LoadI()(dbgs());
+            operator(LoadI).print(dbgs(), true, false, false, true, null);
         }
     }
         if !(false) { break; }
@@ -722,7 +1222,7 @@ fn AArch64LoadStoreOpt::promoteLoadFromStore(self, LoadI: i32, StoreI: i32) -> i
     while true {
         {
         if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
-            StoreI()(dbgs());
+            operator(StoreI).print(dbgs(), true, false, false, true, null);
         }
     }
         if !(false) { break; }
@@ -751,8 +1251,8 @@ fn AArch64LoadStoreOpt::promoteLoadFromStore(self, LoadI: i32, StoreI: i32) -> i
     }
         if !(false) { break; }
     }
-    LoadI()();
-    return ;
+    operator(LoadI).eraseFromParent();
+    return NextI;
 }
 
 fn inBoundsForPair(IsUnscaled: bool, Offset: i32, OffsetStride: i32) -> bool {
@@ -770,6 +1270,20 @@ fn alignTo(Num: i32, PowOf2: i32) -> i32 {
 }
 
 fn mayAlias(MIa: *mut MachineInstr, MemInsns: *mut SmallVectorImpl<MachineInstr *>, AA: *mut AliasAnalysis) -> bool {
+    for MIb in MemInsns {
+        if MIa.mayAlias(AA, *MIb, false) {
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
+                    dbgs() << "Aliasing with: ";
+                    MIb.dump();
+                }
+            }
+                if !(false) { break; }
+            }
+            return true;
+        }
+    }
     while true {
         {
         if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
@@ -781,38 +1295,40 @@ fn mayAlias(MIa: *mut MachineInstr, MemInsns: *mut SmallVectorImpl<MachineInstr 
     return false;
 }
 
-fn AArch64LoadStoreOpt::findMatchingStore(self, I: i32, Limit: u32, StoreI: *mut i32) -> bool {
-    let mut B: i32 = ()();
-    let mut MBBI: i32 = ;
-    let mut LoadMI: *mut MachineInstr = operator*();
+fn AArch64LoadStoreOpt::findMatchingStore(self, I: iterator, Limit: u32, StoreI: *mut iterator) -> bool {
+    let mut B: iterator = operator(I).getParent().begin();
+    let mut MBBI: iterator = I;
+    let mut LoadMI: *mut MachineInstr = operator(I);
     let mut BaseReg: Register = getLdStBaseOp(LoadMI).getReg();
-    if MBBI() ==  {
+    if MBBI == B {
         return false;
     }
+    self.ModifiedRegUnits.clear();
+    self.UsedRegUnits.clear();
     let mut Count: u32 = 0;
     while true {
         {
-        MBBI() = prev_nodbg();
-        let mut MI: *mut MachineInstr = operator*();
+        MBBI = prev_nodbg(MBBI, B, true);
+        let mut MI: *mut MachineInstr = operator(MBBI);
         if !MI.isTransient() {
             Count += 1;
         }
-        if  {
-            StoreI() = ;
+        if MI.mayStore(AnyInBundle) && isMatchingStore(LoadMI, MI) && BaseReg == getLdStBaseOp(MI).getReg() && getLdStOffsetOp(MI).isImm() && isLdOffsetInRangeOfSt(LoadMI, MI, self.TII) && self.ModifiedRegUnits.available(getLdStRegOp(MI, 0).getReg().operator MCRegister()) {
+            StoreI = MBBI;
             return true;
         }
         if MI.isCall(AnyInBundle) {
             return false;
         }
-        accumulateUsedDefed(MI, self.TRI);
-        if  {
+        accumulateUsedDefed(MI, self.ModifiedRegUnits, self.UsedRegUnits, self.TRI);
+        if !self.ModifiedRegUnits.available(BaseReg.operator MCRegister()) {
             return false;
         }
         if MI.mayStore(AnyInBundle) && LoadMI.mayAlias(self.AA, MI, false) {
             return false;
         }
     }
-        if !( !=  && Count < Limit) { break; }
+        if !(MBBI != B && Count < Limit) { break; }
     }
     return false;
 }
@@ -834,7 +1350,7 @@ fn areCandidatesToMergeOrPair(FirstMI: *mut MachineInstr, MI: *mut MachineInstr,
     if OpcA == OpcB {
         return !isPreLdSt(FirstMI);
     }
-    if  {
+    if OpcA == LDR_ZXI || OpcA == STR_ZXI || OpcB == LDR_ZXI || OpcB == STR_ZXI {
         return false;
     }
     if isPreLdSt(FirstMI) && isPreLdSt(MI) {
@@ -851,6 +1367,9 @@ fn areCandidatesToMergeOrPair(FirstMI: *mut MachineInstr, MI: *mut MachineInstr,
     if !PairIsValidLdStrOpc {
         return false;
     }
+    if isNarrowStore(OpcA) || isNarrowStore(OpcB) {
+        return getLdStRegOp(FirstMI, 0).getReg() == WZR && getLdStRegOp(MI, 0).getReg() == WZR && TII.getMemScale(FirstMI) == TII.getMemScale(MI);
+    }
     if isPreLdStPairCandidate(FirstMI, MI) {
         return true;
     }
@@ -860,7 +1379,7 @@ fn areCandidatesToMergeOrPair(FirstMI: *mut MachineInstr, MI: *mut MachineInstr,
 fn canRenameMOP(MI: *MachineInstr, MOP: *MachineOperand, TRI: *TargetRegisterInfo) -> bool {
     if MOP.isReg() {
         let mut RegClass: *TargetRegisterClass = TRI.getMinimalPhysRegClass(MOP.getReg().operator MCRegister());
-        if RegClass.HasDisjunctSubRegs && RegClass.CoveredBySubRegs && (TRI.getSubRegisterClass || TRI.getSubRegisterClass || TRI.getSubRegisterClass) {
+        if RegClass.HasDisjunctSubRegs && RegClass.CoveredBySubRegs && (TRI.getSubRegisterClass(RegClass, dsub0) || TRI.getSubRegisterClass(RegClass, qsub0) || TRI.getSubRegisterClass(RegClass, zsub0)) {
             while true {
                 {
                 if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
@@ -875,7 +1394,7 @@ fn canRenameMOP(MI: *MachineInstr, MOP: *MachineOperand, TRI: *TargetRegisterInf
             if !isRewritableImplicitDef(MI, MOP) {
                 return false;
             }
-            return TRI.isSuperOrSubRegisterEq;
+            return TRI.isSuperOrSubRegisterEq(MI.getOperand(0).getReg().operator MCRegister(), MOP.getReg().operator MCRegister());
         }
     }
     return MOP.isImplicit() || (MOP.isRenamable() && !MOP.isEarlyClobber() && !MOP.isTied());
@@ -886,7 +1405,7 @@ fn canRenameUpToDef(FirstMI: *mut MachineInstr, UsedInBetween: *mut LiveRegUnits
         return false;
     }
     let mut RegToRename: Register = getLdStRegOp(FirstMI, 0).getReg();
-    if !getLdStRegOp(FirstMI, 0).isKill() && operator!(any_of(FirstMI()(), Closure_3 { TRI: TRI, cap_1: RegToRename })) {
+    if !getLdStRegOp(FirstMI, 0).isKill() && !any_of(FirstMI.operands(), Closure_6 { TRI: TRI, cap_1: RegToRename }) {
         while true {
             {
             if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
@@ -898,8 +1417,8 @@ fn canRenameUpToDef(FirstMI: *mut MachineInstr, UsedInBetween: *mut LiveRegUnits
         return false;
     }
     let mut FoundDef: bool = false;
-    let mut CheckMIs: function<bool (MachineInstr &, bool)> = zeroed();
-    if operator!(forAllMIsUntilDef(FirstMI, RegToRename, TRI)) {
+    let mut CheckMIs: function<bool (MachineInstr &, bool)> = Closure_7 { UsedInBetween: &mut UsedInBetween, FoundDef: &mut FoundDef, TRI: &mut TRI, RegToRename: &mut RegToRename, RequiredClasses: &mut RequiredClasses };
+    if !forAllMIsUntilDef(FirstMI, RegToRename.operator unsigned int(), TRI, LdStLimit.operator unsigned int(), CheckMIs) {
         return false;
     }
     if !FoundDef {
@@ -922,17 +1441,17 @@ fn canRenameUntilSecondLoad(FirstLoad: *mut MachineInstr, SecondLoad: *mut Machi
     }
     UsedInBetween.accumulate(FirstLoad);
     let mut RegToRename: Register = getLdStRegOp(FirstLoad, 0).getReg();
-    let mut Success: bool = all_of(FirstLoad()(), SecondLoad()(), Closure_4 { TRI: &mut TRI, RegToRename: &mut RegToRename, RequiredClasses: &mut RequiredClasses });
+    let mut Success: bool = all_of(FirstLoad.getIterator(), SecondLoad.getIterator(), Closure_8 { TRI: &mut TRI, RegToRename: &mut RegToRename, RequiredClasses: &mut RequiredClasses });
     return Success;
 }
 
 fn tryToFindRegisterToRename(MF: *MachineFunction, Reg: Register, DefinedInBB: *mut LiveRegUnits, UsedInBetween: *mut LiveRegUnits, RequiredClasses: *SmallPtrSetImpl<const TargetRegisterClass *>, TRI: *TargetRegisterInfo) -> optional<MCPhysReg> {
     let mut RegInfo: *MachineRegisterInfo = MF.getRegInfo();
-    let mut AnySubOrSuperRegCalleePreserved: Closure_5 = Closure_5 { MF: &mut MF, TRI: TRI };
-    let mut CanBeUsedForAllClasses: Closure_6 = Closure_6 { RequiredClasses: &mut RequiredClasses, TRI: TRI };
+    let mut AnySubOrSuperRegCalleePreserved: Closure_9 = Closure_9 { MF: &mut MF, TRI: TRI };
+    let mut CanBeUsedForAllClasses: Closure_11 = Closure_11 { RequiredClasses: &mut RequiredClasses, TRI: TRI };
     let mut RegClass: *TargetRegisterClass = TRI.getMinimalPhysRegClass(Reg.operator MCRegister());
     for PR in *RegClass {
-        if DefinedInBB.available(PR) && UsedInBetween.available(PR) && !RegInfo.isReserved(PR) && operator!(AnySubOrSuperRegCalleePreserved(PR)) && CanBeUsedForAllClasses(PR) {
+        if DefinedInBB.available(PR) && UsedInBetween.available(PR) && !RegInfo.isReserved(PR) && !AnySubOrSuperRegCalleePreserved.call(PR) && CanBeUsedForAllClasses.call(PR) {
             DefinedInBB.addReg(PR);
             while true {
                 {
@@ -942,47 +1461,49 @@ fn tryToFindRegisterToRename(MF: *MachineFunction, Reg: Register, DefinedInBB: *
             }
                 if !(false) { break; }
             }
-            return void { PR };
+            return PR;
         }
     }
     while true {
         {
         if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
-            dbgs() << "No rename register found from " << TRI.getRegClassName << "\n";
+            dbgs() << "No rename register found from " << TRI.getRegClassName(RegClass) << "\n";
         }
     }
         if !(false) { break; }
     }
-    return nullopt();
+    return nullopt;
 }
 
 fn findRenameRegForSameLdStRegPair(MaybeCanRename: optional<bool>, FirstMI: *mut MachineInstr, MI: *mut MachineInstr, Reg: Register, DefinedInBB: *mut LiveRegUnits, UsedInBetween: *mut LiveRegUnits, RequiredClasses: *SmallPtrSetImpl<const TargetRegisterClass *>, TRI: *TargetRegisterInfo) -> optional<MCPhysReg> {
-    let mut RenameReg: optional<MCPhysReg> = zeroed();
+    let mut RenameReg: optional<MCPhysReg> = optional<MCPhysReg> {};
     if !shouldExecute(RegRenamingCounter) {
-        return ;
+        return RenameReg;
     }
     let mut RegClass: *TargetRegisterClass = TRI.getMinimalPhysRegClass(getLdStRegOp(FirstMI, 0).getReg().operator MCRegister());
     let mut MF: *mut MachineFunction = *FirstMI.getParent().getParent();
     if !RegClass || !MF.getRegInfo().tracksLiveness() {
-        return ;
+        return RenameReg;
     }
     let mut IsLoad: bool = FirstMI.mayLoad(AnyInBundle);
-    if operator!() {
+    if !MaybeCanRename {
         if IsLoad {
-            MaybeCanRename() = void { canRenameUntilSecondLoad(FirstMI, MI, UsedInBetween, RequiredClasses, TRI) };
+            MaybeCanRename = canRenameUntilSecondLoad(FirstMI, MI, UsedInBetween, RequiredClasses, TRI);
         } else {
-            MaybeCanRename() = void { canRenameUpToDef(FirstMI, UsedInBetween, RequiredClasses, TRI) };
+            MaybeCanRename = canRenameUpToDef(FirstMI, UsedInBetween, RequiredClasses, TRI);
         }
     }
-    if operator*() {}
-    return ;
+    if operator(MaybeCanRename) {
+        RenameReg = tryToFindRegisterToRename(MF, Reg, DefinedInBB, UsedInBetween, RequiredClasses, TRI);
+    }
+    return RenameReg;
 }
 
-fn AArch64LoadStoreOpt::findMatchingInsn(self, I: i32, Flags: *mut LdStPairFlags, Limit: u32, FindNarrowMerge: bool) -> i32 {
-    let mut E: i32 = ()();
-    let mut MBBI: i32 = ;
-    let mut FirstMI: *mut MachineInstr = operator*();
-    MBBI() = next_nodbg();
+fn AArch64LoadStoreOpt::findMatchingInsn(self, I: iterator, Flags: *mut LdStPairFlags, Limit: u32, FindNarrowMerge: bool) -> iterator {
+    let mut E: iterator = operator(I).getParent().end();
+    let mut MBBI: iterator = I;
+    let mut FirstMI: *mut MachineInstr = operator(I);
+    MBBI = next_nodbg(MBBI, E, true);
     let mut MayLoad: bool = FirstMI.mayLoad(AnyInBundle);
     let mut IsUnscaled: bool = self.TII.hasUnscaledLdStOffset(FirstMI);
     let mut Reg: Register = getLdStRegOp(FirstMI, 0).getReg();
@@ -990,15 +1511,17 @@ fn AArch64LoadStoreOpt::findMatchingInsn(self, I: i32, Flags: *mut LdStPairFlags
     let mut Offset: i32 = getLdStOffsetOp(FirstMI).getImm();
     let mut OffsetStride: i32 = if IsUnscaled { self.TII.getMemScale(FirstMI) } else { 1 };
     let mut IsPromotableZeroStore: bool = isPromotableZeroStoreInst(FirstMI);
-    let mut MaybeCanRename: optional<bool> = zeroed();
-    if operator!() {
-        MaybeCanRename() = void { false };
+    let mut MaybeCanRename: optional<bool> = optional<bool> {};
+    if !EnableRenaming {
+        MaybeCanRename = false;
     }
-    let mut RequiredClasses: SmallPtrSet<const TargetRegisterClass *, 5> = zeroed();
+    let mut RequiredClasses: SmallPtrSet<const TargetRegisterClass *, 5> = SmallPtrSet<const TargetRegisterClass *, 5> {};
     let mut UsedInBetween: LiveRegUnits = LiveRegUnits {};
     UsedInBetween.init(*self.TRI);
     Flags.clearRenameReg();
-    let mut MemInsns: SmallVector<MachineInstr *, 4> = zeroed();
+    self.ModifiedRegUnits.clear();
+    self.UsedRegUnits.clear();
+    let mut MemInsns: SmallVector<MachineInstr *, 4> = SmallVector<MachineInstr *, 4> {};
     while true {
         {
         if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
@@ -1008,8 +1531,8 @@ fn AArch64LoadStoreOpt::findMatchingInsn(self, I: i32, Flags: *mut LdStPairFlags
     }
         if !(false) { break; }
     }
-    for let mut Count: u32 = 0; MBBI() !=  && Count < Limit;  = next_nodbg() {
-        let mut MI: *mut MachineInstr = operator*();
+    for let mut Count: u32 = 0; MBBI != E && Count < Limit; MBBI = next_nodbg(MBBI, E, true) {
+        let mut MI: *mut MachineInstr = operator(MBBI);
         while true {
             {
             if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
@@ -1033,8 +1556,8 @@ fn AArch64LoadStoreOpt::findMatchingInsn(self, I: i32, Flags: *mut LdStPairFlags
                 let mut MemSize: i32 = self.TII.getMemScale(MI);
                 if MIIsUnscaled {
                     if MIOffset % MemSize {
-                        accumulateUsedDefed(MI, self.TRI);
-                        MemInsns()(&mut MI);
+                        accumulateUsedDefed(MI, self.ModifiedRegUnits, self.UsedRegUnits, self.TRI);
+                        MemInsns.push(&mut MI);
                         continue;
                     }
                     MIOffset /= MemSize;
@@ -1046,32 +1569,32 @@ fn AArch64LoadStoreOpt::findMatchingInsn(self, I: i32, Flags: *mut LdStPairFlags
             if BaseReg == MIBaseReg {
                 if IsPreLdSt {
                     let mut IsOutOfBounds: bool = MIOffset != self.TII.getMemScale(MI);
-                    let mut IsBaseRegUsed: bool = false;
-                    let mut IsBaseRegModified: bool = false;
+                    let mut IsBaseRegUsed: bool = !self.UsedRegUnits.available(getLdStBaseOp(MI).getReg().operator MCRegister());
+                    let mut IsBaseRegModified: bool = !self.ModifiedRegUnits.available(getLdStBaseOp(MI).getReg().operator MCRegister());
                     let mut IsMIRegTheSame: bool = self.TRI.regsOverlap(getLdStRegOp(MI, 0).getReg(), getLdStBaseOp(MI).getReg());
                     if IsOutOfBounds || IsBaseRegUsed || IsBaseRegModified || IsMIRegTheSame {
-                        accumulateUsedDefed(MI, self.TRI);
-                        MemInsns()(&mut MI);
+                        accumulateUsedDefed(MI, self.ModifiedRegUnits, self.UsedRegUnits, self.TRI);
+                        MemInsns.push(&mut MI);
                         continue;
                     }
                 } else {
                     if (Offset != MIOffset + OffsetStride) && (Offset + OffsetStride != MIOffset) {
-                        accumulateUsedDefed(MI, self.TRI);
-                        MemInsns()(&mut MI);
+                        accumulateUsedDefed(MI, self.ModifiedRegUnits, self.UsedRegUnits, self.TRI);
+                        MemInsns.push(&mut MI);
                         continue;
                     }
                 }
                 let mut MinOffset: i32 = if Offset < MIOffset { Offset } else { MIOffset };
                 if FindNarrowMerge {
                     if (!IsUnscaled && alignTo(MinOffset, 2) != MinOffset) || (IsPromotableZeroStore && Reg != getLdStRegOp(MI, 0).getReg()) {
-                        accumulateUsedDefed(MI, self.TRI);
-                        MemInsns()(&mut MI);
+                        accumulateUsedDefed(MI, self.ModifiedRegUnits, self.UsedRegUnits, self.TRI);
+                        MemInsns.push(&mut MI);
                         continue;
                     }
                 } else {
                     if !inBoundsForPair(IsUnscaled, MinOffset, OffsetStride) {
-                        accumulateUsedDefed(MI, self.TRI);
-                        MemInsns()(&mut MI);
+                        accumulateUsedDefed(MI, self.ModifiedRegUnits, self.UsedRegUnits, self.TRI);
+                        MemInsns.push(&mut MI);
                         while true {
                             {
                             if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
@@ -1083,8 +1606,8 @@ fn AArch64LoadStoreOpt::findMatchingInsn(self, I: i32, Flags: *mut LdStPairFlags
                         continue;
                     }
                     if IsUnscaled && (alignTo(MinOffset, OffsetStride) != MinOffset) {
-                        accumulateUsedDefed(MI, self.TRI);
-                        MemInsns()(&mut MI);
+                        accumulateUsedDefed(MI, self.ModifiedRegUnits, self.UsedRegUnits, self.TRI);
+                        MemInsns.push(&mut MI);
                         while true {
                             {
                             if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
@@ -1096,12 +1619,12 @@ fn AArch64LoadStoreOpt::findMatchingInsn(self, I: i32, Flags: *mut LdStPairFlags
                         continue;
                     }
                 }
-                if  {
-                    return ;
+                if !self.ModifiedRegUnits.available(BaseReg.operator MCRegister()) {
+                    return E;
                 }
-                let mut SameLoadReg: bool = MayLoad && self.TRI.isSuperOrSubRegisterEq;
-                let mut RtNotModified: bool = false;
-                let mut RtNotUsed: bool = false;
+                let mut SameLoadReg: bool = MayLoad && self.TRI.isSuperOrSubRegisterEq(Reg.operator MCRegister(), getLdStRegOp(MI, 0).getReg().operator MCRegister());
+                let mut RtNotModified: bool = self.ModifiedRegUnits.available(getLdStRegOp(MI, 0).getReg().operator MCRegister());
+                let mut RtNotUsed: bool = !(MI.mayLoad(AnyInBundle) && !SameLoadReg && !self.UsedRegUnits.available(getLdStRegOp(MI, 0).getReg().operator MCRegister()));
                 while true {
                     {
                     if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
@@ -1110,12 +1633,12 @@ fn AArch64LoadStoreOpt::findMatchingInsn(self, I: i32, Flags: *mut LdStPairFlags
                 }
                     if !(false) { break; }
                 }
-                if RtNotModified && RtNotUsed && operator!(mayAlias(MI, self.AA)) {
+                if RtNotModified && RtNotUsed && !mayAlias(MI, MemInsns, self.AA) {
                     if SameLoadReg {
-                        let mut RenameReg: optional<MCPhysReg> = zeroed();
-                        if operator!() {
-                            accumulateUsedDefed(MI, self.TRI);
-                            MemInsns()(&mut MI);
+                        let mut RenameReg: optional<MCPhysReg> = findRenameRegForSameLdStRegPair(MaybeCanRename, FirstMI, MI, Reg, self.DefinedInBB, UsedInBetween, RequiredClasses, self.TRI);
+                        if !RenameReg {
+                            accumulateUsedDefed(MI, self.ModifiedRegUnits, self.UsedRegUnits, self.TRI);
+                            MemInsns.push(&mut MI);
                             while true {
                                 {
                                 if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
@@ -1126,14 +1649,15 @@ fn AArch64LoadStoreOpt::findMatchingInsn(self, I: i32, Flags: *mut LdStPairFlags
                             }
                             continue;
                         }
-                        Flags.setRenameReg(operator*());
+                        Flags.setRenameReg(operator(RenameReg));
                     }
                     Flags.setMergeForward(false);
                     if !SameLoadReg {
                         Flags.clearRenameReg();
                     }
-                    return ;
+                    return MBBI;
                 }
+                RtNotModified = !(MayLoad && !self.UsedRegUnits.available(getLdStRegOp(FirstMI, 0).getReg().operator MCRegister()));
                 while true {
                     {
                     if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
@@ -1142,17 +1666,17 @@ fn AArch64LoadStoreOpt::findMatchingInsn(self, I: i32, Flags: *mut LdStPairFlags
                 }
                     if !(false) { break; }
                 }
-                if RtNotModified && operator!(mayAlias(FirstMI, self.AA)) {
-                    if  {
+                if RtNotModified && !mayAlias(FirstMI, MemInsns, self.AA) {
+                    if self.ModifiedRegUnits.available(getLdStRegOp(FirstMI, 0).getReg().operator MCRegister()) {
                         Flags.setMergeForward(true);
                         Flags.clearRenameReg();
-                        return ;
+                        return MBBI;
                     }
-                    let mut RenameReg: optional<MCPhysReg> = zeroed();
-                    if RenameReg() {
+                    let mut RenameReg: optional<MCPhysReg> = findRenameRegForSameLdStRegPair(MaybeCanRename, FirstMI, MI, Reg, self.DefinedInBB, UsedInBetween, RequiredClasses, self.TRI);
+                    if RenameReg {
                         Flags.setMergeForward(true);
-                        Flags.setRenameReg(operator*());
-                        return ;
+                        Flags.setRenameReg(operator(RenameReg));
+                        return MBBI;
                     }
                 }
                 while true {
@@ -1174,10 +1698,10 @@ fn AArch64LoadStoreOpt::findMatchingInsn(self, I: i32, Flags: *mut LdStPairFlags
             }
                 if !(false) { break; }
             }
-            return ;
+            return E;
         }
-        accumulateUsedDefed(MI, self.TRI);
-        if  {
+        accumulateUsedDefed(MI, self.ModifiedRegUnits, self.UsedRegUnits, self.TRI);
+        if !self.ModifiedRegUnits.available(BaseReg.operator MCRegister()) {
             while true {
                 {
                 if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
@@ -1186,70 +1710,72 @@ fn AArch64LoadStoreOpt::findMatchingInsn(self, I: i32, Flags: *mut LdStPairFlags
             }
                 if !(false) { break; }
             }
-            return ;
+            return E;
         }
         if MI.mayLoadOrStore(AnyInBundle) {
-            MemInsns()(&mut MI);
+            MemInsns.push(&mut MI);
         }
     }
-    return ;
+    return E;
 }
 
-fn maybeMoveCFI(MI: *mut MachineInstr, MaybeCFI: i32) -> i32 {
-    let mut End: auto = MI.getParent()();
-    if  {
-        return ;
+fn maybeMoveCFI(MI: *mut MachineInstr, MaybeCFI: iterator) -> iterator {
+    assert!((MI.getOpcode() == SUBXri || MI.getOpcode() == ADDXri), "Expected a register update instruction");
+    let mut End: iterator = MI.getParent().end();
+    if MaybeCFI == End || operator(MaybeCFI).getOpcode() != CFI_INSTRUCTION || !(MI.getFlag(FrameSetup) || MI.getFlag(FrameDestroy)) || MI.getOperand(0).getReg() != SP {
+        return End;
     }
     let mut MF: *MachineFunction = *MI.getParent().getParent();
-    let mut CFIIndex: u32 = (0)();
-    let mut CFI: *MCCFIInstruction = MF()()[CFIIndex];
+    let mut CFIIndex: u32 = operator(MaybeCFI).getOperand(0).getCFIIndex();
+    let mut CFI: *MCCFIInstruction = MF.getFrameInstructions()[CFIIndex];
     match CFI.getOperation() {
         OpDefCfa => {
             OpDefCfaOffset;
         },
         _ => {
-            return ;
+            return End;
         },
     }
 }
 
-fn AArch64LoadStoreOpt::mergeUpdateInsn(self, I: i32, Update: i32, IsForward: bool, IsPreIdx: bool, MergeEither: bool) -> i32 {
-    let mut E: i32 = ()();
-    let mut NextI: i32 = next_nodbg();
-    let mut InsertPt: i32 = ;
+fn AArch64LoadStoreOpt::mergeUpdateInsn(self, I: iterator, Update: iterator, IsForward: bool, IsPreIdx: bool, MergeEither: bool) -> iterator> {
+    assert!((operator(Update).getOpcode() == ADDXri || operator(Update).getOpcode() == SUBXri), "Unexpected base register update instruction to merge!");
+    let mut E: iterator = operator(I).getParent().end();
+    let mut NextI: iterator = next_nodbg(I, E, true);
+    let mut InsertPt: iterator = I;
     if IsForward {
         assert!(IsPreIdx);
-        let mut CFI: auto = zeroed();
-        if CFI() !=  {
+        let mut CFI: iterator = maybeMoveCFI(operator(Update), next_nodbg(Update, E, true));
+        if CFI != E {
             if MergeEither {
-                InsertPt() = ;
+                InsertPt = Update;
             } else {
-                if any_of(next(), Closure_7 {}) {
-                    return nullopt();
+                if any_of(next(CFI, 1), I, Closure_14 {}) {
+                    return nullopt;
                 }
-                let mut MBB: *mut MachineBasicBlock = ();
-                MBB()(next(), MBB);
+                let mut MBB: *mut MachineBasicBlock = operator(InsertPt).getParent();
+                MBB.splice(next(InsertPt, 1), MBB, CFI);
             }
         }
     }
-    if NextI() ==  {
-        NextI() = next_nodbg();
+    if NextI == Update {
+        NextI = next_nodbg(NextI, E, true);
     }
-    let mut Value: i32 = (2)();
-    (((operator!(operator!((getShiftValue((3)()) == 0 && "Can't merge 1 << 12 offset into pre-/post-indexed load / store")))) || (_wassert(L"AArch64_AM::getShiftValue(Update->getOperand(3).getImm()) == 0 && \"Can't merge 1 << 12 offset into pre-/post-indexed load / store\"", L"llvm\\lib\\Target\\AArch64\\AArch64LoadStoreOptimizer.cpp", (2347) as u32) , 0)) as void);
-    if  {
+    let mut Value: i32 = operator(Update).getOperand(2).getImm();
+    assert!(getShiftValue(operator(Update).getOperand(3).getImm()) == 0, "Can't merge 1 << 12 offset into pre-/post-indexed load / store");
+    if operator(Update).getOpcode() == SUBXri {
         Value = -Value;
     }
-    let mut NewOpc: u32 = if IsPreIdx { getPreIndexedOpcode() } else { getPostIndexedOpcode() };
+    let mut NewOpc: u32 = if IsPreIdx { getPreIndexedOpcode(operator(I).getOpcode()) } else { getPostIndexedOpcode(operator(I).getOpcode()) };
     let mut MIB: MachineInstrBuilder = MachineInstrBuilder {};
     let mut Scale: i32 = 0;
     let mut MinOffset: i32 = 0;
     let mut MaxOffset: i32 = 0;
-    getPrePostIndexedMemOpInfo(operator*(), Scale, MinOffset, MaxOffset);
-    if operator!(isPairedLdSt(operator*())) {
-        MIB = BuildMI(operator*(), self.TII(NewOpc))((0))(getLdStRegOp(operator*()))(getLdStBaseOp(operator*()))(Value / Scale)()((operator*()));
+    getPrePostIndexedMemOpInfo(operator(I), Scale, MinOffset, MaxOffset);
+    if !isPairedLdSt(operator(I)) {
+        MIB = BuildMI(*operator(InsertPt).getParent(), InsertPt, MIMetadata { DL: operator(InsertPt).getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NewOpc)).add(operator(Update).getOperand(0)).add(getLdStRegOp(operator(I), 0)).add(getLdStBaseOp(operator(I))).addImm(Value / Scale).setMemRefs(operator(I).memoperands()).setMIFlags(operator(I).mergeFlagsWith(operator(Update)));
     } else {
-        MIB = BuildMI(operator*(), self.TII(NewOpc))((0))(getLdStRegOp(operator*(), 0))(getLdStRegOp(operator*(), 1))(getLdStBaseOp(operator*()))(Value / Scale)()((operator*()));
+        MIB = BuildMI(*operator(InsertPt).getParent(), InsertPt, MIMetadata { DL: operator(InsertPt).getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NewOpc)).add(operator(Update).getOperand(0)).add(getLdStRegOp(operator(I), 0)).add(getLdStRegOp(operator(I), 1)).add(getLdStBaseOp(operator(I))).addImm(Value / Scale).setMemRefs(operator(I).memoperands()).setMIFlags(operator(I).mergeFlagsWith(operator(Update)));
     }
     if IsPreIdx {
         operator(NumPreFolded);
@@ -1283,7 +1809,7 @@ fn AArch64LoadStoreOpt::mergeUpdateInsn(self, I: i32, Update: i32, IsForward: bo
     while true {
         {
         if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
-            I()(dbgs());
+            operator(I).print(dbgs(), true, false, false, true, null);
         }
     }
         if !(false) { break; }
@@ -1299,7 +1825,7 @@ fn AArch64LoadStoreOpt::mergeUpdateInsn(self, I: i32, Update: i32, IsForward: bo
     while true {
         {
         if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
-            Update()(dbgs());
+            operator(Update).print(dbgs(), true, false, false, true, null);
         }
     }
         if !(false) { break; }
@@ -1328,16 +1854,17 @@ fn AArch64LoadStoreOpt::mergeUpdateInsn(self, I: i32, Update: i32, IsForward: bo
     }
         if !(false) { break; }
     }
-    I()();
-    Update()();
-    return ;
+    operator(I).eraseFromParent();
+    operator(Update).eraseFromParent();
+    return NextI;
 }
 
-fn AArch64LoadStoreOpt::mergeConstOffsetInsn(self, I: i32, Update: i32, Offset: u32, Scale: i32) -> i32 {
-    let mut E: i32 = ()();
-    let mut NextI: i32 = next_nodbg();
-    let mut PrevI: i32 = prev_nodbg();
-    let mut MemMI: *mut MachineInstr = operator*();
+fn AArch64LoadStoreOpt::mergeConstOffsetInsn(self, I: iterator, Update: iterator, Offset: u32, Scale: i32) -> iterator {
+    assert!((operator(Update).getOpcode() == MOVKWi), "Unexpected const mov instruction to merge!");
+    let mut E: iterator = operator(I).getParent().end();
+    let mut NextI: iterator = next_nodbg(I, E, true);
+    let mut PrevI: iterator = prev_nodbg(Update, E, true);
+    let mut MemMI: *mut MachineInstr = operator(I);
     let mut Mask: u32 = (1 << 12) * Scale - 1;
     let mut Low: u32 = Offset & Mask;
     let mut High: u32 = Offset - Low;
@@ -1345,10 +1872,10 @@ fn AArch64LoadStoreOpt::mergeConstOffsetInsn(self, I: i32, Update: i32, Offset: 
     let mut IndexReg: Register = getLdStOffsetOp(MemMI).getReg();
     let mut AddMIB: MachineInstrBuilder = MachineInstrBuilder {};
     let mut MemMIB: MachineInstrBuilder = MachineInstrBuilder {};
-    AddMIB = BuildMI(operator*(), self.TII)(IndexReg)(BaseReg)(High >> 12)(12);
+    AddMIB = BuildMI(*operator(I).getParent(), I, MIMetadata { DL: operator(I).getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(ADDXri)).addDef(IndexReg, RegState {}, 0).addUse(BaseReg, RegState {}, 0).addImm(High >> 12).addImm(12);
     AddMIB as void;
-    let mut NewOpc: u32 = getBaseAddressOpcode();
-    MemMIB = BuildMI(operator*(), self.TII(NewOpc))(getLdStRegOp(MemMI, 0))(getLdStOffsetOp(MemMI))(Low / Scale)()((operator*()));
+    let mut NewOpc: u32 = getBaseAddressOpcode(operator(I).getOpcode());
+    MemMIB = BuildMI(*operator(I).getParent(), I, MIMetadata { DL: operator(I).getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(NewOpc)).add(getLdStRegOp(MemMI, 0)).add(getLdStOffsetOp(MemMI)).addImm(Low / Scale).setMemRefs(operator(I).memoperands()).setMIFlags(operator(I).mergeFlagsWith(operator(Update)));
     MemMIB as void;
     operator(NumConstOffsetFolded);
     while true {
@@ -1370,7 +1897,7 @@ fn AArch64LoadStoreOpt::mergeConstOffsetInsn(self, I: i32, Update: i32, Offset: 
     while true {
         {
         if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
-            PrevI()(dbgs());
+            operator(PrevI).print(dbgs(), true, false, false, true, null);
         }
     }
         if !(false) { break; }
@@ -1386,7 +1913,7 @@ fn AArch64LoadStoreOpt::mergeConstOffsetInsn(self, I: i32, Update: i32, Offset: 
     while true {
         {
         if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
-            Update()(dbgs());
+            operator(Update).print(dbgs(), true, false, false, true, null);
         }
     }
         if !(false) { break; }
@@ -1402,7 +1929,7 @@ fn AArch64LoadStoreOpt::mergeConstOffsetInsn(self, I: i32, Update: i32, Offset: 
     while true {
         {
         if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
-            I()(dbgs());
+            operator(I).print(dbgs(), true, false, false, true, null);
         }
     }
         if !(false) { break; }
@@ -1447,10 +1974,10 @@ fn AArch64LoadStoreOpt::mergeConstOffsetInsn(self, I: i32, Update: i32, Offset: 
     }
         if !(false) { break; }
     }
-    I()();
-    PrevI()();
-    Update()();
-    return ;
+    operator(I).eraseFromParent();
+    operator(PrevI).eraseFromParent();
+    operator(Update).eraseFromParent();
+    return NextI;
 }
 
 fn AArch64LoadStoreOpt::isMatchingUpdateInsn(self, MemMI: *mut MachineInstr, MI: *mut MachineInstr, BaseReg: u32, Offset: i32) -> bool {
@@ -1458,20 +1985,23 @@ fn AArch64LoadStoreOpt::isMatchingUpdateInsn(self, MemMI: *mut MachineInstr, MI:
         _ => {
             break;
         },
+        SUBXri => {
+            ADDXri;
+        },
     }
     return false;
 }
 
 fn AArch64LoadStoreOpt::isMatchingMovConstInsn(self, MemMI: *mut MachineInstr, MI: *mut MachineInstr, IndexReg: u32, Offset: *mut u32) -> bool {
-    if  {
-        let mut B: i32 = MI.getParent()();
-        let mut MBBI: i32 = &mut MI;
-        if MBBI() ==  {
+    if MI.getOpcode() == MOVKWi && self.TRI.isSuperOrSubRegisterEq(IndexReg, MI.getOperand(1).getReg().operator MCRegister()) {
+        let mut B: iterator = MI.getParent().begin();
+        let mut MBBI: iterator = &mut MI;
+        if MBBI == B {
             return false;
         }
-        MBBI() = prev_nodbg();
-        let mut MovzMI: *mut MachineInstr = operator*();
-        if  {
+        MBBI = prev_nodbg(MBBI, B, true);
+        let mut MovzMI: *mut MachineInstr = operator(MBBI);
+        if MovzMI.getOpcode() == MOVZWi && MovzMI.getOperand(0).getReg() == MI.getOperand(0).getReg() {
             let mut Low: u32 = MovzMI.getOperand(1).getImm();
             let mut High: u32 = MI.getOperand(2).getImm() << MI.getOperand(3).getImm();
             Offset = High + Low;
@@ -1481,45 +2011,47 @@ fn AArch64LoadStoreOpt::isMatchingMovConstInsn(self, MemMI: *mut MachineInstr, M
     return false;
 }
 
-fn AArch64LoadStoreOpt::findMatchingUpdateInsnForward(self, I: i32, UnscaledOffset: i32, Limit: u32) -> i32 {
-    let mut E: i32 = ()();
-    let mut MemMI: *mut MachineInstr = operator*();
-    let mut MBBI: i32 = ;
+fn AArch64LoadStoreOpt::findMatchingUpdateInsnForward(self, I: iterator, UnscaledOffset: i32, Limit: u32) -> iterator {
+    let mut E: iterator = operator(I).getParent().end();
+    let mut MemMI: *mut MachineInstr = operator(I);
+    let mut MBBI: iterator = I;
     let mut BaseReg: Register = getLdStBaseOp(MemMI).getReg();
     let mut MIUnscaledOffset: i32 = getLdStOffsetOp(MemMI).getImm() * self.TII.getMemScale(MemMI);
     if MIUnscaledOffset != UnscaledOffset {
-        return ;
+        return E;
     }
-    if  {
+    if !isTagStore(MemMI) && MemMI.getOpcode() != STGPi {
         let mut IsPairedInsn: bool = isPairedLdSt(MemMI);
         for let mut i: u32 = 0;
 let mut e: u32 = if IsPairedInsn { 2 } else { 1 }; i != e; i += 1 {
             let mut DestReg: Register = getLdStRegOp(MemMI, i).getReg();
-            if DestReg == BaseReg || self.TRI.isSubRegister {
-                return ;
+            if DestReg == BaseReg || self.TRI.isSubRegister(BaseReg.operator MCRegister(), DestReg.operator MCRegister()) {
+                return E;
             }
         }
     }
-    MBBI() = next_nodbg();
-    let mut BaseRegSP: bool = false;
-    if BaseRegSP && needsWinCFI() {
-        return ;
+    self.ModifiedRegUnits.clear();
+    self.UsedRegUnits.clear();
+    MBBI = next_nodbg(MBBI, E, true);
+    let mut BaseRegSP: bool = BaseReg == SP;
+    if BaseRegSP && needsWinCFI(operator(I).getMF()) {
+        return E;
     }
     let mut Count: u32 = 0;
-    let mut CurMBB: *mut MachineBasicBlock = ();
+    let mut CurMBB: *mut MachineBasicBlock = operator(I).getParent();
     let mut VisitSucc: bool = CurMBB.getParent().getRegInfo().tracksLiveness();
     while true {
-        for let mut CurEnd: i32 = CurMBB()(); MBBI() !=  && Count < Limit;  = next_nodbg() {
-            let mut MI: *mut MachineInstr = operator*();
+        for let mut CurEnd: iterator = CurMBB.end(); MBBI != CurEnd && Count < Limit; MBBI = next_nodbg(MBBI, CurEnd, true) {
+            let mut MI: *mut MachineInstr = operator(MBBI);
             if !MI.isTransient() {
                 Count += 1;
             }
-            if self.isMatchingUpdateInsn(operator*(), MI, BaseReg, UnscaledOffset) {
-                return ;
+            if self.isMatchingUpdateInsn(operator(I), MI, BaseReg.operator unsigned int(), UnscaledOffset) {
+                return MBBI;
             }
-            accumulateUsedDefed(MI, self.TRI);
-            if  {
-                return ;
+            accumulateUsedDefed(MI, self.ModifiedRegUnits, self.UsedRegUnits, self.TRI);
+            if !self.ModifiedRegUnits.available(BaseReg.operator MCRegister()) || !self.UsedRegUnits.available(BaseReg.operator MCRegister()) || (BaseRegSP && operator(MBBI).mayLoadOrStore(AnyInBundle)) {
+                return E;
             }
         }
         if !VisitSucc || Limit <= Count {
@@ -1527,109 +2059,126 @@ let mut e: u32 = if IsPairedInsn { 2 } else { 1 }; i != e; i += 1 {
         }
         let mut SuccToVisit: *mut MachineBasicBlock = null;
         let mut LiveSuccCount: u32 = 0;
+        for Succ in CurMBB.successors() {
+            for let mut AI: MCRegAliasIterator = MCRegAliasIterator { BaseReg.operator MCRegister(), self.TRI, true }; AI.isValid(); operator(AI) {
+                if Succ.isLiveIn(operator(AI), getAll()) {
+                    if LiveSuccCount += 1 {
+                        return E;
+                    }
+                    if Succ.pred_size() == 1 {
+                        SuccToVisit = Succ;
+                    }
+                    break;
+                }
+            }
+        }
         if !SuccToVisit {
             break;
         }
         CurMBB = SuccToVisit;
-        MBBI() = CurMBB()();
+        MBBI = CurMBB.begin();
     }
-    return ;
+    return E;
 }
 
-fn AArch64LoadStoreOpt::findMatchingUpdateInsnBackward(self, I: i32, Limit: u32, MergeEither: *mut bool) -> i32 {
-    let mut B: i32 = ()();
-    let mut E: i32 = ()();
-    let mut MemMI: *mut MachineInstr = operator*();
-    let mut MBBI: i32 = ;
+fn AArch64LoadStoreOpt::findMatchingUpdateInsnBackward(self, I: iterator, Limit: u32, MergeEither: *mut bool) -> iterator {
+    let mut B: iterator = operator(I).getParent().begin();
+    let mut E: iterator = operator(I).getParent().end();
+    let mut MemMI: *mut MachineInstr = operator(I);
+    let mut MBBI: iterator = I;
     let mut MF: *mut MachineFunction = *MemMI.getMF();
     let mut BaseReg: Register = getLdStBaseOp(MemMI).getReg();
     let mut Offset: i32 = getLdStOffsetOp(MemMI).getImm();
     let mut IsPairedInsn: bool = isPairedLdSt(MemMI);
     let mut DestReg: [2]Register = [getLdStRegOp(MemMI, 0).getReg(), if IsPairedInsn { getLdStRegOp(MemMI, 1).getReg() } else { Register { Reg: 0 } }];
-    if MBBI() ==  || Offset != 0 {
-        return ;
+    if MBBI == B || Offset != 0 {
+        return E;
     }
     if !isTagStore(MemMI) {
         for let mut i: u32 = 0;
 let mut e: u32 = if IsPairedInsn { 2 } else { 1 }; i != e; i += 1 {
-            if DestReg[i] == BaseReg || self.TRI.isSubRegister {
-                return ;
+            if DestReg[i] == BaseReg || self.TRI.isSubRegister(BaseReg.operator MCRegister(), DestReg[i].operator MCRegister()) {
+                return E;
             }
         }
     }
-    let mut BaseRegSP: bool = false;
-    if BaseRegSP && needsWinCFI() {
-        return ;
+    let mut BaseRegSP: bool = BaseReg == SP;
+    if BaseRegSP && needsWinCFI(operator(I).getMF()) {
+        return E;
     }
-    let mut Subtarget: *AArch64Subtarget = MF;
+    let mut Subtarget: *AArch64Subtarget = MF.getSubtarget();
     let mut RedZoneSize: u32 = Subtarget.getTargetLowering().getRedZoneSize(MF.getFunction());
+    self.ModifiedRegUnits.clear();
+    self.UsedRegUnits.clear();
     let mut Count: u32 = 0;
     let mut MemAccessBeforeSPPreInc: bool = false;
     MergeEither = true;
     while true {
         {
-        MBBI() = prev_nodbg();
-        let mut MI: *mut MachineInstr = operator*();
+        MBBI = prev_nodbg(MBBI, B, true);
+        let mut MI: *mut MachineInstr = operator(MBBI);
         if !MI.isTransient() {
             Count += 1;
         }
-        if self.isMatchingUpdateInsn(operator*(), MI, BaseReg, Offset) {
-            if MemAccessBeforeSPPreInc && (2)() > RedZoneSize {
-                return ;
+        if self.isMatchingUpdateInsn(operator(I), MI, BaseReg.operator unsigned int(), Offset) {
+            if MemAccessBeforeSPPreInc && operator(MBBI).getOperand(2).getImm() > RedZoneSize {
+                return E;
             }
-            return ;
+            return MBBI;
         }
-        accumulateUsedDefed(MI, self.TRI);
-        if  {
-            return ;
+        accumulateUsedDefed(MI, self.ModifiedRegUnits, self.UsedRegUnits, self.TRI);
+        if !self.ModifiedRegUnits.available(BaseReg.operator MCRegister()) || !self.UsedRegUnits.available(BaseReg.operator MCRegister()) {
+            return E;
         }
-        if  {
+        if MI.mayLoadOrStore(AnyInBundle) || MI.hasUnmodeledSideEffects() || (DestReg[0].isValid() && !(self.ModifiedRegUnits.available(DestReg[0].operator MCRegister()) && self.UsedRegUnits.available(DestReg[0].operator MCRegister()))) || (DestReg[1].isValid() && !(self.ModifiedRegUnits.available(DestReg[1].operator MCRegister()) && self.UsedRegUnits.available(DestReg[1].operator MCRegister()))) {
             MergeEither = false;
         }
-        if BaseRegSP && () {
+        if BaseRegSP && operator(MBBI).mayLoadOrStore(AnyInBundle) {
             MemAccessBeforeSPPreInc = true;
         }
     }
-        if !( !=  && Count < Limit) { break; }
+        if !(MBBI != B && Count < Limit) { break; }
     }
-    return ;
+    return E;
 }
 
-fn AArch64LoadStoreOpt::findMatchingConstOffsetBackward(self, I: i32, Limit: u32, Offset: *mut u32) -> i32 {
-    let mut B: i32 = ()();
-    let mut E: i32 = ()();
-    let mut MemMI: *mut MachineInstr = operator*();
-    let mut MBBI: i32 = ;
-    if MBBI() ==  {
-        return ;
+fn AArch64LoadStoreOpt::findMatchingConstOffsetBackward(self, I: iterator, Limit: u32, Offset: *mut u32) -> iterator {
+    let mut B: iterator = operator(I).getParent().begin();
+    let mut E: iterator = operator(I).getParent().end();
+    let mut MemMI: *mut MachineInstr = operator(I);
+    let mut MBBI: iterator = I;
+    if MBBI == B {
+        return E;
     }
     if !getLdStOffsetOp(MemMI).isKill() || !getLdStAmountOp(MemMI).isImm() || (getLdStAmountOp(MemMI).getImm() != 0) {
-        return ;
+        return E;
     }
     let mut IndexReg: Register = getLdStOffsetOp(MemMI).getReg();
+    self.ModifiedRegUnits.clear();
+    self.UsedRegUnits.clear();
     let mut Count: u32 = 0;
     while true {
         {
-        MBBI() = prev_nodbg();
-        let mut MI: *mut MachineInstr = operator*();
+        MBBI = prev_nodbg(MBBI, B, true);
+        let mut MI: *mut MachineInstr = operator(MBBI);
         if !MI.isTransient() {
             Count += 1;
         }
-        if self.isMatchingMovConstInsn(operator*(), MI, IndexReg, Offset) {
-            return ;
+        if self.isMatchingMovConstInsn(operator(I), MI, IndexReg.operator unsigned int(), Offset) {
+            return MBBI;
         }
-        accumulateUsedDefed(MI, self.TRI);
-        if  {
-            return ;
+        accumulateUsedDefed(MI, self.ModifiedRegUnits, self.UsedRegUnits, self.TRI);
+        if !self.ModifiedRegUnits.available(IndexReg.operator MCRegister()) || !self.UsedRegUnits.available(IndexReg.operator MCRegister()) {
+            return E;
         }
     }
-        if !( !=  && Count < Limit) { break; }
+        if !(MBBI != B && Count < Limit) { break; }
     }
-    return ;
+    return E;
 }
 
-fn AArch64LoadStoreOpt::tryToPromoteLoadFromStore(self, MBBI: *mut i32) -> bool {
-    let mut MI: *mut MachineInstr = operator*();
+fn AArch64LoadStoreOpt::tryToPromoteLoadFromStore(self, MBBI: *mut iterator) -> bool {
+    let mut MI: *mut MachineInstr = operator(MBBI);
     if MI.hasOrderedMemoryRef() {
         return false;
     }
@@ -1639,40 +2188,42 @@ fn AArch64LoadStoreOpt::tryToPromoteLoadFromStore(self, MBBI: *mut i32) -> bool 
     if !getLdStOffsetOp(MI).isImm() {
         return false;
     }
-    let mut StoreI: i32 = 0;
-    if  {
+    let mut StoreI: iterator = iterator {};
+    if self.findMatchingStore(MBBI, LdStLimit.operator unsigned int(), StoreI) {
         operator(NumLoadsFromStoresPromoted);
+        MBBI = self.promoteLoadFromStore(MBBI, StoreI);
         return true;
     }
     return false;
 }
 
-fn AArch64LoadStoreOpt::tryToMergeZeroStInst(self, MBBI: *mut i32) -> bool {
-    (((operator!(operator!((isPromotableZeroStoreInst(operator*()) && "Expected narrow store.")))) || (_wassert(L"isPromotableZeroStoreInst(*MBBI) && \"Expected narrow store.\"", L"llvm\\lib\\Target\\AArch64\\AArch64LoadStoreOptimizer.cpp", (2822) as u32) , 0)) as void);
-    let mut MI: *mut MachineInstr = operator*();
-    let mut E: i32 = MI.getParent()();
+fn AArch64LoadStoreOpt::tryToMergeZeroStInst(self, MBBI: *mut iterator) -> bool {
+    assert!(isPromotableZeroStoreInst(operator(MBBI)), "Expected narrow store.");
+    let mut MI: *mut MachineInstr = operator(MBBI);
+    let mut E: iterator = MI.getParent().end();
     if !self.TII.isCandidateToMergeOrPair(MI) {
         return false;
     }
     let mut Flags: LdStPairFlags = LdStPairFlags {};
-    let mut MergeMI: i32 = 0;
-    if MergeMI() !=  {
+    let mut MergeMI: iterator = self.findMatchingInsn(MBBI, Flags, LdStLimit.operator unsigned int(), true);
+    if MergeMI != E {
         operator(NumZeroStoresPromoted);
+        MBBI = self.mergeNarrowZeroStores(MBBI, MergeMI, Flags);
         return true;
     }
     return false;
 }
 
-fn AArch64LoadStoreOpt::tryToPairLdStInst(self, MBBI: *mut i32) -> bool {
-    let mut MI: *mut MachineInstr = operator*();
-    let mut E: i32 = MI.getParent()();
+fn AArch64LoadStoreOpt::tryToPairLdStInst(self, MBBI: *mut iterator) -> bool {
+    let mut MI: *mut MachineInstr = operator(MBBI);
+    let mut E: iterator = MI.getParent().end();
     if !self.TII.isCandidateToMergeOrPair(MI) {
         return false;
     }
-    if MI.mayLoad(AnyInBundle) && self.Subtarget() {
+    if MI.mayLoad(AnyInBundle) && self.Subtarget.hasDisableLdp() {
         return false;
     }
-    if MI.mayStore(AnyInBundle) && self.Subtarget() {
+    if MI.mayStore(AnyInBundle) && self.Subtarget.hasDisableStp() {
         return false;
     }
     let mut IsUnscaled: bool = self.TII.hasUnscaledLdStOffset(MI);
@@ -1685,19 +2236,19 @@ fn AArch64LoadStoreOpt::tryToPairLdStInst(self, MBBI: *mut i32) -> bool {
         return false;
     }
     let mut Flags: LdStPairFlags = LdStPairFlags {};
-    let mut Paired: i32 = 0;
-    if Paired() ==  {
+    let mut Paired: iterator = self.findMatchingInsn(MBBI, Flags, LdStLimit.operator unsigned int(), false);
+    if Paired == E {
         return false;
     }
-    let mut Prev: auto = prev();
-    let mut MemOp: *mut MachineMemOperand = if MI.memoperands_empty() { null } else { MI()()() };
-    if (MI.mayLoad(AnyInBundle) && self.Subtarget()) || (MI.mayStore(AnyInBundle) && self.Subtarget()) {
+    let mut Prev: MachineInstr> = prev(MBBI, 1);
+    let mut MemOp: *mut MachineMemOperand = if MI.memoperands_empty() { null } else { MI.memoperands().front() };
+    if (MI.mayLoad(AnyInBundle) && self.Subtarget.hasLdpAlignedOnly()) || (MI.mayStore(AnyInBundle) && self.Subtarget.hasStpAlignedOnly()) {
         if !MemOp || !MemOp.getMemoryType().isValid() {
             operator(NumFailedAlignmentCheck, 0);
             return false;
         }
         let mut MemAlignment: u64 = MemOp.getAlign().value();
-        let mut TypeAlignment: u64 = MemOp.getSize().getValue()().value();
+        let mut TypeAlignment: u64 = MemOp.getSize().getValue().getKnownMinValue().value();
         if MemAlignment < 2 * TypeAlignment {
             operator(NumFailedAlignmentCheck, 0);
             return false;
@@ -1707,22 +2258,26 @@ fn AArch64LoadStoreOpt::tryToPairLdStInst(self, MBBI: *mut i32) -> bool {
     if self.TII.hasUnscaledLdStOffset(MI) {
         operator(NumUnscaledPairCreated);
     }
-    for let mut I: auto = next(); I() != ;  += 1 {
-        updateDefinedRegisters(operator*(), self.TRI);
+    MBBI = self.mergePairedInsns(MBBI, Paired, Flags);
+    for let mut I: MachineInstr> = next(Prev, 1); I != MBBI; operator(I, 0) {
+        updateDefinedRegisters(operator(I), self.DefinedInBB, self.TRI);
     }
     return true;
 }
 
-fn AArch64LoadStoreOpt::tryToMergeLdStUpdate(self, MBBI: *mut i32) -> bool {
-    let mut MI: *mut MachineInstr = operator*();
-    let mut E: i32 = MI.getParent()();
-    let mut Update: i32 = 0;
-    if  {
+fn AArch64LoadStoreOpt::tryToMergeLdStUpdate(self, MBBI: *mut iterator) -> bool {
+    let mut MI: *mut MachineInstr = operator(MBBI);
+    let mut E: iterator = MI.getParent().end();
+    let mut Update: iterator = iterator {};
+    if operator(MBBI).hasOrderedMemoryRef() && getLdStBaseOp(MI).getReg() != SP && !isTagStore(MI) && MI.getOpcode() != STGPi {
         return false;
     }
-    if Update() !=  {
-        if  {
-            MBBI() = operator*();
+    Update = self.findMatchingUpdateInsnForward(MBBI, 0, UpdateLimit.operator unsigned int());
+    if Update != E {
+        if self.mergeUpdateInsn(MBBI, Update, false, false, false) {
+            NextI;
+        } else {
+            MBBI = operator(NextI);
             return true;
         }
     }
@@ -1730,31 +2285,39 @@ fn AArch64LoadStoreOpt::tryToMergeLdStUpdate(self, MBBI: *mut i32) -> bool {
         return false;
     }
     let mut MergeEither: bool = false;
-    if Update() !=  {
-        if  {
-            MBBI() = operator*();
+    Update = self.findMatchingUpdateInsnBackward(MBBI, UpdateLimit.operator unsigned int(), MergeEither);
+    if Update != E {
+        if self.mergeUpdateInsn(MBBI, Update, true, true, MergeEither) {
+            NextI;
+        } else {
+            MBBI = operator(NextI);
             return true;
         }
     }
     let mut UnscaledOffset: i32 = getLdStOffsetOp(MI).getImm() * self.TII.getMemScale(MI);
-    if Update() !=  {
-        if  {
-            MBBI() = operator*();
+    Update = self.findMatchingUpdateInsnForward(MBBI, UnscaledOffset, UpdateLimit.operator unsigned int());
+    if Update != E {
+        if self.mergeUpdateInsn(MBBI, Update, false, true, false) {
+            NextI;
+        } else {
+            MBBI = operator(NextI);
             return true;
         }
     }
     return false;
 }
 
-fn AArch64LoadStoreOpt::tryToMergeIndexLdSt(self, MBBI: *mut i32, Scale: i32) -> bool {
-    let mut MI: *mut MachineInstr = operator*();
-    let mut E: i32 = MI.getParent()();
-    let mut Update: i32 = 0;
+fn AArch64LoadStoreOpt::tryToMergeIndexLdSt(self, MBBI: *mut iterator, Scale: i32) -> bool {
+    let mut MI: *mut MachineInstr = operator(MBBI);
+    let mut E: iterator = MI.getParent().end();
+    let mut Update: iterator = iterator {};
     if self.TII.hasUnscaledLdStOffset(MI.getOpcode()) {
         return false;
     }
     let mut Offset: u32 = 0;
-    if Update() !=  && (Offset & (Scale - 1)) == 0 {
+    Update = self.findMatchingConstOffsetBackward(MBBI, LdStConstLimit.operator unsigned int(), Offset);
+    if Update != E && (Offset & (Scale - 1)) == 0 {
+        MBBI = self.mergeConstOffsetInsn(MBBI, Update, Offset, Scale);
         return true;
     }
     return false;
@@ -1762,6 +2325,54 @@ fn AArch64LoadStoreOpt::tryToMergeIndexLdSt(self, MBBI: *mut i32, Scale: i32) ->
 
 fn getGPRToFPRStoreOpcode(GPRStoreOpc: u32) -> u32 {
     match GPRStoreOpc {
+        STRBBui => {
+            return STRBui;
+        },
+        STRHHui => {
+            return STRHui;
+        },
+        STRWui => {
+            return STRSui;
+        },
+        STRXui => {
+            return STRDui;
+        },
+        STURBBi => {
+            return STURBi;
+        },
+        STURHHi => {
+            return STURHi;
+        },
+        STURWi => {
+            return STURSi;
+        },
+        STURXi => {
+            return STURDi;
+        },
+        STRBBroW => {
+            return STRBroW;
+        },
+        STRBBroX => {
+            return STRBroX;
+        },
+        STRHHroW => {
+            return STRHroW;
+        },
+        STRHHroX => {
+            return STRHroX;
+        },
+        STRWroW => {
+            return STRSroW;
+        },
+        STRWroX => {
+            return STRSroX;
+        },
+        STRXroW => {
+            return STRDroW;
+        },
+        STRXroX => {
+            return STRDroX;
+        },
         _ => {
             return 0;
         },
@@ -1770,19 +2381,31 @@ fn getGPRToFPRStoreOpcode(GPRStoreOpc: u32) -> u32 {
 
 fn getUMOVSubRegIdx(UMOVOpc: u32) -> u32 {
     match UMOVOpc {
+        UMOVvi8_idx0 => {
+            return bsub;
+        },
+        UMOVvi16_idx0 => {
+            return hsub;
+        },
+        UMOVvi32_idx0 => {
+            return ssub;
+        },
+        UMOVvi64_idx0 => {
+            return dsub;
+        },
         _ => {
             return 0;
         },
     }
 }
 
-fn AArch64LoadStoreOpt::tryToReplaceUMOVStore(self, MBBI: *mut i32) -> bool {
-    let mut StoreMI: *mut MachineInstr = operator*();
+fn AArch64LoadStoreOpt::tryToReplaceUMOVStore(self, MBBI: *mut iterator) -> bool {
+    let mut StoreMI: *mut MachineInstr = operator(MBBI);
     let mut FPRStoreOpc: u32 = getGPRToFPRStoreOpcode(StoreMI.getOpcode());
     if !FPRStoreOpc {
         return false;
     }
-    if StoreMI.hasOrderedMemoryRef() || StoreMI()()() != 1 {
+    if StoreMI.hasOrderedMemoryRef() || StoreMI.memoperands().len != 1 {
         return false;
     }
     let mut MBB: *mut MachineBasicBlock = StoreMI.getParent();
@@ -1797,15 +2420,15 @@ let mut E: u32 = StoreMI.getNumExplicitOperands(); I < E; I += 1 {
         }
     }
     let mut UMOVMI: *mut MachineInstr = null;
-    let mut B: i32 = MBB()();
+    let mut B: iterator = MBB.begin();
     let mut SubRegIdx: u32 = 0;
     let mut Count: u32 = 0;
-    for let mut It: auto = ; It() != ;  {
-        let mut MI: *mut MachineInstr = operator*( -= 1);
+    for let mut It: iterator = MBBI; It != B;  {
+        let mut MI: *mut MachineInstr = operator(operator(It));
         if MI.isDebugInstr() {
             continue;
         }
-        if Count += 1 >  {
+        if Count += 1 > UMOVFoldLimit.operator unsigned int() {
             return false;
         }
         if MI.readsRegister(StoreValReg, self.TRI) {
@@ -1824,22 +2447,22 @@ let mut E: u32 = StoreMI.getNumExplicitOperands(); I < E; I += 1 {
         return false;
     }
     let mut VecReg: MCPhysReg = UMOVMI.getOperand(1).getReg().operator unsigned int();
-    let mut FPRReg: MCPhysReg = self.TRI.getSubReg;
-    if (operator*(StoreMI()()))() != self.TRI.getRegSizeInBits(*self.TRI.getMinimalPhysRegClass(FPRReg)) {
+    let mut FPRReg: MCPhysReg = self.TRI.getSubReg(VecReg, SubRegIdx).operator unsigned int();
+    if (*StoreMI.memoperands_begin()).getSizeInBits() != self.TRI.getRegSizeInBits(*self.TRI.getMinimalPhysRegClass(FPRReg)) {
         return false;
     }
     let mut VecRegKilled: bool = UMOVMI.killsRegister(VecReg, self.TRI);
-    for let mut It: auto = next(UMOVMI()()); It() != ;  += 1 {
-        if It()(VecReg, self.TRI) {
+    for let mut It: MachineInstr, true, true, void, false, void>, false, false> = next(UMOVMI.getIterator(), 1); It != MBBI; operator(It) {
+        if operator(It).modifiesRegister(VecReg, self.TRI) {
             return false;
         }
-        if !VecRegKilled && (VecReg, self.TRI) {
+        if !VecRegKilled && operator(It).killsRegister(VecReg, self.TRI) {
             VecRegKilled = true;
         }
     }
     UMOVMI.clearRegisterKills(VecReg, self.TRI);
-    for let mut It: auto = next(UMOVMI()()); It() != ;  += 1 {
-        It()(VecReg, self.TRI);
+    for let mut It: MachineInstr, true, true, void, false, void>, false, false> = next(UMOVMI.getIterator(), 1); It != MBBI; operator(It) {
+        operator(It).clearRegisterKills(VecReg, self.TRI);
     }
     while true {
         {
@@ -1849,86 +2472,102 @@ let mut E: u32 = StoreMI.getNumExplicitOperands(); I < E; I += 1 {
     }
         if !(false) { break; }
     }
-    let mut MIB: auto = BuildMI(*MBB, StoreMI.getDebugLoc(), self.TII(FPRStoreOpc))(FPRReg, getKillRegState(VecRegKilled));
+    let mut MIB: MachineInstrBuilder = BuildMI(*MBB, MBBI, MIMetadata { DL: StoreMI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(FPRStoreOpc)).addReg(FPRReg, getKillRegState(VecRegKilled), 0);
     for let mut I: u32 = 1;
 let mut E: u32 = StoreMI.getNumExplicitOperands(); I < E; I += 1 {
-        MIB()(StoreMI.getOperand(I));
+        MIB.add(StoreMI.getOperand(I));
     }
-    MIB()(StoreMI()());
-    MBBI() = MBB()();
-    UMOVMI()();
+    MIB.setMemRefs(StoreMI.memoperands());
+    MBBI = MBB.erase(MBBI);
+    UMOVMI.eraseFromParent();
     operator(NumUMOVFoldedToFPRStore);
     return true;
 }
 
 fn AArch64LoadStoreOpt::optimizeBlock(self, MBB: *mut MachineBasicBlock, EnableNarrowZeroStOpt: bool) -> bool {
-    let mut AFI: *mut AArch64FunctionInfo = operator*(MBB.getParent());
+    let mut AFI: *mut AArch64FunctionInfo = *MBB.getParent().getInfo();
     let mut Modified: bool = false;
-    for let mut MBBI: i32 = MBB()(); ;  {
-        if  {
+    for let mut MBBI: iterator = MBB.begin();
+let mut E: iterator = MBB.end(); MBBI != E;  {
+        if isPromotableLoadFromStore(operator(MBBI)) && self.tryToPromoteLoadFromStore(MBBI) {
             Modified = true;
         } else {
-            += 1;
+            operator(MBBI);
         }
     }
     if EnableNarrowZeroStOpt {
-        for let mut MBBI: i32 = MBB()(); ;  {
-            if  {
+        for let mut MBBI: iterator = MBB.begin();
+let mut E: iterator = MBB.end(); MBBI != E;  {
+            if isPromotableZeroStoreInst(operator(MBBI)) && self.tryToMergeZeroStInst(MBBI) {
                 Modified = true;
             } else {
-                += 1;
+                operator(MBBI);
             }
         }
     }
-    if MBB.getParent().getRegInfo().tracksLiveness() {}
-    for let mut MBBI: i32 = MBB()(); ;  {
-        updateDefinedRegisters(operator*(), self.TRI);
-        if  {
+    if MBB.getParent().getRegInfo().tracksLiveness() {
+        self.DefinedInBB.clear();
+        self.DefinedInBB.addLiveIns(MBB);
+    }
+    for let mut MBBI: iterator = MBB.begin();
+let mut E: iterator = MBB.end(); MBBI != E;  {
+        updateDefinedRegisters(operator(MBBI), self.DefinedInBB, self.TRI);
+        if self.TII.isPairableLdStInst(operator(MBBI)) && self.tryToPairLdStInst(MBBI) {
             Modified = true;
         } else {
-            += 1;
+            operator(MBBI);
         }
     }
-    for let mut MBBI: i32 = MBB()(); ;  {
-        if  {
+    for let mut MBBI: iterator = MBB.begin();
+let mut E: iterator = MBB.end(); MBBI != E;  {
+        if isMergeableLdStUpdate(operator(MBBI), AFI) && self.tryToMergeLdStUpdate(MBBI) {
             Modified = true;
         } else {
-            += 1;
+            operator(MBBI);
         }
     }
-    for let mut MBBI: i32 = MBB()(); ;  {
+    for let mut MBBI: iterator = MBB.begin();
+let mut E: iterator = MBB.end(); MBBI != E;  {
         let mut Scale: i32 = 0;
-        if  {
+        if isMergeableIndexLdSt(operator(MBBI), Scale) && self.tryToMergeIndexLdSt(MBBI, Scale) {
             Modified = true;
         } else {
-            += 1;
+            operator(MBBI);
         }
     }
-    for let mut MBBI: i32 = MBB()(); ;  {
-        if  {
+    for let mut MBBI: iterator = MBB.begin();
+let mut E: iterator = MBB.end(); MBBI != E;  {
+        if self.tryToReplaceUMOVStore(MBBI) {
             Modified = true;
         } else {
-            += 1;
+            operator(MBBI);
         }
     }
     return Modified;
 }
 
 fn AArch64LoadStoreOpt::runOnMachineFunction(self, Fn: *mut MachineFunction) -> bool {
-    self.Subtarget = operator&(Fn);
+    self.Subtarget = &mut Fn.getSubtarget();
     self.TII = self.Subtarget.getInstrInfo();
-    self.TRI;
+    self.TRI = self.Subtarget.getRegisterInfo();
+    self.ModifiedRegUnits.init(*self.TRI);
+    self.UsedRegUnits.init(*self.TRI);
+    self.DefinedInBB.init(*self.TRI);
     let mut Modified: bool = false;
-    let mut enableNarrowZeroStOpt: bool = operator!(self.Subtarget());
+    let mut enableNarrowZeroStOpt: bool = !self.Subtarget.requiresStrictAlign();
+    for MBB in Fn {
+        let mut M: bool = self.optimizeBlock(MBB, enableNarrowZeroStOpt);
+        Modified |= M;
+    }
     return Modified;
 }
 
 fn AArch64LoadStoreOptLegacy::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
-    if self.skipFunction {
+    if self.skipFunction(MF.getFunction()) {
         return false;
     }
     let mut Impl: AArch64LoadStoreOpt = AArch64LoadStoreOpt {};
-    Impl.AA = operator&();
+    Impl.AA = &mut self.getAnalysis().getAAResults();
     return Impl.runOnMachineFunction(MF);
 }
 
@@ -1938,48 +2577,138 @@ fn createAArch64LoadStoreOptLegacyPass() -> *mut FunctionPass {
 
 fn AArch64LoadStoreOptPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
     let mut Impl: AArch64LoadStoreOpt = AArch64LoadStoreOpt {};
-    Impl.AA = operator&(MFAM()(MF)()(MF.getFunction()));
+    Impl.AA = &mut MFAM.getResult(MF).getManager().getResult(MF.getFunction());
     let mut Changed: bool = Impl.runOnMachineFunction(MF);
     if !Changed {
         return all();
     }
     let mut PA: PreservedAnalyses = getMachineFunctionPassPreservedAnalyses();
-    PA;
+    PA.preserveSet();
     return PA;
 }
 
 struct Closure_1 {
-    cap_0: *mut AArch64LoadStoreOpt,
+    DefReg: MCPhysReg,
+    TRI: *TargetRegisterInfo,
 }
 
-fn Closure_1::call(self: *mut Closure_1, C: *TargetRegisterClass) -> auto {
-            llvm_unreachable_internal("Should have found matching sub or super register!", "llvm\\lib\\Target\\AArch64\\AArch64LoadStoreOptimizer.cpp", 1062);
+fn Closure_1::call(self: *Closure_1, MOP: *mut MachineOperand) -> bool {
+            return MOP.isReg() && MOP.isDef() && !MOP.isDebug() && MOP.getReg().operator unsigned int() && self.TRI.regsOverlap(MOP.getReg(), self.DefReg);
         }
 
 struct Closure_2 {
+    cap_0: *mut AArch64LoadStoreOpt,
+    cap_1: optional<MCPhysReg>,
+}
+
+fn Closure_2::call(self: *mut Closure_2, C: *TargetRegisterClass) -> auto {
+            for SubOrSuper in self.TRI.sub_and_superregs_inclusive(operator(RenameReg)) {
+                if C.contains(SubOrSuper) {
+                    return SubOrSuper;
+                }
+            }
+            llvm_unreachable_internal("Should have found matching sub or super register!", "P:/Goraw/llvm-project/llvm/lib/Target/AArch64/AArch64LoadStoreOptimizer.cpp", 1062);
+        }
+
+struct Closure_3 {
+    cap_0: *mut AArch64LoadStoreOpt,
+    cap_1: MCRegister,
+    cap_2: (lambda at P:\Goraw\llvm-project\llvm\lib\Target\AArch64\AArch64LoadStoreOptimizer.cpp:1056:9),
+    MergeForward: bool,
+}
+
+fn Closure_3::call(self: *Closure_3, MI: *mut MachineInstr, IsDef: bool) -> bool {
+            if IsDef {
+                let mut SeenDef: bool = false;
+                for let mut OpIdx: u32 = 0; OpIdx < MI.getNumOperands(); OpIdx += 1 {
+                    let mut MOP: *mut MachineOperand = MI.getOperand(OpIdx);
+                    if MOP.isReg() && !MOP.isDebug() && MOP.getReg().operator unsigned int() && (!self.MergeForward || !SeenDef || (MOP.isDef() && MOP.isImplicit())) && self.TRI.regsOverlap(MOP.getReg(), RegToRename) {
+                        assert!((MOP.isImplicit() || (MOP.isRenamable() && !MOP.isEarlyClobber())), "Need renamable operands");
+                        let mut MatchingReg: Register = 0;
+                        if MI.getRegClassConstraint(OpIdx, self.TII, self.TRI) {
+                            RC;
+                        } else {
+                            MatchingReg = GetMatchingSubReg.call(RC);
+                        }
+                        MOP.setReg(MatchingReg);
+                        SeenDef = true;
+                    }
+                }
+            } else {
+                for let mut OpIdx: u32 = 0; OpIdx < MI.getNumOperands(); OpIdx += 1 {
+                    let mut MOP: *mut MachineOperand = MI.getOperand(OpIdx);
+                    if MOP.isReg() && !MOP.isDebug() && MOP.getReg().operator unsigned int() && self.TRI.regsOverlap(MOP.getReg(), RegToRename) {
+                        assert!((MOP.isImplicit() || (MOP.isRenamable() && !MOP.isEarlyClobber())), "Need renamable operands");
+                        let mut MatchingReg: Register = 0;
+                        if MI.getRegClassConstraint(OpIdx, self.TII, self.TRI) {
+                            RC;
+                        } else {
+                            MatchingReg = GetMatchingSubReg.call(RC);
+                        }
+                        assert!(MatchingReg.isValid(), "Cannot find matching regs for renaming");
+                        MOP.setReg(MatchingReg);
+                    }
+                }
+            }
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
+                    dbgs() << "Renamed " << MI;
+                }
+            }
+                if !(false) { break; }
+            }
+            return true;
+        }
+
+struct Closure_4 {
+    cap_0: *mut AArch64LoadStoreOpt,
+    RegToCheck: MCPhysReg,
+}
+
+fn Closure_4::call(self: *Closure_4, MOP: *MachineOperand) -> bool {
+                return !MOP.isReg() || MOP.isDebug() || !MOP.getReg().operator unsigned int() || MOP.isUndef() || !self.TRI.regsOverlap(MOP.getReg(), self.RegToCheck);
+            }
+
+struct Closure_5 {
     MIB: *mut MachineInstrBuilder,
 }
 
-unsafe fn Closure_2::call(self: *mut Closure_2, MI1: i32, MI2: i32) {
-        let mut Ops: SmallSetVector<Register, 4> = zeroed();
+unsafe fn Closure_5::call(self: *mut Closure_5, MI1: iterator, MI2: iterator) {
+        let mut Ops: SmallSetVector<Register, 4> = SmallSetVector<Register, 4> {};
+        for MO in drop_begin(operator(MI1).operands(), operator(MI1).getDesc().getNumOperands()) {
+            if MO.isReg() && MO.isImplicit() && MO.isDef() {
+                Ops.insert(MO.getReg());
+            }
+        }
+        for MO in drop_begin(operator(MI2).operands(), operator(MI2).getDesc().getNumOperands()) {
+            if MO.isReg() && MO.isImplicit() && MO.isDef() {
+                Ops.insert(MO.getReg());
+            }
+        }
+        for Op in Ops {
+            (*self.MIB).addDef(Op, Implicit, 0);
+        }
     }
 
-struct Closure_3 {
+struct Closure_6 {
     TRI: *TargetRegisterInfo,
     cap_1: Register,
 }
 
-fn Closure_3::call(self: *Closure_3, MOP: *MachineOperand) -> bool {
+fn Closure_6::call(self: *Closure_6, MOP: *MachineOperand) -> bool {
         return MOP.isReg() && !MOP.isDebug() && MOP.getReg().operator unsigned int() && MOP.isImplicit() && MOP.isKill() && self.TRI.regsOverlap(RegToRename, MOP.getReg());
     }
 
-struct Closure_4 {
+struct Closure_7 {
+    UsedInBetween: *mut LiveRegUnits,
+    FoundDef: *mut bool,
     TRI: *mut *TargetRegisterInfo,
     RegToRename: *mut Register,
     RequiredClasses: *mut SmallPtrSetImpl<const TargetRegisterClass *>,
 }
 
-unsafe fn Closure_4::call(self: *mut Closure_4, MI: *mut MachineInstr) -> bool {
+unsafe fn Closure_7::call(self: *mut Closure_7, MI: *mut MachineInstr, IsDef: bool) -> bool {
         while true {
             {
             if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
@@ -1999,25 +2728,152 @@ unsafe fn Closure_4::call(self: *mut Closure_4, MI: *mut MachineInstr) -> bool {
             }
             return false;
         }
+        (*self.UsedInBetween).accumulate(MI);
+        (*self.FoundDef) = IsDef;
+        if (*self.FoundDef) {
+            if MI.isPseudo(IgnoreBundle) {
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
+                        dbgs() << "  Cannot rename pseudo/bundle instruction\n";
+                    }
+                }
+                    if !(false) { break; }
+                }
+                return false;
+            }
+            for MOP in MI.operands() {
+                if !MOP.isReg() || !MOP.isDef() || MOP.isDebug() || !MOP.getReg().operator unsigned int() || !(*self.TRI).regsOverlap(MOP.getReg(), (*self.RegToRename)) {
+                    continue;
+                }
+                if !canRenameMOP(MI, MOP, (*self.TRI)) {
+                    while true {
+                        {
+                        if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
+                            dbgs() << "  Cannot rename " << MOP << " in " << MI;
+                        }
+                    }
+                        if !(false) { break; }
+                    }
+                    return false;
+                }
+                (*self.RequiredClasses).insert((*self.TRI).getMinimalPhysRegClass(MOP.getReg().operator MCRegister()));
+            }
+            return true;
+        } else {
+            for MOP in MI.operands() {
+                if !MOP.isReg() || MOP.isDebug() || !MOP.getReg().operator unsigned int() || !(*self.TRI).regsOverlap(MOP.getReg(), (*self.RegToRename)) {
+                    continue;
+                }
+                if !canRenameMOP(MI, MOP, (*self.TRI)) {
+                    while true {
+                        {
+                        if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
+                            dbgs() << "  Cannot rename " << MOP << " in " << MI;
+                        }
+                    }
+                        if !(false) { break; }
+                    }
+                    return false;
+                }
+                (*self.RequiredClasses).insert((*self.TRI).getMinimalPhysRegClass(MOP.getReg().operator MCRegister()));
+            }
+        }
         return true;
     }
 
-struct Closure_5 {
+struct Closure_8 {
+    TRI: *mut *TargetRegisterInfo,
+    RegToRename: *mut Register,
+    RequiredClasses: *mut SmallPtrSetImpl<const TargetRegisterClass *>,
+}
+
+unsafe fn Closure_8::call(self: *mut Closure_8, MI: *mut MachineInstr) -> bool {
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
+                dbgs() << "Checking " << MI;
+            }
+        }
+            if !(false) { break; }
+        }
+        if MI.getFlag(FrameSetup) {
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
+                    dbgs() << "  Cannot rename framesetup instructions " << "currently\n";
+                }
+            }
+                if !(false) { break; }
+            }
+            return false;
+        }
+        for MOP in MI.operands() {
+            if !MOP.isReg() || MOP.isDebug() || !MOP.getReg().operator unsigned int() || !(*self.TRI).regsOverlap(MOP.getReg(), (*self.RegToRename)) {
+                continue;
+            }
+            if !canRenameMOP(MI, MOP, (*self.TRI)) {
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("aarch64-ldst-opt", 1) {
+                        dbgs() << "  Cannot rename " << MOP << " in " << MI;
+                    }
+                }
+                    if !(false) { break; }
+                }
+                return false;
+            }
+            (*self.RequiredClasses).insert((*self.TRI).getMinimalPhysRegClass(MOP.getReg().operator MCRegister()));
+        }
+        return true;
+    }
+
+struct Closure_10 {
     MF: *mut MachineFunction,
     TRI: *TargetRegisterInfo,
 }
 
-unsafe fn Closure_5::call(self: *mut Closure_5, PR: MCPhysReg) -> auto {}
+unsafe fn Closure_10::call(self: *mut Closure_10, SubOrSuper: MCPhysReg) -> bool {
+            return self.TRI.isCalleeSavedPhysReg(SubOrSuper, (*self.MF));
+        }
 
-struct Closure_6 {
+struct Closure_9 {
+    MF: *mut MachineFunction,
+    TRI: *TargetRegisterInfo,
+}
+
+unsafe fn Closure_9::call(self: *mut Closure_9, PR: MCPhysReg) -> bool {
+        return any_of(self.TRI.sub_and_superregs_inclusive(PR), Closure_10 { MF: &mut (*self.MF), TRI: self.TRI });
+    }
+
+struct Closure_13 {
+    C: *TargetRegisterClass,
+}
+
+fn Closure_13::call(self: *Closure_13, SubOrSuper: MCPhysReg) -> bool {
+                return self.C.contains(SubOrSuper);
+            }
+
+struct Closure_12 {
+    PR: MCPhysReg,
+    TRI: *TargetRegisterInfo,
+}
+
+fn Closure_12::call(self: *Closure_12, C: *TargetRegisterClass) -> bool {
+            return any_of(self.TRI.sub_and_superregs_inclusive(self.PR), Closure_13 { C: C });
+        }
+
+struct Closure_11 {
     RequiredClasses: *mut SmallPtrSetImpl<const TargetRegisterClass *>,
     TRI: *TargetRegisterInfo,
 }
 
-unsafe fn Closure_6::call(self: *mut Closure_6, PR: MCPhysReg) -> auto {}
+unsafe fn Closure_11::call(self: *mut Closure_11, PR: MCPhysReg) -> bool {
+        return all_of((*self.RequiredClasses), Closure_12 { PR: PR, TRI: self.TRI });
+    }
 
-struct Closure_7 {}
+struct Closure_14 {}
 
-fn Closure_7::call(self: *Closure_7) {
-                    return Insn() == CFI_INSTRUCTION;
+fn Closure_14::call(self: *Closure_14) {
+                    return Insn.getOpcode() == CFI_INSTRUCTION;
                 }

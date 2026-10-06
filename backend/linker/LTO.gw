@@ -1,5 +1,5 @@
-fn createAddBufferFn(files: *mut i32, filenames: *mut i32) -> AddBufferFn {
-    return Closure_1 {};
+fn createAddBufferFn(files: *mut []unique_ptr<MemoryBuffer>, filenames: *mut []str) -> AddBufferFn {
+    return Closure_1 { files: &mut files, filenames: &mut filenames };
 }
 
 fn BitcodeCompiler::getThinLTOOutputFile(self, path: str) -> str {
@@ -8,47 +8,48 @@ fn BitcodeCompiler::getThinLTOOutputFile(self, path: str) -> str {
 
 fn BitcodeCompiler::createConfig(self) -> Config {
     let mut c: Config = Config {};
-    c() = initTargetOptionsFromCodeGenFlags();
-    c() = true;
+    c.Options = initTargetOptionsFromCodeGenFlags();
+    c.Options.EmitAddrsig = true;
     for C in self.ctx.config.mllvmOpts {
-        c()(C);
+        c.MllvmArgs.push(C);
     }
-    c() = true;
-    c() = true;
+    c.Options.FunctionSections = true;
+    c.Options.DataSections = true;
     if self.ctx.config.machine == IMAGE_FILE_MACHINE_I386 {
-        c() = Static;
+        c.RelocModel = Static;
     } else {
-        c() = PIC_;
+        c.RelocModel = PIC_;
     }
     c.DisableVerify = false;
-    c() = diagnosticHandler;
+    c.DiagHandler = diagnosticHandler;
     c.DwoDir = self.ctx.config.dwoDir;
     c.OptLevel = self.ctx.config.ltoo;
     c.CPU = getCPUStr();
-    let mut optLevelOrNone: optional<CodeGenOptLevel> = getLevel(self.ctx.config.ltoCgo);
+    c.MAttrs = getMAttrs();
+    let mut optLevelOrNone: optional<CodeGenOptLevel> = getLevel(self.ctx.config.ltoCgo.value_or(getCGOptLevel(self.ctx.config.ltoo)));
     assert!(optLevelOrNone, "Invalid optimization level!");
     c.CGOptLevel = operator(optLevelOrNone);
     c.AlwaysEmitRegularLTOObj = !self.ctx.config.ltoObjPath.is_empty();
     c.DebugPassManager = self.ctx.config.ltoDebugPassManager;
-    c.CSIRProfile = self.ctx.config.ltoCSProfileFile;
+    c.CSIRProfile = self.ctx.config.ltoCSProfileFile[0..allocator<char> {}];
     c.RunCSIRInstr = self.ctx.config.ltoCSProfileGenerate;
     c.PGOWarnMismatch = self.ctx.config.ltoPGOWarnMismatch;
-    c.SampleProfile;
+    c.SampleProfile = self.ctx.config.ltoSampleProfileName;
     c.TimeTraceEnabled = self.ctx.config.timeTraceEnabled;
     c.TimeTraceGranularity = self.ctx.config.timeTraceGranularity;
-    c.RemarksFilename;
-    c.RemarksPasses;
+    c.RemarksFilename = self.ctx.config.optRemarksFilename;
+    c.RemarksPasses = self.ctx.config.optRemarksPasses;
     c.RemarksWithHotness = self.ctx.config.optRemarksWithHotness;
-    c() = self.ctx.config.optRemarksHotnessThreshold;
-    c.RemarksFormat;
+    c.RemarksHotnessThreshold = self.ctx.config.optRemarksHotnessThreshold;
+    c.RemarksFormat = self.ctx.config.optRemarksFormat;
     if self.ctx.config.emit == LLVM {
-        c() = Closure_2 { cap_0: self };
+        c.PreCodeGenModuleHook = Closure_2 { cap_0: self };
     } else if self.ctx.config.emit == ASM {
         c.CGFileType = AssemblyFile;
-        c() = true;
+        c.Options.MCOptions.AsmVerbose = true;
     }
     if !self.ctx.config.saveTempsArgs.is_empty() {
-        checkError(c()(self.ctx.config.outputFile + ".", true, self.ctx.config.saveTempsArgs));
+        checkError(c.addSaveTemps(self.ctx.config.outputFile + ".", true, self.ctx.config.saveTempsArgs));
     }
     c.PTO.LoopVectorization = c.OptLevel > 1;
     c.PTO.SLPVectorization = c.OptLevel > 1;
@@ -56,17 +57,20 @@ fn BitcodeCompiler::createConfig(self) -> Config {
 }
 
 fn BitcodeCompiler::BitcodeCompiler(self, c: *mut COFFLinkerContext) {
+    if !self.ctx.config.thinLTOIndexOnlyArg.is_empty() {
+        self.indexFile = openFile(self.ctx.config.thinLTOIndexOnlyArg);
+    }
     let mut backend: ThinBackend = ThinBackend {};
     if self.ctx.config.thinLTOIndexOnly {
         let mut OnIndexWrite: Closure_3 = Closure_3 { cap_0: self };
-        backend = createWriteIndexesThinBackend(hardware_concurrency(self.ctx.config.thinLTOJobs), self.ctx.config.thinLTOPrefixReplaceOld, self.ctx.config.thinLTOPrefixReplaceNew, self.ctx.config.thinLTOPrefixReplaceNativeObject, self.ctx.config.thinLTOEmitImportsFiles, self.indexFile.get(), OnIndexWrite);
+        backend = createWriteIndexesThinBackend(hardware_concurrency(self.ctx.config.thinLTOJobs), self.ctx.config.thinLTOPrefixReplaceOld[0..allocator<char> {}], self.ctx.config.thinLTOPrefixReplaceNew[0..allocator<char> {}], self.ctx.config.thinLTOPrefixReplaceNativeObject[0..allocator<char> {}], self.ctx.config.thinLTOEmitImportsFiles, self.indexFile.get(), OnIndexWrite);
     } else {
-        backend = (heavyweight_hardware_concurrency(self.ctx.config.thinLTOJobs));
+        backend = createInProcessThinBackend(heavyweight_hardware_concurrency(self.ctx.config.thinLTOJobs), null, false, false);
     }
-    if self.ctx.config.dtltoDistributor.len == 0 {
+    if self.ctx.config.dtltoDistributor.is_empty() {
         self.ltoObj = make_unique(self.createConfig(), backend, self.ctx.config.ltoPartitions);
     } else {
-        self.ltoObj = make_unique(self.createConfig(), self.ctx.config.ltoPartitions, LTOK_Default, null, self.ctx.config.thinLTOEmitImportsFiles, self.ctx.config.thinLTOIndexOnly, self.ctx.config.outputFile, self.ctx.config.dtltoDistributor, self.ctx.config.dtltoDistributorArgs, self.ctx.config.dtltoCompiler, self.ctx.config.dtltoCompilerPrependArgs, self.ctx.config.dtltoCompilerArgs, !self.ctx.config.saveTempsArgs.is_empty());
+        self.ltoObj = make_unique(self.createConfig(), self.ctx.config.ltoPartitions, LTOK_Default, null, self.ctx.config.thinLTOEmitImportsFiles, self.ctx.config.thinLTOIndexOnly, self.ctx.config.outputFile, self.ctx.config.dtltoDistributor, self.ctx.config.dtltoDistributorArgs, self.ctx.config.dtltoCompiler, self.ctx.config.dtltoCompilerPrependArgs, self.ctx.config.dtltoCompilerArgs, createAddBufferFn(self.files, self.file_names), !self.ctx.config.saveTempsArgs.is_empty());
     }
 }
 
@@ -85,38 +89,56 @@ fn undefine(s: *mut Symbol) {
 fn BitcodeCompiler::add(self, f: *mut BitcodeFile) {
     let mut obj: *mut InputFile = operator(f.obj);
     let mut symNum: u32 = 0;
-    let mut symBodies: i32 = f.getSymbols();
-    let mut resols: i32 = symBodies()();
+    let mut symBodies: []*mut Symbol = f.getSymbols().operator vector();
+    let mut resols: []SymbolResolution = []SymbolResolution { symBodies.len, SymbolResolution> {} };
     if self.ctx.config.thinLTOIndexOnly {
-        self.thinIndices.insert;
+        self.thinIndices.insert(obj.getName());
     }
-    checkError(self.ltoObj(move(f.obj)));
+    for objSym in obj.symbols() {
+        let mut sym: *mut Symbol = symBodies[symNum];
+        let mut r: *mut SymbolResolution = resols[symNum];
+        symNum += 1;
+        r.Prevailing = !objSym.isUndefined() && sym.getFile() == &mut f;
+        r.VisibleToRegularObj = sym.isUsedInRegularObj;
+        if r.Prevailing {
+            undefine(sym);
+        }
+        r.LinkerRedefined = !sym.canInline;
+    }
+    checkError(operator(self.ltoObj).add(move(f.obj), resols));
 }
 
-fn BitcodeCompiler::compile(self) -> i32 {
-    let mut timeScope: TimeTraceScope = TimeTraceScope { Entry: "Bitcode compile" };
+fn BitcodeCompiler::compile(self) -> []*mut InputFile {
+    let mut timeScope: TimeTraceScope = "Bitcode compile";
     let mut maxTasks: u32 = operator(self.ltoObj).getMaxTasks();
     self.buf.resize(maxTasks);
     self.files.resize(maxTasks);
     self.file_names.resize(maxTasks);
     let mut cache: FileCache = FileCache {};
     if !self.ctx.config.ltoCache.is_empty() {
-        cache = check();
+        cache = check(localCache("ThinLTO", "Thin", self.ctx.config.ltoCache, createAddBufferFn(self.files, self.file_names), !self.ctx.config.dtltoDistributor.is_empty()));
     }
-    checkError(self.ltoObj(Closure_4 { cap_0: self }, cache));
+    checkError(operator(self.ltoObj).run(Closure_4 { cap_0: self }, cache));
+    for s in self.thinIndices {
+        let mut path: str = self.getThinLTOOutputFile(s);
+        openFile(path + ".thinlto.bc");
+        if self.ctx.config.thinLTOEmitImportsFiles {
+            openFile(path + ".imports");
+        }
+    }
     if self.ctx.config.thinLTOIndexOnly {
         if !self.ctx.config.ltoObjPath.is_empty() {
-            saveBuffer(self.buf[0], self.ctx.config.ltoObjPath);
+            saveBuffer(self.buf[0].second.operator StringRef(), self.ctx.config.ltoObjPath);
         }
         if self.indexFile {
             operator(self.indexFile).close();
         }
-        return i32 {};
+        return []*mut InputFile {};
     }
     if !self.ctx.config.ltoCache.is_empty() {
         check(pruneCache(self.ctx.config.ltoCache, self.ctx.config.ltoCachePolicy, self.files));
     }
-    let mut ret: i32 = 0;
+    let mut ret: []*mut InputFile = []*mut InputFile {};
     let mut emitASM: bool = self.ctx.config.emit == ASM;
     let mut Ext: *u8 = if emitASM { ".s" } else { ".obj" };
     for let mut i: u32 = 0; i != maxTasks; i += 1 {
@@ -126,10 +148,10 @@ fn BitcodeCompiler::compile(self) -> i32 {
             objBuf = operator(self.files[i]).getBuffer();
             bitcodeFilePath = self.file_names[i];
         } else {
-            objBuf = self.buf[i];
-            bitcodeFilePath = self.buf[i];
+            objBuf = self.buf[i].second.operator StringRef();
+            bitcodeFilePath = self.buf[i].first;
         }
-        if objBuf.len == 0 {
+        if objBuf.is_empty() {
             continue;
         }
         let mut ltoObjName: str = "";
@@ -139,30 +161,33 @@ fn BitcodeCompiler::compile(self) -> i32 {
             let mut directory: str = parent_path(bitcodeFilePath, native);
             let mut baseName: str = stem(bitcodeFilePath, native);
             let mut outputFileBaseName: str = filename(self.ctx.config.outputFile, native);
-            let mut path: str = zeroed();
-            append(directory, outputFileBaseName + ".lto." + baseName + Ext);
-            remove_dots(true);
-            ltoObjName = saver()();
+            let mut path: str = "";
+            append(path, directory, outputFileBaseName + ".lto." + baseName + Ext, "", "");
+            remove_dots(path, true, native);
+            ltoObjName = saver().save(path);
         }
         if is_contained(self.ctx.config.saveTempsArgs, "prelink") || emitASM {
-            saveBuffer(self.buf[i], ltoObjName);
+            saveBuffer(self.buf[i].second.operator StringRef(), ltoObjName);
         }
         if !emitASM {
-            ret()(create(self.ctx, MemoryBufferRef { Buffer: objBuf, Identifier: ltoObjName }, false));
+            ret.push(create(self.ctx, MemoryBufferRef { Buffer: objBuf, Identifier: ltoObjName }, false));
         }
     }
-    return ;
+    return ret;
 }
 
 fn BitcodeCompiler::setBitcodeLibFuncs(self, bitcodeLibFuncs: ArrayRef<StringRef>) {
-    operator(self.ltoObj).setBitcodeLibFuncs(ArrayRef<StringRef> { bitcodeLibFuncs });
+    operator(self.ltoObj).setBitcodeLibFuncs(bitcodeLibFuncs);
 }
 
-struct Closure_1 {}
+struct Closure_1 {
+    files: *mut []unique_ptr<MemoryBuffer>,
+    filenames: *mut []str,
+}
 
-fn Closure_1::call(self: *Closure_1, task: u32, moduleName: str, mb: i32) {
-        files()[task] = move();
-        filenames()[task] = moduleName;
+unsafe fn Closure_1::call(self: *mut Closure_1, task: u32, moduleName: str, mb: unique_ptr<MemoryBuffer>) {
+        (*self.files)[task] = move(mb);
+        (*self.filenames)[task] = moduleName;
     }
 
 struct Closure_2 {
@@ -170,8 +195,10 @@ struct Closure_2 {
 }
 
 fn Closure_2::call(self: *Closure_2, task: u64, m: *Module) -> bool {
-            if  {
-                WriteBitcodeToFile(m, operator*(), false);
+            if openLTOOutputFile(self.ctx.config.outputFile) {
+                os;
+            } else {
+                WriteBitcodeToFile(m, operator(os), false, null, false, null);
             }
             return false;
         }
@@ -188,6 +215,7 @@ struct Closure_4 {
     cap_0: *mut BitcodeCompiler,
 }
 
-fn Closure_4::call(self: *Closure_4, task: u64, moduleName: str) -> auto {
-        self.buf[task] = moduleName;
+fn Closure_4::call(self: *Closure_4, task: u64, moduleName: str) -> CachedFileStream> {
+        self.buf[task].first = moduleName;
+        return make_unique(make_unique(self.buf[task].second));
     }

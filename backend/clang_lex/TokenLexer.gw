@@ -69,31 +69,31 @@ fn TokenLexer::destroy(self) {
 }
 
 fn hasVaOptSupport(LangOpts: *LangOptions) -> bool {
-    return LangOpts() || LangOpts();
+    return LangOpts.C23 || LangOpts.CPlusPlus20;
 }
 
 fn TokenLexer::MaybeRemoveCommaBeforeVaArgs(self, ResultToks: *mut SmallVectorImpl<Token>, HasPasteOperator: bool, Macro: *mut MacroInfo, MacroArgNo: u32, PP: *mut Preprocessor) -> bool {
     if !Macro.isVariadic() || MacroArgNo != Macro.getNumParams() - 1 {
         return false;
     }
-    if !HasPasteOperator && !PP.getLangOpts() {
+    if !HasPasteOperator && !PP.getLangOpts().MSVCCompat {
         return false;
     }
-    if PP.getLangOpts() && !PP.getLangOpts() && Macro.getNumParams() < 2 {
+    if PP.getLangOpts().C99 && !PP.getLangOpts().GNUMode && Macro.getNumParams() < 2 {
         return false;
     }
-    if ResultToks()() || !ResultToks()()(comma) {
+    if ResultToks.is_empty() || !ResultToks.back().is(comma) {
         return false;
     }
     if HasPasteOperator {
-        PP << hasVaOptSupport(PP.getLangOpts());
+        PP.Diag(ResultToks.back().getLocation(), ext_paste_comma) << hasVaOptSupport(PP.getLangOpts());
     }
-    ResultToks()();
-    if !ResultToks()() {
-        if ResultToks()()(hashhash) {
-            ResultToks()();
+    ResultToks.pop();
+    if !ResultToks.is_empty() {
+        if ResultToks.back().is(hashhash) {
+            ResultToks.pop();
         }
-        ResultToks()()(CommaAfterElided);
+        ResultToks.back().setFlag(CommaAfterElided);
     }
     self.NextTokGetsSpace = false;
     return true;
@@ -101,37 +101,37 @@ fn TokenLexer::MaybeRemoveCommaBeforeVaArgs(self, ResultToks: *mut SmallVectorIm
 
 fn TokenLexer::stringifyVAOPTContents(self, ResultToks: *mut SmallVectorImpl<Token>, VCtx: *VAOptExpansionContext, VAOPTClosingParenLoc: SourceLocation) {
     let mut NumToksPriorToVAOpt: i32 = VCtx.getNumberOfTokensPriorToVAOpt();
-    let mut NumVAOptTokens: u32 = ResultToks()() - NumToksPriorToVAOpt;
-    let mut VAOPTTokens: Token *const = zeroed();
-    let mut ConcatenatedVAOPTResultToks: SmallVector<Token, 64> = zeroed();
+    let mut NumVAOptTokens: u32 = ResultToks.len - NumToksPriorToVAOpt;
+    let mut VAOPTTokens: Token *const = if NumVAOptTokens { &mut ResultToks[NumToksPriorToVAOpt] } else { null };
+    let mut ConcatenatedVAOPTResultToks: SmallVector<Token, 64> = SmallVector<Token, 64> {};
     for let mut CurTokenIdx: u32 = 0; CurTokenIdx != NumVAOptTokens; CurTokenIdx += 1 {
         if VAOPTTokens[CurTokenIdx].is(hashhash) {
             assert!(CurTokenIdx != 0, "Can not have __VAOPT__ contents begin with a ##");
             let mut LHS: *mut Token = VAOPTTokens[CurTokenIdx - 1];
-            (LHS, VAOPTTokens(NumVAOptTokens), CurTokenIdx);
-            ConcatenatedVAOPTResultToks()() = LHS;
+            self.pasteTokens(LHS, Token> { VAOPTTokens, NumVAOptTokens }, CurTokenIdx);
+            ConcatenatedVAOPTResultToks.back() = LHS;
             if CurTokenIdx == NumVAOptTokens {
                 break;
             }
         }
-        ConcatenatedVAOPTResultToks()(VAOPTTokens[CurTokenIdx]);
+        ConcatenatedVAOPTResultToks.push(VAOPTTokens[CurTokenIdx]);
     }
-    ConcatenatedVAOPTResultToks()(VCtx.getEOFTok());
+    ConcatenatedVAOPTResultToks.push(VCtx.getEOFTok());
     let mut ExpansionLocStartWithinMacro: SourceLocation = self.getExpansionLocForMacroDefLoc(VCtx.getVAOptLoc());
     let mut ExpansionLocEndWithinMacro: SourceLocation = self.getExpansionLocForMacroDefLoc(VAOPTClosingParenLoc);
-    let mut StringifiedVAOPT: Token = StringifyArgument(operator&([0]), self.PP, VCtx.hasCharifyBefore(), ExpansionLocStartWithinMacro, ExpansionLocEndWithinMacro);
+    let mut StringifiedVAOPT: Token = StringifyArgument(&mut ConcatenatedVAOPTResultToks[0], self.PP, VCtx.hasCharifyBefore(), ExpansionLocStartWithinMacro, ExpansionLocEndWithinMacro);
     if VCtx.getLeadingSpaceForStringifiedToken() {
         StringifiedVAOPT.setFlag(LeadingSpace);
     }
     StringifiedVAOPT.setFlag(StringifiedInMacro);
-    ResultToks()(NumToksPriorToVAOpt + 1);
-    ResultToks()() = StringifiedVAOPT;
+    ResultToks.resize(NumToksPriorToVAOpt + 1);
+    ResultToks.back() = StringifiedVAOPT;
 }
 
 fn TokenLexer::ExpandFunctionArguments(self) {
-    let mut ResultToks: SmallVector<Token, 128> = zeroed();
+    let mut ResultToks: SmallVector<Token, 128> = SmallVector<Token, 128> {};
     let mut MadeChange: bool = false;
-    let mut CalledWithVariadicArguments: optional<bool> = zeroed();
+    let mut CalledWithVariadicArguments: optional<bool> = optional<bool> {};
     let mut VCtx: VAOptExpansionContext = self.PP;
     for let mut I: u32 = 0;
 let mut E: u32 = self.NumTokens; I != E; I += 1 {
@@ -139,37 +139,37 @@ let mut E: u32 = self.NumTokens; I != E; I += 1 {
         if I != 0 && !self.Tokens[I - 1].is(hashhash) && CurTok.hasLeadingSpace() {
             self.NextTokGetsSpace = true;
         }
-        if VCtx.isVAOptToken {
+        if VCtx.isVAOptToken(CurTok) {
             MadeChange = true;
             assert!(self.Tokens[I + 1].is(l_paren), "__VA_OPT__ must be followed by '('");
             I += 1;
-            VCtx.sawVAOptFollowedByOpeningParens(CurTok.getLocation());
+            VCtx.sawVAOptFollowedByOpeningParens(CurTok.getLocation(), ResultToks.len);
             continue;
         }
-        if VCtx.isInVAOpt {
+        if VCtx.isInVAOpt() {
             if self.Tokens[I].is(l_paren) {
-                VCtx.sawOpeningParen;
+                VCtx.sawOpeningParen(self.Tokens[I].getLocation());
             }
-            if !self.Tokens[I].is(r_paren) || !VCtx.sawClosingParen {
-                if ! {
-                    CalledWithVariadicArguments() = self.ActualArgs.invokedWithVariadicArgument(self.Macro, self.PP);
+            if !self.Tokens[I].is(r_paren) || !VCtx.sawClosingParen() {
+                if !CalledWithVariadicArguments {
+                    CalledWithVariadicArguments = self.ActualArgs.invokedWithVariadicArgument(self.Macro, self.PP);
                 }
-                if !* {
+                if !operator(CalledWithVariadicArguments) {
                     continue;
                 }
             } else {
                 if VCtx.hasStringifyOrCharifyBefore() {
-                    self.stringifyVAOPTContents(VCtx, self.Tokens[I].getLocation());
-                } else if ResultToks()() == VCtx.getNumberOfTokensPriorToVAOpt() {
-                    if ResultToks()() && ()(hashhash) {
-                        ResultToks()();
+                    self.stringifyVAOPTContents(ResultToks, VCtx, self.Tokens[I].getLocation());
+                } else if ResultToks.len == VCtx.getNumberOfTokensPriorToVAOpt() {
+                    if ResultToks.len && ResultToks.back().is(hashhash) {
+                        ResultToks.pop();
                     } else if (I + 1 != E) && self.Tokens[I + 1].is(hashhash) {
                         I += 1;
                     }
                 } else {
                     if VCtx.beginsWithPlaceholder() {
-                        assert!(VCtx.getNumberOfTokensPriorToVAOpt() > 0 && () >= VCtx.getNumberOfTokensPriorToVAOpt() && [VCtx.getNumberOfTokensPriorToVAOpt() - 1](hashhash), "no token paste before __VA_OPT__");
-                        ResultToks()(() + VCtx.getNumberOfTokensPriorToVAOpt() - 1);
+                        assert!(VCtx.getNumberOfTokensPriorToVAOpt() > 0 && ResultToks.len >= VCtx.getNumberOfTokensPriorToVAOpt() && ResultToks[VCtx.getNumberOfTokensPriorToVAOpt() - 1].is(hashhash), "no token paste before __VA_OPT__");
+                        ResultToks.erase(ResultToks.begin() + VCtx.getNumberOfTokensPriorToVAOpt() - 1);
                     }
                     if VCtx.endsWithPlaceholder() && I + 1 != E && self.Tokens[I + 1].is(hashhash) {
                         I += 1;
@@ -179,9 +179,9 @@ let mut E: u32 = self.NumTokens; I != E; I += 1 {
                 continue;
             }
         }
-        if CurTok {
+        if CurTok.isOneOf(hash, hashat) {
             let mut ArgNo: i32 = self.Macro.getParameterNum(self.Tokens[I + 1].getIdentifierInfo());
-            assert!((ArgNo != -1 || VCtx.isVAOptToken), "Token following # is not an argument or __VA_OPT__!");
+            assert!((ArgNo != -1 || VCtx.isVAOptToken(self.Tokens[I + 1])), "Token following # is not an argument or __VA_OPT__!");
             if ArgNo == -1 {
                 VCtx.sawHashOrHashAtBefore(self.NextTokGetsSpace, CurTok.is(hashat));
                 continue;
@@ -195,57 +195,62 @@ let mut E: u32 = self.NumTokens; I != E; I += 1 {
             if self.NextTokGetsSpace {
                 Res.setFlag(LeadingSpace);
             }
-            ResultToks()(Res);
+            ResultToks.push(Res);
             MadeChange = true;
             I += 1;
             self.NextTokGetsSpace = false;
             continue;
         }
-        let mut NonEmptyPasteBefore: bool = !() && ()(hashhash);
+        let mut NonEmptyPasteBefore: bool = !ResultToks.is_empty() && ResultToks.back().is(hashhash);
         let mut PasteBefore: bool = I != 0 && self.Tokens[I - 1].is(hashhash);
         let mut PasteAfter: bool = I + 1 != E && self.Tokens[I + 1].is(hashhash);
         let mut RParenAfter: bool = I + 1 != E && self.Tokens[I + 1].is(r_paren);
-        assert!((!NonEmptyPasteBefore || PasteBefore || VCtx.isInVAOpt), "unexpected ## in ResultToks");
+        assert!((!NonEmptyPasteBefore || PasteBefore || VCtx.isInVAOpt()), "unexpected ## in ResultToks");
         let mut II: *mut IdentifierInfo = CurTok.getIdentifierInfo();
         let mut ArgNo: i32 = if II { self.Macro.getParameterNum(II) } else { -1 };
         if ArgNo == -1 {
-            ResultToks()(CurTok);
+            ResultToks.push(CurTok);
             if self.NextTokGetsSpace {
-                ResultToks()()(LeadingSpace);
+                ResultToks.back().setFlag(LeadingSpace);
                 self.NextTokGetsSpace = false;
             } else if PasteBefore && !NonEmptyPasteBefore {
-                ResultToks()()(LeadingSpace);
+                ResultToks.back().clearFlag(LeadingSpace);
             }
             continue;
         }
         MadeChange = true;
-        if !PasteBefore && self.ActualArgs.isVarargsElidedUse() && self.MaybeRemoveCommaBeforeVaArgs(false, self.Macro, ArgNo, self.PP) {
+        if !PasteBefore && self.ActualArgs.isVarargsElidedUse() && self.MaybeRemoveCommaBeforeVaArgs(ResultToks, false, self.Macro, ArgNo, self.PP) {
             continue;
         }
         if !PasteBefore && !PasteAfter {
             let mut ResultArgToks: *Token = null;
             let mut ArgTok: *Token = self.ActualArgs.getUnexpArgument(ArgNo);
             if self.ActualArgs.ArgNeedsPreexpansion(ArgTok, self.PP) {
-                ResultArgToks = operator&(self.ActualArgs(ArgNo, self.PP)[0]);
+                ResultArgToks = &mut self.ActualArgs.getPreExpArgument(ArgNo, self.PP)[0];
             } else {
                 ResultArgToks = ArgTok;
             }
             if ResultArgToks.isNot(eof) {
-                let mut FirstResult: u64 = ();
+                let mut FirstResult: u64 = ResultToks.len;
                 let mut NumToks: u32 = getArgLength(ResultArgToks);
-                ResultToks()(ResultArgToks, ResultArgToks + NumToks);
-                if self.PP.getLangOpts() && NumToks == 1 && ()(comma) {
-                    ResultToks()()(IgnoredComma);
+                ResultToks.append(ResultArgToks, ResultArgToks + NumToks);
+                if self.PP.getLangOpts().MSVCCompat && NumToks == 1 && ResultToks.back().is(comma) {
+                    ResultToks.back().setFlag(IgnoredComma);
+                }
+                for Tok in drop_begin(ResultToks, FirstResult) {
+                    if Tok.is(hashhash) {
+                        Tok.setKind(unknown);
+                    }
                 }
                 if self.ExpandLocStart.isValid() {
-                    self.updateLocForMacroArgTokens(CurTok.getLocation(), () + FirstResult);
+                    self.updateLocForMacroArgTokens(CurTok.getLocation(), ResultToks.begin() + FirstResult, ResultToks.end());
                 }
-                ResultToks()[FirstResult](LeadingSpace, self.NextTokGetsSpace);
-                ResultToks()[FirstResult](StartOfLine, false);
+                ResultToks[FirstResult].setFlagValue(LeadingSpace, self.NextTokGetsSpace);
+                ResultToks[FirstResult].setFlagValue(StartOfLine, false);
                 self.NextTokGetsSpace = false;
             } else {
                 if NonEmptyPasteBefore {
-                    assert!(VCtx.isInVAOpt, "should only happen inside a __VA_OPT__");
+                    assert!(VCtx.isInVAOpt(), "should only happen inside a __VA_OPT__");
                     VCtx.hasPlaceholderAfterHashhashAtStart();
                 } else if RParenAfter {
                     VCtx.hasPlaceholderBeforeRParen();
@@ -257,21 +262,26 @@ let mut E: u32 = self.NumTokens; I != E; I += 1 {
         let mut NumToks: u32 = getArgLength(ArgToks);
         if NumToks {
             let mut VaArgsPseudoPaste: bool = false;
-            if NonEmptyPasteBefore && () >= 2 && [() - 2](comma) && ArgNo as u32 == self.Macro.getNumParams() - 1 && self.Macro.isVariadic() {
+            if NonEmptyPasteBefore && ResultToks.len >= 2 && ResultToks[ResultToks.len - 2].is(comma) && ArgNo as u32 == self.Macro.getNumParams() - 1 && self.Macro.isVariadic() {
                 VaArgsPseudoPaste = true;
                 let mut VaOptSupport: bool = hasVaOptSupport(self.PP.getLangOpts());
-                let mut Diag: auto = self.PP << VaOptSupport;
+                let mut Diag: DiagnosticBuilder = self.PP.Diag(ResultToks.pop_back_val().getLocation(), ext_paste_comma) << VaOptSupport;
                 if VaOptSupport {
-                    Diag() << CreateReplacement(()(), " __VA_OPT__() __VA_ARGS__");
+                    Diag << CreateReplacement(SourceRange { B: ResultToks.back().getLocation(), E: CurTok.getLocation() }, " __VA_OPT__(,) __VA_ARGS__");
                 }
             }
-            ResultToks()(ArgToks, ArgToks + NumToks);
+            ResultToks.append(ArgToks, ArgToks + NumToks);
+            for Tok in make_range(ResultToks.end() - NumToks, ResultToks.end()) {
+                if Tok.is(hashhash) {
+                    Tok.setKind(unknown);
+                }
+            }
             if self.ExpandLocStart.isValid() {
-                self.updateLocForMacroArgTokens(CurTok.getLocation(), () - NumToks);
+                self.updateLocForMacroArgTokens(CurTok.getLocation(), ResultToks.end() - NumToks, ResultToks.end());
             }
             if !VaArgsPseudoPaste {
-                ResultToks()[() - NumToks](StartOfLine, false);
-                ResultToks()[() - NumToks](LeadingSpace, self.NextTokGetsSpace);
+                ResultToks[ResultToks.len - NumToks].setFlagValue(StartOfLine, false);
+                ResultToks[ResultToks.len - NumToks].setFlagValue(LeadingSpace, self.NextTokGetsSpace);
             }
             self.NextTokGetsSpace = false;
             continue;
@@ -285,21 +295,21 @@ let mut E: u32 = self.NumTokens; I != E; I += 1 {
         }
         assert!(PasteBefore);
         if NonEmptyPasteBefore {
-            assert!(ResultToks()()(hashhash);
-            if !VCtx.isInVAOpt || () > VCtx.getNumberOfTokensPriorToVAOpt() {
-                ResultToks()();
+            assert!(ResultToks.back().is(hashhash);
+            if !VCtx.isInVAOpt() || ResultToks.len > VCtx.getNumberOfTokensPriorToVAOpt() {
+                ResultToks.pop();
             } else {
                 VCtx.hasPlaceholderAfterHashhashAtStart();
             }
         }
         if self.ActualArgs.isVarargsElidedUse() {
-            self.MaybeRemoveCommaBeforeVaArgs(true, self.Macro, ArgNo, self.PP);
+            self.MaybeRemoveCommaBeforeVaArgs(ResultToks, true, self.Macro, ArgNo, self.PP);
         }
     }
     if MadeChange {
         assert!(!self.OwnsTokens, "This would leak if we already own the token list");
-        self.NumTokens = ();
-        self.Tokens = self.PP.cacheMacroExpandedTokens(self);
+        self.NumTokens = ResultToks.len;
+        self.Tokens = self.PP.cacheMacroExpandedTokens(self, ResultToks);
         self.OwnsTokens = false;
     }
 }
@@ -332,7 +342,7 @@ fn TokenLexer::Lex(self, Tok: *mut Token) -> bool {
         Tok.setFlag(IsReinjected);
     }
     let mut TokenIsFromPaste: bool = false;
-    if !self.isAtEnd() && self.Macro && (self.Tokens[self.CurTokenIdx].is(hashhash) || (self.PP.getLangOpts() && isWideStringLiteralFromMacro(Tok, self.Tokens[self.CurTokenIdx]))) {
+    if !self.isAtEnd() && self.Macro && (self.Tokens[self.CurTokenIdx].is(hashhash) || (self.PP.getLangOpts().MSVCCompat && isWideStringLiteralFromMacro(Tok, self.Tokens[self.CurTokenIdx]))) {
         if self.pasteTokens(Tok) {
             return true;
         }
@@ -360,7 +370,7 @@ fn TokenLexer::Lex(self, Tok: *mut Token) -> bool {
     }
     self.AtStartOfLine = false;
     self.HasLeadingSpace = false;
-    if !Tok.isAnnotation() && Tok.getIdentifierInfo() != null && (!self.PP.getLangOpts() || !Tok.isModuleContextualKeyword(true)) {
+    if !Tok.isAnnotation() && Tok.getIdentifierInfo() != null && (!self.PP.getLangOpts().CPlusPlusModules || !Tok.isModuleContextualKeyword(true)) {
         let mut II: *mut IdentifierInfo = Tok.getIdentifierInfo();
         Tok.setKind(II.getTokenID());
         if II.isPoisoned() && TokenIsFromPaste {
@@ -374,52 +384,52 @@ fn TokenLexer::Lex(self, Tok: *mut Token) -> bool {
 }
 
 fn TokenLexer::pasteTokens(self, Tok: *mut Token) -> bool {
-    return (Tok, self.Tokens, self.CurTokenIdx);
+    return self.pasteTokens(Tok, Token> { self.Tokens, self.NumTokens }, self.CurTokenIdx);
 }
 
 fn TokenLexer::pasteTokens(self, LHSTok: *mut Token, TokenStream: ArrayRef<Token>, CurIdx: *mut u32) -> bool {
     assert!(CurIdx > 0, "## can not be the first token within tokens");
-    assert!((TokenStream()[CurIdx](hashhash) || (self.PP.getLangOpts() && isWideStringLiteralFromMacro(LHSTok, [CurIdx]))), "Token at this Index must be ## or part of the MSVC 'L #macro-arg' pasting pair");
-    if self.PP.getLangOpts() && (CurIdx >= 2) && [CurIdx - 2](hashhash) {
+    assert!((TokenStream[CurIdx].is(hashhash) || (self.PP.getLangOpts().MSVCCompat && isWideStringLiteralFromMacro(LHSTok, TokenStream[CurIdx]))), "Token at this Index must be ## or part of the MSVC 'L #macro-arg' pasting pair");
+    if self.PP.getLangOpts().MicrosoftExt && (CurIdx >= 2) && TokenStream[CurIdx - 2].is(hashhash) {
         LHSTok.clearFlag(LeadingSpace);
     }
-    let mut Buffer: str = zeroed();
+    let mut Buffer: str = "";
     let mut ResultTokStrPtr: *u8 = null;
     let mut StartLoc: SourceLocation = LHSTok.getLocation();
     let mut PasteOpLoc: SourceLocation = SourceLocation {};
     let mut HasUCNs: bool = false;
-    let mut IsAtEnd: Closure_1 = Closure_1 { CurIdx: &mut CurIdx };
+    let mut IsAtEnd: Closure_1 = Closure_1 { TokenStream: &mut TokenStream, CurIdx: &mut CurIdx };
     while true {
         {
-        PasteOpLoc = [CurIdx]();
-        if TokenStream()[CurIdx](hashhash) {
+        PasteOpLoc = TokenStream[CurIdx].getLocation();
+        if TokenStream[CurIdx].is(hashhash) {
             CurIdx += 1;
         }
-        assert!(!IsAtEnd(), "No token on the RHS of a paste operator!");
-        let mut RHS: *Token = [CurIdx];
-        Buffer()(LHSTok.getLength() + RHS.getLength());
-        let mut BufPtr: *u8 = operator&([0]);
+        assert!(!IsAtEnd.call(), "No token on the RHS of a paste operator!");
+        let mut RHS: *Token = TokenStream[CurIdx];
+        Buffer.resize(LHSTok.getLength() + RHS.getLength());
+        let mut BufPtr: *u8 = &mut Buffer[0];
         let mut Invalid: bool = false;
         let mut LHSLen: u32 = self.PP.getSpelling(LHSTok, BufPtr, &mut Invalid);
-        if BufPtr != operator&([0]) {
-            memcpy(operator&([0]), BufPtr, LHSLen);
+        if BufPtr != &mut Buffer[0] {
+            memcpy(&mut Buffer[0], BufPtr, LHSLen);
         }
         if Invalid {
             return true;
         }
-        BufPtr = () + LHSLen;
+        BufPtr = Buffer.ptr + LHSLen;
         let mut RHSLen: u32 = self.PP.getSpelling(RHS, BufPtr, &mut Invalid);
         if Invalid {
             return true;
         }
-        if RHSLen && BufPtr != operator&([LHSLen]) {
-            memcpy(operator&([LHSLen]), BufPtr, RHSLen);
+        if RHSLen && BufPtr != &mut Buffer[LHSLen] {
+            memcpy(&mut Buffer[LHSLen], BufPtr, RHSLen);
         }
-        Buffer()(LHSLen + RHSLen);
+        Buffer.resize(LHSLen + RHSLen);
         let mut ResultTokTmp: Token = Token {};
         ResultTokTmp.startToken();
         ResultTokTmp.setKind(string_literal);
-        self.PP.CreateString(ResultTokTmp);
+        self.PP.CreateString(Buffer.operator StringRef(), ResultTokTmp, SourceLocation {}, SourceLocation {});
         let mut ResultTokLoc: SourceLocation = ResultTokTmp.getLocation();
         ResultTokStrPtr = ResultTokTmp.getLiteralData();
         let mut Result: Token = Token {};
@@ -446,12 +456,12 @@ fn TokenLexer::pasteTokens(self, LHSTok: *mut Token, TokenStream: ArrayRef<Token
             if isInvalid {
                 let mut SM: *mut SourceManager = self.PP.getSourceManager();
                 let mut Loc: SourceLocation = SM.createExpansionLoc(PasteOpLoc, self.ExpandLocStart, self.ExpandLocEnd, 2, true, 0, 0);
-                if self.PP.getLangOpts() && LHSTok.is(slash) && RHS.is(slash) {
+                if self.PP.getLangOpts().MicrosoftExt && LHSTok.is(slash) && RHS.is(slash) {
                     self.HandleMicrosoftCommentPaste(LHSTok, Loc);
                     return true;
                 }
-                if !self.PP.getLangOpts() {
-                    self.PP << ;
+                if !self.PP.getLangOpts().AsmPreprocessor {
+                    self.PP.Diag(Loc, if self.PP.getLangOpts().MicrosoftExt { ext_pp_bad_paste_ms } else { err_pp_bad_paste }) << Buffer;
                 }
                 break;
             }
@@ -465,9 +475,9 @@ fn TokenLexer::pasteTokens(self, LHSTok: *mut Token, TokenStream: ArrayRef<Token
         HasUCNs = LHSTok.hasUCN() || RHS.hasUCN() || HasUCNs;
         LHSTok = Result;
     }
-        if !(!IsAtEnd() && [CurIdx](hashhash)) { break; }
+        if !(!IsAtEnd.call() && TokenStream[CurIdx].is(hashhash)) { break; }
     }
-    let mut EndLoc: SourceLocation = [CurIdx - 1]();
+    let mut EndLoc: SourceLocation = TokenStream[CurIdx - 1].getLocation();
     let mut SM: *mut SourceManager = self.PP.getSourceManager();
     if StartLoc.isFileID() {
         StartLoc = self.getExpansionLocForMacroDefLoc(StartLoc);
@@ -494,7 +504,7 @@ fn TokenLexer::pasteTokens(self, LHSTok: *mut Token, TokenStream: ArrayRef<Token
 
 fn TokenLexer::peekNextPPToken(self: *TokenLexer) -> optional<Token> {
     if self.isAtEnd() {
-        return nullopt();
+        return nullopt;
     }
     return self.Tokens[self.CurTokenIdx];
 }
@@ -512,7 +522,7 @@ fn TokenLexer::isLexingCXXModuleDirective(self: *TokenLexer) -> bool {
 }
 
 fn TokenLexer::HandleMicrosoftCommentPaste(self, Tok: *mut Token, OpLoc: SourceLocation) {
-    self.PP;
+    self.PP.Diag(OpLoc, ext_comment_paste_microsoft);
     assert!(self.Macro, "Token streams can't paste comments");
     self.Macro.EnableMacro();
     self.PP.HandleMicrosoftCommentPaste(Tok);
@@ -531,20 +541,24 @@ fn TokenLexer::getExpansionLocForMacroDefLoc(self: *TokenLexer, loc: SourceLocat
 fn updateConsecutiveMacroArgTokens(SM: *mut SourceManager, ExpandLoc: SourceLocation, begin_tokens: *mut *mut Token, end_tokens: *mut Token) {
     assert!(begin_tokens + 1 < end_tokens);
     let mut BeginLoc: SourceLocation = begin_tokens.getLocation();
-    let mut All: MutableArrayRef<Token> = zeroed();
-    let mut Partition: MutableArrayRef<Token> = zeroed();
+    let mut All: MutableArrayRef<Token> = MutableArrayRef<Token> { begin_tokens, end_tokens };
+    let mut Partition: MutableArrayRef<Token> = MutableArrayRef<Token> {};
     let mut NearLast: Closure_2 = Closure_2 { cap_0: BeginLoc };
     if BeginLoc.isFileID() {
-        Partition() = (Closure_3 { NearLast: &mut NearLast });
+        Partition = All.take_while(Closure_3 { NearLast: &mut NearLast });
     } else {
         let mut BeginFID: FileID = SM.getFileID(BeginLoc);
         let mut Limit: SourceLocation = SM.getComposedLoc(BeginFID, SM.getFileIDSize(BeginFID));
-        Partition() = (Closure_4 { BeginLoc: &mut BeginLoc, Limit: &mut Limit, NearLast: &mut NearLast });
+        Partition = All.take_while(Closure_4 { BeginLoc: &mut BeginLoc, Limit: &mut Limit, NearLast: &mut NearLast });
     }
-    assert!(!();
-    let mut FullLength: UIntTy = ()()() - ()()();
+    assert!(!Partition.is_empty();
+    let mut FullLength: UIntTy = Partition.back().getEndLoc().getRawEncoding() - Partition.front().getLocation().getRawEncoding();
     let mut Expansion: SourceLocation = SM.createMacroArgExpansionLoc(BeginLoc, ExpandLoc, FullLength);
-    begin_tokens = operator&() + 1;
+    for T in Partition {
+        let mut RelativeOffset: IntTy = T.getLocation().getRawEncoding() - BeginLoc.getRawEncoding();
+        T.setLocation(Expansion.getLocWithOffset(RelativeOffset));
+    }
+    begin_tokens = &mut Partition.back() + 1;
 }
 
 fn TokenLexer::updateLocForMacroArgTokens(self, ArgIdSpellLoc: SourceLocation, begin_tokens: *mut Token, end_tokens: *mut Token) {
@@ -566,10 +580,13 @@ fn TokenLexer::PropagateLineStartLeadingSpaceInfo(self, Result: *mut Token) {
 }
 
 struct Closure_1 {
+    TokenStream: *mut ArrayRef<Token>,
     CurIdx: *mut u32,
 }
 
-unsafe fn Closure_1::call(self: *mut Closure_1) -> auto {}
+unsafe fn Closure_1::call(self: *mut Closure_1) -> auto {
+        return (*self.TokenStream).len == (*self.CurIdx);
+    }
 
 struct Closure_2 {
     cap_0: SourceLocation,

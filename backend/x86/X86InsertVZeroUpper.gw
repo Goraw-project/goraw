@@ -1,4 +1,4 @@
-static mut UseVZeroUpper: i32 = "x86-use-vzeroupper";
+static mut UseVZeroUpper: opt<bool> = opt<bool> { "x86-use-vzeroupper", Hidden, "Minimize AVX to SSE transition penalty", init(true) };
 
 static mut NumVZU: Statistic = Statistic { "x86-insert-vzeroupper", "NumVZU", "Number of vzeroupper instructions inserted" };
 
@@ -79,23 +79,30 @@ fn getBlockExitStateName(ST: BlockExitState) -> *u8 {
             return "Exits-clean";
         },
     }
-    llvm_unreachable_internal("Invalid block exit state.", "llvm\\lib\\Target\\X86\\X86InsertVZeroUpper.cpp", 116);
+    llvm_unreachable_internal("Invalid block exit state.", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86InsertVZeroUpper.cpp", 116);
 }
 
-fn isYmmOrZmmReg(Reg: MCRegister) -> bool {}
+fn isYmmOrZmmReg(Reg: MCRegister) -> bool {
+    return (Reg.operator unsigned int() >= YMM0 && Reg.operator unsigned int() <= YMM15) || (Reg.operator unsigned int() >= ZMM0 && Reg.operator unsigned int() <= ZMM15);
+}
 
 fn checkFnHasLiveInYmmOrZmm(MRI: *mut MachineRegisterInfo) -> bool {
+    for LI in MRI.liveins() {
+        if isYmmOrZmmReg(LI.first) {
+            return true;
+        }
+    }
     return false;
 }
 
 fn clobbersAllYmmAndZmmRegs(MO: *MachineOperand) -> bool {
-    for let mut reg: u32 = 0; ; reg += 1 {
-        if !MO.clobbersPhysReg(MCRegister { Reg: reg }) {
+    for let mut reg: u32 = YMM0; reg <= YMM15; reg += 1 {
+        if !MO.clobbersPhysReg(reg) {
             return false;
         }
     }
-    for let mut reg: u32 = 0; ; reg += 1 {
-        if !MO.clobbersPhysReg(MCRegister { Reg: reg }) {
+    for let mut reg: u32 = ZMM0; reg <= ZMM15; reg += 1 {
+        if !MO.clobbersPhysReg(reg) {
             return false;
         }
     }
@@ -131,19 +138,21 @@ fn callHasRegMask(MI: *mut MachineInstr) -> bool {
 }
 
 fn insertVZeroUpper(I: iterator, MBB: *mut MachineBasicBlock, TII: *TargetInstrInfo) -> bool {
-    BuildMI(MBB, I, operator(I).getDebugLoc(), TII.get);
+    BuildMI(MBB, I, MIMetadata { DL: operator(I).getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, TII.get(VZEROUPPER));
     operator(NumVZU);
     return true;
 }
 
 fn addDirtySuccessor(MBB: *mut MachineBasicBlock, BlockStates: *mut BlockStateMap, DirtySuccessors: *mut DirtySuccessorsWorkList) {
-    if  {
-        DirtySuccessors()(&mut MBB);
+    if !BlockStates[MBB.getNumber()].AddedToDirtySuccessors {
+        DirtySuccessors.push(&mut MBB);
+        BlockStates[MBB.getNumber()].AddedToDirtySuccessors = true;
     }
 }
 
 fn processBasicBlock(MBB: *mut MachineBasicBlock, BlockStates: *mut BlockStateMap, DirtySuccessors: *mut DirtySuccessorsWorkList, IsX86INTR: bool, TII: *TargetInstrInfo) -> bool {
     let mut CurState: BlockExitState = PASS_THROUGH;
+    BlockStates[MBB.getNumber()].FirstUnguardedCall = MBB.end();
     let mut MadeChange: bool = false;
     for MI in MBB {
         let mut IsCall: bool = MI.isCall(AnyInBundle);
@@ -152,7 +161,7 @@ fn processBasicBlock(MBB: *mut MachineBasicBlock, BlockStates: *mut BlockStateMa
         if IsX86INTR && IsReturn {
             continue;
         }
-        if  {
+        if MI.getOpcode() == VZEROALL || MI.getOpcode() == VZEROUPPER {
             CurState = EXITS_CLEAN;
             continue;
         }
@@ -170,9 +179,10 @@ fn processBasicBlock(MBB: *mut MachineBasicBlock, BlockStates: *mut BlockStateMa
             continue;
         }
         if CurState == EXITS_DIRTY {
-            MadeChange |= insertVZeroUpper(iterator { MI }, MBB, TII);
+            MadeChange |= insertVZeroUpper(MI, MBB, TII);
             CurState = EXITS_CLEAN;
         } else if CurState == PASS_THROUGH {
+            BlockStates[MBB.getNumber()].FirstUnguardedCall = MI;
             CurState = EXITS_CLEAN;
         }
     }
@@ -189,41 +199,52 @@ fn processBasicBlock(MBB: *mut MachineBasicBlock, BlockStates: *mut BlockStateMa
             addDirtySuccessor(*Succ, BlockStates, DirtySuccessors);
         }
     }
+    BlockStates[MBB.getNumber()].ExitState = CurState;
     return MadeChange;
 }
 
 fn insertVZeroUpper(MF: *mut MachineFunction) -> bool {
-    if operator!() {
+    if !UseVZeroUpper {
         return false;
     }
-    let mut ST: *X86Subtarget = MF;
-    if !ST.hasAVX() || operator!(ST()()) {
+    let mut ST: *X86Subtarget = MF.getSubtarget();
+    if !ST.hasAVX() || !ST.insertVZEROUPPER() {
         return false;
     }
     let mut MRI: *mut MachineRegisterInfo = MF.getRegInfo();
     let mut FnHasLiveInYmmOrZmm: bool = checkFnHasLiveInYmmOrZmm(MRI);
     let mut YmmOrZmmUsed: bool = FnHasLiveInYmmOrZmm;
+    for RC in [&mut VR256RegClass, &mut VR512_0_15RegClass] {
+        if !YmmOrZmmUsed {
+            for R in *RC {
+                if !MRI.reg_nodbg_empty(R) {
+                    YmmOrZmmUsed = true;
+                    break;
+                }
+            }
+        }
+    }
     if !YmmOrZmmUsed {
         return false;
     }
     let mut TII: *TargetInstrInfo = ST.getInstrInfo();
     let mut IsX86INTR: bool = MF.getFunction().getCallingConv() == X86_INTR;
     let mut EverMadeChange: bool = false;
-    let mut BlockStates: BlockStateMap = zeroed();
-    let mut DirtySuccessors: DirtySuccessorsWorkList = zeroed();
-    (((operator!(operator!((BlockStates()() == MF.getNumBlockIDs() && () && "X86VZeroUpper state should be clear")))) || (_wassert(L"BlockStates.size() == MF.getNumBlockIDs() && DirtySuccessors.empty() && \"X86VZeroUpper state should be clear\"", L"llvm\\lib\\Target\\X86\\X86InsertVZeroUpper.cpp", (315) as u32) , 0)) as void);
+    let mut BlockStates: BlockStateMap = MF.getNumBlockIDs();
+    let mut DirtySuccessors: DirtySuccessorsWorkList = DirtySuccessorsWorkList {};
+    assert!(BlockStates.len == MF.getNumBlockIDs() && DirtySuccessors.is_empty(), "X86VZeroUpper state should be clear");
     for MBB in MF {
-        operator|=(EverMadeChange, processBasicBlock(MBB, IsX86INTR, TII));
+        EverMadeChange |= processBasicBlock(MBB, BlockStates, DirtySuccessors, IsX86INTR, TII);
     }
     if FnHasLiveInYmmOrZmm {
-        addDirtySuccessor(MF.front());
+        addDirtySuccessor(MF.front(), BlockStates, DirtySuccessors);
     }
-    while operator!() {
-        let mut MBB: *mut MachineBasicBlock = operator*();
-        DirtySuccessors()();
-        let mut BBState: *mut BlockState = [MBB.getNumber()];
+    while !DirtySuccessors.is_empty() {
+        let mut MBB: *mut MachineBasicBlock = *DirtySuccessors.back();
+        DirtySuccessors.pop();
+        let mut BBState: *mut BlockState = BlockStates[MBB.getNumber()];
         if BBState.FirstUnguardedCall != MBB.end() {
-            EverMadeChange |= insertVZeroUpper(iterator { BBState.FirstUnguardedCall }, MBB, TII);
+            EverMadeChange |= insertVZeroUpper(BBState.FirstUnguardedCall, MBB, TII);
         }
         if BBState.ExitState == PASS_THROUGH {
             while true {
@@ -233,6 +254,9 @@ fn insertVZeroUpper(MF: *mut MachineFunction) -> bool {
                 }
             }
                 if !(false) { break; }
+            }
+            for Succ in MBB.successors() {
+                addDirtySuccessor(*Succ, BlockStates, DirtySuccessors);
             }
         }
     }
@@ -244,5 +268,5 @@ fn X86InsertVZeroUpperLegacy::runOnMachineFunction(self, MF: *mut MachineFunctio
 }
 
 fn X86InsertVZeroUpperPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
-    return if insertVZeroUpper(MF) { getMachineFunctionPassPreservedAnalyses() } else { all() };
+    return if insertVZeroUpper(MF) { getMachineFunctionPassPreservedAnalyses().preserveSet() } else { all() };
 }

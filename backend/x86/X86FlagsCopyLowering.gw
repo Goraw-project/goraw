@@ -71,27 +71,29 @@ fn createX86FlagsCopyLoweringLegacyPass() -> *mut FunctionPass {
 static mut ID: i8 = 0;
 
 fn X86FlagsCopyLoweringLegacy::getAnalysisUsage(self: *X86FlagsCopyLoweringLegacy, AU: *mut AnalysisUsage) {
-    AU;
-    AU;
+    AU.addUsedIfAvailable();
+    AU.addPreserved();
     self.getAnalysisUsage(AU);
 }
 
-fn isArithmeticOp(Opc: u32) -> bool {}
+fn isArithmeticOp(Opc: u32) -> bool {
+    return isADC(Opc) || isSBB(Opc) || isRCL(Opc) || isRCR(Opc) || (Opc == SETB_C32r || Opc == SETB_C64r);
+}
 
 fn splitBlock(MBB: *mut MachineBasicBlock, SplitI: *mut MachineInstr, TII: *X86InstrInfo) -> *mut MachineBasicBlock {
     let mut MF: *mut MachineFunction = *MBB.getParent();
     assert!(SplitI.getParent() == &mut MBB, "Split instruction must be in the split block!");
     assert!(SplitI.isBranch(AnyInBundle), "Only designed to split a tail of branch instructions!");
     assert!(getCondFromBranch(SplitI) != COND_INVALID, "Must split on an actual jCC instruction!");
-    let mut PrevI: *mut MachineInstr = operator*(prev(SplitI.getIterator()));
+    let mut PrevI: *mut MachineInstr = operator(prev(SplitI.getIterator(), 1));
     assert!(PrevI.isBranch(AnyInBundle), "Must split after a branch!");
     assert!(getCondFromBranch(PrevI) != COND_INVALID, "Must split after an actual jCC instruction!");
-    (((operator!(operator!((operator!(prev(PrevI.getIterator())()) && "Must only have this one terminator prior to the split!")))) || (_wassert(L"!std::prev(PrevI.getIterator())->isTerminator() && \"Must only have this one terminator prior to the split!\"", L"llvm\\lib\\Target\\X86\\X86FlagsCopyLowering.cpp", (167) as u32) , 0)) as void);
+    assert!(!operator(prev(PrevI.getIterator(), 1)).isTerminator(AnyInBundle), "Must only have this one terminator prior to the split!");
     let mut UnsplitSucc: *mut MachineBasicBlock = *PrevI.getOperand(0).getMBB();
     let mut IsEdgeSplit: bool = any_of(SplitI.getIterator(), MBB.instr_end(), Closure_1 { UnsplitSucc: &mut UnsplitSucc }) || MBB.getFallThrough(true) == &mut UnsplitSucc;
-    let mut NewMBB: *mut MachineBasicBlock = *MF.CreateMachineBasicBlock(null, optional<UniqueBBID> { nullopt });
-    MF.insert(next(iterator { &mut MBB }), &mut NewMBB);
-    NewMBB.splice(NewMBB.end(), &mut MBB, iterator { SplitI.getIterator() }, MBB.end());
+    let mut NewMBB: *mut MachineBasicBlock = *MF.CreateMachineBasicBlock(null, nullopt);
+    MF.insert(next(&mut MBB, 1), &mut NewMBB);
+    NewMBB.splice(NewMBB.end(), &mut MBB, SplitI.getIterator(), MBB.end());
     for let mut SI: succ_iterator = MBB.succ_begin();
 let mut SE: succ_iterator = MBB.succ_end(); SI != SE; SI += 1 {
         if IsEdgeSplit || *SI != &mut UnsplitSucc {
@@ -140,7 +142,7 @@ enum EFLAGSClobber {
 }
 
 fn getClobberType(MI: *MachineInstr) -> EFLAGSClobber {
-    let mut FlagDef: *MachineOperand = MI;
+    let mut FlagDef: *MachineOperand = MI.findRegisterDefOperand(EFLAGS, null, false, false);
     if !FlagDef {
         return NoClobber;
     }
@@ -159,41 +161,49 @@ fn X86FlagsCopyLoweringImpl::runOnMachineFunction(self, MF: *mut MachineFunction
     }
         if !(false) { break; }
     }
-    self.Subtarget = operator&(MF);
+    self.Subtarget = &mut MF.getSubtarget();
     self.MRI = &mut MF.getRegInfo();
     self.TII = self.Subtarget.getInstrInfo();
-    self.TRI;
-    if MF.len == 0 {
+    self.TRI = self.Subtarget.getRegisterInfo();
+    self.PromoteRC = &mut GR8RegClass;
+    if MF.is_empty() {
         return false;
     }
-    if none_of(self.MRI, Closure_2 {}) {
+    if none_of(self.MRI.def_instructions(EFLAGS), Closure_3 {}) {
         return false;
     }
-    let mut OwnedMDT: i32 = 0;
+    let mut OwnedMDT: unique_ptr<MachineDominatorTree> = unique_ptr<MachineDominatorTree> {};
     if !self.MDT {
-        OwnedMDT() = make_unique(MF);
-        self.MDT = ();
+        OwnedMDT = make_unique(MF);
+        self.MDT = OwnedMDT.get();
     }
-    let mut Copies: SmallSetVector<MachineInstr *, 4> = zeroed();
-    let mut RPOT: i32 = &mut MF;
-    if self.Subtarget() {
-        let mut RemovedCopies: SmallSetVector<MachineInstr *, 4> = zeroed();
-        let mut CopyIIt: auto = ();
-        let mut CopyIEnd: auto = ();
-        while CopyIIt() !=  {
-            let mut NCopyIIt: auto = next();
-            let mut EvitableClobbers: SmallSetVector<MachineInstr *, 4> = zeroed();
-            let mut CopyI: *mut MachineInstr = operator*();
+    let mut Copies: SmallSetVector<MachineInstr *, 4> = SmallSetVector<MachineInstr *, 4> {};
+    let mut RPOT: ReversePostOrderTraversal<MachineFunction *> = &mut MF;
+    for MBB in RPOT {
+        for MI in *MBB {
+            if MI.getOpcode() == COPY && MI.getOperand(0).getReg() == EFLAGS {
+                Copies.insert(&mut MI);
+            }
+        }
+    }
+    if self.Subtarget.hasNF() {
+        let mut RemovedCopies: SmallSetVector<MachineInstr *, 4> = SmallSetVector<MachineInstr *, 4> {};
+        let mut CopyIIt: iterator = Copies.begin();
+        let mut CopyIEnd: iterator = Copies.end();
+        while CopyIIt != CopyIEnd {
+            let mut NCopyIIt: *MachineInstr *const = next(CopyIIt, 1);
+            let mut EvitableClobbers: SmallSetVector<MachineInstr *, 4> = SmallSetVector<MachineInstr *, 4> {};
+            let mut CopyI: *mut MachineInstr = *CopyIIt;
             let mut VOp: *mut MachineOperand = CopyI.getOperand(1);
             let mut CopyDefI: *mut MachineInstr = self.MRI.getVRegDef(VOp.getReg());
             let mut CopyIMBB: *mut MachineBasicBlock = CopyI.getParent();
             let mut CopyDefIMBB: *mut MachineBasicBlock = CopyDefI.getParent();
-            for let mut BI: auto = idf_begin(CopyIMBB);
-let mut BE: auto = idf_end(CopyDefIMBB); BI() != ;  += 1 {
-                let mut MBB: *mut MachineBasicBlock = operator*();
-                for let mut I: auto = if (MBB != CopyDefIMBB) { MBB.begin() } else { next(iterator { CopyDefI }) };
-let mut E: auto = if (MBB != CopyIMBB) { MBB.end() } else { iterator { CopyI } }; I() != ;  += 1 {
-                    let mut MI: *mut MachineInstr = operator*();
+            for let mut BI: MachineBasicBlock *> = idf_begin(CopyIMBB);
+let mut BE: MachineBasicBlock *> = idf_end(CopyDefIMBB); BI != BE; operator(BI) {
+                let mut MBB: *mut MachineBasicBlock = operator(BI);
+                for let mut I: MachineInstr> = if (MBB != CopyDefIMBB) { MBB.begin() } else { next(CopyDefI, 1) };
+let mut E: iterator = if (MBB != CopyIMBB) { MBB.end() } else { CopyI }; I != E; operator(I) {
+                    let mut MI: *mut MachineInstr = operator(I);
                     let mut ClobberType: EFLAGSClobber = getClobberType(MI);
                     if ClobberType == NoClobber {
                         continue;
@@ -202,43 +212,242 @@ let mut E: auto = if (MBB != CopyIMBB) { MBB.end() } else { iterator { CopyI } }
                         
                     }
                     assert!(ClobberType == EvitableClobber, "unexpected workflow");
-                    EvitableClobbers()(&mut MI);
+                    EvitableClobbers.insert(&mut MI);
                 }
             }
-            RemovedCopies()(CopyI);
+            RemovedCopies.insert(CopyI);
             CopyI.eraseFromParent();
             if self.MRI.use_nodbg_empty(CopyDefI.getOperand(0).getReg()) {
-                RemovedCopies()(CopyDefI);
+                RemovedCopies.insert(CopyDefI);
                 CopyDefI.eraseFromParent();
             }
             operator(NumCopiesEliminated);
-            for let mut BI: auto = idf_begin(CopyIMBB);
-let mut BE: auto = idf_end(CopyDefIMBB); BI() != ;  += 1 {
-                if operator*() != CopyDefIMBB {
-                    BI();
+            for Clobber in EvitableClobbers {
+                let mut NewOpc: u32 = getNFVariant(Clobber.getOpcode());
+                assert!(NewOpc, "evitable clobber must have a NF variant");
+                Clobber.setDesc(self.TII.get(NewOpc));
+                Clobber.removeOperand(Clobber.findRegisterDefOperand(EFLAGS, null, false, false).getOperandNo());
+                operator(NumNFsConvertedTo);
+            }
+            for let mut BI: MachineBasicBlock *> = idf_begin(CopyIMBB);
+let mut BE: MachineBasicBlock *> = idf_end(CopyDefIMBB); BI != BE; operator(BI) {
+                if operator(BI) != CopyDefIMBB {
+                    operator(BI).addLiveIn(EFLAGS, getAll());
                 }
             }
-            CopyIIt() = ;
+            CopyIIt = NCopyIIt;
         }
-        Copies()();
+        Copies.set_subtract(RemovedCopies);
+    }
+    for CopyI in Copies {
+        let mut MBB: *mut MachineBasicBlock = *CopyI.getParent();
+        let mut VOp: *mut MachineOperand = CopyI.getOperand(1);
+        assert!(VOp.isReg(), "The input to the copy for EFLAGS should always be a register!");
+        let mut CopyDefI: *mut MachineInstr = *self.MRI.getVRegDef(VOp.getReg());
+        if CopyDefI.getOpcode() != COPY {
+            while true {
+                {
+                if DebugFlag && isCurrentDebugType("x86-flags-copy-lowering", 1) {
+                    dbgs() << "ERROR: Encountered unexpected def of an eflags copy: ";
+                    CopyDefI.dump();
+                }
+            }
+                if !(false) { break; }
+            }
+            report_fatal_error("Cannot lower EFLAGS copy unless it is defined in turn by a copy!", true);
+        }
+        let mut Cleanup: Closure_4 = Closure_4 { CopyI: &mut CopyI, cap_1: self, CopyDefI: &mut CopyDefI };
+        let mut DOp: *mut MachineOperand = CopyI.getOperand(0);
+        assert!(DOp.isDef(), "Expected register def!");
+        assert!(DOp.getReg() == EFLAGS, "Unexpected copy def register!");
+        if DOp.isDead() {
+            continue;
+        }
+        let mut TestMBB: *mut MachineBasicBlock = CopyDefI.getParent();
+        let mut TestPos: self_iterator = CopyDefI.getIterator();
+        let mut TestLoc: DebugLoc = CopyDefI.getDebugLoc();
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-flags-copy-lowering", 1) {
+                dbgs() << "Rewriting copy: ";
+                CopyI.dump();
+            }
+        }
+            if !(false) { break; }
+        }
+        let mut HasEFLAGSClobber: Closure_5 = Closure_5 { CopyI: &mut CopyI };
+        let mut HasEFLAGSClobberPath: Closure_7 = Closure_7 { cap_0: self, HasEFLAGSClobber: &mut HasEFLAGSClobber };
+        while TestMBB.isLiveIn(EFLAGS, getAll()) && !TestMBB.pred_empty() && !HasEFLAGSClobber.call(TestMBB.begin(), TestPos) {
+            let mut HoistMBB: *mut MachineBasicBlock = accumulate(next(TestMBB.pred_begin(), 1), TestMBB.pred_end(), *TestMBB.pred_begin(), Closure_8 { cap_0: self });
+            if HasEFLAGSClobberPath.call(HoistMBB, TestMBB) {
+                break;
+            }
+            if HasEFLAGSClobber.call(operator(HoistMBB.getFirstTerminator()).getIterator(), HoistMBB.instr_end()) {
+                break;
+            }
+            TestMBB = HoistMBB;
+            TestPos = operator(TestMBB.getFirstTerminator()).getIterator();
+            TestLoc = DebugLoc { Loc: null };
+        }
+        while true {
+            {
+            if DebugFlag && isCurrentDebugType("x86-flags-copy-lowering", 1) {
+                {
+                    let mut DefIt: MachineInstr, true, true, void, false, void>, false, false>> = find_if(reverse(make_range(TestMBB.instr_begin(), TestPos)), Closure_9 {});
+                    if DefIt.base() != TestMBB.instr_begin() {
+                        dbgs() << "  Using EFLAGS defined by: ";
+                        operator(DefIt).dump();
+                    } else {
+                        dbgs() << "  Using live-in flags for BB:\n";
+                        TestMBB.dump();
+                    }
+                }
+            }
+        }
+            if !(false) { break; }
+        }
+        let mut JmpIs: SmallVector<MachineInstr *, 4> = SmallVector<MachineInstr *, 4> {};
+        let mut CondRegs: CondRegArray = self.collectCondsInRegs(*TestMBB, TestPos);
+        let mut Blocks: SmallVector<MachineBasicBlock *, 2> = SmallVector<MachineBasicBlock *, 2> {};
+        let mut VisitedBlocks: SmallPtrSet<MachineBasicBlock *, 2> = SmallPtrSet<MachineBasicBlock *, 2> {};
+        Blocks.push(&mut MBB);
+        while true {
+            {
+            let mut UseMBB: *mut MachineBasicBlock = *Blocks.pop_back_val();
+            let mut FlagsKilled: bool = false;
+            for let mut MII: MachineInstr, true, true, void, false, void>, false, false> = if (&mut UseMBB == &mut MBB && !VisitedBlocks.count(&mut UseMBB)) { next(CopyI.getIterator(), 1) } else { UseMBB.instr_begin() };
+let mut MIE: instr_iterator = UseMBB.instr_end(); MII != MIE;  {
+                let mut MI: *mut MachineInstr = operator(operator(MII, 0));
+                if &mut MI == CopyI || &mut MI == &mut CopyDefI {
+                    assert!(&mut UseMBB == &mut MBB && VisitedBlocks.count(&mut MBB), "Should only encounter these on the second pass over the original block.");
+                    break;
+                }
+                let mut FlagUse: *mut MachineOperand = MI.findRegisterUseOperand(EFLAGS, null, false);
+                FlagsKilled = MI.modifiesRegister(EFLAGS, self.TRI);
+                if !FlagUse && FlagsKilled {
+                    break;
+                } else if !FlagUse {
+                    continue;
+                }
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("x86-flags-copy-lowering", 1) {
+                        dbgs() << "  Rewriting use: ";
+                        MI.dump();
+                    }
+                }
+                    if !(false) { break; }
+                }
+                if FlagUse.isKill() {
+                    FlagsKilled = true;
+                }
+                if getCondFromBranch(MI) != COND_INVALID {
+                    let mut JmpIt: self_iterator = MI.getIterator();
+                    while true {
+                        {
+                        JmpIs.push(&mut operator(JmpIt));
+                        operator(JmpIt);
+                    }
+                        if !(JmpIt != UseMBB.instr_end() && getCondFromBranch(operator(JmpIt)) != COND_INVALID) { break; }
+                    }
+                    break;
+                }
+                let mut Opc: u32 = MI.getOpcode();
+                if Opc == COPY {
+                    self.MRI.replaceRegWith(MI.getOperand(0).getReg(), CopyDefI.getOperand(0).getReg());
+                    MI.eraseFromParent();
+                } else if isSETCC(Opc) || isSETZUCC(Opc) {
+                    self.rewriteSetCC(*TestMBB, TestPos, TestLoc, MI, CondRegs);
+                } else if isArithmeticOp(Opc) {
+                    self.rewriteArithmetic(*TestMBB, TestPos, TestLoc, MI, CondRegs);
+                } else {
+                    self.rewriteMI(*TestMBB, TestPos, TestLoc, MI, CondRegs);
+                }
+                if FlagsKilled {
+                    break;
+                }
+            }
+            if FlagsKilled {
+                continue;
+            }
+            for SuccMBB in UseMBB.successors() {
+                if SuccMBB.isLiveIn(EFLAGS, getAll()) && VisitedBlocks.insert(SuccMBB).second {
+                    if SuccMBB == TestMBB || !self.MDT.dominates(TestMBB, SuccMBB) {
+                        while true {
+                            {
+                            if DebugFlag && isCurrentDebugType("x86-flags-copy-lowering", 1) {
+                                {
+                                    dbgs() << "ERROR: Encountered use that is not dominated by our test basic block! Rewriting this would require inserting PHI nodes to track the flag state across the CFG.\n\nTest block:\n";
+                                    TestMBB.dump();
+                                    dbgs() << "Use block:\n";
+                                    SuccMBB.dump();
+                                }
+                            }
+                        }
+                            if !(false) { break; }
+                        }
+                        report_fatal_error("Cannot lower EFLAGS copy when original copy def does not dominate all uses.", true);
+                    }
+                    Blocks.push(SuccMBB);
+                    SuccMBB.removeLiveIn(EFLAGS, getAll());
+                }
+            }
+        }
+            if !(!Blocks.is_empty()) { break; }
+        }
+        let mut LastJmpMBB: *mut MachineBasicBlock = null;
+        for JmpI in JmpIs {
+            if JmpI.getParent() == LastJmpMBB {
+                splitBlock(*JmpI.getParent(), *JmpI, *self.TII);
+            } else {
+                LastJmpMBB = JmpI.getParent();
+            }
+            self.rewriteMI(*TestMBB, TestPos, TestLoc, *JmpI, CondRegs);
+        }
+    }
+    for MBB in depth_first(&mut MF) {
+        for MI in *MBB {
+            if MI.getOpcode() == COPY && (MI.getOperand(0).getReg() == EFLAGS || MI.getOperand(1).getReg() == EFLAGS) {
+                while true {
+                    {
+                    if DebugFlag && isCurrentDebugType("x86-flags-copy-lowering", 1) {
+                        dbgs() << "ERROR: Found a COPY involving EFLAGS: ";
+                        MI.dump();
+                    }
+                }
+                    if !(false) { break; }
+                }
+                llvm_unreachable_internal("Unlowered EFLAGS copy!", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86FlagsCopyLowering.cpp", 712);
+            }
+        }
     }
     return true;
 }
 
 fn X86FlagsCopyLoweringImpl::collectCondsInRegs(self, MBB: *mut MachineBasicBlock, TestPos: iterator) -> CondRegArray {
-    let mut CondRegs: CondRegArray = zeroed();
-    return ;
+    let mut CondRegs: CondRegArray = CondRegArray { [16]Register {} };
+    for MI in reverse(make_range(MBB.begin(), TestPos)) {
+        let mut Cond: CondCode = getCondFromSETCC(MI);
+        if Cond != COND_INVALID && !MI.mayStore(AnyInBundle) && MI.getOperand(0).isReg() && MI.getOperand(0).getReg().isVirtual() {
+            assert!(MI.getOperand(0).isDef(), "A non-storing SETcc should always define a register!");
+            CondRegs[Cond] = MI.getOperand(0).getReg();
+        }
+        if MI.findRegisterDefOperand(EFLAGS, null, false, false) {
+            break;
+        }
+    }
+    return CondRegs;
 }
 
 fn X86FlagsCopyLoweringImpl::promoteCondToReg(self, TestMBB: *mut MachineBasicBlock, TestPos: iterator, TestLoc: *DebugLoc, Cond: CondCode) -> Register {
     let mut Reg: Register = self.MRI.createVirtualRegister(self.PromoteRC, "");
-    let mut SetI: auto = BuildMI(TestMBB, TestPos, TestLoc, self.TII, Reg)(Cond);
-     as void;
+    let mut SetI: MachineInstrBuilder = BuildMI(TestMBB, TestPos, MIMetadata { DL: TestLoc, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(if (!self.Subtarget.hasZU() || self.Subtarget.preferLegacySetCC()) { SETCCr } else { SETZUCCr }), Reg).addImm(Cond);
+    SetI as void;
     while true {
         {
         if DebugFlag && isCurrentDebugType("x86-flags-copy-lowering", 1) {
             dbgs() << "    save cond: ";
-            SetI()();
+            operator(SetI).dump();
         }
     }
         if !(false) { break; }
@@ -248,26 +457,26 @@ fn X86FlagsCopyLoweringImpl::promoteCondToReg(self, TestMBB: *mut MachineBasicBl
 }
 
 fn X86FlagsCopyLoweringImpl::getCondOrInverseInReg(self, TestMBB: *mut MachineBasicBlock, TestPos: iterator, TestLoc: *DebugLoc, Cond: CondCode, CondRegs: *mut CondRegArray) -> pair<Register, bool> {
-    let mut CondReg: *mut Register = null;
-    let mut InvCondReg: *mut Register = null;
+    let mut CondReg: *mut Register = CondRegs[Cond];
+    let mut InvCondReg: *mut Register = CondRegs[GetOppositeBranchCondition(Cond)];
     if !CondReg.operator unsigned int() && !InvCondReg.operator unsigned int() {
-        CondReg = self.promoteCondToReg(TestMBB, iterator { TestPos }, TestLoc, Cond);
+        CondReg = self.promoteCondToReg(TestMBB, TestPos, TestLoc, Cond);
     }
     if CondReg.operator unsigned int() {
-        return void { CondReg, false };
+        return pair<Register, bool> { CondReg, false };
     } else {
-        return void { InvCondReg, true };
+        return pair<Register, bool> { InvCondReg, true };
     }
 }
 
 fn X86FlagsCopyLoweringImpl::insertTest(self, MBB: *mut MachineBasicBlock, Pos: iterator, Loc: *DebugLoc, Reg: Register) {
-    let mut TestI: auto = BuildMI(MBB, Pos, Loc, self.TII)(Reg)(Reg);
-     as void;
+    let mut TestI: MachineInstrBuilder = BuildMI(MBB, Pos, MIMetadata { DL: Loc, PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(TEST8rr)).addReg(Reg, RegState {}, 0).addReg(Reg, RegState {}, 0);
+    TestI as void;
     while true {
         {
         if DebugFlag && isCurrentDebugType("x86-flags-copy-lowering", 1) {
             dbgs() << "    test cond: ";
-            TestI()();
+            operator(TestI).dump();
         }
     }
         if !(false) { break; }
@@ -277,9 +486,9 @@ fn X86FlagsCopyLoweringImpl::insertTest(self, MBB: *mut MachineBasicBlock, Pos: 
 
 fn X86FlagsCopyLoweringImpl::rewriteSetCC(self, MBB: *mut MachineBasicBlock, Pos: iterator, Loc: *DebugLoc, MI: *mut MachineInstr, CondRegs: *mut CondRegArray) {
     let mut Cond: CondCode = getCondFromSETCC(MI);
-    let mut CondReg: *mut Register = null;
+    let mut CondReg: *mut Register = CondRegs[Cond];
     if !CondReg.operator unsigned int() {
-        CondReg = self.promoteCondToReg(MBB, iterator { Pos }, Loc, Cond);
+        CondReg = self.promoteCondToReg(MBB, Pos, Loc, Cond);
     }
     if !MI.mayStore(AnyInBundle) {
         assert!(MI.getOperand(0).isReg(), "Cannot have a non-register defined operand to SETcc!");
@@ -289,42 +498,66 @@ fn X86FlagsCopyLoweringImpl::rewriteSetCC(self, MBB: *mut MachineBasicBlock, Pos
         MI.eraseFromParent();
         return;
     }
-    let mut MIB: auto = BuildMI(*MI.getParent(), MI.getIterator(), MI.getDebugLoc(), self.TII);
+    let mut MIB: MachineInstrBuilder = BuildMI(*MI.getParent(), MI.getIterator(), MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(MOV8mr));
     for let mut i: i32 = 0; i < AddrNumOperands; i += 1 {
-        MIB()(MI.getOperand(i));
+        MIB.add(MI.getOperand(i));
     }
-    MIB()(CondReg);
-    MIB()(MI.memoperands());
+    MIB.addReg(CondReg, RegState {}, 0);
+    MIB.setMemRefs(MI.memoperands());
     MI.eraseFromParent();
 }
 
 fn X86FlagsCopyLoweringImpl::rewriteArithmetic(self, MBB: *mut MachineBasicBlock, Pos: iterator, Loc: *DebugLoc, MI: *mut MachineInstr, CondRegs: *mut CondRegArray) {
     let mut Cond: CondCode = COND_B;
     let mut Addend: i32 = 255;
-    let mut CondReg: *mut Register = null;
+    let mut CondReg: *mut Register = CondRegs[Cond];
     if !CondReg.operator unsigned int() {
-        CondReg = self.promoteCondToReg(MBB, iterator { Pos }, Loc, Cond);
+        CondReg = self.promoteCondToReg(MBB, Pos, Loc, Cond);
     }
     let mut TmpReg: Register = self.MRI.createVirtualRegister(self.PromoteRC, "");
-    let mut AddI: auto = BuildMI(*MI.getParent(), MI.getIterator(), MI.getDebugLoc(), self.TII)(TmpReg, Dead)(CondReg)(Addend);
-     as void;
+    let mut AddI: MachineInstrBuilder = BuildMI(*MI.getParent(), MI.getIterator(), MIMetadata { DL: MI.getDebugLoc(), PCSections: null, MMRA: null, DeactivationSymbol: null }, self.TII.get(if self.Subtarget.hasNDD() { ADD8ri_ND } else { ADD8ri })).addDef(TmpReg, Dead, 0).addReg(CondReg, RegState {}, 0).addImm(Addend);
+    AddI as void;
     while true {
         {
         if DebugFlag && isCurrentDebugType("x86-flags-copy-lowering", 1) {
             dbgs() << "    add cond: ";
-            AddI()();
+            operator(AddI).dump();
         }
     }
         if !(false) { break; }
     }
     operator(NumAddsInserted);
-    MI(true);
+    MI.findRegisterUseOperand(EFLAGS, null, false).setIsKill(true);
 }
 
 fn getImplicitCondFromMI(Opc: u32) -> CondCode {
     match Opc {
         _ => {
             return COND_INVALID;
+        },
+        CMOVB_Fp32 => {
+            CMOVB_Fp64;
+        },
+        CMOVE_Fp32 => {
+            CMOVE_Fp64;
+        },
+        CMOVP_Fp32 => {
+            CMOVP_Fp64;
+        },
+        CMOVBE_Fp32 => {
+            CMOVBE_Fp64;
+        },
+        CMOVNB_Fp32 => {
+            CMOVNB_Fp64;
+        },
+        CMOVNE_Fp32 => {
+            CMOVNE_Fp64;
+        },
+        CMOVNP_Fp32 => {
+            CMOVNP_Fp64;
+        },
+        CMOVNBE_Fp32 => {
+            CMOVNBE_Fp64;
         },
     }
 }
@@ -333,7 +566,16 @@ fn getOpcodeWithCC(Opc: u32, CC: CondCode) -> u32 {
     assert!((CC == COND_E || CC == COND_NE), "Unexpected CC");
     match Opc {
         _ => {
-            llvm_unreachable_internal("Unexpected opcode", "llvm\\lib\\Target\\X86\\X86FlagsCopyLowering.cpp", 891);
+            llvm_unreachable_internal("Unexpected opcode", "P:/Goraw/llvm-project/llvm/lib/Target/X86/X86FlagsCopyLowering.cpp", 891);
+        },
+        CMOVB_Fp32 => {
+            CMOVE_Fp32;
+        },
+        CMOVB_Fp64 => {
+            CMOVE_Fp64;
+        },
+        CMOVB_Fp80 => {
+            CMOVE_Fp80;
         },
     }
 }
@@ -346,16 +588,17 @@ fn X86FlagsCopyLoweringImpl::rewriteMI(self, MBB: *mut MachineBasicBlock, Pos: i
         IsImplicitCC = true;
     }
     assert!(CC != COND_INVALID, "Unknown EFLAG user!");
-    let mut CondReg: Register = Register { Reg: 0 };
+    let mut CondReg: Register = 0;
     let mut Inverted: bool = false;
-    self.insertTest(*MI.getParent(), iterator { MI.getIterator() }, MI.getDebugLoc(), CondReg);
+    tie(CondReg, Inverted) = self.getCondOrInverseInReg(MBB, Pos, Loc, CC, CondRegs);
+    self.insertTest(*MI.getParent(), MI.getIterator(), MI.getDebugLoc(), CondReg);
     let mut NewCC: CondCode = if Inverted { COND_E } else { COND_NE };
     if IsImplicitCC {
-        MI.setDesc(self.TII(getOpcodeWithCC(MI.getOpcode(), NewCC)));
+        MI.setDesc(self.TII.get(getOpcodeWithCC(MI.getOpcode(), NewCC)));
     } else {
         MI.getOperand(MI.getDesc().getNumOperands() - 1).setImm(NewCC);
     }
-    MI(true);
+    MI.findRegisterUseOperand(EFLAGS, null, false).setIsKill(true);
     while true {
         {
         if DebugFlag && isCurrentDebugType("x86-flags-copy-lowering", 1) {
@@ -368,27 +611,109 @@ fn X86FlagsCopyLoweringImpl::rewriteMI(self, MBB: *mut MachineBasicBlock, Pos: i
 }
 
 fn X86FlagsCopyLoweringLegacy::runOnMachineFunction(self, MF: *mut MachineFunction) -> bool {
-    let mut MDTWrapper: *mut auto = ;
-    let mut MDT: *mut MachineDominatorTree = if  { operator&() } else { null };
-    return X86FlagsCopyLoweringImpl { MDT }.runOnMachineFunction(MF);
+    let mut MDTWrapper: *mut MachineDominatorTreeWrapperPass = self.getAnalysisIfAvailable();
+    let mut MDT: *mut MachineDominatorTree = if MDTWrapper { &mut MDTWrapper.getDomTree() } else { null };
+    return MDT.runOnMachineFunction(MF);
 }
 
 fn X86FlagsCopyLoweringPass::run(self, MF: *mut MachineFunction, MFAM: *mut MachineFunctionAnalysisManager) -> PreservedAnalyses {
-    let mut MDT: *mut MachineDominatorTree = MFAM;
-    let mut Changed: bool = X86FlagsCopyLoweringImpl { MDT }.runOnMachineFunction(MF);
+    let mut MDT: *mut MachineDominatorTree = MFAM.getCachedResult(MF);
+    let mut Changed: bool = MDT.runOnMachineFunction(MF);
     return if Changed { all() } else { getMachineFunctionPassPreservedAnalyses() };
 }
+
+struct Closure_2 {
+    UnsplitSucc: *mut MachineBasicBlock,
+}
+
+unsafe fn Closure_2::call(self: *mut Closure_2, MOp: *mut MachineOperand) -> bool {
+            return MOp.isMBB() && MOp.getMBB() == &mut (*self.UnsplitSucc);
+        }
 
 struct Closure_1 {
     UnsplitSucc: *mut MachineBasicBlock,
 }
 
-unsafe fn Closure_1::call(self: *mut Closure_1, MI: *mut MachineInstr) -> auto {
+unsafe fn Closure_1::call(self: *mut Closure_1, MI: *mut MachineInstr) -> bool {
         assert!(MI.isTerminator(AnyInBundle), "Should only have spliced terminators!");
+        return any_of(MI.operands(), Closure_2 { UnsplitSucc: &mut (*self.UnsplitSucc) });
     }
 
-struct Closure_2 {}
+struct Closure_3 {}
 
-fn Closure_2::call(self: *Closure_2, MI: *MachineInstr) -> bool {
+fn Closure_3::call(self: *Closure_3, MI: *MachineInstr) -> bool {
         return MI.getOpcode() == COPY;
     }
+
+struct Closure_4 {
+    CopyI: *mut *mut MachineInstr,
+    cap_1: *mut X86FlagsCopyLoweringImpl,
+    CopyDefI: *mut MachineInstr,
+}
+
+unsafe fn Closure_4::call(self: *mut Closure_4) -> auto {
+            (*self.CopyI).eraseFromParent();
+            if self.MRI.use_empty((*self.CopyDefI).getOperand(0).getReg()) {
+                (*self.CopyDefI).eraseFromParent();
+            }
+            operator(NumCopiesEliminated);
+        }
+
+struct Closure_6 {
+    CopyI: *mut *mut MachineInstr,
+}
+
+unsafe fn Closure_6::call(self: *mut Closure_6, MI: *mut MachineInstr) -> bool {
+                return &mut MI != (*self.CopyI) && MI.findRegisterDefOperand(EFLAGS, null, false, false);
+            }
+
+struct Closure_5 {
+    CopyI: *mut *mut MachineInstr,
+}
+
+unsafe fn Closure_5::call(self: *mut Closure_5, Begin: iterator, End: iterator) -> bool {
+            return any_of(reverse(make_range(Begin, End)), Closure_6 { CopyI: &mut (*self.CopyI) });
+        }
+
+struct Closure_7 {
+    cap_0: *mut X86FlagsCopyLoweringImpl,
+    HasEFLAGSClobber: *mut (lambda at P:\Goraw\llvm-project\llvm\lib\Target\X86\X86FlagsCopyLowering.cpp:457:29),
+}
+
+unsafe fn Closure_7::call(self: *mut Closure_7, BeginMBB: *mut MachineBasicBlock, EndMBB: *mut MachineBasicBlock) -> bool {
+            assert!(self.MDT.dominates(BeginMBB, EndMBB), "Only support paths down the dominator tree!");
+            let mut Visited: SmallPtrSet<MachineBasicBlock *, 4> = SmallPtrSet<MachineBasicBlock *, 4> {};
+            let mut Worklist: SmallVector<MachineBasicBlock *, 4> = SmallVector<MachineBasicBlock *, 4> {};
+            Visited.insert(BeginMBB);
+            Worklist.push(EndMBB);
+            while true {
+                {
+                let mut MBB: *mut MachineBasicBlock = Worklist.pop_back_val();
+                for PredMBB in MBB.predecessors() {
+                    if !Visited.insert(PredMBB).second {
+                        continue;
+                    }
+                    if (*self.HasEFLAGSClobber).call(PredMBB.begin(), PredMBB.end()) {
+                        return true;
+                    }
+                    Worklist.push(PredMBB);
+                }
+            }
+                if !(!Worklist.is_empty()) { break; }
+            }
+            return false;
+        }
+
+struct Closure_8 {
+    cap_0: *mut X86FlagsCopyLoweringImpl,
+}
+
+fn Closure_8::call(self: *Closure_8, LHS: *mut MachineBasicBlock, RHS: *mut MachineBasicBlock) -> *mut MachineBasicBlock {
+                return self.MDT.findNearestCommonDominator(LHS, RHS);
+            }
+
+struct Closure_9 {}
+
+fn Closure_9::call(self: *Closure_9, MI: *mut MachineInstr) -> *mut MachineOperand {
+                        return MI.findRegisterDefOperand(EFLAGS, null, false, false);
+                    }
