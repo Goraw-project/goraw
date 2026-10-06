@@ -610,6 +610,12 @@ fn top_level_first_arg(inner: &str) -> &str {
 pub fn map_cpp_type(qual_type: &str, desugared: Option<&str>) -> String {
     let mut s = qual_type.trim();
 
+    // Безымянные типы Clang: лямбды, анонимные struct/enum -> непрозрачный байт
+    // (замыкания capture'ятся по ссылке как *mut u8; точный Closure_N — Фаза 2).
+    if s.contains("(lambda at") || s.contains("(unnamed") || s.contains("(anonymous") {
+        return "u8".to_string();
+    }
+
     // Префиксы
     if let Some(stripped) = s.strip_prefix("const ") {
         s = stripped.trim();
