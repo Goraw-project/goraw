@@ -630,6 +630,15 @@ pub fn map_cpp_type(qual_type: &str, desugared: Option<&str>) -> String {
         s = stripped.trim();
     }
 
+    // const-указатель: `T *const` / `T * const` -> трактуем как `T *`
+    // (иначе получался невалидный `*mut T const` / `[N]T *const const`).
+    if let Some(without) = s.strip_suffix("const") {
+        let w = without.trim_end();
+        if w.ends_with('*') {
+            s = w;
+        }
+    }
+
     // Указатели и ссылки
     if s.ends_with('*') {
         let base = s[..s.len() - 1].trim();
@@ -1034,7 +1043,10 @@ fn lift_global_var_decl(node: &Value, ctx: &mut TranspilerContext) -> Option<Str
         default_value_for_type(&mapped_ty)
     };
 
-    if is_const {
+    // `const` в Goraw требует КОНСТАНТНОГО выражения. Если инициализатор —
+    // вызов/zeroed()/непостоянное выражение, понижаем до `static mut`.
+    let init_is_const = !init_str.contains('(') || init_str.starts_with('"');
+    if is_const && init_is_const {
         Some(format!("const {name}: {mapped_ty} = {init_str};"))
     } else {
         Some(format!("static mut {name}: {mapped_ty} = {init_str};"))
@@ -1060,24 +1072,10 @@ fn lift_function_decl(node: &Value, ctx: &mut TranspilerContext) -> Option<Strin
         return None;
     }
 
-    // Операторы C++ переименовываем в идиоматичные функции
-    if let Some(op) = name.strip_prefix("operator") {
-        name = match op.trim() {
-            "+" => "op_add".to_string(),
-            "-" => "op_sub".to_string(),
-            "*" => "op_mul".to_string(),
-            "/" => "op_div".to_string(),
-            "%" => "op_rem".to_string(),
-            "==" => "op_eq".to_string(),
-            "!=" => "op_ne".to_string(),
-            "<" => "op_lt".to_string(),
-            ">" => "op_gt".to_string(),
-            "<=" => "op_le".to_string(),
-            ">=" => "op_ge".to_string(),
-            "[]" => "op_index".to_string(),
-            "()" => "op_call".to_string(),
-            _ => format!("op_{}", op.trim().replace(' ', "_")),
-        };
+    // Операторы C++ -> идиоматичные имена (единая таблица sanitize_member_name:
+    // покрывает <<, >>, ==, составные и conversion — старая таблица давала `op_<<`).
+    if name.starts_with("operator") {
+        name = sanitize_member_name(&name);
     }
 
     let qual_type = node.get("type")?.get("qualType")?.as_str()?;
