@@ -1619,6 +1619,17 @@ fn lift_stmt(node: &Value, ctx: &mut TranspilerContext) -> Option<String> {
                 String::new()
             };
 
+            // Мультиinit (`for (int i=0, e=n; ...)`) даёт несколько объявлений в
+            // init — Goraw держит в init только одно. Лишние выносим перед циклом.
+            if init_str.contains(';') {
+                let parts: Vec<String> = init_str
+                    .split(';')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let prefix: String = parts.iter().map(|s| format!("{indent}{s};\n")).collect();
+                return Some(format!("{prefix}{indent}for ; {cond_str}; {inc_str} {body_str}"));
+            }
             Some(format!("{indent}for {init_str}; {cond_str}; {inc_str} {body_str}"))
         }
         "CXXForRangeStmt" => {
