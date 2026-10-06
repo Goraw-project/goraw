@@ -1952,8 +1952,8 @@ fn lift_expr(node: &Value, ctx: &mut TranspilerContext) -> String {
             }
             if let Some(inner) = node.get("inner").and_then(|i| i.as_array()) {
                 if inner.len() >= 2 {
-                    let lhs = lift_expr(&inner[0], ctx);
-                    let rhs = lift_expr(&inner[1], ctx);
+                    let lhs = lift_or(&inner[0], ctx, "0");
+                    let rhs = lift_or(&inner[1], ctx, "0");
                     return format!("{lhs} {opcode} {rhs}");
                 }
             }
@@ -1965,8 +1965,8 @@ fn lift_expr(node: &Value, ctx: &mut TranspilerContext) -> String {
             let opcode = node.get("opcode").and_then(|o| o.as_str()).unwrap_or("+=");
             if let Some(inner) = node.get("inner").and_then(|i| i.as_array()) {
                 if inner.len() >= 2 {
-                    let lhs = lift_expr(&inner[0], ctx);
-                    let rhs = lift_expr(&inner[1], ctx);
+                    let lhs = lift_or(&inner[0], ctx, "_tmp");
+                    let rhs = lift_or(&inner[1], ctx, "0");
                     return format!("{lhs} {opcode} {rhs}");
                 }
             }
@@ -1979,7 +1979,8 @@ fn lift_expr(node: &Value, ctx: &mut TranspilerContext) -> String {
             let _is_postfix = node.get("isPostfix").and_then(|b| b.as_bool()).unwrap_or(false);
             if let Some(inner) = node.get("inner").and_then(|i| i.as_array()) {
                 if let Some(sub) = inner.first() {
-                    let sub_str = lift_expr(sub, ctx);
+                    let fallback = match opcode { "!" => "false", "*" | "&" => "null", _ => "0" };
+                    let sub_str = lift_or(sub, ctx, fallback);
                     return match opcode {
                         "++" => format!("{sub_str} += 1"),
                         "--" => format!("{sub_str} -= 1"),
@@ -2350,7 +2351,8 @@ fn lift_cxx_operator_call_expr(node: &Value, ctx: &mut TranspilerContext) -> Str
     // Унарные перегруженные операторы (!x, -x, ~x, *x, &x, ++x, --x, operator bool).
     if inner.len() == 2 {
         if let Some(symbol) = op_name.strip_prefix("operator") {
-            let operand = lift_expr(&inner[1], ctx);
+            let fb = match symbol.trim() { "!" => "false", "*" | "&" => "null", _ => "0" };
+            let operand = lift_or(&inner[1], ctx, fb);
             match symbol.trim() {
                 "!" => return format!("!{operand}"),
                 "-" => return format!("-{operand}"),
@@ -2368,8 +2370,8 @@ fn lift_cxx_operator_call_expr(node: &Value, ctx: &mut TranspilerContext) -> Str
     // Обычные перегруженные бинарные операторы
     if inner.len() >= 3 {
         if let Some(symbol) = op_name.strip_prefix("operator") {
-            let lhs = lift_expr(&inner[1], ctx);
-            let rhs = lift_expr(&inner[2], ctx);
+            let lhs = lift_or(&inner[1], ctx, "0");
+            let rhs = lift_or(&inner[2], ctx, "0");
             let s = symbol.trim();
             match s {
                 "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<" | ">" | "<=" | ">=" | "&&" | "||" | "&" | "|" | "^" | "<<" | ">>" | "=" => {
@@ -2557,6 +2559,14 @@ fn non_struct_default(sname: &str) -> Option<String> {
         return Some(default_value_for_type(sname));
     }
     None
+}
+
+/// Лифт подвыражения с защитой от пустоты: при частичном AST (recovery-узлы)
+/// подвыражение может лифтнуться в "" и сломать парс (`!`, `-= 1`). Подставляем
+/// валидный placeholder, чтобы файл всё же парсился (семантика — Фаза 2).
+fn lift_or(node: &Value, ctx: &mut TranspilerContext, fallback: &str) -> String {
+    let s = lift_expr(node, ctx);
+    if s.trim().is_empty() { fallback.to_string() } else { s }
 }
 
 fn lift_init_list_or_construct(node: &Value, ctx: &mut TranspilerContext) -> String {
