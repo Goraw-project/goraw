@@ -2341,6 +2341,24 @@ fn lift_cxx_operator_call_expr(node: &Value, ctx: &mut TranspilerContext) -> Str
         return format!("{receiver}.call({})", args.join(", "));
     }
 
+    // Унарные перегруженные операторы (!x, -x, ~x, *x, &x, ++x, --x, operator bool).
+    if inner.len() == 2 {
+        if let Some(symbol) = op_name.strip_prefix("operator") {
+            let operand = lift_expr(&inner[1], ctx);
+            match symbol.trim() {
+                "!" => return format!("!{operand}"),
+                "-" => return format!("-{operand}"),
+                "~" => return format!("~{operand}"),
+                "*" => return format!("(*{operand})"),
+                "&" => return format!("&{operand}"),
+                "++" => return format!("{operand} + 1"),
+                "--" => return format!("{operand} - 1"),
+                "bool" => return operand,
+                _ => {}
+            }
+        }
+    }
+
     // Обычные перегруженные бинарные операторы
     if inner.len() >= 3 {
         if let Some(symbol) = op_name.strip_prefix("operator") {
@@ -2351,6 +2369,9 @@ fn lift_cxx_operator_call_expr(node: &Value, ctx: &mut TranspilerContext) -> Str
                 "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<" | ">" | "<=" | ">=" | "&&" | "||" | "&" | "|" | "^" | "<<" | ">>" | "=" => {
                     return format!("{lhs} {s} {rhs}");
                 }
+                "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" => {
+                    return format!("{lhs} {s} {rhs}");
+                }
                 "[]" => {
                     return format!("{lhs}[{rhs}]");
                 }
@@ -2359,10 +2380,15 @@ fn lift_cxx_operator_call_expr(node: &Value, ctx: &mut TranspilerContext) -> Str
         }
     }
 
-    // Фолбэк как обычный вызов функции
-    let func_name = inner[0].get("name").and_then(|n| n.as_str()).unwrap_or("operator");
-    let args: Vec<String> = inner[1..].iter().map(|arg| lift_expr(arg, ctx)).collect();
-    format!("{func_name}({})", args.join(", "))
+    // Фолбэк: вызов метода с валидным именем (operator X -> op_* / to_bool / ...).
+    let receiver = lift_expr(&inner[1], ctx);
+    let method = sanitize_member_name(op_name);
+    let args: Vec<String> = inner[2..].iter().map(|arg| lift_expr(arg, ctx)).collect();
+    if receiver.trim().is_empty() {
+        format!("{method}({})", args.join(", "))
+    } else {
+        format!("{receiver}.{method}({})", args.join(", "))
+    }
 }
 
 /// Генерация вызова printf из потокового вывода std::cout / std::cerr.
