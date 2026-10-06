@@ -42,6 +42,32 @@ pub struct TranspilerContext<'a> {
     /// Уже эмитированные имена типов (struct/enum) — для дедупа одноимённых
     /// типов из разных namespace (после стрипа квалификаторов они совпадают).
     pub emitted_types: HashSet<String>,
+    /// Имена типов, на которые ссылаются поля (для forward-заглушек в all-types).
+    pub referenced_types: HashSet<String>,
+}
+
+/// Базовое имя типа из строки Goraw-типа (снимает `*mut `/`*`/`[]`/`[N]`),
+/// возвращает Some только для «голого» идентификатора (не примитива).
+fn base_type_name(ty: &str) -> Option<String> {
+    let mut t = ty.trim();
+    loop {
+        if let Some(r) = t.strip_prefix("*mut ") { t = r.trim(); continue; }
+        if let Some(r) = t.strip_prefix('*') { t = r.trim(); continue; }
+        if let Some(r) = t.strip_prefix("[]") { t = r.trim(); continue; }
+        if t.starts_with('[') {
+            if let Some(idx) = t.find(']') { t = t[idx + 1..].trim(); continue; }
+        }
+        break;
+    }
+    // Только простой идентификатор
+    if t.is_empty() || !t.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return None;
+    }
+    match t {
+        "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f32" | "f64"
+        | "bool" | "void" | "str" => None,
+        _ => Some(t.to_string()),
+    }
 }
 
 /// Является ли декларация определением типа или namespace (для рекурсии в all-types).
@@ -65,6 +91,7 @@ impl<'a> TranspilerContext<'a> {
             id_to_struct_name: HashMap::new(),
             emit_all_types: std::env::var("GORAW_EMIT_ALL_TYPES").is_ok(),
             emitted_types: HashSet::new(),
+            referenced_types: HashSet::new(),
             defined_functions: HashSet::new(),
             current_struct: None,
             current_method_is_const: false,
@@ -219,9 +246,12 @@ pub fn transpile_cpp_ast(root: &Value, input_filename: &str) -> Result<String, S
 
     for decl in inner {
         let dkind = decl.get("kind").and_then(|k| k.as_str()).unwrap_or("");
-        if !is_from_input_file(decl, input_filename)
-            && !(ctx.emit_all_types && is_type_or_ns_decl(dkind))
-        {
+        if ctx.emit_all_types {
+            // Режим модуля типов: только определения типов/namespace, без функций.
+            if !is_type_or_ns_decl(dkind) {
+                continue;
+            }
+        } else if !is_from_input_file(decl, input_filename) {
             continue;
         }
 
@@ -233,9 +263,28 @@ pub fn transpile_cpp_ast(root: &Value, input_filename: &str) -> Result<String, S
     }
 
     // Синтезированные замыкания, корутины и вспомогательные структуры
-    for synth in &ctx.synthesized_top_level {
-        if !synth.trim().is_empty() {
-            top_level_code.push(synth.clone());
+    // (в режиме модуля типов не нужны — это реализация, не раскладка типов).
+    if !ctx.emit_all_types {
+        for synth in &ctx.synthesized_top_level {
+            if !synth.trim().is_empty() {
+                top_level_code.push(synth.clone());
+            }
+        }
+    }
+
+    // Режим модуля типов: forward-заглушки для типов, на которые ссылаются поля,
+    // но которые не определены (вложенные типы, LLVM-typedef'ы) -> `struct X {}`.
+    if ctx.emit_all_types {
+        let mut stubs: Vec<String> = ctx
+            .referenced_types
+            .iter()
+            .filter(|t| !ctx.emitted_types.contains(*t))
+            .cloned()
+            .collect();
+        stubs.sort();
+        if !stubs.is_empty() {
+            let block: String = stubs.iter().map(|t| format!("struct {t} {{}}\n")).collect();
+            top_level_code.push(format!("// forward-заглушки для неопределённых типов\n{block}"));
         }
     }
 
@@ -529,9 +578,12 @@ fn lift_top_level_decl(node: &Value, ctx: &mut TranspilerContext) -> Option<Stri
             if let Some(inner) = node.get("inner").and_then(|i| i.as_array()) {
                 for child in inner {
                     let ckind = child.get("kind").and_then(|k| k.as_str()).unwrap_or("");
-                    if is_from_input_file(child, ctx.input_filename)
-                        || (ctx.emit_all_types && is_type_or_ns_decl(ckind))
-                    {
+                    let keep = if ctx.emit_all_types {
+                        is_type_or_ns_decl(ckind)
+                    } else {
+                        is_from_input_file(child, ctx.input_filename)
+                    };
+                    if keep {
                         if let Some(c) = lift_top_level_decl(child, ctx) {
                             parts.push(c);
                         }
@@ -846,8 +898,9 @@ fn lift_record_decl(node: &Value, ctx: &mut TranspilerContext) -> Option<String>
     let mut own_method_names = HashSet::new();
 
     // Если есть уплощённые поля (включая унаследованные от базовых классов БЕЗ vtables)
-    if let Some(ftypes) = ctx.struct_field_types.get(&name) {
-        for (fname, ftype) in ftypes {
+    if let Some(ftypes) = ctx.struct_field_types.get(&name).cloned() {
+        for (fname, ftype) in &ftypes {
+            if let Some(bn) = base_type_name(ftype) { ctx.referenced_types.insert(bn); }
             fields.push(format!("    {fname}: {ftype},"));
         }
     } else {
@@ -860,6 +913,7 @@ fn lift_record_decl(node: &Value, ctx: &mut TranspilerContext) -> Option<String>
                         .and_then(|q| q.as_str())
                         .unwrap_or("i32");
                     let mapped_ty = map_cpp_type(ftype, None);
+                    if let Some(bn) = base_type_name(&mapped_ty) { ctx.referenced_types.insert(bn); }
                     fields.push(format!("    {fname}: {mapped_ty},"));
                 }
             }
