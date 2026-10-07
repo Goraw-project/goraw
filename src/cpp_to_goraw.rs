@@ -787,11 +787,15 @@ pub fn map_cpp_type(qual_type: &str, desugared: Option<&str>) -> String {
     if s.ends_with('*') {
         let base = s[..s.len() - 1].trim();
         let is_const = qual_type.contains("const ");
-        let clean_base = if base == "char" || base == "const char" {
+        let mut clean_base = if base == "char" || base == "const char" {
             "u8".to_string()
         } else {
             map_cpp_type(base, None)
         };
+        // Пустой/невалидный pointee (сложный шаблонный тип) -> непрозрачный байт.
+        if clean_base.trim().is_empty() {
+            clean_base = "u8".to_string();
+        }
         return if is_const {
             format!("*{clean_base}")
         } else {
