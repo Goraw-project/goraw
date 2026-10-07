@@ -44,6 +44,8 @@ pub struct TranspilerContext<'a> {
     pub emitted_types: HashSet<String>,
     /// Имена типов, на которые ссылаются поля (для forward-заглушек в all-types).
     pub referenced_types: HashSet<String>,
+    /// Уже эмитированные имена функций (для дедупа `extern fn`-сигнатур в all-types).
+    pub emitted_fns: HashSet<String>,
 }
 
 /// Базовое имя типа из строки Goraw-типа (снимает `*mut `/`*`/`[]`/`[N]`),
@@ -92,6 +94,7 @@ impl<'a> TranspilerContext<'a> {
             emit_all_types: std::env::var("GORAW_EMIT_ALL_TYPES").is_ok(),
             emitted_types: HashSet::new(),
             referenced_types: HashSet::new(),
+            emitted_fns: HashSet::new(),
             defined_functions: HashSet::new(),
             current_struct: None,
             current_method_is_const: false,
@@ -247,8 +250,8 @@ pub fn transpile_cpp_ast(root: &Value, input_filename: &str) -> Result<String, S
     for decl in inner {
         let dkind = decl.get("kind").and_then(|k| k.as_str()).unwrap_or("");
         if ctx.emit_all_types {
-            // Режим модуля типов: только определения типов/namespace, без функций.
-            if !is_type_or_ns_decl(dkind) {
+            // Режим модуля типов: типы/namespace + сигнатуры свободных функций.
+            if !is_type_or_ns_decl(dkind) && dkind != "FunctionDecl" {
                 continue;
             }
         } else if !is_from_input_file(decl, input_filename) {
@@ -569,7 +572,13 @@ fn lift_top_level_decl(node: &Value, ctx: &mut TranspilerContext) -> Option<Stri
         "RecordDecl" | "CXXRecordDecl" => lift_record_decl(node, ctx),
         "ClassTemplateDecl" => lift_class_template_decl(node, ctx),
         "EnumDecl" => lift_enum_decl(node, ctx),
-        "FunctionDecl" => lift_function_decl(node, ctx),
+        "FunctionDecl" => {
+            if ctx.emit_all_types {
+                lift_function_signature(node, ctx)
+            } else {
+                lift_function_decl(node, ctx)
+            }
+        }
         "CXXMethodDecl" | "CXXConstructorDecl" | "CXXDestructorDecl" => lift_out_of_line_method_decl(node, ctx),
         "FunctionTemplateDecl" => lift_function_template_decl(node, ctx),
         "VarDecl" => lift_global_var_decl(node, ctx),
@@ -579,7 +588,7 @@ fn lift_top_level_decl(node: &Value, ctx: &mut TranspilerContext) -> Option<Stri
                 for child in inner {
                     let ckind = child.get("kind").and_then(|k| k.as_str()).unwrap_or("");
                     let keep = if ctx.emit_all_types {
-                        is_type_or_ns_decl(ckind)
+                        is_type_or_ns_decl(ckind) || ckind == "FunctionDecl"
                     } else {
                         is_from_input_file(child, ctx.input_filename)
                     };
@@ -742,6 +751,9 @@ pub fn map_cpp_type(qual_type: &str, desugared: Option<&str>) -> String {
 
     // Префиксы
     if let Some(stripped) = s.strip_prefix("const ") {
+        s = stripped.trim();
+    }
+    if let Some(stripped) = s.strip_prefix("volatile ") {
         s = stripped.trim();
     }
     if let Some(stripped) = s.strip_prefix("struct ") {
@@ -1218,6 +1230,58 @@ fn lift_global_var_decl(node: &Value, ctx: &mut TranspilerContext) -> Option<Str
     } else {
         Some(format!("static mut {name}: {mapped_ty} = {init_str};"))
     }
+}
+
+/// Сигнатура свободной функции как `extern fn name(params) -> R;` (без тела) —
+/// для модуля типов (all-types), чтобы вызовы резолвились (E0071).
+fn lift_function_signature(node: &Value, ctx: &mut TranspilerContext) -> Option<String> {
+    let raw = node.get("name")?.as_str()?;
+    if raw.starts_with('_') || raw == "main" {
+        return None;
+    }
+    let name = if raw.starts_with("operator") {
+        sanitize_member_name(raw)
+    } else {
+        sanitize_ident_chars(raw)
+    };
+    // Дедуп (перегрузки C++ -> одно имя в Goraw; берём первую сигнатуру).
+    if !ctx.emitted_fns.insert(name.clone()) {
+        return None;
+    }
+    let qual_type = node.get("type")?.get("qualType")?.as_str()?;
+    let ret_type = extract_return_type_from_qual_type(qual_type);
+    if let Some(bn) = base_type_name(&ret_type) { ctx.referenced_types.insert(bn); }
+    let ret_suffix = if ret_type == "void" || ret_type.is_empty() {
+        String::new()
+    } else {
+        format!(" -> {ret_type}")
+    };
+    let mut params = Vec::new();
+    let mut variadic = false;
+    if let Some(inner) = node.get("inner").and_then(|i| i.as_array()) {
+        let mut idx = 0;
+        for child in inner {
+            match child.get("kind").and_then(|k| k.as_str()) {
+                Some("ParmVarDecl") => {
+                    let ptype = child.get("type").and_then(|t| t.get("qualType")).and_then(|q| q.as_str()).unwrap_or("i32");
+                    let pdes = child.get("type").and_then(|t| t.get("desugaredQualType")).and_then(|q| q.as_str());
+                    let pname = child.get("name").and_then(|n| n.as_str()).map(|s| sanitize_ident_chars(s)).unwrap_or_else(|| format!("a{idx}"));
+                    idx += 1;
+                    let pty = map_cpp_type(ptype, pdes);
+                    if let Some(bn) = base_type_name(&pty) { ctx.referenced_types.insert(bn); }
+                    params.push(format!("{pname}: {pty}"));
+                }
+                _ => {}
+            }
+        }
+    }
+    if qual_type.contains("...)") {
+        variadic = true;
+    }
+    if variadic {
+        params.push("...".to_string());
+    }
+    Some(format!("extern fn {name}({}){ret_suffix};", params.join(", ")))
 }
 
 /// Трансляция FunctionDecl.
