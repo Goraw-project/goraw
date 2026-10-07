@@ -212,7 +212,13 @@ impl<'a> Codegen<'a> {
         for s in &prog.statics {
             let ty = self.resolve(&s.ty);
             let sym = llvm_global(&format!("g.{}", s.name));
-            let init = match self.eval_const(&s.value, Some(&ty)) {
+            // `zeroed()` / `null` — валидная константа нуля для static (zero-init).
+            let is_zero_init = matches!(&s.value, Expr::Null(_))
+                || matches!(&s.value, Expr::Call { callee, args, .. }
+                    if args.is_empty() && matches!(&**callee, Expr::Ident(n, _) if n == "zeroed"));
+            let init = if is_zero_init {
+                self.zero_of(&ty)
+            } else { match self.eval_const(&s.value, Some(&ty)) {
                 Some(cv) => {
                     if !compat(&ty, &cv.ty()) && cv.ty() != Ty::Err && ty != Ty::Err {
                         self.err("E0088", s.value.span(), format!("инициализатор static типа `{}`, а объявлен `{}`", cv.ty().name(), ty.name()), None);
@@ -234,7 +240,7 @@ impl<'a> Codegen<'a> {
                     self.err("E0089", s.value.span(), format!("`static {}` требует константный инициализатор", s.name), None);
                     self.zero_of(&ty)
                 }
-            };
+            } };
             self.globals.push_str(&format!("{sym} = global {} {init}\n", ty.llvm()));
             self.statics.insert(s.name.clone(), (sym, ty));
         }
