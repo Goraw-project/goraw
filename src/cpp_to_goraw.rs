@@ -757,6 +757,11 @@ pub fn map_cpp_type(qual_type: &str, desugared: Option<&str>) -> String {
         s = stripped.trim();
     }
 
+    // Указатель на функцию/массив `R (*)(...)` / `T (*)[N]` -> непрозрачный указатель.
+    if s.contains("(*") {
+        return "*mut u8".to_string();
+    }
+
     // const-указатель: `T *const` / `T * const` -> трактуем как `T *`
     // (иначе получался невалидный `*mut T const` / `[N]T *const const`).
     if let Some(without) = s.strip_suffix("const") {
@@ -885,6 +890,9 @@ pub fn map_cpp_type(qual_type: &str, desugared: Option<&str>) -> String {
         "time_t" | "clock_t" | "_off_t" | "_off64_t" | "off_t" | "ptrdiff_t" | "intmax_t" => "i64".to_string(),
         "_ino_t" | "ino_t" | "uintmax_t" | "uint_least64_t" => "u64".to_string(),
         "_dev_t" | "dev_t" | "mode_t" | "errno_t" | "wint_t" | "char_type" => "u32".to_string(),
+        // Голые smart-pointer'ы/контейнеры без <...> -> непрозрачный указатель.
+        "unique_ptr" | "shared_ptr" | "weak_ptr" | "OwningPtr" | "IntrusiveRefCntPtr"
+        | "DenseMap" | "StringMap" | "SmallVector" | "SmallVectorImpl" | "function" => "*mut u8".to_string(),
         other => {
             // Если desugared доступен и отличается, пробуем его
             if let Some(desug) = desugared {
