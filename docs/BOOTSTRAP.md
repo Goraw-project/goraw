@@ -32,9 +32,11 @@
 B=/p/llvm-build; LP=/p/Goraw/llvm-project
 GEN="-I $B/include -I $B/tools/clang/include"
 INC="-I $B/tools/lld/COFF -I $LP/lld/COFF -I $LP/lld/include -I $LP/llvm/include"
-GORAW_EMIT_ALL_TYPES=1 goraw from-cpp $LP/lld/COFF/MarkLive.cpp -o types_lld.gw $GEN $INC
+goraw from-cpp $LP/lld/COFF/MarkLive.cpp --emit-types -o types_lld.gw $GEN $INC
 ```
-Затем в backend-`.gw`: `import "types_lld.gw";` → типы видны.
+Официальный флаг `--emit-types` (эквивалент env `GORAW_EMIT_ALL_TYPES=1`): эмитит
+struct/enum из заголовков + `extern fn`-сигнатуры свободных функций + forward-заглушки.
+Затем в backend-`.gw`: `import "types_lld.gw";` → типы и функции видны.
 
 ## Обновление (итерации 12–20)
 

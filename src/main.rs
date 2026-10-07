@@ -442,7 +442,7 @@ fn handle_from_cpp_subcommand(args: &[String]) -> i32 {
                 println!(
                     "goraw from-cpp — транслятор C++23 исходного кода обратно в Goraw (.gw)\n\n\
                      ИСПОЛЬЗОВАНИЕ:\n    goraw from-cpp <файл.cpp> [-o out.gw] [--std c++23] [-I <include_path>] [--clang <путь>]\n\n\
-                     ОПЦИИ:\n    -o <путь>      имя выходного файла (по умолчанию <файл>.gw, '-' для stdout)\n    -I <путь>      дополнительный путь поиска заголовков\n    --std <версия> стандарт C++ (по умолчанию c++23)\n    --clang <путь> путь к компилятору clang++\n    --target <trp> целевой target triple\n    -h, --help     показать справку"
+                     ОПЦИИ:\n    -o <путь>      имя выходного файла (по умолчанию <файл>.gw, '-' для stdout)\n    -I <путь>      дополнительный путь поиска заголовков\n    --std <версия> стандарт C++ (по умолчанию c++23)\n    --clang <путь> путь к компилятору clang++\n    --target <trp> целевой target triple\n    --emit-types   модуль типов: struct/enum из заголовков + extern-fn-сигнатуры\n    -h, --help     показать справку"
                 );
                 return 0;
             }
@@ -495,6 +495,12 @@ fn handle_from_cpp_subcommand(args: &[String]) -> i32 {
                         return 2;
                     }
                 }
+            }
+            "--emit-types" => {
+                // Режим модуля типов: эмитим определения struct/enum из заголовков
+                // + extern-fn-сигнатуры (для разрешения кросс-файловых типов backend).
+                // set_var unsafe в edition 2024; CLI одно-поточный, вызов до транспиляции.
+                unsafe { std::env::set_var("GORAW_EMIT_ALL_TYPES", "1") };
             }
             s if s.starts_with("-I") => {
                 extra_includes.push(PathBuf::from(&s[2..]));
