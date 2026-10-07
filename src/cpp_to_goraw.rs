@@ -668,6 +668,55 @@ fn sanitize_member_name(name: &str) -> String {
     name.to_string()
 }
 
+/// Разбивает список по запятым верхнего уровня (учёт вложенных `<>`/`()`/`[]`).
+fn split_top_level_commas(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(s[start..i].trim().to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let last = s[start..].trim();
+    if !last.is_empty() {
+        out.push(last.to_string());
+    }
+    out
+}
+
+/// `std::function<R(Args)>` -> Goraw fn-указатель `fn(Args) -> R`.
+fn map_function_signature(sig: &str) -> String {
+    if let (Some(open), Some(close)) = (sig.find('('), sig.rfind(')')) {
+        if close > open {
+            let ret = sig[..open].trim();
+            let args_str = sig[open + 1..close].trim();
+            let args: Vec<String> = if args_str.is_empty() || args_str == "void" {
+                Vec::new()
+            } else {
+                split_top_level_commas(args_str)
+                    .iter()
+                    .map(|a| map_cpp_type(a, None))
+                    .collect()
+            };
+            let ret_m = map_cpp_type(ret, None);
+            let base = format!("fn({})", args.join(", "));
+            return if ret_m == "void" || ret_m.is_empty() {
+                base
+            } else {
+                format!("{base} -> {ret_m}")
+            };
+        }
+    }
+    "*mut u8".to_string()
+}
+
 /// Первый аргумент шаблона на верхнем уровне (учёт вложенных `<>` и `()`).
 fn top_level_first_arg(inner: &str) -> &str {
     let mut depth = 0i32;
@@ -800,7 +849,10 @@ pub fn map_cpp_type(qual_type: &str, desugared: Option<&str>) -> String {
                 "Optional" | "optional" | "Expected" | "ErrorOr" => {
                     return map_cpp_type(first, None);
                 }
-                // Неизвестный шаблон (DenseMap, function, StringMap, set, ...) -> непрозрачный указатель.
+                "function" | "function_ref" | "unique_function" => {
+                    return map_function_signature(inner);
+                }
+                // Неизвестный шаблон (DenseMap, StringMap, set, ...) -> непрозрачный указатель.
                 _ => return "*mut u8".to_string(),
             }
         }
@@ -2658,6 +2710,9 @@ fn non_struct_default(sname: &str) -> Option<String> {
     if sname == "str" {
         return Some("\"\"".to_string());
     }
+    if sname.starts_with("fn(") {
+        return Some("null".to_string());
+    }
     if sname.starts_with('*')
         || sname.starts_with('[')
         || matches!(sname, "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f32" | "f64" | "bool" | "void")
@@ -2960,7 +3015,7 @@ fn default_value_for_type(ty: &str) -> String {
         "f32" => "0.0".to_string(),
         "f64" => "0.0".to_string(),
         "bool" => "false".to_string(),
-        s if s.starts_with('*') => "null".to_string(),
+        s if s.starts_with('*') || s.starts_with("fn(") => "null".to_string(),
         s if s.starts_with('[') && s.contains(']') => "zeroed()".to_string(),
         _ => "zeroed()".to_string(),
     }
