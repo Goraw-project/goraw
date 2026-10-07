@@ -753,6 +753,9 @@ pub fn map_cpp_type(qual_type: &str, desugared: Option<&str>) -> String {
     if let Some(stripped) = s.strip_prefix("enum ") {
         s = stripped.trim();
     }
+    if let Some(stripped) = s.strip_prefix("union ") {
+        s = stripped.trim();
+    }
 
     // const-указатель: `T *const` / `T * const` -> трактуем как `T *`
     // (иначе получался невалидный `*mut T const` / `[N]T *const const`).
@@ -930,7 +933,9 @@ fn lift_record_decl(node: &Value, ctx: &mut TranspilerContext) -> Option<String>
         return None;
     }
     // Дедуп: один и тот же тип могут определять разные namespace/файлы.
-    if !ctx.emitted_types.insert(name.clone()) {
+    // Только ПРОВЕРКА здесь; запись в emitted_types — при успешной эмиссии (ниже),
+    // иначе имя «занимается» даже при раннем return None и тип не заглушается.
+    if ctx.emitted_types.contains(&name) {
         return None;
     }
 
@@ -1023,6 +1028,7 @@ fn lift_record_decl(node: &Value, ctx: &mut TranspilerContext) -> Option<String>
         out.push_str(&methods.join("\n\n"));
     }
 
+    ctx.emitted_types.insert(name.clone());
     Some(out)
 }
 
@@ -1140,8 +1146,8 @@ fn lift_method_decl(node: &Value, struct_name: &str, ctx: &mut TranspilerContext
 /// Трансляция EnumDecl.
 fn lift_enum_decl(node: &Value, ctx: &mut TranspilerContext) -> Option<String> {
     let name = node.get("name")?.as_str()?;
-    // Дедуп одноимённых enum из разных namespace (как и для struct).
-    if !ctx.emitted_types.insert(name.to_string()) {
+    // Дедуп одноимённых enum (только проверка; запись — при успешной эмиссии).
+    if ctx.emitted_types.contains(name) {
         return None;
     }
     let inner = node.get("inner").and_then(|i| i.as_array())?;
@@ -1163,6 +1169,7 @@ fn lift_enum_decl(node: &Value, ctx: &mut TranspilerContext) -> Option<String> {
         }
     }
 
+    ctx.emitted_types.insert(name.to_string());
     Some(format!("enum {name} {{\n{}\n}}", variants.join("\n")))
 }
 
