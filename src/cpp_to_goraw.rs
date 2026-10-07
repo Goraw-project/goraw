@@ -977,7 +977,8 @@ fn lift_record_decl(node: &Value, ctx: &mut TranspilerContext) -> Option<String>
                         .and_then(|t| t.get("qualType"))
                         .and_then(|q| q.as_str())
                         .unwrap_or("i32");
-                    let mapped_ty = map_cpp_type(ftype, None);
+                    let fdes = child.get("type").and_then(|t| t.get("desugaredQualType")).and_then(|q| q.as_str());
+                    let mapped_ty = map_cpp_type(ftype, fdes);
                     if let Some(bn) = base_type_name(&mapped_ty) { ctx.referenced_types.insert(bn); }
                     fields.push(format!("    {fname}: {mapped_ty},"));
                 }
@@ -1189,7 +1190,9 @@ fn lift_global_var_decl(node: &Value, ctx: &mut TranspilerContext) -> Option<Str
     }
 
     let qual_type = node.get("type")?.get("qualType")?.as_str()?;
-    let mapped_ty = map_cpp_type(qual_type, None);
+    // desugared резолвит typedef'ы (Statistic -> TrackingStatistic) и `auto`.
+    let desugared = node.get("type").and_then(|t| t.get("desugaredQualType")).and_then(|q| q.as_str());
+    let mapped_ty = map_cpp_type(qual_type, desugared);
 
     let is_const = qual_type.contains("const ") || node.get("isConstexpr").and_then(|b| b.as_bool()).unwrap_or(false);
 
