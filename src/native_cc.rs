@@ -54,25 +54,47 @@ pub const AVAILABLE: bool = cfg!(windows);
 
 /// Каталог встроенных заголовков clang (resource-dir, где stddef.h и пр.).
 /// Нужен встроенному clang, т.к. у него нет инсталляции на диске.
-/// Переопределяется через GORAW_CLANG_RESOURCE_DIR.
+///
+/// Порядок поиска (без хардкода путей):
+///   1) env GORAW_CLANG_RESOURCE_DIR — явное переопределение в рантайме;
+///   2) путь, запечённый build.rs (GORAW_CLANG_RESOURCE_DIR_BUILTIN);
+///   3) рядом с исполняемым файлом: <exe_dir>/clang-rt/include и
+///      <exe_dir>/lib/clang/<ver>/include (на случай переносимой раскладки).
 pub fn clang_resource_dir() -> Option<std::path::PathBuf> {
+    let has_stddef = |p: &std::path::Path| p.join("stddef.h").exists();
+
     if let Ok(p) = std::env::var("GORAW_CLANG_RESOURCE_DIR") {
         let pb = std::path::PathBuf::from(p);
-        if pb.join("stddef.h").exists() {
+        if has_stddef(&pb) {
             return Some(pb);
         }
     }
-    // Значение по умолчанию: дерево сборки LLVM этой машины.
-    for base in ["P:/llvm-build/lib/clang", "./llvm-build/lib/clang"] {
-        if let Ok(rd) = std::fs::read_dir(base) {
-            for e in rd.flatten() {
-                let inc = e.path().join("include");
-                if inc.join("stddef.h").exists() {
-                    return Some(inc);
+
+    if let Some(p) = option_env!("GORAW_CLANG_RESOURCE_DIR_BUILTIN") {
+        let pb = std::path::PathBuf::from(p);
+        if has_stddef(&pb) {
+            return Some(pb);
+        }
+    }
+
+    // Переносимая раскладка рядом с бинарём.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let direct = dir.join("clang-rt").join("include");
+            if has_stddef(&direct) {
+                return Some(direct);
+            }
+            if let Ok(rd) = std::fs::read_dir(dir.join("lib").join("clang")) {
+                for e in rd.flatten() {
+                    let inc = e.path().join("include");
+                    if has_stddef(&inc) {
+                        return Some(inc);
+                    }
                 }
             }
         }
     }
+
     None
 }
 

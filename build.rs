@@ -2,8 +2,12 @@
 // (X86-only, MSVC ABI), mimalloc и blake3, плюс C++-шим runtime/goraw_cc.cpp.
 // Так gorawc перестаёт зависеть от системного LLVM/Clang.
 //
-// Пути к предсобранным либам задаются через env (со значениями по умолчанию
-// под текущую машину):
+// Пути НИЧЕГО не хардкодят. Порядок поиска каждого каталога:
+//   1) env-переменная (см. ниже) — явное переопределение;
+//   2) относительно корня крейта (CARGO_MANIFEST_DIR) — раскладка по умолчанию;
+//   3) если не нашлось — внятный panic с подсказкой, что собрать и какой env задать.
+//
+// Env-переопределения:
 //   GORAW_LLVM_BUILD   — каталог сборки LLVM (…/lib/*.lib, …/include)
 //   GORAW_LLVM_SRC     — каталог исходников llvm-project
 //   GORAW_MIMALLOC_LIB — каталог с mimalloc.lib
@@ -11,9 +15,31 @@
 
 use std::path::{Path, PathBuf};
 
-fn env_or(key: &str, default: &str) -> String {
-    println!("cargo:rerun-if-env-changed={key}");
-    std::env::var(key).unwrap_or_else(|_| default.to_string())
+/// Каталог: сперва env, иначе первый существующий из кандидатов (относительно
+/// корня крейта). Возвращает None, если ничего не найдено.
+fn locate(env_key: &str, manifest: &Path, candidates: &[&str]) -> Option<PathBuf> {
+    println!("cargo:rerun-if-env-changed={env_key}");
+    if let Ok(v) = std::env::var(env_key) {
+        return Some(PathBuf::from(v));
+    }
+    for rel in candidates {
+        let p = manifest.join(rel);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+fn need(env_key: &str, what: &str, manifest: &Path, candidates: &[&str]) -> PathBuf {
+    locate(env_key, manifest, candidates).unwrap_or_else(|| {
+        panic!(
+            "не найден {what}. Проверенные пути (относительно {}): {:?}. \
+             Собери предсобранные либы (см. memory/goraw-static-llvm) или задай env {env_key}=<путь>.",
+            manifest.display(),
+            candidates
+        )
+    })
 }
 
 fn main() {
@@ -22,17 +48,42 @@ fn main() {
         return;
     }
 
-    let llvm_build = env_or("GORAW_LLVM_BUILD", "P:/llvm-build");
-    let llvm_src = env_or("GORAW_LLVM_SRC", "P:/Goraw/llvm-project");
-    let mimalloc_lib = env_or("GORAW_MIMALLOC_LIB", "P:/Goraw/mimalloc/build");
-    let blake3_lib = env_or("GORAW_BLAKE3_LIB", "P:/Goraw/blake3_repo/c/build");
+    let manifest = PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"),
+    );
 
+    // Раскладка по умолчанию: llvm-build — сосед корня крейта (../llvm-build) или
+    // вложен (./llvm-build); llvm-project/mimalloc/blake3 — внутри крейта.
+    let llvm_build = need(
+        "GORAW_LLVM_BUILD",
+        "каталог сборки LLVM",
+        &manifest,
+        &["../llvm-build", "llvm-build"],
+    );
+    let llvm_src = need(
+        "GORAW_LLVM_SRC",
+        "исходники llvm-project",
+        &manifest,
+        &["llvm-project", "../llvm-project"],
+    );
+    let mimalloc_lib = need(
+        "GORAW_MIMALLOC_LIB",
+        "каталог с mimalloc.lib",
+        &manifest,
+        &["mimalloc/build", "../mimalloc/build"],
+    );
+    let blake3_lib = need(
+        "GORAW_BLAKE3_LIB",
+        "каталог с blake3.lib",
+        &manifest,
+        &["blake3_repo/c/build", "../blake3_repo/c/build"],
+    );
+
+    let llvm_build = llvm_build.to_string_lossy().replace('\\', "/");
+    let llvm_src = llvm_src.to_string_lossy().replace('\\', "/");
     let llvm_lib_dir = format!("{llvm_build}/lib");
     if !Path::new(&llvm_lib_dir).is_dir() {
-        panic!(
-            "GORAW_LLVM_BUILD={llvm_build}: нет каталога либ {llvm_lib_dir}. \
-             Сначала собери статические LLVM+clang либы (см. memory/goraw-static-llvm)."
-        );
+        panic!("в {llvm_build} нет подкаталога lib/ со статическими либами LLVM+clang");
     }
 
     // --- 1. Компилируем C++-шим в статическую либу goraw_cc.lib ---
@@ -54,12 +105,25 @@ fn main() {
     cc.compile("goraw_cc");
     println!("cargo:rerun-if-changed=runtime/goraw_cc.cpp");
 
-    // --- 2. Пути поиска либ ---
-    println!("cargo:rustc-link-search=native={llvm_lib_dir}");
-    println!("cargo:rustc-link-search=native={mimalloc_lib}");
-    println!("cargo:rustc-link-search=native={blake3_lib}");
+    // --- 2. Resource-dir clang (встроенные заголовки) — находим и запекаем ---
+    // Путь кладём в компайл-тайм env, чтобы в бинаре не было хардкода; рантайм
+    // всё равно может переопределить его через GORAW_CLANG_RESOURCE_DIR.
+    if let Some(rd) = find_resource_dir(&llvm_lib_dir) {
+        println!("cargo:rustc-env=GORAW_CLANG_RESOURCE_DIR_BUILTIN={rd}");
+    }
 
-    // --- 3. Линкуем все LLVM/clang статиклибы (MSVC link тянет только нужное) ---
+    // --- 3. Пути поиска либ ---
+    println!("cargo:rustc-link-search=native={llvm_lib_dir}");
+    println!(
+        "cargo:rustc-link-search=native={}",
+        mimalloc_lib.to_string_lossy().replace('\\', "/")
+    );
+    println!(
+        "cargo:rustc-link-search=native={}",
+        blake3_lib.to_string_lossy().replace('\\', "/")
+    );
+
+    // --- 4. Линкуем все LLVM/clang статиклибы (MSVC link тянет только нужное) ---
     let mut names: Vec<String> = Vec::new();
     for entry in std::fs::read_dir(&llvm_lib_dir).expect("read llvm lib dir") {
         let p: PathBuf = entry.unwrap().path();
@@ -74,15 +138,29 @@ fn main() {
         println!("cargo:rustc-link-lib=static={n}");
     }
 
-    // --- 4. mimalloc + blake3 ---
+    // --- 5. mimalloc + blake3 ---
     println!("cargo:rustc-link-lib=static=mimalloc");
     println!("cargo:rustc-link-lib=static=blake3");
 
-    // --- 5. Системные либы, нужные LLVM на Windows ---
+    // --- 6. Системные либы, нужные LLVM на Windows ---
     for sys in [
         "ole32", "uuid", "psapi", "shell32", "advapi32", "user32", "kernel32",
         "ws2_32", "version", "ntdll",
     ] {
         println!("cargo:rustc-link-lib=dylib={sys}");
     }
+}
+
+/// Ищет каталог встроенных заголовков clang: <llvm_lib_dir>/clang/<ver>/include,
+/// в котором есть stddef.h.
+fn find_resource_dir(llvm_lib_dir: &str) -> Option<String> {
+    let base = Path::new(llvm_lib_dir).join("clang");
+    let rd = std::fs::read_dir(&base).ok()?;
+    for e in rd.flatten() {
+        let inc = e.path().join("include");
+        if inc.join("stddef.h").exists() {
+            return Some(inc.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    None
 }

@@ -12,9 +12,141 @@ use std::collections::HashMap;
 /// Информация об импортируемом символе
 #[derive(Debug, Clone)]
 struct ImportSymbol {
-    dll_name: &'static str,
+    dll_name: String,
     sym_name: String,
     hint: u16,
+}
+
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// Декодирует десятичный размер члена архива (поле 10 ASCII-байт, добито пробелами).
+fn ar_size(field: &[u8]) -> usize {
+    std::str::from_utf8(field)
+        .ok()
+        .map(|s| s.trim())
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
+/// Индексирует «первый компоновочный член» импорт-библиотеки (.lib): символ -> смещение члена.
+fn index_archive(path: &Path, map: &mut HashMap<String, (PathBuf, u32)>) {
+    let Ok(bytes) = std::fs::read(path) else { return };
+    if bytes.len() < 8 + 60 || &bytes[0..8] != b"!<arch>\n" {
+        return;
+    }
+    let pos = 8;
+    let hdr = &bytes[pos..pos + 60];
+    // Имя первого члена — "/" (таблица символов, big-endian — формат MS/System V).
+    if hdr[0] != b'/' {
+        return;
+    }
+    let size = ar_size(&hdr[48..58]);
+    let data_start = pos + 60;
+    let data_end = data_start + size;
+    if data_end > bytes.len() || size < 4 {
+        return;
+    }
+    let data = &bytes[data_start..data_end];
+    let count = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+    let offs_start = 4;
+    let names_start = offs_start + count * 4;
+    if names_start > data.len() {
+        return;
+    }
+    let mut name_pos = names_start;
+    for i in 0..count {
+        if name_pos >= data.len() {
+            break;
+        }
+        let o = offs_start + i * 4;
+        let member_off = u32::from_be_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
+        let end = data[name_pos..]
+            .iter()
+            .position(|&b| b == 0)
+            .map(|e| name_pos + e)
+            .unwrap_or(data.len());
+        let name = String::from_utf8_lossy(&data[name_pos..end]).into_owned();
+        name_pos = end + 1;
+
+        // Индексируем ТОЛЬКО символы, чей член — «короткий импорт» (реальный
+        // импорт из DLL). Так статические либы (libucrt/libcmt — там обычные
+        // объектники) не перебивают DLL-импорт-либы (ucrt.lib и пр.).
+        let ds = member_off as usize + 60;
+        let is_short_import = ds + 4 <= bytes.len()
+            && bytes[ds] == 0
+            && bytes[ds + 1] == 0
+            && bytes[ds + 2] == 0xFF
+            && bytes[ds + 3] == 0xFF;
+        if is_short_import {
+            map.entry(name).or_insert((path.to_path_buf(), member_off));
+        }
+    }
+}
+
+/// Ленивый индекс символов по всем .lib из SDK-каталогов Goraw (ucrt/um/msvc/mingw).
+fn implib_index() -> &'static HashMap<String, (PathBuf, u32)> {
+    static IDX: OnceLock<HashMap<String, (PathBuf, u32)>> = OnceLock::new();
+    IDX.get_or_init(|| {
+        let mut map = HashMap::new();
+        let sdk = crate::c_interop::get_sdk_paths();
+        let dbg = std::env::var("GORAW_DEBUG_IMPLIB").is_ok();
+        for dir in &sdk.libs {
+            if dbg {
+                eprintln!("[implib] каталог: {}", dir.display());
+            }
+            if let Ok(rd) = std::fs::read_dir(dir) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    let is_lib = p
+                        .extension()
+                        .and_then(|x| x.to_str())
+                        .map(|x| x.eq_ignore_ascii_case("lib"))
+                        .unwrap_or(false);
+                    if is_lib {
+                        let before = map.len();
+                        index_archive(&p, &mut map);
+                        if dbg {
+                            eprintln!("[implib]   {} (+{} симв.)", p.display(), map.len() - before);
+                        }
+                    }
+                }
+            }
+        }
+        if dbg {
+            eprintln!("[implib] всего символов: {}", map.len());
+        }
+        map
+    })
+}
+
+/// Разрешает символ через импорт-библиотеки SDK: возвращает (dll, имя-импорта).
+/// Работает с «короткими импорт-членами» (IMPORT_OBJECT_HEADER) — именно их
+/// содержат .lib для UCRT/Win32/libc++.
+fn resolve_import_lib(sym: &str) -> Option<(String, String)> {
+    let clean = sym.trim_start_matches('\x01');
+    let idx = implib_index();
+    let (path, off) = idx.get(clean).or_else(|| idx.get(sym))?;
+    let bytes = std::fs::read(path).ok()?;
+    let data_start = *off as usize + 60; // пропускаем 60-байтовый заголовок члена
+    if data_start + 20 > bytes.len() {
+        return None;
+    }
+    let d = &bytes[data_start..];
+    // Сигнатура короткого импорта: Sig1=0x0000, Sig2=0xFFFF.
+    if !(d[0] == 0 && d[1] == 0 && d[2] == 0xFF && d[3] == 0xFF) {
+        return None;
+    }
+    let strs = &d[20..];
+    let name_end = strs.iter().position(|&b| b == 0)?;
+    let import_name = String::from_utf8_lossy(&strs[..name_end]).into_owned();
+    let dll_start = name_end + 1;
+    let rel = strs.get(dll_start..)?.iter().position(|&b| b == 0)?;
+    let dll_name = String::from_utf8_lossy(&strs[dll_start..dll_start + rel]).into_owned();
+    if dll_name.is_empty() {
+        return None;
+    }
+    Some((dll_name, import_name))
 }
 
 /// Создает таблицу автоматических системных импортов Windows
@@ -227,20 +359,29 @@ pub fn link_coff_to_pe(obj_bytes_list: &[&[u8]], custom_entry: Option<&str>) -> 
         if let Some((dll, clean_name)) = identify_import(sym) {
             if !needed_imports.iter().any(|i| i.sym_name == clean_name && i.dll_name == dll) {
                 needed_imports.push(ImportSymbol {
-                    dll_name: dll,
+                    dll_name: dll.to_string(),
                     sym_name: clean_name.to_string(),
                     hint: 0,
                 });
             }
+        } else if let Some((dll, import_name)) = resolve_import_lib(sym) {
+            // Разрешено через импорт-библиотеку SDK (UCRT, Win32, libc++ и пр.).
+            if !needed_imports.iter().any(|i| i.sym_name == import_name && i.dll_name == dll) {
+                needed_imports.push(ImportSymbol {
+                    dll_name: dll,
+                    sym_name: import_name,
+                    hint: 0,
+                });
+            }
         } else {
-            return Err(format!("не разрешен внешний символ `{sym}` (не найден во встроенных библиотеках kernel32/msvcrt)"));
+            return Err(format!("не разрешен внешний символ `{sym}` (нет ни во встроенной таблице kernel32/msvcrt, ни в импорт-библиотеках SDK)"));
         }
     }
 
     // Группируем импорты по DLL
-    let mut dll_imports: HashMap<&'static str, Vec<ImportSymbol>> = HashMap::new();
+    let mut dll_imports: HashMap<String, Vec<ImportSymbol>> = HashMap::new();
     for imp in needed_imports {
-        dll_imports.entry(imp.dll_name).or_default().push(imp);
+        dll_imports.entry(imp.dll_name.clone()).or_default().push(imp);
     }
 
     // Создаем стартовый стаб (entry stub) в начале .text:
@@ -508,7 +649,7 @@ pub fn link_coff_to_pe(obj_bytes_list: &[&[u8]], custom_entry: Option<&str>) -> 
 
 /// Построитель структуры секции импорта `.idata`
 fn build_idata_section(
-    dll_imports: &HashMap<&'static str, Vec<ImportSymbol>>,
+    dll_imports: &HashMap<String, Vec<ImportSymbol>>,
     base_rva: u32,
 ) -> (Vec<u8>, HashMap<String, u32>, u32) {
     let mut idata = Vec::new();
