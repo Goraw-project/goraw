@@ -122,6 +122,56 @@ impl<'a> TranspilerContext<'a> {
     }
 }
 
+/// AST-dump через встроенный clang-шим (без системного clang).
+/// Ok(Some) — получен (возможно частичный) AST; Ok(None) — шим пуст, нужен фолбэк.
+fn run_ast_dump_shim(
+    cpp_path: &Path,
+    target: &str,
+    cpp_std: &str,
+    opts: &CppToGorawOptions,
+    sdk: &crate::c_interop::SdkPaths,
+) -> Result<Option<Value>, String> {
+    let source = std::fs::read_to_string(cpp_path)
+        .map_err(|e| format!("не удалось прочитать `{}`: {e}", cpp_path.display()))?;
+
+    let mut args: Vec<String> = vec![
+        format!("--target={target}"),
+        format!("-std={cpp_std}"),
+        "-fno-exceptions".to_string(),
+    ];
+    if let Some(rd) = crate::native_cc::clang_resource_dir() {
+        args.push("-resource-dir".to_string());
+        args.push(rd.to_string_lossy().into_owned());
+    }
+    // Каталог исходника — для относительных #include (внешний clang добавлял его неявно).
+    if let Some(dir) = cpp_path.parent() {
+        if !dir.as_os_str().is_empty() {
+            args.push("-I".to_string());
+            args.push(dir.to_string_lossy().into_owned());
+        }
+    }
+    for inc in &opts.extra_includes {
+        args.push("-I".to_string());
+        args.push(inc.to_string_lossy().into_owned());
+    }
+    for inc in sdk.includes_for_target(target) {
+        args.push("-isystem".to_string());
+        args.push(inc.to_string_lossy().into_owned());
+    }
+
+    let json_str = match crate::native_cc::cc_ast_json(&source, true, &args, None) {
+        Ok(s) if !s.trim().is_empty() => s,
+        _ => return Ok(None),
+    };
+
+    let mut de = serde_json::Deserializer::from_str(&json_str);
+    de.disable_recursion_limit();
+    match serde::Deserialize::deserialize(&mut de) {
+        Ok(ast) => Ok(Some(ast)),
+        Err(_) => Ok(None),
+    }
+}
+
 /// Запуск clang++ и получение Clang AST в формате JSON.
 pub fn run_clang_ast_dump(
     cpp_path: &Path,
@@ -138,6 +188,18 @@ pub fn run_clang_ast_dump(
         raw_target
     };
     let cpp_std = opts.cpp_std.as_deref().unwrap_or("c++23");
+
+    // Сначала — встроенный clang-шим (без системного clang).
+    if crate::native_cc::AVAILABLE {
+        match run_ast_dump_shim(cpp_path, target, cpp_std, opts, sdk) {
+            Ok(Some(ast)) => return Ok(ast),
+            Ok(None) => { /* шим вернул пусто — падаем на системный clang */ }
+            Err(e) => {
+                eprintln!("встроенный clang-шим AST не сработал ({e}); пробую системный clang");
+            }
+        }
+    }
+
     let detected_clang;
     let clang_bin = match opts.clang_path.as_deref() {
         Some(p) => p,

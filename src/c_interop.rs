@@ -358,6 +358,42 @@ pub fn compile_inline_snippet(
     opt_level: Option<&str>,
     target_triple: Option<&str>,
 ) -> Result<(), String> {
+    let target = target_triple.unwrap_or("x86_64-w64-windows-gnu");
+    let std_v = match std_version {
+        Some(v) => v.to_string(),
+        None => if is_cpp { "c++23".to_string() } else { "c23".to_string() },
+    };
+    let opt = opt_level.unwrap_or("2");
+
+    // Сначала пробуем встроенный clang-шим (без системного clang). На выходе
+    // COFF-объектник — его одинаково принимают и встроенный PE-компоновщик, и
+    // системный clang при фолбэк-линковке.
+    if crate::native_cc::AVAILABLE {
+        let mut args: Vec<String> = vec![
+            format!("--target={target}"),
+            format!("-std={std_v}"),
+            format!("-O{opt}"),
+        ];
+        if is_cpp {
+            args.push("-fno-exceptions".to_string());
+        }
+        if let Some(rd) = crate::native_cc::clang_resource_dir() {
+            args.push("-resource-dir".to_string());
+            args.push(rd.to_string_lossy().into_owned());
+        }
+        let sdk = get_sdk_paths();
+        for inc in sdk.includes_for_target(target) {
+            args.push("-I".to_string());
+            args.push(inc.to_string_lossy().into_owned());
+        }
+        match crate::native_cc::cc_emit_obj(code, is_cpp, &args, output_bc) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                eprintln!("встроенный clang-шим не смог собрать инлайн-вставку ({e}); пробую системный clang");
+            }
+        }
+    }
+
     let compiler = if is_cpp {
         if clang_path.ends_with("clang.exe") || clang_path == "clang" {
             clang_path.replace("clang.exe", "clang++.exe").replace("clang", "clang++")
@@ -369,7 +405,6 @@ pub fn compile_inline_snippet(
     };
 
     let mut cmd = Command::new(&compiler);
-    let target = target_triple.unwrap_or("x86_64-w64-windows-gnu");
     cmd.arg(format!("--target={target}"));
     cmd.arg("-c")
         .arg("-x")
@@ -380,8 +415,9 @@ pub fn compile_inline_snippet(
         None => if is_cpp { "-std=c++23".to_string() } else { "-std=c23".to_string() },
     };
     let opt = opt_level.unwrap_or("2");
+    // Эмитим COFF-объектник (не bitcode): его одинаково принимают и встроенный
+    // PE-компоновщик, и clang при фолбэк-линковке (расширение вывода — .obj).
     cmd.arg(std_arg)
-        .arg("-emit-llvm")
         .arg(format!("-O{opt}"));
 
     if opt == "0" {

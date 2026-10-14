@@ -1694,7 +1694,7 @@ fn run(opts: Options) -> i32 {
     // Компиляция инлайн C / C++ блоков в .bc файлы
     let mut temp_c_objs = Vec::new();
     if !inline_c_code.trim().is_empty() {
-        let c_bc = ll_path.with_extension("c.bc");
+        let c_bc = ll_path.with_extension("c.obj");
         if let Err(e) = gorawc::c_interop::compile_inline_snippet(&inline_c_code, false, Some(&opts.c_std), &opts.clang, &c_bc, Some(&effective_opt), Some(&opts.target)) {
             eprintln!("{e}");
             return 1;
@@ -1702,7 +1702,7 @@ fn run(opts: Options) -> i32 {
         temp_c_objs.push(c_bc);
     }
     if !inline_cpp_code.trim().is_empty() {
-        let cpp_bc = ll_path.with_extension("cpp.bc");
+        let cpp_bc = ll_path.with_extension("cpp.obj");
         if let Err(e) = gorawc::c_interop::compile_inline_snippet(&inline_cpp_code, true, Some(&opts.cpp_std), &opts.clang, &cpp_bc, Some(&effective_opt), Some(&opts.target)) {
             eprintln!("{e}");
             return 1;
@@ -1729,30 +1729,35 @@ fn run(opts: Options) -> i32 {
                 }
             }
         } else {
-            // Компилируем LLVM IR в объектный файл через clang -c, если clang есть
+            // Компилируем LLVM IR в объектный файл встроенным LLVM-шимом
+            // (без системного clang). При недоступности шима/ошибке —
+            // фолбэк на встроенный автономный x86-64 backend Goraw.
             let ll_obj = ll_path.with_extension("obj");
-            let mut compile_cmd = Command::new(&opts.clang);
-            compile_cmd.arg(format!("--target={}", opts.target));
-            compile_cmd.arg(format!("-O{effective_opt}"));
-            compile_cmd.arg("-c").arg(&ll_path).arg("-o").arg(&ll_obj);
-            compile_cmd.arg("-Wno-override-module");
-
-            if matches!(compile_cmd.status(), Ok(s) if s.success()) {
-                if let Ok(b) = std::fs::read(&ll_obj) {
-                    obj_bytes_list.push(b);
-                    compiled_obj_ok = true;
+            let opt_lvl: u8 = effective_opt.parse().unwrap_or(2);
+            let mut used_shim = false;
+            if gorawc::native_cc::AVAILABLE {
+                match gorawc::native_cc::llc_to_obj(&ir, &ll_obj, true, opt_lvl, &opts.target) {
+                    Ok(()) => {
+                        if let Ok(b) = std::fs::read(&ll_obj) {
+                            obj_bytes_list.push(b);
+                            compiled_obj_ok = true;
+                            used_shim = true;
+                        }
+                        let _ = std::fs::remove_file(&ll_obj);
+                    }
+                    Err(e) => {
+                        eprintln!("встроенный LLVM-шим не смог скомпилировать IR: {e}");
+                    }
                 }
-                let _ = std::fs::remove_file(&ll_obj);
-            } else {
-                // Если clang не установлен на машине, автоматически переключаемся
-                // на встроенный автономный x86-64 backend Goraw!
+            }
+            if !used_shim {
                 match gorawc::x86_codegen::compile_program_to_obj(&prog, &input_name) {
                     Ok(bytes) => {
                         obj_bytes_list.push(bytes);
                         compiled_obj_ok = true;
                     }
                     Err(e) => {
-                        eprintln!("ошибка сборки: Clang недоступен, а автономный x86-64 генератор сообщил: {e}");
+                        eprintln!("ошибка сборки: встроенный LLVM-шим недоступен, а автономный x86-64 генератор сообщил: {e}");
                         return 1;
                     }
                 }
