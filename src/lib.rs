@@ -2,8 +2,9 @@
 //! ассемблера `gorawas`.
 
 // Глобальный аллокатор mimalloc (статически слинкован, см. build.rs). Ускоряет
-// все бинари Goraw и убирает зависимость от аллокатора системного CRT.
-#[cfg(windows)]
+// все бинари Goraw и убирает зависимость от аллокатора системного CRT. Включается
+// только когда линкуется статический набор (cfg goraw_static_llvm).
+#[cfg(goraw_static_llvm)]
 mod mi_alloc {
     use std::alloc::{GlobalAlloc, Layout};
     use std::os::raw::c_void;
@@ -29,7 +30,7 @@ mod mi_alloc {
         }
     }
 }
-#[cfg(windows)]
+#[cfg(goraw_static_llvm)]
 #[global_allocator]
 static GLOBAL_ALLOC: mi_alloc::MiMalloc = mi_alloc::MiMalloc;
 

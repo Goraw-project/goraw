@@ -31,18 +31,12 @@ fn locate(env_key: &str, manifest: &Path, candidates: &[&str]) -> Option<PathBuf
     None
 }
 
-fn need(env_key: &str, what: &str, manifest: &Path, candidates: &[&str]) -> PathBuf {
-    locate(env_key, manifest, candidates).unwrap_or_else(|| {
-        panic!(
-            "не найден {what}. Проверенные пути (относительно {}): {:?}. \
-             Собери предсобранные либы (см. memory/goraw-static-llvm) или задай env {env_key}=<путь>.",
-            manifest.display(),
-            candidates
-        )
-    })
-}
-
 fn main() {
+    // cfg(goraw_static_llvm) включается ТОЛЬКО когда предсобранные LLVM+clang либы
+    // реально найдены. Иначе статическая линковка отключается (gorawc работает через
+    // системный clang / нативный backend) — важно для CI без предсобранных либ.
+    println!("cargo:rustc-check-cfg=cfg(goraw_static_llvm)");
+
     // На не-Windows пока не поддерживаем статическую линковку LLVM — выходим тихо.
     if !cfg!(target_os = "windows") {
         return;
@@ -54,36 +48,34 @@ fn main() {
 
     // Раскладка по умолчанию: llvm-build — сосед корня крейта (../llvm-build) или
     // вложен (./llvm-build); llvm-project/mimalloc/blake3 — внутри крейта.
-    let llvm_build = need(
-        "GORAW_LLVM_BUILD",
-        "каталог сборки LLVM",
-        &manifest,
-        &["../llvm-build", "llvm-build"],
-    );
-    let llvm_src = need(
-        "GORAW_LLVM_SRC",
-        "исходники llvm-project",
-        &manifest,
-        &["llvm-project", "../llvm-project"],
-    );
-    let mimalloc_lib = need(
-        "GORAW_MIMALLOC_LIB",
-        "каталог с mimalloc.lib",
-        &manifest,
-        &["mimalloc/build", "../mimalloc/build"],
-    );
-    let blake3_lib = need(
-        "GORAW_BLAKE3_LIB",
-        "каталог с blake3.lib",
-        &manifest,
-        &["blake3_repo/c/build", "../blake3_repo/c/build"],
-    );
+    let found = (|| {
+        Some((
+            locate("GORAW_LLVM_BUILD", &manifest, &["../llvm-build", "llvm-build"])?,
+            locate("GORAW_LLVM_SRC", &manifest, &["llvm-project", "../llvm-project"])?,
+            locate("GORAW_MIMALLOC_LIB", &manifest, &["mimalloc/build", "../mimalloc/build"])?,
+            locate("GORAW_BLAKE3_LIB", &manifest, &["blake3_repo/c/build", "../blake3_repo/c/build"])?,
+        ))
+    })();
+
+    let Some((llvm_build, llvm_src, mimalloc_lib, blake3_lib)) = found else {
+        println!(
+            "cargo:warning=Goraw: предсобранные LLVM+clang либы не найдены — \
+             статическая линковка отключена (сборка идёт в режиме внешнего clang). \
+             Чтобы включить, собери либы (см. memory/goraw-static-llvm) и задай \
+             GORAW_LLVM_BUILD/GORAW_LLVM_SRC/GORAW_MIMALLOC_LIB/GORAW_BLAKE3_LIB."
+        );
+        return;
+    };
 
     let llvm_build = llvm_build.to_string_lossy().replace('\\', "/");
     let llvm_src = llvm_src.to_string_lossy().replace('\\', "/");
     let llvm_lib_dir = format!("{llvm_build}/lib");
     if !Path::new(&llvm_lib_dir).is_dir() {
-        panic!("в {llvm_build} нет подкаталога lib/ со статическими либами LLVM+clang");
+        println!(
+            "cargo:warning=Goraw: в {llvm_build} нет подкаталога lib/ — \
+             статическая линковка отключена."
+        );
+        return;
     }
 
     // --- 1. Компилируем C++-шим в статическую либу goraw_cc.lib ---
@@ -149,6 +141,9 @@ fn main() {
     ] {
         println!("cargo:rustc-link-lib=dylib={sys}");
     }
+
+    // --- 7. Статическая линковка активна — включаем cfg для кода ---
+    println!("cargo:rustc-cfg=goraw_static_llvm");
 }
 
 /// Ищет каталог встроенных заголовков clang: <llvm_lib_dir>/clang/<ver>/include,

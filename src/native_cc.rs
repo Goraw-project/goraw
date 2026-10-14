@@ -8,7 +8,7 @@
 
 #![allow(dead_code)]
 
-#[cfg(windows)]
+#[cfg(goraw_static_llvm)]
 mod ffi {
     use std::os::raw::{c_char, c_int};
     unsafe extern "C" {
@@ -50,7 +50,7 @@ mod ffi {
 }
 
 /// Доступен ли встроенный шим на этой сборке/платформе.
-pub const AVAILABLE: bool = cfg!(windows);
+pub const AVAILABLE: bool = cfg!(goraw_static_llvm);
 
 /// Каталог встроенных заголовков clang (resource-dir, где stddef.h и пр.).
 /// Нужен встроенному clang, т.к. у него нет инсталляции на диске.
@@ -98,7 +98,7 @@ pub fn clang_resource_dir() -> Option<std::path::PathBuf> {
     None
 }
 
-#[cfg(windows)]
+#[cfg(goraw_static_llvm)]
 mod imp {
     use super::ffi;
     use std::ffi::{CStr, CString};
@@ -251,7 +251,7 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(goraw_static_llvm))]
 mod imp {
     use std::path::Path;
     pub fn llc_to_obj(_: &str, _: &Path, _: bool, _: u8, _: &str) -> Result<(), String> {
